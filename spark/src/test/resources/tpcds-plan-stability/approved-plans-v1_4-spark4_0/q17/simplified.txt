@@ -23,7 +23,7 @@ TakeOrderedAndProject [i_item_id,i_item_desc,s_state,store_sales_quantitycount,s
                                             CometProject [ss_item_sk,ss_store_sk,ss_quantity,ss_sold_date_sk,sr_item_sk,sr_customer_sk,sr_return_quantity,sr_returned_date_sk]
                                               CometBroadcastHashJoin [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_quantity,ss_sold_date_sk,sr_item_sk,sr_customer_sk,sr_ticket_number,sr_return_quantity,sr_returned_date_sk]
                                                 CometFilter [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_quantity,ss_sold_date_sk]
-                                                  CometScan [native_comet] parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_quantity,ss_sold_date_sk]
+                                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_quantity,ss_sold_date_sk]
                                                     SubqueryBroadcast [d_date_sk] #1
                                                       BroadcastExchange #2
                                                         WholeStageCodegen (1)
@@ -31,10 +31,10 @@ TakeOrderedAndProject [i_item_id,i_item_desc,s_state,store_sales_quantitycount,s
                                                             InputAdapter
                                                               CometProject [d_date_sk]
                                                                 CometFilter [d_date_sk,d_quarter_name]
-                                                                  CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_quarter_name]
+                                                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_quarter_name]
                                                 CometBroadcastExchange [sr_item_sk,sr_customer_sk,sr_ticket_number,sr_return_quantity,sr_returned_date_sk] #3
                                                   CometFilter [sr_item_sk,sr_customer_sk,sr_ticket_number,sr_return_quantity,sr_returned_date_sk]
-                                                    CometScan [native_comet] parquet spark_catalog.default.store_returns [sr_item_sk,sr_customer_sk,sr_ticket_number,sr_return_quantity,sr_returned_date_sk]
+                                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns [sr_item_sk,sr_customer_sk,sr_ticket_number,sr_return_quantity,sr_returned_date_sk]
                                                       SubqueryBroadcast [d_date_sk] #2
                                                         BroadcastExchange #4
                                                           WholeStageCodegen (1)
@@ -42,25 +42,25 @@ TakeOrderedAndProject [i_item_id,i_item_desc,s_state,store_sales_quantitycount,s
                                                               InputAdapter
                                                                 CometProject [d_date_sk]
                                                                   CometFilter [d_date_sk,d_quarter_name]
-                                                                    CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_quarter_name]
+                                                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_quarter_name]
                                             CometBroadcastExchange [cs_bill_customer_sk,cs_item_sk,cs_quantity,cs_sold_date_sk] #5
                                               CometFilter [cs_bill_customer_sk,cs_item_sk,cs_quantity,cs_sold_date_sk]
-                                                CometScan [native_comet] parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_item_sk,cs_quantity,cs_sold_date_sk]
+                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_item_sk,cs_quantity,cs_sold_date_sk]
                                                   ReusedSubquery [d_date_sk] #2
                                         CometBroadcastExchange [d_date_sk] #6
                                           CometProject [d_date_sk]
                                             CometFilter [d_date_sk,d_quarter_name]
-                                              CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_quarter_name]
+                                              CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_quarter_name]
                                     CometBroadcastExchange [d_date_sk] #7
                                       CometProject [d_date_sk]
                                         CometFilter [d_date_sk,d_quarter_name]
-                                          CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_quarter_name]
+                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_quarter_name]
                                 ReusedExchange [d_date_sk] #7
                             CometBroadcastExchange [s_store_sk,s_state] #8
                               CometProject [s_state] [s_store_sk,s_state]
                                 CometFilter [s_store_sk,s_state]
-                                  CometScan [native_comet] parquet spark_catalog.default.store [s_store_sk,s_state]
+                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.store [s_store_sk,s_state]
                         CometBroadcastExchange [i_item_sk,i_item_id,i_item_desc] #9
                           CometProject [i_item_id] [i_item_sk,i_item_id,i_item_desc]
                             CometFilter [i_item_sk,i_item_id,i_item_desc]
-                              CometScan [native_comet] parquet spark_catalog.default.item [i_item_sk,i_item_id,i_item_desc]
+                              CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_item_id,i_item_desc]
