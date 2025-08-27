@@ -131,11 +131,19 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
+        val encryptionEnabled: Boolean =
+          conf.getConfString("parquet.crypto.factory.class", "").nonEmpty &&
+            conf.getConfString("parquet.encryption.kms.client.class", "").nonEmpty
+
         var scanImpl = COMET_NATIVE_SCAN_IMPL.get()
 
         // if scan is auto then pick the best available scan
         if (scanImpl == SCAN_AUTO) {
-          scanImpl = selectScan(scanExec, r.partitionSchema)
+          if (encryptionEnabled) {
+            scanImpl = SCAN_NATIVE_COMET
+          } else {
+            scanImpl = selectScan(scanExec, r.partitionSchema)
+          }
         }
 
         if (scanImpl == SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
@@ -181,10 +189,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             "Full native scan disabled because nested types for default values are not supported"
           return withInfos(scanExec, fallbackReasons.toSet)
         }
-
-        val encryptionEnabled: Boolean =
-          conf.getConfString("parquet.crypto.factory.class", "").nonEmpty &&
-            conf.getConfString("parquet.encryption.kms.client.class", "").nonEmpty
 
         if (scanImpl != CometConf.SCAN_NATIVE_COMET && encryptionEnabled) {
           fallbackReasons +=
