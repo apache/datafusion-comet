@@ -304,8 +304,11 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       JavaConverters.mapAsJavaMap(
         NativeConfig.extractObjectStoreOptions(session.sparkContext.hadoopConfiguration, URI.create(filePath)));
 
-    if (!Native.isValidObjectStore(filePath, objectStoreOptions)) {
-      fallbackReasons += s"Object store config not supported by $SCAN_NATIVE_ICEBERG_COMPAT"
+    try {
+      Native.validateObjectStoreConfig(filePath, objectStoreOptions)
+    } catch {
+      case e: Exception =>
+        fallbackReasons += s"Object store config not supported by $SCAN_NATIVE_ICEBERG_COMPAT: ${e.getMessage}"
     }
 
     val typeChecker = CometScanTypeChecker(SCAN_NATIVE_ICEBERG_COMPAT)

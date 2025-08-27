@@ -674,7 +674,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_isValidObject
     _jclass: JClass,
     file_path: jstring,
     object_store_options: jobject,
-) -> jboolean {
+) {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let session_config = SessionConfig::new();
         let planer =
@@ -691,7 +691,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_isValidObject
             path.clone(),
             &object_store_config,
         )?;
-        Ok(1)
+        Ok(())
     })
 }
 

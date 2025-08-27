@@ -247,7 +247,7 @@ public final class Native extends NativeBase {
    * @param filePath
    * @return true if the object store is supported
    */
-  public static native boolean isValidObjectStore(
+  public static native void validateObjectStoreConfig(
       String filePath, Map<String, String> objectStoreOptions);
 
   /**
