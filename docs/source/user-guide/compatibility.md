@@ -75,10 +75,22 @@ The `native_datafusion` scan has some additional limitations:
 
 ## ANSI Mode
 
-Comet currently ignores ANSI mode in most cases, and therefore can produce different results than Spark. By default,
-Comet will fall back to Spark if ANSI mode is enabled. To enable Comet to accelerate queries when ANSI mode is enabled,
-specify `spark.comet.ansi.enabled=true` in the Spark configuration. Comet's ANSI support is experimental and should not
-be used in production.
+Comet will fall back to Spark for the following expressions when ANSI mode is enabled, unless
+`spark.comet.expression.allowIncompatible=true`.
+
+- Add
+- Subtract
+- Multiple
+- Divide
+- IntegralDivide
+- Remainder
+- Round
+- Cast (in some cases)
+
+Comet will always fall back to Spark for the following aggregate expressions:
+
+- Average
+- Sum
 
 There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where we are tracking the work to fully implement ANSI support.
 
