@@ -19,8 +19,12 @@
 
 package org.apache.comet.rules
 
+import java.net.URI
+
+import scala.collection.JavaConverters
 import scala.collection.mutable.ListBuffer
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -38,7 +42,8 @@ import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
+import org.apache.comet.objectstore.NativeConfig
+import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -291,6 +296,18 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     if (!scanExec.relation.inputFiles
         .forall(path => path.startsWith("file://") || path.startsWith("s3a://"))) {
       fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT only supports local filesystem and S3"
+    }
+
+    val filePath = scanExec.relation.inputFiles.head
+
+    // TODO how to get Hadoop config from driver?
+    val conf = new Configuration()
+    val objectStoreOptions =
+      JavaConverters.mapAsJavaMap(
+        NativeConfig.extractObjectStoreOptions(conf, URI.create(filePath)));
+
+    if (!Native.isValidObjectStore(filePath, objectStoreOptions)) {
+      fallbackReasons += s"Object store config not supported by $SCAN_NATIVE_ICEBERG_COMPAT"
     }
 
     val typeChecker = CometScanTypeChecker(SCAN_NATIVE_ICEBERG_COMPAT)

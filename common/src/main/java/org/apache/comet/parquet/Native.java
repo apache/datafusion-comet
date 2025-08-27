@@ -242,6 +242,15 @@ public final class Native extends NativeBase {
   //      Add batch size, datetimeRebaseModeSpec, metrics(how?)...
 
   /**
+   * Verify that object store options are valid.
+   *
+   * @param filePath
+   * @return true if the object store is supported
+   */
+  public static native boolean isValidObjectStore(
+      String filePath, Map<String, String> objectStoreOptions);
+
+  /**
    * Initialize a record batch reader for a PartitionedFile
    *
    * @param filePath
