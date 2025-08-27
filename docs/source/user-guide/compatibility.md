@@ -80,7 +80,7 @@ Comet will fall back to Spark for the following expressions when ANSI mode is en
 
 - Add
 - Subtract
-- Multiple
+- Multiply
 - Divide
 - IntegralDivide
 - Remainder
