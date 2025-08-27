@@ -295,15 +295,13 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     if (scanExec.relation.inputFiles
         .forall(path => path.startsWith("file://") || path.startsWith("s3a://"))) {
 
-      val filePath = scanExec.relation.inputFiles.head
-      if (filePath.startsWith("s3a://")) {
-
+      val filePath = scanExec.relation.inputFiles.headOption
+      if (filePath.exists(_.startsWith("s3a://"))) {
         val objectStoreOptions =
           JavaConverters.mapAsJavaMap(
             NativeConfig.extractObjectStoreOptions(
               session.sparkContext.hadoopConfiguration,
-              URI.create(filePath)))
-
+              URI.create(filePath.get)))
         try {
           Native.validateObjectStoreConfig(filePath, objectStoreOptions)
         } catch {
