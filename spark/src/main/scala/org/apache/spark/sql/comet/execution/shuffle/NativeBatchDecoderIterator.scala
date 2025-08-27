@@ -182,6 +182,7 @@ case class NativeBatchDecoderIterator(
           currentBatch = null
         }
         in.close()
+        nativeUtil.close()
         isClosed = true
       }
     }
