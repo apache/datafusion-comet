@@ -4,8 +4,8 @@
    +- CometColumnarExchange (52)
       +- * HashAggregate (51)
          +- * HashAggregate (50)
-            +- * HashAggregate (49)
-               +- * CometColumnarToRow (48)
+            +- * CometColumnarToRow (49)
+               +- CometHashAggregate (48)
                   +- CometProject (47)
                      +- CometBroadcastHashJoin (46)
                         :- CometProject (41)
@@ -266,41 +266,39 @@ Arguments: [ws_web_site_sk#3], [web_site_sk#23], Inner, BuildRight
 Input [5]: [ws_web_site_sk#3, ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6, web_site_sk#23]
 Arguments: [ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6], [ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
 
-(48) CometColumnarToRow [codegen id : 1]
-Input [3]: [ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
-
-(49) HashAggregate [codegen id : 1]
+(48) CometHashAggregate
 Input [3]: [ws_order_number#4, ws_ext_ship_cost#5, ws_net_profit#6]
 Keys [1]: [ws_order_number#4]
 Functions [2]: [partial_sum(UnscaledValue(ws_ext_ship_cost#5)), partial_sum(UnscaledValue(ws_net_profit#6))]
-Aggregate Attributes [2]: [sum(UnscaledValue(ws_ext_ship_cost#5))#25, sum(UnscaledValue(ws_net_profit#6))#26]
-Results [3]: [ws_order_number#4, sum#27, sum#28]
+
+(49) CometColumnarToRow [codegen id : 1]
+Input [3]: [ws_order_number#4, sum#25, sum#26]
 
 (50) HashAggregate [codegen id : 1]
-Input [3]: [ws_order_number#4, sum#27, sum#28]
+Input [3]: [ws_order_number#4, sum#25, sum#26]
 Keys [1]: [ws_order_number#4]
 Functions [2]: [merge_sum(UnscaledValue(ws_ext_ship_cost#5)), merge_sum(UnscaledValue(ws_net_profit#6))]
-Aggregate Attributes [2]: [sum(UnscaledValue(ws_ext_ship_cost#5))#25, sum(UnscaledValue(ws_net_profit#6))#26]
-Results [3]: [ws_order_number#4, sum#27, sum#28]
+Aggregate Attributes [2]: [sum(UnscaledValue(ws_ext_ship_cost#5))#27, sum(UnscaledValue(ws_net_profit#6))#28]
+Results [3]: [ws_order_number#4, sum#25, sum#26]
 
 (51) HashAggregate [codegen id : 1]
-Input [3]: [ws_order_number#4, sum#27, sum#28]
+Input [3]: [ws_order_number#4, sum#25, sum#26]
 Keys: []
 Functions [3]: [merge_sum(UnscaledValue(ws_ext_ship_cost#5)), merge_sum(UnscaledValue(ws_net_profit#6)), partial_count(distinct ws_order_number#4)]
-Aggregate Attributes [3]: [sum(UnscaledValue(ws_ext_ship_cost#5))#25, sum(UnscaledValue(ws_net_profit#6))#26, count(ws_order_number#4)#29]
-Results [3]: [sum#27, sum#28, count#30]
+Aggregate Attributes [3]: [sum(UnscaledValue(ws_ext_ship_cost#5))#27, sum(UnscaledValue(ws_net_profit#6))#28, count(ws_order_number#4)#29]
+Results [3]: [sum#25, sum#26, count#30]
 
 (52) CometColumnarExchange
-Input [3]: [sum#27, sum#28, count#30]
+Input [3]: [sum#25, sum#26, count#30]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
 (53) CometColumnarToRow [codegen id : 2]
-Input [3]: [sum#27, sum#28, count#30]
+Input [3]: [sum#25, sum#26, count#30]
 
 (54) HashAggregate [codegen id : 2]
-Input [3]: [sum#27, sum#28, count#30]
+Input [3]: [sum#25, sum#26, count#30]
 Keys: []
 Functions [3]: [sum(UnscaledValue(ws_ext_ship_cost#5)), sum(UnscaledValue(ws_net_profit#6)), count(distinct ws_order_number#4)]
-Aggregate Attributes [3]: [sum(UnscaledValue(ws_ext_ship_cost#5))#25, sum(UnscaledValue(ws_net_profit#6))#26, count(ws_order_number#4)#29]
-Results [3]: [count(ws_order_number#4)#29 AS order count #31, MakeDecimal(sum(UnscaledValue(ws_ext_ship_cost#5))#25,17,2) AS total shipping cost #32, MakeDecimal(sum(UnscaledValue(ws_net_profit#6))#26,17,2) AS total net profit #33]
+Aggregate Attributes [3]: [sum(UnscaledValue(ws_ext_ship_cost#5))#27, sum(UnscaledValue(ws_net_profit#6))#28, count(ws_order_number#4)#29]
+Results [3]: [count(ws_order_number#4)#29 AS order count #31, MakeDecimal(sum(UnscaledValue(ws_ext_ship_cost#5))#27,17,2) AS total shipping cost #32, MakeDecimal(sum(UnscaledValue(ws_net_profit#6))#28,17,2) AS total net profit #33]
 

@@ -267,7 +267,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true", // needed for ANSI mode
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true", // needed for Spark 4.0.0 / ANSI
       CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true", // needed for v1.4/q9, v1.4/q44, v2.7.0/q6, v2.7.0/q64
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
       val qe = sql(queryString).queryExecution
