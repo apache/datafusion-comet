@@ -36,7 +36,7 @@ import org.apache.comet.vector.NativeUtil
  * and use Arrow FFI to return the Arrow record batch.
  */
 case class NativeBatchDecoderIterator(
-    var in: InputStream,
+    in: InputStream,
     taskContext: TaskContext,
     decodeTime: SQLMetric)
     extends Iterator[ColumnarBatch] {
@@ -45,6 +45,7 @@ case class NativeBatchDecoderIterator(
   private val longBuf = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
   private val native = new Native()
   private val nativeUtil = new NativeUtil()
+  private val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
   private var currentBatch: ColumnarBatch = null
   private var batch = fetchNext()
 
@@ -167,7 +168,7 @@ case class NativeBatchDecoderIterator(
           bytesToRead.toInt,
           arrayAddrs,
           schemaAddrs,
-          CometConf.COMET_TRACING_ENABLED.get())
+          tracingEnabled)
       })
     decodeTime.add(System.nanoTime() - startTime)
 
