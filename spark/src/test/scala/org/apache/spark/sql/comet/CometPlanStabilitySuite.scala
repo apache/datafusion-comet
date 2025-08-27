@@ -83,7 +83,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       name
     }
     val nativeImpl = CometConf.COMET_NATIVE_SCAN_IMPL.get()
-    if (!nativeImpl.equals(CometConf.SCAN_NATIVE_COMET)) {
+    if (nativeImpl != CometConf.SCAN_AUTO) {
       goldenFileName = s"$goldenFileName.$nativeImpl"
     }
     new File(goldenFilePath, goldenFileName)
@@ -259,20 +259,15 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       s"$tpcdsGroup/$query.sql",
       classLoader = Thread.currentThread().getContextClassLoader)
 
-    // Comet does not yet support DPP yet with full native scan enabled
-    // https://github.com/apache/datafusion-comet/issues/121
-    val dppEnabled = CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_COMET
-
-    // Disable char/varchar read-side handling for better performance.
     withSQLConf(
       CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
-      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> dppEnabled.toString,
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
+      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true", // needed for Spark 4.0.0
       CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true", // needed for v1.4/q9, v1.4/q44, v2.7.0/q6, v2.7.0/q64
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
       val qe = sql(queryString).queryExecution
@@ -301,7 +296,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
-    conf.set(CometConf.COMET_NATIVE_SCAN_IMPL.key, CometConf.SCAN_NATIVE_COMET)
+    conf.set(CometConf.COMET_NATIVE_SCAN_IMPL.key, CometConf.SCAN_AUTO)
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
 
@@ -320,7 +315,7 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
   override val goldenFilePath: String =
     new File(baseResourcePath, planName).getAbsolutePath
 
-  if (CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+  if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_AUTO) {
     tpcdsQueries.foreach { q =>
       test(s"check simplified (tpcds-v1.4/$q)") {
         testQuery("tpcds", q)
@@ -340,7 +335,7 @@ class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
   override val goldenFilePath: String =
     new File(baseResourcePath, planName).getAbsolutePath
 
-  if (CometConf.COMET_NATIVE_SCAN_IMPL.get().equals(CometConf.SCAN_NATIVE_COMET)) {
+  if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_AUTO) {
     tpcdsQueriesV2_7_0.foreach { q =>
       test(s"check simplified (tpcds-v2.7.0/$q)") {
         testQuery("tpcds-v2.7.0", q)

@@ -18,34 +18,34 @@ TakeOrderedAndProject (44)
       :     :                    :     :     :- CometProject (8)
       :     :                    :     :     :  +- CometBroadcastHashJoin (7)
       :     :                    :     :     :     :- CometFilter (2)
-      :     :                    :     :     :     :  +- CometScan [native_comet] parquet spark_catalog.default.store_sales (1)
+      :     :                    :     :     :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (1)
       :     :                    :     :     :     +- CometBroadcastExchange (6)
       :     :                    :     :     :        +- CometProject (5)
       :     :                    :     :     :           +- CometFilter (4)
-      :     :                    :     :     :              +- CometScan [native_comet] parquet spark_catalog.default.date_dim (3)
+      :     :                    :     :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (3)
       :     :                    :     :     +- CometBroadcastExchange (12)
       :     :                    :     :        +- CometProject (11)
       :     :                    :     :           +- CometFilter (10)
-      :     :                    :     :              +- CometScan [native_comet] parquet spark_catalog.default.store (9)
+      :     :                    :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store (9)
       :     :                    :     +- CometBroadcastExchange (18)
       :     :                    :        +- CometProject (17)
       :     :                    :           +- CometFilter (16)
-      :     :                    :              +- CometScan [native_comet] parquet spark_catalog.default.household_demographics (15)
+      :     :                    :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.household_demographics (15)
       :     :                    +- CometBroadcastExchange (23)
       :     :                       +- CometFilter (22)
-      :     :                          +- CometScan [native_comet] parquet spark_catalog.default.customer_address (21)
+      :     :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address (21)
       :     +- BroadcastExchange (35)
       :        +- * CometColumnarToRow (34)
       :           +- CometProject (33)
       :              +- CometFilter (32)
-      :                 +- CometScan [native_comet] parquet spark_catalog.default.customer (31)
+      :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer (31)
       +- BroadcastExchange (41)
          +- * CometColumnarToRow (40)
             +- CometFilter (39)
-               +- CometScan [native_comet] parquet spark_catalog.default.customer_address (38)
+               +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address (38)
 
 
-(1) CometScan [native_comet] parquet spark_catalog.default.store_sales
+(1) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
 Output [9]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8, ss_sold_date_sk#9]
 Batched: true
 Location: InMemoryFileIndex []
@@ -57,7 +57,7 @@ ReadSchema: struct<ss_customer_sk:int,ss_hdemo_sk:int,ss_addr_sk:int,ss_store_sk
 Input [9]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8, ss_sold_date_sk#9]
 Condition : (((isnotnull(ss_store_sk#4) AND isnotnull(ss_hdemo_sk#2)) AND isnotnull(ss_addr_sk#3)) AND isnotnull(ss_customer_sk#1))
 
-(3) CometScan [native_comet] parquet spark_catalog.default.date_dim
+(3) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#11, d_year#12, d_dom#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -85,7 +85,7 @@ Arguments: [ss_sold_date_sk#9], [d_date_sk#11], Inner, BuildRight
 Input [10]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8, ss_sold_date_sk#9, d_date_sk#11]
 Arguments: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8], [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8]
 
-(9) CometScan [native_comet] parquet spark_catalog.default.store
+(9) CometScan [native_iceberg_compat] parquet spark_catalog.default.store
 Output [2]: [s_store_sk#14, s_city#15]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store]
@@ -113,7 +113,7 @@ Arguments: [ss_store_sk#4], [s_store_sk#14], Inner, BuildRight
 Input [9]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_store_sk#4, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8, s_store_sk#14]
 Arguments: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8], [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8]
 
-(15) CometScan [native_comet] parquet spark_catalog.default.household_demographics
+(15) CometScan [native_iceberg_compat] parquet spark_catalog.default.household_demographics
 Output [3]: [hd_demo_sk#16, hd_dep_count#17, hd_vehicle_count#18]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/household_demographics]
@@ -141,7 +141,7 @@ Arguments: [ss_hdemo_sk#2], [hd_demo_sk#16], Inner, BuildRight
 Input [8]: [ss_customer_sk#1, ss_hdemo_sk#2, ss_addr_sk#3, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8, hd_demo_sk#16]
 Arguments: [ss_customer_sk#1, ss_addr_sk#3, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8], [ss_customer_sk#1, ss_addr_sk#3, ss_ticket_number#5, ss_ext_sales_price#6, ss_ext_list_price#7, ss_ext_tax#8]
 
-(21) CometScan [native_comet] parquet spark_catalog.default.customer_address
+(21) CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
 Output [2]: [ca_address_sk#19, ca_city#20]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
@@ -189,7 +189,7 @@ Functions [3]: [sum(UnscaledValue(ss_ext_sales_price#6)), sum(UnscaledValue(ss_e
 Aggregate Attributes [3]: [sum(UnscaledValue(ss_ext_sales_price#6))#27, sum(UnscaledValue(ss_ext_list_price#7))#28, sum(UnscaledValue(ss_ext_tax#8))#29]
 Results [6]: [ss_ticket_number#5, ss_customer_sk#1, ca_city#20 AS bought_city#30, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#6))#27,17,2) AS extended_price#31, MakeDecimal(sum(UnscaledValue(ss_ext_list_price#7))#28,17,2) AS list_price#32, MakeDecimal(sum(UnscaledValue(ss_ext_tax#8))#29,17,2) AS extended_tax#33]
 
-(31) CometScan [native_comet] parquet spark_catalog.default.customer
+(31) CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
 Output [4]: [c_customer_sk#34, c_current_addr_sk#35, c_first_name#36, c_last_name#37]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer]
@@ -221,7 +221,7 @@ Join condition: None
 Output [8]: [ss_ticket_number#5, bought_city#30, extended_price#31, list_price#32, extended_tax#33, c_current_addr_sk#35, c_first_name#38, c_last_name#39]
 Input [10]: [ss_ticket_number#5, ss_customer_sk#1, bought_city#30, extended_price#31, list_price#32, extended_tax#33, c_customer_sk#34, c_current_addr_sk#35, c_first_name#38, c_last_name#39]
 
-(38) CometScan [native_comet] parquet spark_catalog.default.customer_address
+(38) CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
 Output [2]: [ca_address_sk#40, ca_city#41]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/customer_address]
@@ -260,10 +260,10 @@ BroadcastExchange (49)
 +- * CometColumnarToRow (48)
    +- CometProject (47)
       +- CometFilter (46)
-         +- CometScan [native_comet] parquet spark_catalog.default.date_dim (45)
+         +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (45)
 
 
-(45) CometScan [native_comet] parquet spark_catalog.default.date_dim
+(45) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#11, d_year#12, d_dom#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

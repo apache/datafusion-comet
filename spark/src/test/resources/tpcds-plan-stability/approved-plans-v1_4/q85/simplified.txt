@@ -21,7 +21,7 @@ WholeStageCodegen (1)
                                         CometBroadcastHashJoin [ws_item_sk,ws_web_page_sk,ws_order_number,ws_quantity,ws_sales_price,ws_net_profit,ws_sold_date_sk,wr_item_sk,wr_refunded_cdemo_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_order_number,wr_fee,wr_refunded_cash]
                                           CometBroadcastExchange [ws_item_sk,ws_web_page_sk,ws_order_number,ws_quantity,ws_sales_price,ws_net_profit,ws_sold_date_sk] #2
                                             CometFilter [ws_item_sk,ws_web_page_sk,ws_order_number,ws_quantity,ws_sales_price,ws_net_profit,ws_sold_date_sk]
-                                              CometScan [native_comet] parquet spark_catalog.default.web_sales [ws_item_sk,ws_web_page_sk,ws_order_number,ws_quantity,ws_sales_price,ws_net_profit,ws_sold_date_sk]
+                                              CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales [ws_item_sk,ws_web_page_sk,ws_order_number,ws_quantity,ws_sales_price,ws_net_profit,ws_sold_date_sk]
                                                 SubqueryBroadcast [d_date_sk] #1
                                                   BroadcastExchange #3
                                                     WholeStageCodegen (1)
@@ -29,30 +29,30 @@ WholeStageCodegen (1)
                                                         InputAdapter
                                                           CometProject [d_date_sk]
                                                             CometFilter [d_date_sk,d_year]
-                                                              CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                              CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                           CometProject [wr_item_sk,wr_refunded_cdemo_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_order_number,wr_fee,wr_refunded_cash]
                                             CometFilter [wr_item_sk,wr_refunded_cdemo_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_order_number,wr_fee,wr_refunded_cash,wr_returned_date_sk]
-                                              CometScan [native_comet] parquet spark_catalog.default.web_returns [wr_item_sk,wr_refunded_cdemo_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_order_number,wr_fee,wr_refunded_cash,wr_returned_date_sk]
+                                              CometScan [native_iceberg_compat] parquet spark_catalog.default.web_returns [wr_item_sk,wr_refunded_cdemo_sk,wr_refunded_addr_sk,wr_returning_cdemo_sk,wr_reason_sk,wr_order_number,wr_fee,wr_refunded_cash,wr_returned_date_sk]
                                       CometBroadcastExchange [wp_web_page_sk] #4
                                         CometFilter [wp_web_page_sk]
-                                          CometScan [native_comet] parquet spark_catalog.default.web_page [wp_web_page_sk]
+                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.web_page [wp_web_page_sk]
                                   CometBroadcastExchange [cd_demo_sk,cd_marital_status,cd_education_status] #5
                                     CometProject [cd_marital_status,cd_education_status] [cd_demo_sk,cd_marital_status,cd_education_status]
                                       CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
-                                        CometScan [native_comet] parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
+                                        CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
                               CometBroadcastExchange [cd_demo_sk,cd_marital_status,cd_education_status] #6
                                 CometProject [cd_marital_status,cd_education_status] [cd_demo_sk,cd_marital_status,cd_education_status]
                                   CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
-                                    CometScan [native_comet] parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
+                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
                           CometBroadcastExchange [ca_address_sk,ca_state] #7
                             CometProject [ca_state] [ca_address_sk,ca_state]
                               CometFilter [ca_address_sk,ca_state,ca_country]
-                                CometScan [native_comet] parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
+                                CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
                       CometBroadcastExchange [d_date_sk] #8
                         CometProject [d_date_sk]
                           CometFilter [d_date_sk,d_year]
-                            CometScan [native_comet] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                            CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                   CometBroadcastExchange [r_reason_sk,r_reason_desc] #9
                     CometProject [r_reason_desc] [r_reason_sk,r_reason_desc]
                       CometFilter [r_reason_sk,r_reason_desc]
-                        CometScan [native_comet] parquet spark_catalog.default.reason [r_reason_sk,r_reason_desc]
+                        CometScan [native_iceberg_compat] parquet spark_catalog.default.reason [r_reason_sk,r_reason_desc]
