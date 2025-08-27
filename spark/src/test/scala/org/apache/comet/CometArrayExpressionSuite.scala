@@ -429,16 +429,20 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_intersect") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-        checkSparkAnswerAndOperator(
-          sql("SELECT array_intersect(array(_2, _3, _4), array(_3, _4)) from t1"))
-        checkSparkAnswerAndOperator(
-          sql("SELECT array_intersect(array(_4 * -1), array(_5, _5)) from t1"))
-        checkSparkAnswerAndOperator(sql("SELECT array_intersect(array(_18), array(_19)) from t1"))
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 10000)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_intersect(array(_2, _3, _4), array(_3, _4)) from t1"))
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_intersect(array(_4 * -1), array(_5)) from t1"))
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_intersect(array(_18), array(_19)) from t1"))
+        }
       }
     }
   }
