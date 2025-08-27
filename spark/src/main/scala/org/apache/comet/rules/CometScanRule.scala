@@ -292,25 +292,28 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     val fallbackReasons = new ListBuffer[String]()
 
     // native_iceberg_compat only supports local filesystem and S3
-    if (!scanExec.relation.inputFiles
+    if (scanExec.relation.inputFiles
         .forall(path => path.startsWith("file://") || path.startsWith("s3a://"))) {
+
+      val filePath = scanExec.relation.inputFiles.head
+      if (filePath.startsWith("s3a://")) {
+
+        val objectStoreOptions =
+          JavaConverters.mapAsJavaMap(
+            NativeConfig.extractObjectStoreOptions(
+              session.sparkContext.hadoopConfiguration,
+              URI.create(filePath)))
+
+        try {
+          Native.validateObjectStoreConfig(filePath, objectStoreOptions)
+        } catch {
+          case e: Exception =>
+            fallbackReasons += s"Object store config not supported by " +
+              s"$SCAN_NATIVE_ICEBERG_COMPAT: ${e.getMessage}"
+        }
+      }
+    } else {
       fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT only supports local filesystem and S3"
-    }
-
-    val filePath = scanExec.relation.inputFiles.head
-
-    val objectStoreOptions =
-      JavaConverters.mapAsJavaMap(
-        NativeConfig.extractObjectStoreOptions(
-          session.sparkContext.hadoopConfiguration,
-          URI.create(filePath)))
-
-    try {
-      Native.validateObjectStoreConfig(filePath, objectStoreOptions)
-    } catch {
-      case e: Exception =>
-        fallbackReasons += s"Object store config not supported by " +
-          s"$SCAN_NATIVE_ICEBERG_COMPAT: ${e.getMessage}"
     }
 
     val typeChecker = CometScanTypeChecker(SCAN_NATIVE_ICEBERG_COMPAT)
