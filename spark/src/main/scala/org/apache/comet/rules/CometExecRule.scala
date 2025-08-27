@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
@@ -36,7 +36,7 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometConf.COMET_EXEC_SHUFFLE_ENABLED
@@ -71,6 +71,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   private def isCometNative(op: SparkPlan): Boolean = op.isInstanceOf[CometNativeExec]
 
   // spotless:off
+
   /**
    * Tries to transform a Spark physical plan into a Comet plan.
    *
@@ -752,16 +753,38 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   private def nativeShuffleSupported(s: ShuffleExchangeExec): Boolean = {
 
     /**
-     * Determine which data types are supported as hash-partition keys in native shuffle.
+     * Determine which data types are supported as partition columns in native shuffle.
      *
-     * Hash Partition Key determines how data should be collocated for operations like
-     * `groupByKey`, `reduceByKey` or `join`.
+     * For Hash Partition this defines the key that determines how data should be collocated for
+     * operations like `groupByKey`, `reduceByKey` or `join`. Native code does not support hashing
+     * complex types, see hash_funcs/utils.rs
      */
-    def supportedHashPartitionKeyDataType(dt: DataType): Boolean = dt match {
+    def supportedPartitioningDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DecimalType | _: DateType =>
         true
+      case _ =>
+        false
+    }
+
+    /**
+     * Determine which data types are supported as data columns in native shuffle.
+     *
+     * Native shuffle relies on the Arrow IPC writer to serialize batches to disk, so it should
+     * support all types that Comet supports.
+     */
+    def supportedSerializableDataType(dt: DataType): Boolean = dt match {
+      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
+          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
+          _: TimestampNTZType | _: DecimalType | _: DateType =>
+        true
+      case StructType(fields) =>
+        fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType))
+      case ArrayType(elementType, _) =>
+        supportedSerializableDataType(elementType)
+      case MapType(keyType, valueType, _) =>
+        supportedSerializableDataType(keyType) && supportedSerializableDataType(valueType)
       case _ =>
         false
     }
@@ -780,11 +803,15 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       return false
     }
 
-    if (!checkSupportedShuffleDataTypes(s)) {
-      return false
+    val inputs = s.child.output
+
+    for (input <- inputs) {
+      if (!supportedSerializableDataType(input.dataType)) {
+        withInfo(s, s"unsupported shuffle data type ${input.dataType} for input $input")
+        return false
+      }
     }
 
-    val inputs = s.child.output
     val partitioning = s.outputPartitioning
     val conf = SQLConf.get
     partitioning match {
@@ -800,12 +827,12 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
             withInfo(s, s"unsupported hash partitioning expression: $expr")
             supported = false
+            // We don't short-circuit in case there is more than one unsupported expression
+            // to provide info for.
           }
         }
         for (dt <- expressions.map(_.dataType).distinct) {
-          if (!supportedHashPartitionKeyDataType(dt)) {
-            // native shuffle currently does not support complex types as partition keys
-            // due to lack of hashing support for those types
+          if (!supportedPartitioningDataType(dt)) {
             withInfo(s, s"unsupported hash partitioning data type for native shuffle: $dt")
             supported = false
           }
@@ -821,7 +848,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           withInfo(s, "Range partitioning is not supported by native shuffle")
           return false
         }
-        rangePartitioningSupported(s, inputs, orderings)
+        var supported = true
+        for (o <- orderings) {
+          if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
+            withInfo(s, s"unsupported range partitioning sort order: $o")
+            supported = false
+            // We don't short-circuit in case there is more than one unsupported expression
+            // to provide info for.
+          }
+        }
+        for (dt <- orderings.map(_.dataType).distinct) {
+          if (!supportedPartitioningDataType(dt)) {
+            withInfo(s, s"unsupported range partitioning data type for native shuffle: $dt")
+            supported = false
+          }
+        }
+        supported
       case _ =>
         withInfo(
           s,
@@ -835,6 +877,42 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    * which supports struct/array.
    */
   private def columnarShuffleSupported(s: ShuffleExchangeExec): Boolean = {
+
+    /**
+     * Determine which data types are supported as data columns in columnar shuffle.
+     *
+     * Comet columnar shuffle used native code to convert Spark unsafe rows to Arrow batches, see
+     * shuffle/row.rs
+     */
+    def supportedSerializableDataType(dt: DataType): Boolean = dt match {
+      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
+          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
+          _: TimestampNTZType | _: DecimalType | _: DateType =>
+        true
+      case StructType(fields) =>
+        fields.forall(f => supportedSerializableDataType(f.dataType)) &&
+        // Java Arrow stream reader cannot work on duplicate field name
+        fields.map(f => f.name).distinct.length == fields.length &&
+        fields.nonEmpty
+
+      // TODO add support for nested complex types
+      // https://github.com/apache/datafusion-comet/issues/2199
+      case ArrayType(ArrayType(_, _), _) => false
+      case ArrayType(MapType(_, _, _), _) => false
+      case MapType(MapType(_, _, _), _, _) => false
+      case MapType(_, MapType(_, _, _), _) => false
+      case MapType(StructType(_), _, _) => false
+      case MapType(_, StructType(_), _) => false
+      case MapType(ArrayType(_, _), _, _) => false
+      case MapType(_, ArrayType(_, _), _) => false
+
+      case ArrayType(elementType, _) =>
+        supportedSerializableDataType(elementType)
+      case MapType(keyType, valueType, _) =>
+        supportedSerializableDataType(keyType) && supportedSerializableDataType(valueType)
+      case _ =>
+        false
+    }
 
     if (!isCometShuffleEnabledWithInfo(s)) {
       return false
@@ -856,8 +934,12 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     val inputs = s.child.output
-    if (!checkSupportedShuffleDataTypes(s)) {
-      return false
+
+    for (input <- inputs) {
+      if (!supportedSerializableDataType(input.dataType)) {
+        withInfo(s, s"unsupported shuffle data type ${input.dataType} for input $input")
+        return false
+      }
     }
 
     val partitioning = s.outputPartitioning
@@ -868,6 +950,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
             withInfo(s, s"unsupported hash partitioning expression: $expr")
             supported = false
+            // We don't short-circuit in case there is more than one unsupported expression
+            // to provide info for.
           }
         }
         supported
@@ -878,77 +962,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         // we already checked that the input types are supported
         true
       case RangePartitioning(orderings, _) =>
-        rangePartitioningSupported(s, inputs, orderings)
+        var supported = true
+        for (o <- orderings) {
+          if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
+            withInfo(s, s"unsupported range partitioning sort order: $o")
+            supported = false
+            // We don't short-circuit in case there is more than one unsupported expression
+            // to provide info for.
+          }
+        }
+        supported
       case _ =>
         withInfo(
           s,
           s"unsupported Spark partitioning for columnar shuffle: ${partitioning.getClass.getName}")
         false
     }
-  }
-
-  private def rangePartitioningSupported(
-      s: ShuffleExchangeExec,
-      inputs: Seq[Attribute],
-      orderings: Seq[SortOrder]) = {
-    var supported = true
-    for (o <- orderings) {
-      if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
-        withInfo(s, s"unsupported range partitioning sort order: $o")
-        supported = false
-      }
-    }
-    for (dt <- orderings.map(_.dataType).distinct) {
-      if (!supportedShuffleDataType(dt)) {
-        withInfo(s, s"unsupported shuffle data type: $dt")
-        supported = false
-      }
-    }
-    supported
-  }
-
-  /** Check that all input types can be written to a shuffle file */
-  private def checkSupportedShuffleDataTypes(s: ShuffleExchangeExec): Boolean = {
-    var supported = true
-    for (input <- s.child.output) {
-      if (!supportedShuffleDataType(input.dataType)) {
-        withInfo(s, s"unsupported shuffle data type ${input.dataType} for input $input")
-        supported = false
-      }
-    }
-    supported
-  }
-
-  /**
-   * Determine which data types are supported in a shuffle.
-   */
-  private def supportedShuffleDataType(dt: DataType): Boolean = dt match {
-    case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-        _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-        _: TimestampNTZType | _: DecimalType | _: DateType =>
-      true
-    case StructType(fields) =>
-      fields.forall(f => supportedShuffleDataType(f.dataType)) &&
-      // Java Arrow stream reader cannot work on duplicate field name
-      fields.map(f => f.name).distinct.length == fields.length
-
-    // TODO add support for nested complex types
-    // https://github.com/apache/datafusion-comet/issues/2199
-
-    case ArrayType(ArrayType(_, _), _) => false // TODO: nested array is not supported
-    case ArrayType(MapType(_, _, _), _) => false // TODO: map array element is not supported
-    case ArrayType(elementType, _) =>
-      supportedShuffleDataType(elementType)
-    case MapType(MapType(_, _, _), _, _) => false // TODO: nested map is not supported
-    case MapType(_, MapType(_, _, _), _) => false
-    case MapType(StructType(_), _, _) => false // TODO: struct map key/value is not supported
-    case MapType(_, StructType(_), _) => false
-    case MapType(ArrayType(_, _), _, _) => false // TODO: array map key/value is not supported
-    case MapType(_, ArrayType(_, _), _) => false
-    case MapType(keyType, valueType, _) =>
-      supportedShuffleDataType(keyType) && supportedShuffleDataType(valueType)
-    case _ =>
-      false
   }
 
 }
