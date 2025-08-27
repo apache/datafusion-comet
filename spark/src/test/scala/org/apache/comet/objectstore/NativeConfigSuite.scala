@@ -21,10 +21,15 @@ package org.apache.comet.objectstore
 
 import java.net.URI
 
+import scala.collection.JavaConverters
+
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.hadoop.conf.Configuration
+
+import org.apache.comet.CometNativeException
+import org.apache.comet.parquet.Native
 
 class NativeConfigSuite extends AnyFunSuite with Matchers {
 
@@ -69,5 +74,13 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       hadoopConf,
       new URI("unsupported://test-bucket/test-object"))
     assert(unsupportedOptions.isEmpty, "Unsupported scheme should return empty options")
+  }
+
+  test("validate object store config - invalid provider") {
+    val config = Map("aws.credentials.provider" -> "invalid")
+    val e = intercept[CometNativeException] {
+      Native.validateObjectStoreConfig("path_tbd", JavaConverters.mapAsJavaMap(config))
+    }
+    assert(e.getMessage != null && e.getMessage.contains("tbd"))
   }
 }

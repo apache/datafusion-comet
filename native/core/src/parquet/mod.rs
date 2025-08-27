@@ -669,7 +669,7 @@ pub fn get_object_store_options(
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_isValidObjectStore(
+pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_validateObjectStoreConfig(
     e: JNIEnv,
     _jclass: JClass,
     file_path: jstring,

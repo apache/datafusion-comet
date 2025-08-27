@@ -24,7 +24,6 @@ import java.net.URI
 import scala.collection.JavaConverters
 import scala.collection.mutable.ListBuffer
 
-import org.apache.hadoop.conf.Configuration
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -302,13 +301,16 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
     val objectStoreOptions =
       JavaConverters.mapAsJavaMap(
-        NativeConfig.extractObjectStoreOptions(session.sparkContext.hadoopConfiguration, URI.create(filePath)));
+        NativeConfig.extractObjectStoreOptions(
+          session.sparkContext.hadoopConfiguration,
+          URI.create(filePath)))
 
     try {
       Native.validateObjectStoreConfig(filePath, objectStoreOptions)
     } catch {
       case e: Exception =>
-        fallbackReasons += s"Object store config not supported by $SCAN_NATIVE_ICEBERG_COMPAT: ${e.getMessage}"
+        fallbackReasons += s"Object store config not supported by " +
+          s"$SCAN_NATIVE_ICEBERG_COMPAT: ${e.getMessage}"
     }
 
     val typeChecker = CometScanTypeChecker(SCAN_NATIVE_ICEBERG_COMPAT)
