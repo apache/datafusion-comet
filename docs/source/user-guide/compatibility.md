@@ -85,12 +85,9 @@ Comet will fall back to Spark for the following expressions when ANSI mode is en
 - IntegralDivide
 - Remainder
 - Round
-- Cast (in some cases)
-
-Comet will always fall back to Spark for the following aggregate expressions when ANSI mode is enabled:
-
 - Average
 - Sum
+- Cast (in some cases)
 
 There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where we are tracking the work to fully implement ANSI support.
 
