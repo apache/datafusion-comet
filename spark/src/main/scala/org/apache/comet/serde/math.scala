@@ -78,7 +78,7 @@ object CometFloor extends CometExpressionSerde[Floor] {
 // The expression for `log` functions is defined as null on numbers less than or equal
 // to 0. This matches Spark and Hive behavior, where non positive values eval to null
 // instead of NaN or -Infinity.
-object CometLog extends CometExpressionSerde[Log] with MathBase {
+object CometLog extends CometExpressionSerde[Log] with MathExprBase {
   override def convert(
       expr: Log,
       inputs: Seq[Attribute],
@@ -89,7 +89,7 @@ object CometLog extends CometExpressionSerde[Log] with MathBase {
   }
 }
 
-object CometLog10 extends CometExpressionSerde[Log10] with MathBase {
+object CometLog10 extends CometExpressionSerde[Log10] with MathExprBase {
   override def convert(
       expr: Log10,
       inputs: Seq[Attribute],
@@ -100,7 +100,7 @@ object CometLog10 extends CometExpressionSerde[Log10] with MathBase {
   }
 }
 
-object CometLog2 extends CometExpressionSerde[Log2] with MathBase {
+object CometLog2 extends CometExpressionSerde[Log2] with MathExprBase {
   override def convert(
       expr: Log2,
       inputs: Seq[Attribute],
@@ -112,7 +112,7 @@ object CometLog2 extends CometExpressionSerde[Log2] with MathBase {
   }
 }
 
-sealed trait MathBase {
+sealed trait MathExprBase {
   protected def nullIfNegative(expression: Expression): Expression = {
     val zero = Literal.default(expression.dataType)
     If(LessThanOrEqual(expression, zero), Literal.create(null, expression.dataType), expression)
