@@ -140,6 +140,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         // if scan is auto then pick the best available scan
         if (scanImpl == SCAN_AUTO) {
           if (encryptionEnabled) {
+            logInfo(
+              s"Auto scan mode falling back to $SCAN_NATIVE_COMET because " +
+                s"$SCAN_NATIVE_ICEBERG_COMPAT does not support reading encrypted Parquet files")
             scanImpl = SCAN_NATIVE_COMET
           } else {
             scanImpl = selectScan(scanExec, r.partitionSchema)
