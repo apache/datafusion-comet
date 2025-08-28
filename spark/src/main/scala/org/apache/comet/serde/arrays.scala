@@ -456,7 +456,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
     val ordinalExpr = exprToProtoInternal(expr.right, inputs, binding)
     val defaultExpr = expr.defaultValueOutOfBound.flatMap(exprToProtoInternal(_, inputs, binding))
 
-    if (expr.left.dataType.isInstanceOf[ArrayType]) {
+    if (!expr.left.dataType.isInstanceOf[ArrayType]) {
       withInfo(expr, "Input is not an array")
       return None
     }

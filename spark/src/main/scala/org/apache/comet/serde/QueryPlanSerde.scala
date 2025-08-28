@@ -95,7 +95,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ArraysOverlap] -> CometArraysOverlap,
     classOf[ArrayUnion] -> CometArrayUnion,
     classOf[CreateArray] -> CometCreateArray,
-    classOf[ElementAt] -> CometElementAt,
     classOf[GetArrayItem] -> CometGetArrayItem,
     classOf[Ascii] -> CometScalarFunction("ascii"),
     classOf[ConcatWs] -> CometScalarFunction("concat_ws"),
@@ -1337,6 +1336,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, bloomFilter, value)
           None
         }
+      case e: ElementAt if e.left.dataType.isInstanceOf[ArrayType] =>
+        convert(e, CometElementAt)
       case af @ ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
         convert(af, CometArrayCompact)
       case expr =>
