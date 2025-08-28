@@ -307,10 +307,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           // maps containing complex types are not supported
           isComplexType(m.keyType) || isComplexType(m.valueType) ||
           hasUnsupportedType(m.keyType) || hasUnsupportedType(m.valueType)
-        case dt => isStringCollationType(dt)
-        case _: StringType =>
-          // we only support `case object StringType` and not other instances of `class StringType`
-          dataType != StringType
+        case dt if isStringCollationType(dt) => true
         case _ => false
       }
     }
