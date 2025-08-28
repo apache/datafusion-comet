@@ -141,6 +141,16 @@ class CometNativeShuffleWriter[K, V](
       MapStatus.apply(SparkEnv.get.blockManager.shuffleServerId, partitionLengths, mapId)
   }
 
+  // Spark sometimes generates partitioning schemes other than SinglePartition with
+  // numPartitions == 1, typically near the output of a query. In this case Comet just
+  // serializes a SinglePartition scheme to native.
+  private def isSinglePartitioning(p: Partitioning): Boolean = p match {
+    case SinglePartition => true
+    case rp: RangePartitioning => rp.numPartitions == 1
+    case hp: HashPartitioning => hp.numPartitions == 1
+    case _ => false
+  }
+
   private def getNativePlan(dataFile: String, indexFile: String): Operator = {
     val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("ShuffleWriterInput")
     val opBuilder = OperatorOuterClass.Operator.newBuilder()
@@ -171,6 +181,12 @@ class CometNativeShuffleWriter[K, V](
         CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get)
 
       outputPartitioning match {
+        case p if isSinglePartitioning(p) =>
+          val partitioning = PartitioningOuterClass.SinglePartition.newBuilder()
+
+          val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
+          shuffleWriterBuilder.setPartitioning(
+            partitioningBuilder.setSinglePartition(partitioning).build())
         case _: HashPartitioning =>
           val hashPartitioning = outputPartitioning.asInstanceOf[HashPartitioning]
 
@@ -237,12 +253,6 @@ class CometNativeShuffleWriter[K, V](
           val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
           shuffleWriterBuilder.setPartitioning(
             partitioningBuilder.setRangePartition(partitioning).build())
-        case SinglePartition =>
-          val partitioning = PartitioningOuterClass.SinglePartition.newBuilder()
-
-          val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
-          shuffleWriterBuilder.setPartitioning(
-            partitioningBuilder.setSinglePartition(partitioning).build())
 
         case _ =>
           throw new UnsupportedOperationException(
