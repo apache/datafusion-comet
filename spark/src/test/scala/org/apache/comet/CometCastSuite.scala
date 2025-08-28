@@ -945,31 +945,26 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // Complex Types
 
   test("cast StructType to StringType") {
-    // TODO test fails if scan is auto
-    // https://github.com/apache/datafusion-comet/issues/2175
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-          withParquetTable(path.toString, "tbl") {
-            // primitives
-            checkSparkAnswerAndOperator(
-              "SELECT CAST(struct(_1, _2, _3, _4, _5, _6, _7, _8) as string) FROM tbl")
-            checkSparkAnswerAndOperator(
-              "SELECT CAST(struct(_9, _10, _11, _12) as string) FROM tbl")
-            // decimals
-            // TODO add _16 when https://github.com/apache/datafusion-comet/issues/1068 is resolved
-            checkSparkAnswerAndOperator("SELECT CAST(struct(_15, _17) as string) FROM tbl")
-            // dates & timestamps
-            checkSparkAnswerAndOperator("SELECT CAST(struct(_18, _19, _20) as string) FROM tbl")
-            // named struct
-            checkSparkAnswerAndOperator(
-              "SELECT CAST(named_struct('a', _1, 'b', _2) as string) FROM tbl")
-            // nested struct
-            checkSparkAnswerAndOperator(
-              "SELECT CAST(named_struct('a', named_struct('b', _1, 'c', _2)) as string) FROM tbl")
-          }
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          // primitives
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(struct(_1, _2, _3, _4, _5, _6, _7, _8) as string) FROM tbl")
+          checkSparkAnswerAndOperator("SELECT CAST(struct(_11, _12) as string) FROM tbl")
+          // decimals
+          // TODO add _16 when https://github.com/apache/datafusion-comet/issues/1068 is resolved
+          checkSparkAnswerAndOperator("SELECT CAST(struct(_15, _17) as string) FROM tbl")
+          // dates & timestamps
+          checkSparkAnswerAndOperator("SELECT CAST(struct(_18, _19, _20) as string) FROM tbl")
+          // named struct
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(named_struct('a', _1, 'b', _2) as string) FROM tbl")
+          // nested struct
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(named_struct('a', named_struct('b', _1, 'c', _2)) as string) FROM tbl")
         }
       }
     }
