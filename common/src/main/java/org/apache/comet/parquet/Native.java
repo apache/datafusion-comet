@@ -242,8 +242,8 @@ public final class Native extends NativeBase {
   //      Add batch size, datetimeRebaseModeSpec, metrics(how?)...
 
   /**
-   * Verify that object store options are valid. An exception
-   * will be thrown if the provided options are not valid.
+   * Verify that object store options are valid. An exception will be thrown if the provided options
+   * are not valid.
    */
   public static native void validateObjectStoreConfig(
       String filePath, Map<String, String> objectStoreOptions);
