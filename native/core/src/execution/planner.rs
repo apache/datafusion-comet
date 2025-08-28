@@ -1207,7 +1207,21 @@ impl PhysicalPlanner {
                             .map(|r| (r, format!("col_{idx}")))
                     })
                     .collect();
-                let group_by = PhysicalGroupBy::new_single(group_exprs?);
+
+                let mut map_converter =
+                    crate::execution::utils::HashAggregateMapConverter::default();
+
+                // Currently DataFusion does not support grouping on Map type, as such pass the
+                // `group_exprs` through `maybe_wrap_map_type_in_grouping_exprs` which canonicalizes
+                // any Map type to a List of Struct types for grouping.
+                let maybe_wrapped_group_exprs = map_converter
+                    .maybe_wrap_map_type_in_grouping_exprs(
+                        &self.session_ctx.state(),
+                        group_exprs?,
+                        child.schema(),
+                    )?;
+
+                let group_by = PhysicalGroupBy::new_single(maybe_wrapped_group_exprs);
                 let schema = child.schema();
 
                 let mode = if agg.mode == 0 {
@@ -1234,12 +1248,24 @@ impl PhysicalPlanner {
                         Arc::clone(&schema),
                     )?,
                 );
+
+                // To maintain schema consistency, the `AggregateExec` output is passed through
+                // `maybe_project_map_type_with_aggregation` which adds a projection that converts
+                // any canonicalized Map back to its original Map type. Not doing so will
+                // result in schema mismatch between Spark and DataFusion.
+                let maybe_aggregate_with_project = map_converter
+                    .maybe_project_map_type_with_aggregation(
+                        &self.session_ctx.state(),
+                        agg,
+                        aggregate,
+                    )?;
+
                 let result_exprs: PhyExprResult = agg
                     .result_exprs
                     .iter()
                     .enumerate()
                     .map(|(idx, expr)| {
-                        self.create_expr(expr, aggregate.schema())
+                        self.create_expr(expr, maybe_aggregate_with_project.schema())
                             .map(|r| (r, format!("col_{idx}")))
                     })
                     .collect();
@@ -1247,7 +1273,11 @@ impl PhysicalPlanner {
                 if agg.result_exprs.is_empty() {
                     Ok((
                         scans,
-                        Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
+                        Arc::new(SparkPlan::new(
+                            spark_plan.plan_id,
+                            maybe_aggregate_with_project,
+                            vec![child],
+                        )),
                     ))
                 } else {
                     // For final aggregation, DF's hash aggregate exec doesn't support Spark's
@@ -1259,7 +1289,7 @@ impl PhysicalPlanner {
                     // Spark side.
                     let projection = Arc::new(ProjectionExec::try_new(
                         result_exprs?,
-                        Arc::clone(&aggregate),
+                        Arc::clone(&maybe_aggregate_with_project),
                     )?);
                     Ok((
                         scans,
@@ -1267,7 +1297,7 @@ impl PhysicalPlanner {
                             spark_plan.plan_id,
                             projection,
                             vec![child],
-                            vec![aggregate],
+                            vec![maybe_aggregate_with_project],
                         )),
                     ))
                 }

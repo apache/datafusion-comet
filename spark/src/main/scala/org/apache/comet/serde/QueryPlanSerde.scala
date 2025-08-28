@@ -48,7 +48,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import com.google.protobuf.ByteString
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isCometScan, isSpark40Plus, withInfo}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
@@ -73,7 +73,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   /**
    * Mapping of Spark expression class to Comet expression handler.
    */
-  private val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+  private val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] = (Map(
     classOf[Add] -> CometAdd,
     classOf[Subtract] -> CometSubtract,
     classOf[Multiply] -> CometMultiply,
@@ -169,7 +169,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[DateAdd] -> CometDateAdd,
     classOf[DateSub] -> CometDateSub,
     classOf[TruncDate] -> CometTruncDate,
-    classOf[TruncTimestamp] -> CometTruncTimestamp)
+    classOf[TruncTimestamp] -> CometTruncTimestamp) ++ versionSpecificExprSerdeMap).toMap
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
@@ -1901,7 +1901,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
         if (groupingExpressions.exists(expr =>
             expr.dataType match {
-              case _: MapType => true
+              case _: MapType =>
+                if (isSpark40Plus &&
+                  CometConf.COMET_ENABLE_GROUPING_ON_MAP_TYPE.get(conf) &&
+                  CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) == CometConf.SCAN_NATIVE_DATAFUSION)
+                  false
+                else
+                  true
               case _ => false
             })) {
           withInfo(op, "Grouping on map types is not supported")

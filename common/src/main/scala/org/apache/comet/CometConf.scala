@@ -648,6 +648,15 @@ object CometConf extends ShimCometConf {
       .longConf
       .createWithDefault(3000L)
 
+  val COMET_ENABLE_GROUPING_ON_MAP_TYPE: ConfigEntry[Boolean] =
+    conf("spark.comet.enableGroupingOnMapType")
+      .doc(
+        "An experimental feature with limited capabilities to enable grouping on Spark Map type." +
+          "Requires Spark 4.0 and beyond along with support for scan on Map type." +
+          s"Set this config to true to enable grouping on map type. $COMPAT_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
       exec: String,

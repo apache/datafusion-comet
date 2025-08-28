@@ -31,6 +31,7 @@ import org.apache.spark.sql.functions.{avg, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 /**
@@ -1513,6 +1514,101 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   def getNumCometHashAggregate(df: DataFrame): Int = {
     val sparkPlan = stripAQEPlan(df.queryExecution.executedPlan)
     sparkPlan.collect { case s: CometHashAggregateExec => s }.size
+  }
+
+  test("groupby with map column") {
+    assume(isSpark40Plus, "Groupby on map type is supported in Spark 4.0 and beyond")
+
+    def runTests(tableName: String): Unit = {
+      // Group on second map column with just aggregate.
+      checkSparkAnswerAndOperator(s"select count(*) AS cnt from $tableName group by _2")
+
+      // Group on second map column with just grouping column.
+      checkSparkAnswerAndOperator(s"select _2 from $tableName group by _2")
+
+      // Group on second map column with different aggregates.
+      checkSparkAnswerAndOperator(s"select _2, count(*) AS cnt from $tableName group by _2")
+      checkSparkAnswerAndOperator(s"select _2, sum(_1) AS total from $tableName group by _2")
+      checkSparkAnswerAndOperator(
+        s"select _2, count(*) AS cnt, sum(_1) AS sum_val from $tableName group by _2")
+
+      // Group on second map column with aggregate and filtering.
+      checkSparkAnswerAndOperator(
+        s"select _2, count(*) AS cnt from $tableName group by _2 having count(*) > 1")
+      checkSparkAnswerAndOperator(
+        s"select _2, count(*) AS cnt from $tableName WHERE _2 IS not null group by _2")
+
+      // Group on second map column with aggregate and order by.
+      checkSparkAnswerAndOperator(
+        s"select _2, count(*) AS cnt from $tableName group by _2 order by cnt DESC")
+
+      // Group on third map column with aggregate.
+      checkSparkAnswerAndOperator(s"select _3, count(*) AS cnt from $tableName group by _3")
+      checkSparkAnswerAndOperator(s"select _3, sum(_1) AS total from $tableName group by _3")
+
+      // Group on third map column with different aggregates.
+      checkSparkAnswerAndOperator(
+        s"select _3, count(*) AS cnt, sum(_1) AS sum_val from $tableName group by _3")
+
+      // Group on third map column with aggregate and filtering.
+      checkSparkAnswerAndOperator(
+        s"select _3, count(*) AS cnt from $tableName WHERE _3 IS not null group by _3")
+
+      // Group on third map column with aggregate and order by.
+      checkSparkAnswerAndOperator(
+        s"select _3, count(*) AS cnt from $tableName group by _3 order by cnt DESC")
+
+      // Group on both map columns with aggregate.
+      checkSparkAnswerAndOperator(
+        s"select _2, _3, count(*) AS cnt from $tableName group by _2, _3")
+
+      // Group on both map columns with aggregate. The columns are selected in different order.
+      checkSparkAnswerAndOperator(
+        s"select _3, count(*), _2 AS cnt from $tableName group by _2, _3")
+
+      // Group on both map columns with different aggregates.
+      checkSparkAnswerAndOperator(
+        s"select _2, _3, count(*) AS cnt, sum(_1) AS sum_val from $tableName group by _2, _3")
+
+      // Group on both map column with aggregate and filtering.
+      checkSparkAnswerAndOperator(
+        s"select _2, _3, count(*) AS cnt from $tableName WHERE _2 IS not null group by _2, _3")
+      checkSparkAnswerAndOperator(
+        s"select _2, _3, count(*) AS cnt from $tableName WHERE _3 IS not null group by _2, _3")
+      checkSparkAnswerAndOperator(
+        s"select _2, _3, count(*) AS cnt from $tableName WHERE _2 IS not null AND _3 IS not null group by _2, _3")
+      checkSparkAnswerAndOperator(
+        s"select _2, _3, count(*) AS cnt from $tableName WHERE _2 IS not null group by _2, _3 order by cnt DESC")
+    }
+
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
+      CometConf.COMET_ENABLE_GROUPING_ON_MAP_TYPE.key -> "true") {
+
+      withParquetTable(
+        Seq(
+          (1, Map("a" -> 1, "b" -> 2), Map(1 -> "a", 2 -> "b")),
+          (2, Map("b" -> 2, "a" -> 1), Map(2 -> "b", 1 -> "a")),
+          (3, Map("a" -> 5, "b" -> 6), Map(1 -> "c", 2 -> "d")),
+          (4, Map("a" -> 1, "b" -> 2), Map(1 -> "a", 2 -> "b")),
+          (5, Map("c" -> 3), Map(3 -> "e")),
+          (6, Map("a" -> 1, "b" -> 2, "c" -> 3), Map(1 -> "a", 2 -> "b", 3 -> "e")),
+          (7, Map.empty[String, Int], Map.empty[Int, String]),
+          (8, Map("b" -> 3, "a" -> 5), Map(2 -> "b", 1 -> "a")),
+          (9, null, null),
+          (10, Map("d" -> 4, "e" -> 5, "f" -> 6), Map(4 -> "f", 5 -> "g", 6 -> "h")),
+          (11, Map("datafusion" -> 4, "comet" -> 5), Map(1 -> "datafusion", 2 -> "comet")),
+          (12, Map("comet" -> 5, "datafusion" -> 4), Map(2 -> "comet", 1 -> "datafusion")),
+          (13, Map("a" -> 1, "b" -> 2), Map(-1 -> "a", 2 -> "b")),
+          (14, Map("b" -> 2, "a" -> 1), Map(1 -> "a", 2 -> "b")),
+          (15, Map("b" -> 2, "a" -> 1), Map(2 -> "b", -1 -> "a"))),
+        "map_tbl") {
+        runTests("map_tbl")
+      }
+    }
   }
 
 }
