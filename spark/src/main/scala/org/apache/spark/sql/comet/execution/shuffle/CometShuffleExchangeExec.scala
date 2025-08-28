@@ -36,8 +36,7 @@ import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.comet.{CometMetricNode, CometPlan}
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeLike, ShuffleOrigin}
-import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
+import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -222,34 +221,38 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
       rangePartitioning: RangePartitioning,
       outputAttributes: Seq[Attribute]): Seq[InternalRow] = {
 
-    // Create sampling RDD similar to existing JVM shuffle logic
-    val rddForSampling = rdd.mapPartitionsInternal { iter =>
-      val projection =
-        UnsafeProjection.create(rangePartitioning.ordering.map(_.child), outputAttributes)
-      val mutablePair = new MutablePair[InternalRow, Null]()
+    // The code block below is mostly brought over from
+    // ShuffleExchangeExec::prepareShuffleDependency and modified for columnar batches
+    val rangePartitioner = {
+      // Extract only fields used for sorting to avoid collecting large fields that does not
+      // affect sorting result when deciding partition bounds in RangePartitioner
+      val rddForSampling = rdd.mapPartitionsInternal { iter =>
+        val projection =
+          UnsafeProjection.create(rangePartitioning.ordering.map(_.child), outputAttributes)
+        val mutablePair = new MutablePair[InternalRow, Null]()
 
-      // Convert ColumnarBatch to rows and project sorting columns
-      iter.flatMap { batch =>
-        val rowIter = batch.rowIterator().asScala
-        rowIter.map { row =>
-          // Copy the mutable keys for accurate sampling
-          mutablePair.update(projection(row).copy(), null)
+        // Internally, RangePartitioner runs a job on the RDD that samples keys to compute
+        // partition bounds. To get accurate samples, we need to copy the mutable keys.
+        iter.flatMap { batch =>
+          val rowIter = batch.rowIterator().asScala
+          rowIter.map { row =>
+            mutablePair.update(projection(row).copy(), null)
+          }
         }
       }
-    }
 
-    // Construct ordering on extracted sort key
-    val orderingAttributes = rangePartitioning.ordering.zipWithIndex.map { case (ord, i) =>
-      ord.copy(child = BoundReference(i, ord.dataType, ord.nullable))
+      // Construct ordering on extracted sort key.
+      val orderingAttributes = rangePartitioning.ordering.zipWithIndex.map { case (ord, i) =>
+        ord.copy(child = BoundReference(i, ord.dataType, ord.nullable))
+      }
+      implicit val ordering = new LazilyGeneratedOrdering(orderingAttributes)
+      // Use Spark's RangePartitioner to compute bounds from global samples
+      new RangePartitioner(
+        rangePartitioning.numPartitions,
+        rddForSampling,
+        ascending = true,
+        samplePointsPerPartitionHint = SQLConf.get.rangeExchangeSampleSizePerPartition)
     }
-    implicit val ordering = new LazilyGeneratedOrdering(orderingAttributes)
-
-    // Use Spark's RangePartitioner to compute bounds from global samples
-    val rangePartitioner = new RangePartitioner(
-      rangePartitioning.numPartitions,
-      rddForSampling,
-      ascending = true,
-      samplePointsPerPartitionHint = SQLConf.get.rangeExchangeSampleSizePerPartition)
 
     // Use reflection to access the private rangeBounds field
     val rangePartitionerClass = rangePartitioner.getClass
@@ -260,6 +263,7 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
 
     rangeBounds
   }
+
   def prepareShuffleDependency(
       rdd: RDD[ColumnarBatch],
       outputAttributes: Seq[Attribute],
@@ -284,6 +288,7 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
       shuffleType = CometNativeShuffle,
       partitioner = new Partitioner {
         override def numPartitions: Int = outputPartitioning.numPartitions
+
         override def getPartition(key: Any): Int = key.asInstanceOf[Int]
       },
       decodeTime = metrics("decode_time"),
@@ -381,6 +386,7 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
       case _ => throw new IllegalStateException(s"Exchange not implemented for $newPartitioning")
       // TODO: Handle BroadcastPartitioning.
     }
+
     def getPartitionKeyExtractor(): InternalRow => Any = newPartitioning match {
       case RoundRobinPartitioning(numPartitions) =>
         // Distributes elements evenly across output partitions, starting from a random partition.
@@ -433,6 +439,7 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
           // limited range.
           val prefixComputer = new UnsafeExternalRowSorter.PrefixComputer {
             private val result = new UnsafeExternalRowSorter.PrefixComputer.Prefix
+
             override def computePrefix(
                 row: InternalRow): UnsafeExternalRowSorter.PrefixComputer.Prefix = {
               // The hashcode generated from the binary form of a [[UnsafeRow]] should not be null.
