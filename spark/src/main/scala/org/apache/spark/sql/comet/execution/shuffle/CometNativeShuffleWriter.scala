@@ -28,11 +28,11 @@ import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsReporter, ShuffleWriter}
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, SinglePartition}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometConf
@@ -51,7 +51,8 @@ class CometNativeShuffleWriter[K, V](
     shuffleId: Int,
     mapId: Long,
     context: TaskContext,
-    metricsReporter: ShuffleWriteMetricsReporter)
+    metricsReporter: ShuffleWriteMetricsReporter,
+    rangePartitionBounds: Option[Seq[InternalRow]] = None)
     extends ShuffleWriter[K, V]
     with Logging {
 
@@ -194,35 +195,43 @@ class CometNativeShuffleWriter[K, V](
 
           val partitioning = PartitioningOuterClass.RangePartition.newBuilder()
           partitioning.setNumPartitions(outputPartitioning.numPartitions)
-          val sampleSize = {
-            // taken from org.apache.spark.RangePartitioner#rangeBounds
-            // This is the sample size we need to have roughly balanced output partitions,
-            // capped at 1M.
-            // Cast to double to avoid overflowing ints or longs
-            val sampleSize = math.min(
-              SQLConf.get
-                .getConf(SQLConf.RANGE_EXCHANGE_SAMPLE_SIZE_PER_PARTITION)
-                .toDouble * outputPartitioning.numPartitions,
-              1e6)
-            // Assume the input partitions are roughly balanced and over-sample a little bit.
-            // Comet: we don't divide by numPartitions since each DF plan handles one partition.
-            math.ceil(3.0 * sampleSize).toInt
-          }
-          if (sampleSize > 8192) {
-            logWarning(
-              s"RangePartitioning sampleSize of s$sampleSize exceeds Comet RecordBatch size.")
-          }
-          partitioning.setSampleSize(sampleSize)
 
-          val orderingExprs = rangePartitioning.ordering
-            .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
-
-          if (orderingExprs.length != rangePartitioning.ordering.length) {
-            throw new UnsupportedOperationException(
-              s"Partitioning $rangePartitioning is not supported.")
+          {
+            // Serialize the ordering expressions for comparisons
+            val orderingExprs = rangePartitioning.ordering
+              .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+            if (orderingExprs.length != rangePartitioning.ordering.length) {
+              throw new UnsupportedOperationException(
+                s"Partitioning $rangePartitioning is not supported.")
+            }
+            partitioning.addAllSortOrders(orderingExprs.asJava)
           }
 
-          partitioning.addAllSortOrders(orderingExprs.asJava)
+          // Convert Spark's sequence of InternalRows that represent partitioning boundaries to sequences of Literals,
+          // where each outer entry represents a boundary row, and each internal entry is a value in that row. In other
+          // words, these are stored in row major order, not column major
+          val boundarySchema = rangePartitioning.ordering.flatMap(e => Some(e.dataType))
+          val boundaryExprs: Seq[Seq[Literal]] =
+            rangePartitionBounds.get.map((row: InternalRow) =>
+              // For every InternalRow, map its values to Literals to ao collection of Literals
+              row.toSeq(boundarySchema).zip(boundarySchema).map { case (value, valueType) =>
+                Literal(value, valueType)
+              })
+
+          {
+            // Convert the sequences of Literals to a collection of serialized BoundaryRows
+            val boundaryRows: Seq[PartitioningOuterClass.BoundaryRow] = boundaryExprs
+              .map((rowLiterals: Seq[Literal]) => {
+                // Serialize each sequence of Literals as a BoundaryRow
+                val rowBuilder = PartitioningOuterClass.BoundaryRow.newBuilder();
+                val serializedExprs =
+                  rowLiterals.map(lit_value =>
+                    QueryPlanSerde.exprToProto(lit_value, outputAttributes).get)
+                rowBuilder.addAllPartitionBounds(serializedExprs.asJava)
+                rowBuilder.build()
+              })
+            partitioning.addAllBoundaryRows(boundaryRows.asJava)
+          }
 
           val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
           shuffleWriterBuilder.setPartitioning(

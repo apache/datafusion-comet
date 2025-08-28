@@ -85,11 +85,12 @@ use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
-    BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array,
-    Int16Array, Int32Array, Int64Array, Int8Array, NullArray, StringBuilder,
+    ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array,
+    Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, NullArray, StringBuilder,
     TimestampMicrosecondArray,
 };
 use arrow::buffer::BooleanBuffer;
+use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec;
@@ -2442,16 +2443,63 @@ impl PhysicalPlanner {
                 ))
             }
             PartitioningStruct::RangePartition(range_partition) => {
+                // Generate the lexical ordering for comparisons
                 let exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = range_partition
                     .sort_orders
                     .iter()
                     .map(|expr| self.create_sort_expr(expr, Arc::clone(&input_schema)))
                     .collect();
                 let lex_ordering = LexOrdering::new(exprs?).unwrap();
+                let boundary_row_len = lex_ordering.len();
+
+                // Generate the row converter for comparing incoming batches to boundary rows
+                let sort_fields: Vec<SortField> = lex_ordering
+                    .iter()
+                    .map(|sort_expr| {
+                        let data_type = sort_expr.expr.data_type(input_schema.as_ref()).unwrap();
+                        SortField::new_with_options(data_type, sort_expr.options)
+                    })
+                    .collect();
+
+                // Deserialize the literals to columnar collections of ScalarValues
+                let mut scalar_values: Vec<Vec<ScalarValue>> = vec![vec![]; lex_ordering.len()];
+                range_partition
+                    .boundary_rows
+                    .iter()
+                    .for_each(|boundary_row| {
+                        assert_eq!(boundary_row.partition_bounds.len(), boundary_row_len);
+                        // For each serialized expr in a boundary row, convert to a Literal
+                        // expression, then extract the ScalarValue from the Literal and push it
+                        // into the collection of ScalarValues
+                        boundary_row.partition_bounds.iter().enumerate().for_each(
+                            |(col_idx, literal_expr)| {
+                                // TODO: Is there a quicker/cleaner way to go from serialized expr
+                                // that we know is a literal to a ScalarValue?
+                                let expr = self
+                                    .create_expr(literal_expr, Arc::clone(&input_schema))
+                                    .unwrap();
+                                let literal_expr = expr.as_any().downcast_ref::<Literal>().unwrap();
+                                scalar_values[col_idx].push(literal_expr.value().clone());
+                            },
+                        );
+                    });
+
+                // Convert the collection of ScalarValues to collection of Arrow Arrays
+                let arrays: Vec<ArrayRef> = scalar_values
+                    .iter()
+                    .map(|scalar_vec| ScalarValue::iter_to_array(scalar_vec.iter().cloned()))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // Create a RowConverter and use to create OwnedRows from the Arrays
+                let converter = RowConverter::new(sort_fields)?;
+                let rows = converter.convert_columns(&arrays)?;
+                let owned_rows: Vec<OwnedRow> = rows.iter().map(|row| row.owned()).collect();
+
                 Ok(CometPartitioning::RangePartitioning(
                     lex_ordering,
                     range_partition.num_partitions as usize,
-                    range_partition.sample_size as usize,
+                    Arc::new(converter),
+                    owned_rows,
                 ))
             }
             PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
