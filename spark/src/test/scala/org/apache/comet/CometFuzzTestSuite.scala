@@ -262,7 +262,6 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             case "jvm" =>
               1
             case "native" =>
-              // native shuffle does not support complex types as partitioning keys
               2
           }
       }
