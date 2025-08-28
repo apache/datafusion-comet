@@ -73,6 +73,11 @@ The `native_datafusion` scan has some additional limitations:
 [#1545]: https://github.com/apache/datafusion-comet/issues/1545
 [#1758]: https://github.com/apache/datafusion-comet/issues/1758
 
+### S3 Support with `native_iceberg_compat`
+
+- When using the default AWS S3 endpoint (no custom endpoint configured), a valid region is required. Comet 
+  will attempt to resolve the region if it is not provided.
+
 ## ANSI Mode
 
 Comet will fall back to Spark for the following expressions when ANSI mode is enabled, unless

@@ -87,12 +87,25 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     val e = intercept[CometNativeException] {
       validate(hadoopConf)
     }
-    assert(e.getMessage != null && e.getMessage.contains("Unsupported credential provider"))
+    assert(e.getMessage.contains("Unsupported credential provider: invalid"))
+  }
+
+  test("validate object store config - mixed anonymous providers") {
+    val hadoopConf = new Configuration()
+    val provider1 = "com.amazonaws.auth.AnonymousAWSCredentials"
+    val provider2 = "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider"
+    hadoopConf.set("fs.s3a.aws.credentials.provider", Seq(provider1, provider2).mkString(","))
+    val e = intercept[CometNativeException] {
+      validate(hadoopConf)
+    }
+    val expectedError =
+      "Anonymous credential provider cannot be mixed with other credential providers"
+    assert(e.getMessage.contains(expectedError))
   }
 
   private def validate(hadoopConf: Configuration): Unit = {
     val path = "s3a://path/to/file.parquet"
     val configMap = NativeConfig.extractObjectStoreOptions(hadoopConf, URI.create(path))
-    Native.validateObjectStoreConfig(path,JavaConverters.mapAsJavaMap(configMap))
+    Native.validateObjectStoreConfig(path, JavaConverters.mapAsJavaMap(configMap))
   }
 }
