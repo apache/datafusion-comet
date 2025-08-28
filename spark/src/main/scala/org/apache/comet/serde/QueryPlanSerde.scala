@@ -170,6 +170,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[DateSub] -> CometDateSub,
     classOf[TruncDate] -> CometTruncDate,
     classOf[TruncTimestamp] -> CometTruncTimestamp,
+    classOf[CreateNamedStruct] -> CometCreateNamedStruct,
     classOf[StructsToJson] -> CometStructsToJson)
 
   /**
@@ -1330,29 +1331,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
               .build())
         } else {
           withInfo(expr, bloomFilter, value)
-          None
-        }
-
-      case struct @ CreateNamedStruct(_) =>
-        if (struct.names.length != struct.names.distinct.length) {
-          withInfo(expr, "CreateNamedStruct with duplicate field names are not supported")
-          return None
-        }
-
-        val valExprs = struct.valExprs.map(exprToProtoInternal(_, inputs, binding))
-
-        if (valExprs.forall(_.isDefined)) {
-          val structBuilder = ExprOuterClass.CreateNamedStruct.newBuilder()
-          structBuilder.addAllValues(valExprs.map(_.get).asJava)
-          structBuilder.addAllNames(struct.names.map(_.toString).asJava)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setCreateNamedStruct(structBuilder)
-              .build())
-        } else {
-          withInfo(expr, "unsupported arguments for CreateNamedStruct", struct.valExprs: _*)
           None
         }
 

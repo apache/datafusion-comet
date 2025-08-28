@@ -19,11 +19,43 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, StructsToJson}
+import scala.jdk.CollectionConverters.asJavaIterableConverter
+
+import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, StructsToJson}
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, MapType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
+
+object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
+  override def convert(
+      expr: CreateNamedStruct,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (expr.names.length != expr.names.distinct.length) {
+      withInfo(expr, "CreateNamedStruct with duplicate field names are not supported")
+      return None
+    }
+
+    val valExprs = expr.valExprs.map(exprToProtoInternal(_, inputs, binding))
+
+    if (valExprs.forall(_.isDefined)) {
+      val structBuilder = ExprOuterClass.CreateNamedStruct.newBuilder()
+      structBuilder.addAllValues(valExprs.map(_.get).asJava)
+      structBuilder.addAllNames(expr.names.map(_.toString).asJava)
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCreateNamedStruct(structBuilder)
+          .build())
+    } else {
+      withInfo(expr, "unsupported arguments for CreateNamedStruct", expr.valExprs: _*)
+      None
+    }
+
+  }
+}
 
 object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
 
