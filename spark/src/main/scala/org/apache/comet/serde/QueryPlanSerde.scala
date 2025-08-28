@@ -171,6 +171,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[TruncDate] -> CometTruncDate,
     classOf[TruncTimestamp] -> CometTruncTimestamp,
     classOf[CreateNamedStruct] -> CometCreateNamedStruct,
+    classOf[GetStructField] -> CometGetStructField,
     classOf[StructsToJson] -> CometStructsToJson)
 
   /**
@@ -1332,19 +1333,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         } else {
           withInfo(expr, bloomFilter, value)
           None
-        }
-
-      case GetStructField(child, ordinal, _) =>
-        exprToProtoInternal(child, inputs, binding).map { childExpr =>
-          val getStructFieldBuilder = ExprOuterClass.GetStructField
-            .newBuilder()
-            .setChild(childExpr)
-            .setOrdinal(ordinal)
-
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setGetStructField(getStructFieldBuilder)
-            .build()
         }
 
       case GetArrayItem(child, ordinal, failOnError) =>

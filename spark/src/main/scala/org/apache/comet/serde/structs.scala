@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters.asJavaIterableConverter
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, StructsToJson}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetStructField, StructsToJson}
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, MapType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -54,6 +54,25 @@ object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
       None
     }
 
+  }
+}
+
+object CometGetStructField extends CometExpressionSerde[GetStructField] {
+  override def convert(
+      expr: GetStructField,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    exprToProtoInternal(expr.child, inputs, binding).map { childExpr =>
+      val getStructFieldBuilder = ExprOuterClass.GetStructField
+        .newBuilder()
+        .setChild(childExpr)
+        .setOrdinal(expr.ordinal)
+
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setGetStructField(getStructFieldBuilder)
+        .build()
+    }
   }
 }
 
