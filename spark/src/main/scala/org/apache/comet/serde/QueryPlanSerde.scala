@@ -169,7 +169,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[DateAdd] -> CometDateAdd,
     classOf[DateSub] -> CometDateSub,
     classOf[TruncDate] -> CometTruncDate,
-    classOf[TruncTimestamp] -> CometTruncTimestamp)
+    classOf[TruncTimestamp] -> CometTruncTimestamp,
+    classOf[StructsToJson] -> CometStructsToJson)
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
@@ -910,66 +911,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             }
           case None =>
             None
-        }
-
-      case StructsToJson(options, child, timezoneId) =>
-        if (options.nonEmpty) {
-          withInfo(expr, "StructsToJson with options is not supported")
-          None
-        } else {
-
-          def isSupportedType(dt: DataType): Boolean = {
-            dt match {
-              case StructType(fields) =>
-                fields.forall(f => isSupportedType(f.dataType))
-              case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
-                  DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
-                  DataTypes.DoubleType | DataTypes.StringType =>
-                true
-              case DataTypes.DateType | DataTypes.TimestampType =>
-                // TODO implement these types with tests for formatting options and timezone
-                false
-              case _: MapType | _: ArrayType =>
-                // Spark supports map and array in StructsToJson but this is not yet
-                // implemented in Comet
-                false
-              case _ => false
-            }
-          }
-
-          val isSupported = child.dataType match {
-            case s: StructType =>
-              s.fields.forall(f => isSupportedType(f.dataType))
-            case _: MapType | _: ArrayType =>
-              // Spark supports map and array in StructsToJson but this is not yet
-              // implemented in Comet
-              false
-            case _ =>
-              false
-          }
-
-          if (isSupported) {
-            exprToProtoInternal(child, inputs, binding) match {
-              case Some(p) =>
-                val toJson = ExprOuterClass.ToJson
-                  .newBuilder()
-                  .setChild(p)
-                  .setTimezone(timezoneId.getOrElse("UTC"))
-                  .setIgnoreNullFields(true)
-                  .build()
-                Some(
-                  ExprOuterClass.Expr
-                    .newBuilder()
-                    .setToJson(toJson)
-                    .build())
-              case _ =>
-                withInfo(expr, child)
-                None
-            }
-          } else {
-            withInfo(expr, "Unsupported data type", child)
-            None
-          }
         }
 
       case SortOrder(child, direction, nullOrdering, _) =>
