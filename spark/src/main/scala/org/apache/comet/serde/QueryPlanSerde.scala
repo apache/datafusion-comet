@@ -95,6 +95,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ArraysOverlap] -> CometArraysOverlap,
     classOf[ArrayUnion] -> CometArrayUnion,
     classOf[CreateArray] -> CometCreateArray,
+    classOf[ElementAt] -> CometElementAt,
     classOf[Ascii] -> CometScalarFunction("ascii"),
     classOf[ConcatWs] -> CometScalarFunction("concat_ws"),
     classOf[Chr] -> CometScalarFunction("char"),
@@ -1355,33 +1356,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
               .build())
         } else {
           withInfo(expr, "unsupported arguments for GetArrayItem", child, ordinal)
-          None
-        }
-
-      case ElementAt(child, ordinal, defaultValue, failOnError)
-          if child.dataType.isInstanceOf[ArrayType] =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val ordinalExpr = exprToProtoInternal(ordinal, inputs, binding)
-        val defaultExpr = defaultValue.flatMap(exprToProtoInternal(_, inputs, binding))
-
-        if (childExpr.isDefined && ordinalExpr.isDefined &&
-          defaultExpr.isDefined == defaultValue.isDefined) {
-          val arrayExtractBuilder = ExprOuterClass.ListExtract
-            .newBuilder()
-            .setChild(childExpr.get)
-            .setOrdinal(ordinalExpr.get)
-            .setOneBased(true)
-            .setFailOnError(failOnError)
-
-          defaultExpr.foreach(arrayExtractBuilder.setDefaultValue(_))
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setListExtract(arrayExtractBuilder)
-              .build())
-        } else {
-          withInfo(expr, "unsupported arguments for ElementAt", child, ordinal)
           None
         }
       case af @ ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
