@@ -141,12 +141,18 @@ class CometNativeShuffleWriter[K, V](
       MapStatus.apply(SparkEnv.get.blockManager.shuffleServerId, partitionLengths, mapId)
   }
 
-  // Spark sometimes generates partitioning schemes other than SinglePartition with
-  // numPartitions == 1, typically near the output of a query. In this case Comet just
-  // serializes a SinglePartition scheme to native.
   private def isSinglePartitioning(p: Partitioning): Boolean = p match {
     case SinglePartition => true
-    case rp: RangePartitioning => rp.numPartitions == 1
+    case rp: RangePartitioning =>
+      // Spark sometimes generates RangePartitioning schemes with numPartitions == 1,
+      // or the computed bounds results in a single target partition.
+      // In this case Comet just serializes a SinglePartition scheme to native.
+      if ((rp.numPartitions == 1) || rangePartitionBounds.isEmpty ||
+        rangePartitionBounds.get.isEmpty) {
+        true
+      } else {
+        false
+      }
     case hp: HashPartitioning => hp.numPartitions == 1
     case _ => false
   }
