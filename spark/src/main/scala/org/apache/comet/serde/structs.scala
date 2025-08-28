@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import scala.jdk.CollectionConverters.asJavaIterableConverter
+import scala.collection.JavaConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetArrayStructFields, GetStructField, StructsToJson}
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, MapType, StructType}
