@@ -87,7 +87,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
 
     let lex_ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
-        col("a", batch.schema().as_ref()).unwrap(),
+        col("c0", batch.schema().as_ref()).unwrap(),
     )])
     .unwrap();
 
