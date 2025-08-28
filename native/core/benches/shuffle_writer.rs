@@ -91,21 +91,16 @@ fn criterion_benchmark(c: &mut Criterion) {
     )])
     .unwrap();
 
-    let (owned_rows, row_converter) = {
-        let (bounds_rows, row_converter) = RangePartitioner::generate_bounds(
-            &Vec::from(batch.columns()),
-            &lex_ordering,
-            16,
-            batch.num_rows(),
-            100,
-            42,
-        )
-        .unwrap();
-        (
-            bounds_rows.iter().map(|row| row.owned()).collect_vec(),
-            row_converter,
-        )
-    };
+    let (bounds_rows, row_converter) = RangePartitioner::generate_bounds(
+        &Vec::from(batch.columns()),
+        &lex_ordering,
+        16,
+        batch.num_rows(),
+        100,
+        42,
+    )
+    .unwrap();
+    let owned_rows = bounds_rows.iter().map(|row| row.owned()).collect_vec();
 
     for partitioning in [
         CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
