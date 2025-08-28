@@ -243,9 +243,6 @@ public final class Native extends NativeBase {
 
   /**
    * Verify that object store options are valid.
-   *
-   * @param filePath
-   * @return true if the object store is supported
    */
   public static native void validateObjectStoreConfig(
       String filePath, Map<String, String> objectStoreOptions);
