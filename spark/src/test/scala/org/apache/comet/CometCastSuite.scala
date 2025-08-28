@@ -953,7 +953,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // primitives
           checkSparkAnswerAndOperator(
             "SELECT CAST(struct(_1, _2, _3, _4, _5, _6, _7, _8) as string) FROM tbl")
-          checkSparkAnswerAndOperator("SELECT CAST(struct(_11, _12) as string) FROM tbl")
+          checkSparkAnswerAndOperator("SELECT CAST(struct(_11, _12, _11, _12) as string) FROM tbl")
           // decimals
           // TODO add _16 when https://github.com/apache/datafusion-comet/issues/1068 is resolved
           checkSparkAnswerAndOperator("SELECT CAST(struct(_15, _17) as string) FROM tbl")
