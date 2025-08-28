@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters.asJavaIterableConverter
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetStructField, StructsToJson}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetArrayStructFields, GetStructField, StructsToJson}
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, MapType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -72,6 +72,31 @@ object CometGetStructField extends CometExpressionSerde[GetStructField] {
         .newBuilder()
         .setGetStructField(getStructFieldBuilder)
         .build()
+    }
+  }
+}
+
+object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFields] {
+  override def convert(
+      expr: GetArrayStructFields,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+
+    if (childExpr.isDefined) {
+      val arrayStructFieldsBuilder = ExprOuterClass.GetArrayStructFields
+        .newBuilder()
+        .setChild(childExpr.get)
+        .setOrdinal(expr.ordinal)
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setGetArrayStructFields(arrayStructFieldsBuilder)
+          .build())
+    } else {
+      withInfo(expr, "unsupported arguments for GetArrayStructFields", expr.child)
+      None
     }
   }
 }

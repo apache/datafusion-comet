@@ -172,6 +172,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[TruncTimestamp] -> CometTruncTimestamp,
     classOf[CreateNamedStruct] -> CometCreateNamedStruct,
     classOf[GetStructField] -> CometGetStructField,
+    classOf[GetArrayStructFields] -> CometGetArrayStructFields,
     classOf[StructsToJson] -> CometStructsToJson)
 
   /**
@@ -1381,25 +1382,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
               .build())
         } else {
           withInfo(expr, "unsupported arguments for ElementAt", child, ordinal)
-          None
-        }
-
-      case GetArrayStructFields(child, _, ordinal, _, _) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-
-        if (childExpr.isDefined) {
-          val arrayStructFieldsBuilder = ExprOuterClass.GetArrayStructFields
-            .newBuilder()
-            .setChild(childExpr.get)
-            .setOrdinal(ordinal)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setGetArrayStructFields(arrayStructFieldsBuilder)
-              .build())
-        } else {
-          withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
           None
         }
       case af @ ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
