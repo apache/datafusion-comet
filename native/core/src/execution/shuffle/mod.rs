@@ -19,10 +19,11 @@ pub(crate) mod codec;
 mod comet_partitioning;
 mod list;
 mod map;
-pub mod range_partitioner;
+pub(crate) mod range_partitioner;
 pub mod row;
 mod shuffle_writer;
 
 pub use codec::{read_ipc_compressed, CompressionCodec, ShuffleBlockWriter};
 pub use comet_partitioning::CometPartitioning;
+pub use range_partitioner::RangePartitioner;
 pub use shuffle_writer::ShuffleWriterExec;

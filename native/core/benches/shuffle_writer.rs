@@ -18,7 +18,7 @@
 use arrow::array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow::array::{builder::StringBuilder, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
-use comet::execution::shuffle::range_partitioner::RangePartitioner;
+use comet::execution::shuffle::RangePartitioner;
 use comet::execution::shuffle::{
     CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec,
 };
@@ -32,6 +32,7 @@ use datafusion::{
     physical_plan::{common::collect, ExecutionPlan},
     prelude::SessionContext,
 };
+use itertools::Itertools;
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::runtime::Runtime;

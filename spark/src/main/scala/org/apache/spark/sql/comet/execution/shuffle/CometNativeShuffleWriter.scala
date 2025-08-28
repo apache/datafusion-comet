@@ -207,9 +207,10 @@ class CometNativeShuffleWriter[K, V](
             partitioning.addAllSortOrders(orderingExprs.asJava)
           }
 
-          // Convert Spark's sequence of InternalRows that represent partitioning boundaries to sequences of Literals,
-          // where each outer entry represents a boundary row, and each internal entry is a value in that row. In other
-          // words, these are stored in row major order, not column major
+          // Convert Spark's sequence of InternalRows that represent partitioning boundaries to
+          // sequences of Literals, where each outer entry represents a boundary row, and each
+          // internal entry is a value in that row. In other words, these are stored in row major
+          // order, not column major
           val boundarySchema = rangePartitioning.ordering.flatMap(e => Some(e.dataType))
           val boundaryExprs: Seq[Seq[Literal]] =
             rangePartitionBounds.get.map((row: InternalRow) =>
