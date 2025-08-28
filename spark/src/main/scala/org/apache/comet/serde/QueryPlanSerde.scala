@@ -169,7 +169,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[DateAdd] -> CometDateAdd,
     classOf[DateSub] -> CometDateSub,
     classOf[TruncDate] -> CometTruncDate,
-    classOf[TruncTimestamp] -> CometTruncTimestamp)
+    classOf[TruncTimestamp] -> CometTruncTimestamp,
+    classOf[Flatten] -> CometFlatten)
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
