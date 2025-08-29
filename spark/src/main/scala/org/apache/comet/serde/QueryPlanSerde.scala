@@ -2089,7 +2089,7 @@ case class Compatible(notes: Option[String] = None) extends SupportLevel
 case class Incompatible(notes: Option[String] = None) extends SupportLevel
 
 /** Comet does not support this feature */
-case class Unsupported(notes: Option[String]) extends SupportLevel
+case class Unsupported(notes: Option[String] = None) extends SupportLevel
 
 /**
  * Trait for providing serialization logic for operators.
