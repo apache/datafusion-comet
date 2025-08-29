@@ -718,6 +718,30 @@ under the License.
         </pluginManagement>
       </build>
     </profile>
+    <profile>
+          <id>strict-warnings</id>
+          <build>
+              <plugins>
+                  <plugin>
+                      <groupId>net.alchim31.maven</groupId>
+                      <artifactId>scala-maven-plugin</artifactId>
+                      <configuration>
+                          <args>
+                              <arg>-deprecation</arg>
+                              <arg>-unchecked</arg>
+                              <arg>-feature</arg>
+                              <arg>-Xlint:_</arg>
+                              <arg>-Ywarn-dead-code</arg>
+                              <arg>-Ywarn-numeric-widen</arg>
+                              <arg>-Ywarn-value-discard</arg>
+                              <arg>-Ywarn-unused:imports,patvars,privates,locals,params,-implicits</arg>
+                              <arg>-Xfatal-warnings</arg>
+                          </args>
+                      </configuration>
+                  </plugin>
+              </plugins>
+          </build>
+    </profile>
   </profiles>
 
   <build>
