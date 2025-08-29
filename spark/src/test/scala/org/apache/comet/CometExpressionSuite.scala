@@ -2672,7 +2672,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         Seq(true, false).foreach { ansiEnabled =>
           withSQLConf(
-            CometConf.COMET_LOG_FALLBACK_REASONS.key -> "true",
             CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
             SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString(),
             // Prevent the optimizer from collapsing an extract value of a create array
