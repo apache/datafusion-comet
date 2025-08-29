@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Atan2, Attribute, Ceil, Expression, Floor, If, LessThanOrEqual, Literal, Log, Log10, Log2, Pow}
+import org.apache.spark.sql.catalyst.expressions.{Atan2, Attribute, Ceil, Expression, Floor, If, LessThanOrEqual, Literal, Log, Log10, Log2}
 import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
