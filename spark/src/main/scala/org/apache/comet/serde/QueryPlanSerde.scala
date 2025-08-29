@@ -175,12 +175,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[CreateNamedStruct] -> CometCreateNamedStruct,
     classOf[GetStructField] -> CometGetStructField,
     classOf[GetArrayStructFields] -> CometGetArrayStructFields,
-    classOf[StructsToJson] -> CometStructsToJson)
+    classOf[StructsToJson] -> CometStructsToJson,
+    classOf[Flatten] -> CometFlatten)
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
    */
-  private val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde] = Map(
+  private val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
     classOf[Sum] -> CometSum,
     classOf[Average] -> CometAverage,
     classOf[Count] -> CometCount,
@@ -504,7 +505,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
     val cometExpr = aggrSerdeMap.get(fn.getClass)
     cometExpr match {
       case Some(handler) =>
-        handler.convert(aggExpr, fn, inputs, binding, conf)
+        handler
+          .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
+          .convert(aggExpr, fn, inputs, binding, conf)
       case _ =>
         withInfo(
           aggExpr,
@@ -2298,7 +2301,7 @@ trait CometExpressionSerde[T <: Expression] {
 /**
  * Trait for providing serialization logic for aggregate expressions.
  */
-trait CometAggregateExpressionSerde {
+trait CometAggregateExpressionSerde[T <: AggregateFunction] {
 
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
@@ -2321,7 +2324,7 @@ trait CometAggregateExpressionSerde {
    */
   def convert(
       aggExpr: AggregateExpression,
-      expr: Expression,
+      expr: T,
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr]
