@@ -19,8 +19,13 @@
 
 package org.apache.comet.rules
 
+import java.net.URI
+
+import scala.collection.{mutable, JavaConverters}
 import scala.collection.mutable.ListBuffer
 
+import org.apache.hadoop.conf.Configuration
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -34,17 +39,19 @@ import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, DataTypeSupport}
+import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.parquet.{CometParquetScan, SupportsComet}
+import org.apache.comet.objectstore.NativeConfig
+import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
 import org.apache.comet.shims.CometTypeShim
 
 /**
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
  */
 case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with CometTypeShim {
+  import CometScanRule._
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
@@ -295,8 +302,17 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     val fallbackReasons = new ListBuffer[String]()
 
     // native_iceberg_compat only supports local filesystem and S3
-    if (!scanExec.relation.inputFiles
+    if (scanExec.relation.inputFiles
         .forall(path => path.startsWith("file://") || path.startsWith("s3a://"))) {
+
+      val filePath = scanExec.relation.inputFiles.headOption
+      if (filePath.exists(_.startsWith("s3a://"))) {
+        validateObjectStoreConfig(
+          filePath.get,
+          session.sparkContext.hadoopConfiguration,
+          fallbackReasons)
+      }
+    } else {
       fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT only supports local filesystem and S3"
     }
 
@@ -374,5 +390,66 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)
     }
+  }
+}
+
+object CometScanRule extends Logging {
+
+  /**
+   * Validating object store configs can cause requests to be made to S3 APIs (such as when
+   * resolving the region for a bucket). We use a cache to reduce the number of S3 calls.
+   *
+   * The key is the config map converted to a string. The value is the reason that the config is
+   * not valid, or None if the config is valid.
+   */
+  val configValidityMap = new mutable.HashMap[String, Option[String]]()
+
+  /**
+   * We do not expect to see a large number of unique configs within the lifetime of a Spark
+   * session, but we reset the cache once it reaches a fixed size to prevent it growing
+   * indefinitely.
+   */
+  val configValidityMapMaxSize = 1024
+
+  def validateObjectStoreConfig(
+      filePath: String,
+      hadoopConf: Configuration,
+      fallbackReasons: mutable.ListBuffer[String]): Unit = {
+    val objectStoreConfigMap =
+      NativeConfig.extractObjectStoreOptions(hadoopConf, URI.create(filePath))
+
+    val cacheKey = objectStoreConfigMap
+      .map { case (k, v) =>
+        s"$k=$v"
+      }
+      .toList
+      .sorted
+      .mkString("\n")
+
+    if (configValidityMap.size >= configValidityMapMaxSize) {
+      logWarning("Resetting S3 object store validity cache")
+      configValidityMap.clear()
+    }
+
+    configValidityMap.get(cacheKey) match {
+      case Some(Some(reason)) =>
+        fallbackReasons += reason
+        throw new CometNativeException(reason)
+      case Some(None) =>
+      // previously validated
+      case _ =>
+        try {
+          val objectStoreOptions = JavaConverters.mapAsJavaMap(objectStoreConfigMap)
+          Native.validateObjectStoreConfig(filePath, objectStoreOptions)
+        } catch {
+          case e: Exception =>
+            val reason = "Object store config not supported by " +
+              s"$SCAN_NATIVE_ICEBERG_COMPAT: ${e.getMessage}"
+            fallbackReasons += reason
+            configValidityMap.put(cacheKey, Some(reason))
+            throw e
+        }
+    }
+
   }
 }
