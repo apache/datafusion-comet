@@ -427,11 +427,12 @@ object CometScanRule extends Logging {
       configValidityMap.clear()
     }
 
-    val maybeMaybeString: Option[Option[String]] = configValidityMap.get(cacheKey)
-    maybeMaybeString match {
-      case Some(reason) =>
-        fallbackReasons += reason.get
-        throw new CometNativeException(reason.get)
+    configValidityMap.get(cacheKey) match {
+      case Some(Some(reason)) =>
+        fallbackReasons += reason
+        throw new CometNativeException(reason)
+      case Some(None) =>
+      // previously validated
       case _ =>
         try {
           val objectStoreOptions = JavaConverters.mapAsJavaMap(objectStoreConfigMap)
