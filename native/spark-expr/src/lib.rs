@@ -55,6 +55,7 @@ pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain};
 
 mod conditional_funcs;
 mod conversion_funcs;
+mod map_funcs;
 mod math_funcs;
 mod nondetermenistic_funcs;
 
