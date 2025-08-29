@@ -21,17 +21,23 @@ package org.apache.comet.objectstore
 
 import java.net.URI
 
-import scala.collection.JavaConverters
+import scala.collection.mutable
+import scala.util.Try
 
+import org.scalatest.BeforeAndAfterEach
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.hadoop.conf.Configuration
 
 import org.apache.comet.CometNativeException
-import org.apache.comet.parquet.Native
+import org.apache.comet.rules.CometScanRule
 
-class NativeConfigSuite extends AnyFunSuite with Matchers {
+class NativeConfigSuite extends AnyFunSuite with Matchers with BeforeAndAfterEach {
+
+  override protected def beforeEach(): Unit = {
+    CometScanRule.configValidityMap.clear()
+  }
 
   test("extractObjectStoreOptions - multiple cloud provider configurations") {
     val hadoopConf = new Configuration()
@@ -122,9 +128,24 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     assert(e.getMessage.contains(expectedError))
   }
 
+  test("validity cache") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.s3a.endpoint", "https://acme.storage.com")
+
+    assert(CometScanRule.configValidityMap.isEmpty)
+    for (_ <- 0 until 5) {
+      assert(Try(validate(hadoopConf)).isFailure)
+      assert(CometScanRule.configValidityMap.size == 1)
+    }
+
+    hadoopConf.set("fs.s3a.endpoint", "https://acme2.storage.com")
+    assert(Try(validate(hadoopConf)).isFailure)
+    assert(CometScanRule.configValidityMap.size == 2)
+  }
+
   private def validate(hadoopConf: Configuration): Unit = {
     val path = "s3a://path/to/file.parquet"
-    val configMap = NativeConfig.extractObjectStoreOptions(hadoopConf, URI.create(path))
-    Native.validateObjectStoreConfig(path, JavaConverters.mapAsJavaMap(configMap))
+    val fallbackReasons = mutable.ListBuffer[String]()
+    CometScanRule.validateObjectStoreConfig(path, hadoopConf, fallbackReasons)
   }
 }
