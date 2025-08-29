@@ -103,6 +103,17 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     assert(e.getMessage.contains(expectedError))
   }
 
+  test("validate object store config - custom s3 endpoint not supported") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.s3a.endpoint", "https://acme.storage.com")
+    val e = intercept[CometNativeException] {
+      validate(hadoopConf)
+    }
+    val expectedError =
+      "Custom S3 endpoints are not supported"
+    assert(e.getMessage.contains(expectedError))
+  }
+
   private def validate(hadoopConf: Configuration): Unit = {
     val path = "s3a://path/to/file.parquet"
     val configMap = NativeConfig.extractObjectStoreOptions(hadoopConf, URI.create(path))
