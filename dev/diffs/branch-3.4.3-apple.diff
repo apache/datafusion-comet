@@ -296,10 +296,10 @@ index 84639f7c87e..d10c5ddf043 100644
          checkAnswer(shjCodegenDF, Seq.empty)
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index 8a3e7457618..2cc1791ba54 100644
+index 8a3e7457618..5e04319dd97 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-@@ -4468,7 +4468,10 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+@@ -4468,7 +4468,11 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
            val msg = intercept[SparkException] {
              sql(query).collect()
            }.getMessage
@@ -308,6 +308,7 @@ index 8a3e7457618..2cc1791ba54 100644
 +            // Comet's error message does not include the original SQL query
 +            // https://github.com/apache/datafusion-comet/issues/2215
 +            assert(msg.contains(query))
++          }
          }
        }
      }
@@ -882,7 +883,7 @@ index 3a1cd75bd62..9573947f020 100644
 -          .set("spark.comet.ansi.enabled", "true")
        }
      }
-
+ 
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
 index de3b1ffccf0..2a76d127093 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/PartitionedTablePerfStatsSuite.scala
@@ -957,4 +958,4 @@ index 816785ccc0f..adcae61cf50 100644
 -              .set("spark.comet.ansi.enabled", "true")
            }
          }
-
+ 
