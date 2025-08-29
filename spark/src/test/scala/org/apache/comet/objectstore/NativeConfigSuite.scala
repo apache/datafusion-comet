@@ -81,6 +81,14 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     validate(hadoopConf)
   }
 
+  test("validate object store config - valid providers") {
+    val hadoopConf = new Configuration()
+    val provider1 = "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    val provider2 = "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
+    hadoopConf.set("fs.s3a.aws.credentials.provider", Seq(provider1, provider2).mkString(","))
+    validate(hadoopConf)
+  }
+
   test("validate object store config - invalid provider") {
     val hadoopConf = new Configuration()
     hadoopConf.set("fs.s3a.aws.credentials.provider", "invalid")
