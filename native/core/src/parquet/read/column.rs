@@ -691,7 +691,7 @@ impl<T: DataType> TypedColumnReader<T> {
     /// well as reset all of its internal states.
     #[inline]
     pub fn reset_batch(&mut self) {
-        self.vector.reset()
+        self.vector = ParquetMutableVector::new(self.capacity, &self.arrow_type);
     }
 
     /// Returns the current batch that's been constructed.

@@ -117,24 +117,6 @@ impl ParquetMutableVector {
         unsafe { !bit::get_bit_raw(self.validity_buffer.as_ptr(), idx) }
     }
 
-    /// Resets this vector to the initial state.
-    #[inline]
-    pub fn reset(&mut self) {
-        self.num_values = 0;
-        self.num_nulls = 0;
-        self.validity_buffer.reset();
-        if Self::is_binary_type(&self.arrow_type) {
-            // Reset the first offset to 0
-            let zero: u32 = 0;
-            bit::memcpy_value(&zero, 4, &mut self.value_buffer);
-            // Also reset the child value vector
-            let child = &mut self.children[0];
-            child.reset();
-        } else if Self::should_reset_value_buffer(&self.arrow_type) {
-            self.value_buffer.reset();
-        }
-    }
-
     /// Appends a new null value to the end of this vector.
     #[inline]
     pub fn put_null(&mut self) {
@@ -232,12 +214,5 @@ impl ParquetMutableVector {
     #[inline]
     fn is_binary_type(dt: &ArrowDataType) -> bool {
         matches!(dt, ArrowDataType::Binary | ArrowDataType::Utf8)
-    }
-
-    #[inline]
-    fn should_reset_value_buffer(dt: &ArrowDataType) -> bool {
-        // - Boolean type expects have a zeroed value buffer
-        // - Decimal may pad buffer with 0xff so we need to clear them before a new batch
-        matches!(dt, ArrowDataType::Boolean | ArrowDataType::Decimal128(_, _))
     }
 }
