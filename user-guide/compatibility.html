@@ -316,6 +316,16 @@ under the License.
      Parquet Scans
     </a>
    </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#s3-support-with-native-iceberg-compat">
+     S3 Support with
+     <code class="docutils literal notranslate">
+      <span class="pre">
+       native_iceberg_compat
+      </span>
+     </code>
+    </a>
+   </li>
   </ul>
  </li>
  <li class="toc-h2 nav-item toc-entry">
@@ -472,6 +482,13 @@ types (regardless of the logical type). This behavior can be disabled by setting
 <li><p><code class="docutils literal notranslate"><span class="pre">PARQUET_FIELD_ID_READ_ENABLED</span></code> is not respected <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1758">#1758</a></p></li>
 <li><p>There are failures in the Spark SQL test suite <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1545">#1545</a></p></li>
 <li><p>Setting Spark configs <code class="docutils literal notranslate"><span class="pre">ignoreMissingFiles</span></code> or <code class="docutils literal notranslate"><span class="pre">ignoreCorruptFiles</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> is not compatible with Spark</p></li>
+</ul>
+</section>
+<section id="s3-support-with-native-iceberg-compat">
+<h3>S3 Support with <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code><a class="headerlink" href="#s3-support-with-native-iceberg-compat" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p>When using the default AWS S3 endpoint (no custom endpoint configured), a valid region is required. Comet
+will attempt to resolve the region if it is not provided.</p></li>
 </ul>
 </section>
 </section>
