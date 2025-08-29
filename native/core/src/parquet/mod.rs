@@ -669,6 +669,35 @@ pub fn get_object_store_options(
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
 #[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_validateObjectStoreConfig(
+    e: JNIEnv,
+    _jclass: JClass,
+    file_path: jstring,
+    object_store_options: jobject,
+) {
+    try_unwrap_or_throw(&e, |mut env| unsafe {
+        let session_config = SessionConfig::new();
+        let planner =
+            PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)), 0);
+        let session_ctx = planner.session_ctx();
+        let path: String = env
+            .get_string(&JString::from_raw(file_path))
+            .unwrap()
+            .into();
+        let object_store_config =
+            get_object_store_options(&mut env, JObject::from_raw(object_store_options))?;
+        let (_, _) = prepare_object_store_with_configs(
+            session_ctx.runtime_env(),
+            path.clone(),
+            &object_store_config,
+        )?;
+        Ok(())
+    })
+}
+
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBatchReader(
     e: JNIEnv,
     _jclass: JClass,
@@ -686,9 +715,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         let session_config = SessionConfig::new().with_batch_size(batch_size as usize);
-        let planer =
+        let planner =
             PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)), 0);
-        let session_ctx = planer.session_ctx();
+        let session_ctx = planner.session_ctx();
 
         let path: String = env
             .get_string(&JString::from_raw(file_path))
@@ -716,7 +745,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             let filter_buffer = env.convert_byte_array(&filter_array)?;
             let filter_expr = serde::deserialize_expr(filter_buffer.as_slice())?;
             Some(vec![
-                planer.create_expr(&filter_expr, Arc::clone(&data_schema))?
+                planner.create_expr(&filter_expr, Arc::clone(&data_schema))?
             ])
         } else {
             None

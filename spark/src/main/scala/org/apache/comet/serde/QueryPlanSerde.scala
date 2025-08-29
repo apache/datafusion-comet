@@ -176,7 +176,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[GetStructField] -> CometGetStructField,
     classOf[GetArrayStructFields] -> CometGetArrayStructFields,
     classOf[StructsToJson] -> CometStructsToJson,
-    classOf[Flatten] -> CometFlatten)
+    classOf[Flatten] -> CometFlatten,
+    classOf[Atan2] -> CometAtan2,
+    classOf[Ceil] -> CometCeil,
+    classOf[Floor] -> CometFloor,
+    classOf[Log] -> CometLog,
+    classOf[Log10] -> CometLog10,
+    classOf[Log2] -> CometLog2,
+    classOf[Pow] -> CometScalarFunction[Pow]("pow"))
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
@@ -1054,12 +1061,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
 //            None
 //          }
 
-      case Atan2(left, right) =>
-        val leftExpr = exprToProtoInternal(left, inputs, binding)
-        val rightExpr = exprToProtoInternal(right, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("atan2", leftExpr, rightExpr)
-        optExprWithInfo(optExpr, expr, left, right)
-
       case Hex(child) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
         val optExpr =
@@ -1076,56 +1077,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("unhex", e.dataType, childExpr, failOnErrorExpr)
         optExprWithInfo(optExpr, expr, unHex._1)
-
-      case e @ Ceil(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        child.dataType match {
-          case t: DecimalType if t.scale == 0 => // zero scale is no-op
-            childExpr
-          case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-            withInfo(e, s"Decimal type $t has negative scale")
-            None
-          case _ =>
-            val optExpr = scalarFunctionExprToProtoWithReturnType("ceil", e.dataType, childExpr)
-            optExprWithInfo(optExpr, expr, child)
-        }
-
-      case e @ Floor(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        child.dataType match {
-          case t: DecimalType if t.scale == 0 => // zero scale is no-op
-            childExpr
-          case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-            withInfo(e, s"Decimal type $t has negative scale")
-            None
-          case _ =>
-            val optExpr = scalarFunctionExprToProtoWithReturnType("floor", e.dataType, childExpr)
-            optExprWithInfo(optExpr, expr, child)
-        }
-
-      // The expression for `log` functions is defined as null on numbers less than or equal
-      // to 0. This matches Spark and Hive behavior, where non positive values eval to null
-      // instead of NaN or -Infinity.
-      case Log(child) =>
-        val childExpr = exprToProtoInternal(nullIfNegative(child), inputs, binding)
-        val optExpr = scalarFunctionExprToProto("ln", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Log10(child) =>
-        val childExpr = exprToProtoInternal(nullIfNegative(child), inputs, binding)
-        val optExpr = scalarFunctionExprToProto("log10", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Log2(child) =>
-        val childExpr = exprToProtoInternal(nullIfNegative(child), inputs, binding)
-        val optExpr = scalarFunctionExprToProto("log2", childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case Pow(left, right) =>
-        val leftExpr = exprToProtoInternal(left, inputs, binding)
-        val rightExpr = exprToProtoInternal(right, inputs, binding)
-        val optExpr = scalarFunctionExprToProto("pow", leftExpr, rightExpr)
-        optExprWithInfo(optExpr, expr, left, right)
 
       case RegExpReplace(subject, pattern, replacement, startPosition) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
@@ -1210,15 +1161,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, allBranches: _*)
           None
         }
-
-      case BitwiseAnd(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
 
       case n @ Not(In(_, _)) =>
         CometNotIn.convert(n, inputs, binding)
@@ -1451,11 +1393,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         return None
     }
     Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
-  }
-
-  private def nullIfNegative(expression: Expression): Expression = {
-    val zero = Literal.default(expression.dataType)
-    If(LessThanOrEqual(expression, zero), Literal.create(null, expression.dataType), expression)
   }
 
   /**
