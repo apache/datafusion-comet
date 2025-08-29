@@ -419,7 +419,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast FloatType to DecimalType(10,2) - allow incompat") {
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
     }
   }
@@ -479,7 +479,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast DoubleType to DecimalType(10,2) - allow incompat") {
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
     }
   }
@@ -646,7 +646,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to FloatType (partial support)") {
     withSQLConf(
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
       SQLConf.ANSI_ENABLED.key -> "false") {
       castTest(
         gen.generateStrings(dataSize, "0123456789.", 8).toDF("a"),
@@ -662,7 +662,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to DoubleType (partial support)") {
     withSQLConf(
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
       SQLConf.ANSI_ENABLED.key -> "false") {
       castTest(
         gen.generateStrings(dataSize, "0123456789.", 8).toDF("a"),
@@ -679,7 +679,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to DecimalType(10,2) (partial support)") {
     withSQLConf(
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
       SQLConf.ANSI_ENABLED.key -> "false") {
       val values = gen
         .generateStrings(dataSize, "0123456789.", 8)
@@ -768,7 +768,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   ignore("cast StringType to TimestampType") {
     // https://github.com/apache/datafusion-comet/issues/328
-    withSQLConf((CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key, "true")) {
+    withSQLConf((CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key, "true")) {
       val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ gen.generateStrings(
         dataSize,
         timestampPattern,
@@ -819,7 +819,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // test for invalid inputs
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       val values = Seq("-9?", "1-", "0.5")
       castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
     }

@@ -51,7 +51,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("Chr") {
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       val table = "test"
       withTable(table) {
         sql(s"create table $table(col varchar(20)) using parquet")
@@ -64,7 +64,7 @@ class CometStringExpressionSuite extends CometTestBase {
 
   test("Chr with null character") {
     // test compatibility with Spark, spark supports chr(0)
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       val table = "test0"
       withTable(table) {
         sql(s"create table $table(c9 int, c4 int) using parquet")

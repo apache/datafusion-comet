@@ -504,7 +504,7 @@ class CometExecSuite extends CometTestBase {
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
-        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
           var column1 = s"CAST(max(_1) AS $subqueryType)"
           if (subqueryType == "BINARY") {
@@ -1431,7 +1431,7 @@ class CometExecSuite extends CometTestBase {
   test("SPARK-33474: Support typed literals as partition spec values") {
     withSQLConf(
       SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       withTable("t1") {
         val binaryStr = "Spark SQL"
         val binaryHexStr = Hex.hex(UTF8String.fromString(binaryStr).getBytes).toString

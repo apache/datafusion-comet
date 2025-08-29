@@ -26,9 +26,9 @@ import org.apache.spark.sql.types.{DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.expressions.{CometEvalMode, RegExp}
+import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{castToProto, createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -187,7 +187,7 @@ trait CommonStringExprs {
         // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
         // for invalid strings.
         // Left child is the binary expression.
-        castToProto(
+        CometCast.castToProto(
           expr,
           None,
           DataTypes.StringType,

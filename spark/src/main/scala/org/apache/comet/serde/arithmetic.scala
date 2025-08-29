@@ -25,8 +25,8 @@ import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, 
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.QueryPlanSerde.{castToProto, evalModeToProto, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
 trait MathBase {
@@ -274,7 +274,7 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       }
 
       // cast result to long
-      castToProto(expr, None, LongType, childExpr.get, CometEvalMode.LEGACY)
+      CometCast.castToProto(expr, None, LongType, childExpr.get, CometEvalMode.LEGACY)
     } else {
       None
     }
