@@ -89,3 +89,21 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     optExprWithInfo(mapFromArraysExpr, expr, expr.children: _*)
   }
 }
+
+object CometMapFilter extends CometExpressionSerde[MapFilter] {
+
+  override def convert(
+      expr: MapFilter,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val mapExpr = exprToProtoInternal(expr.argument, inputs, binding)
+    val lambdaExpr = exprToProtoInternal(expr.function, inputs, binding)
+    
+    if (mapExpr.isDefined && lambdaExpr.isDefined) {
+      val mapFilterExpr = scalarFunctionExprToProto("map_filter", mapExpr.get, lambdaExpr.get)
+      optExprWithInfo(mapFilterExpr, expr, expr.children: _*)
+    } else {
+      None
+    }
+  }
+}
