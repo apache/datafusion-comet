@@ -21,7 +21,7 @@ syntax = "proto3";
 
 package spark.spark_expression;
 
-import "datatype.proto";
+import "types.proto";
 
 option java_package = "org.apache.comet.serde";
 
@@ -39,8 +39,9 @@ message Literal {
     string string_val = 8;
     bytes bytes_val = 9;
     bytes decimal_val = 10;
+    ListLiteral list_val = 11;
   }
 
-  DataType datatype = 11;
-  bool is_null = 12;
+  DataType datatype = 12;
+  bool is_null = 13;
 }

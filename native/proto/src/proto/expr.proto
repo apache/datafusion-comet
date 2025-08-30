@@ -21,7 +21,6 @@ syntax = "proto3";
 
 package spark.spark_expression;
 
-import "datatype.proto";
 import "literal.proto";
 import "types.proto";
 

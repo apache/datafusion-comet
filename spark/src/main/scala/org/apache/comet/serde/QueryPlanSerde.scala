@@ -52,11 +52,11 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.serde.Datatype.{DataType => ProtoDataType}
-import org.apache.comet.serde.Datatype.DataType._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.Types.{DataType => ProtoDataType}
+import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.Types.ListLiteral
 import org.apache.comet.shims.CometExprShim
 
@@ -214,7 +214,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * doesn't mean it is supported by Comet native execution, i.e., `supportedDataType` may return
    * false for it.
    */
-  def serializeDataType(dt: org.apache.spark.sql.types.DataType): Option[Datatype.DataType] = {
+  def serializeDataType(dt: org.apache.spark.sql.types.DataType): Option[Types.DataType] = {
     val typeId = dt match {
       case _: BooleanType => 0
       case _: ByteType => 1
