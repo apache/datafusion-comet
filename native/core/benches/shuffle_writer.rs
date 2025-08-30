@@ -18,6 +18,7 @@
 use arrow::array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
 use arrow::array::{builder::StringBuilder, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
+use comet::execution::shuffle::RangePartitioner;
 use comet::execution::shuffle::{
     CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec,
 };
@@ -31,6 +32,7 @@ use datafusion::{
     physical_plan::{common::collect, ExecutionPlan},
     prelude::SessionContext,
 };
+use itertools::Itertools;
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -84,16 +86,25 @@ fn criterion_benchmark(c: &mut Criterion) {
         );
     }
 
+    let lex_ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
+        col("c0", batch.schema().as_ref()).unwrap(),
+    )])
+    .unwrap();
+
+    let (bounds_rows, row_converter) = RangePartitioner::generate_bounds(
+        &Vec::from(batch.columns()),
+        &lex_ordering,
+        16,
+        batch.num_rows(),
+        100,
+        42,
+    )
+    .unwrap();
+    let owned_rows = bounds_rows.iter().map(|row| row.owned()).collect_vec();
+
     for partitioning in [
         CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
-        CometPartitioning::RangePartitioning(
-            LexOrdering::new(vec![PhysicalSortExpr::new_default(
-                col("c0", batch.schema().as_ref()).unwrap(),
-            )])
-            .unwrap(),
-            16,
-            100,
-        ),
+        CometPartitioning::RangePartitioning(lex_ordering, 16, Arc::new(row_converter), owned_rows),
     ] {
         let compression_codec = CompressionCodec::None;
         group.bench_function(
