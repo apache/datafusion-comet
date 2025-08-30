@@ -2175,6 +2175,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case _ => false
     }
   }
+
   private def isExchangeSink(op: SparkPlan): Boolean = {
     op match {
       case _: ShuffleExchangeExec => true
