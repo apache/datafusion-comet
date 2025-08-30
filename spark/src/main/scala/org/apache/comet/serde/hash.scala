@@ -34,7 +34,7 @@ object CometXxHash64 extends CometExpressionSerde[XxHash64] {
       return None
     }
     val exprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
-    val seedBuilder = ExprOuterClass.Literal
+    val seedBuilder = LiteralOuterClass.Literal
       .newBuilder()
       .setDatatype(serializeDataType(LongType).get)
       .setLongVal(expr.seed)
@@ -53,7 +53,7 @@ object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] {
       return None
     }
     val exprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
-    val seedBuilder = ExprOuterClass.Literal
+    val seedBuilder = LiteralOuterClass.Literal
       .newBuilder()
       .setDatatype(serializeDataType(IntegerType).get)
       .setIntVal(expr.seed)

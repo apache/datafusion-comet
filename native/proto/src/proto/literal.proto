@@ -1,0 +1,47 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+
+
+syntax = "proto3";
+
+package spark.spark_expression;
+
+import "types.proto";
+
+option java_package = "org.apache.comet.serde";
+
+message Literal {
+  oneof value {
+    bool bool_val = 1;
+    // Protobuf doesn't provide int8 and int16, we put them into int32 and convert
+    // to int8 and int16 when deserializing.
+    int32 byte_val = 2;
+    int32 short_val = 3;
+    int32 int_val = 4;
+    int64 long_val = 5;
+    float float_val = 6;
+    double double_val = 7;
+    string string_val = 8;
+    bytes bytes_val = 9;
+    bytes decimal_val = 10;
+    ListLiteral list_val = 11;
+  }
+
+  DataType datatype = 12;
+  bool is_null = 13;
+}
