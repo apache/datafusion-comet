@@ -919,6 +919,99 @@ object QueryPlanSerde extends Logging with CometExprShim {
             None
         }
 
+<<<<<<< HEAD
+=======
+<<<<<<< HEAD
+=======
+      case If(predicate, trueValue, falseValue) =>
+        val predicateExpr = exprToProtoInternal(predicate, inputs, binding)
+        val trueExpr = exprToProtoInternal(trueValue, inputs, binding)
+        val falseExpr = exprToProtoInternal(falseValue, inputs, binding)
+        if (predicateExpr.isDefined && trueExpr.isDefined && falseExpr.isDefined) {
+          val builder = ExprOuterClass.IfExpr.newBuilder()
+          builder.setIfExpr(predicateExpr.get)
+          builder.setTrueExpr(trueExpr.get)
+          builder.setFalseExpr(falseExpr.get)
+          Some(
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setIf(builder)
+              .build())
+        } else {
+          withInfo(expr, predicate, trueValue, falseValue)
+          None
+        }
+
+//        TODO : Remove this once ANSI mode is tested with coalesce lazy eval .
+      case c @ (CaseWhen(_, _) | Coalesce(_)) =>
+        val (finalBranches, finalElse) = c match {
+          case CaseWhen(branches, elseValue) =>
+            (branches, elseValue)
+
+          case Coalesce(children) =>
+            val branches = children.dropRight(1).map { child =>
+              (IsNotNull(child), child)
+            }
+            val elseValue = Some(children.last)
+            (branches, elseValue)
+        }
+
+        var allBranches: Seq[Expression] = Seq()
+        val whenSeq = finalBranches.map(elements => {
+          allBranches = allBranches :+ elements._1
+          exprToProtoInternal(elements._1, inputs, binding)
+        })
+        val thenSeq = finalBranches.map(elements => {
+          allBranches = allBranches :+ elements._2
+          exprToProtoInternal(elements._2, inputs, binding)
+        })
+        assert(whenSeq.length == thenSeq.length)
+        if (whenSeq.forall(_.isDefined) && thenSeq.forall(_.isDefined)) {
+          val builder = ExprOuterClass.CaseWhen.newBuilder()
+          builder.addAllWhen(whenSeq.map(_.get).asJava)
+          builder.addAllThen(thenSeq.map(_.get).asJava)
+          if (finalElse.isDefined) {
+            val elseValueExpr =
+              exprToProtoInternal(finalElse.get, inputs, binding)
+            if (elseValueExpr.isDefined) {
+              builder.setElseExpr(elseValueExpr.get)
+            } else {
+              withInfo(expr, finalElse.get)
+              return None
+            }
+          }
+          Some(
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setCaseWhen(builder)
+              .build())
+        } else {
+          withInfo(expr, allBranches: _*)
+          None
+        }
+
+      case BitwiseAnd(left, right) =>
+        createBinaryExpr(
+          expr,
+          left,
+          right,
+          inputs,
+          binding,
+          (builder, binaryExpr) => builder.setBitwiseAnd(binaryExpr))
+
+      case n @ Not(In(_, _)) =>
+        CometNotIn.convert(n, inputs, binding)
+
+      case Not(child) =>
+        createUnaryExpr(
+          expr,
+          child,
+          inputs,
+          binding,
+          (builder, unaryExpr) => builder.setNot(unaryExpr))
+
+>>>>>>> bbe63eb0 (undo_golden_file_generation_changes)
+>>>>>>> 90860a97 (lazy_coalesce_fallback_case_statement)
       case UnaryMinus(child, failOnError) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
         if (childExpr.isDefined) {
