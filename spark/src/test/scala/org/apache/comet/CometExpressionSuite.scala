@@ -44,7 +44,6 @@ import org.apache.spark.sql.types._
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
-
   import testImplicits._
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -368,15 +367,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withParquetTable(data, "tbl") {
       checkSparkAnswerAndOperator("SELECT try_divide(_1, _2) FROM tbl")
       checkSparkAnswerAndOperator("""
-          |SELECT
-          |  try_divide(10, 0),
-          |  try_divide(NULL, 5),
-          |  try_divide(5, NULL),
-          |  try_divide(-2147483648, -1),
-          |  try_divide(-9223372036854775808, -1),
-          |  try_divide(DECIMAL('9999999999999999999999999999'), 0.1)
-          |  from tbl
-          |""".stripMargin)
+            |SELECT
+            |  try_divide(10, 0),
+            |  try_divide(NULL, 5),
+            |  try_divide(5, NULL),
+            |  try_divide(-2147483648, -1),
+            |  try_divide(-9223372036854775808, -1),
+            |  try_divide(DECIMAL('9999999999999999999999999999'), 0.1)
+            |  from tbl
+            |""".stripMargin)
     }
   }
 
@@ -385,13 +384,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withParquetTable(data, "tbl") {
       checkSparkAnswerAndOperator("SELECT try_divide(_1, _2) FROM tbl")
       checkSparkAnswerAndOperator("""
-          |SELECT try_divide(-128, -1),
-          |try_divide(-32768, -1),
-          |try_divide(-2147483648, -1),
-          |try_divide(-9223372036854775808, -1),
-          |try_divide(CAST(99999 AS DECIMAL(5,0)), CAST(0.0001 AS DECIMAL(5,4)))
-          |from tbl
-          |""".stripMargin)
+                                    |SELECT try_divide(-128, -1),
+                                    |try_divide(-32768, -1),
+                                    |try_divide(-2147483648, -1),
+                                    |try_divide(-9223372036854775808, -1),
+                                    |try_divide(CAST(99999 AS DECIMAL(5,0)), CAST(0.0001 AS DECIMAL(5,4)))
+                                    |from tbl
+                                    |""".stripMargin)
     }
   }
 
@@ -400,15 +399,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val data = Seq((100, 0))
       withParquetTable(data, "t1") {
         val res = spark.sql("""
-             |SELECT coalesce(_1 , 1/0) from t1;
-             |  """.stripMargin)
-
-        res.explain(true)
-
+                              |SELECT coalesce(_1 , 1/0) from t1;
+                              |  """.stripMargin)
         checkSparkAnswer(res)
       }
-    }
-  }
 
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
