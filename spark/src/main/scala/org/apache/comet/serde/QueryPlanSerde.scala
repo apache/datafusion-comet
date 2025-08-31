@@ -940,6 +940,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
+//        TODO : Remove this once ANSI mode is tested with coalesce lazy eval .
       case c @ (CaseWhen(_, _) | Coalesce(_)) =>
         val (finalBranches, finalElse) = c match {
           case CaseWhen(branches, elseValue) =>
