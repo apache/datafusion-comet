@@ -398,8 +398,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       val data = Seq((100, 0))
       withParquetTable(data, "t1") {
-        val res = spark.sql(
-          """
+        val res = spark.sql("""
             |SELECT coalesce(_1 , 1/0) from t1;
             |  """.stripMargin)
         checkSparkAnswer(res)
