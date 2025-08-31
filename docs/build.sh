@@ -29,9 +29,6 @@ mkdir temp/user-guide/latest
 mv temp/user-guide/*.md temp/user-guide/latest
 mv temp/user-guide/index.rst temp/user-guide/latest
 
-# Move overview back to top level
-mv temp/user-guide/latest/overview.md temp/user-guide/
-
 # Add user guide from published releases
 python3 generate-versions.py
 
