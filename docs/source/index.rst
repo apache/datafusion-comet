@@ -37,22 +37,12 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
 
 .. _toc.user-guide-links:
 .. toctree::
-   :maxdepth: 1
-   :caption: User Guide
+   :maxdepth: 2
+   :caption: User Guides:
 
-   Comet Overview <user-guide/overview>
-   Installing Comet <user-guide/installation>
-   Building From Source <user-guide/source>
-   Supported Data Sources <user-guide/datasources>
-   Supported Data Types <user-guide/datatypes>
-   Supported Operators <user-guide/operators>
-   Supported Expressions <user-guide/expressions>
-   Configuration Settings <user-guide/configs>
-   Compatibility Guide <user-guide/compatibility>
-   Tuning Guide <user-guide/tuning>
-   Metrics Guide <user-guide/metrics>
-   Iceberg Guide <user-guide/iceberg>
-   Kubernetes Guide <user-guide/kubernetes>
+   Comet 0.10.0-SNAPSHOT <user-guide/latest/index>
+   Comet 0.9.0 <user-guide/0.9.0/index>
+   Comet 0.8.0 <user-guide/0.8.0/index>
 
 .. _toc.contributor-guide-links:
 .. toctree::
