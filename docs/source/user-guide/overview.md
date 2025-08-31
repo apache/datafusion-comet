@@ -56,10 +56,10 @@ We have a detailed guide [comparing Apache DataFusion Comet with Apache Gluten].
 Spark RAPIDS is a solution that provides hardware acceleration on NVIDIA GPUs. Comet does not require specialized 
 hardware.
 
-[comparing Apache DataFusion Comet with Apache Gluten]: latest/gluten_comparison.md
+[comparing Apache DataFusion Comet with Apache Gluten]: gluten_comparison.md
 
 ## Getting Started
 
 Refer to the [Comet Installation Guide] to get started.
 
-[Comet Installation Guide]: latest/installation.md
+[Comet Installation Guide]: installation.md
