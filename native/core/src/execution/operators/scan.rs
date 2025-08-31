@@ -81,6 +81,7 @@ pub struct ScanExec {
     jvm_fetch_time: Time,
     /// Time spent in FFI
     arrow_ffi_time: Time,
+    /// Whether native code can assume ownership of batches that it receives
     arrow_ffi_safe: bool,
 }
 
