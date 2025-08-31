@@ -19,13 +19,13 @@
   :alt: DataFusion Comet Logo
 
 =======================
-Comet 0.8.0 User Guide
+Comet 0.9.x User Guide
 =======================
 
 .. _toc.user-guide-links:
 .. toctree::
    :maxdepth: 1
-   :caption: Comet 0.8.0 User Guide
+   :caption: Comet 0.9.x User Guide
 
    Comet Overview <overview>
    Installing Comet <installation>
