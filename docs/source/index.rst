@@ -39,6 +39,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
 .. toctree::
    :maxdepth: 2
    :caption: User Guides:
+   :hidden:
 
    Comet 0.10.0-SNAPSHOT <user-guide/latest/index>
    Comet 0.9.0 <user-guide/0.9.0/index>
@@ -48,6 +49,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
 .. toctree::
    :maxdepth: 1
    :caption: Contributor Guide
+   :hidden:
 
    Getting Started <contributor-guide/contributing>
    Comet Plugin Overview <contributor-guide/plugin_overview>
@@ -65,6 +67,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
 .. toctree::
    :maxdepth: 1
    :caption: ASF Links
+   :hidden:
 
    Apache Software Foundation <https://apache.org>
    License <https://www.apache.org/licenses/>
