@@ -292,9 +292,8 @@ impl ScanExec {
                 // ownership of this array has been transferred to native
                 array
             } else {
-                // we copy the array to that we don't have to worry about potential memory
-                // corruption issues later on if underlying buffers are reused or freed, which
-                // is the case for any plan that contains native_comet scans
+                // it is necessary to copy the array because the contents may be
+                // overwritten on the JVM side in the future
                 copy_array(&array)
             };
 
