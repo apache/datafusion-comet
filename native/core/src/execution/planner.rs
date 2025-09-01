@@ -1899,12 +1899,8 @@ impl PhysicalPlanner {
     ) -> Result<AggregateFunctionExpr, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
             AggExprStruct::Count(expr) => {
+                assert!(!expr.children.is_empty());
                 if spark_expr.distinct {
-                    assert!(!expr.children.is_empty());
-                    // Using `count_udaf` from Comet is exceptionally slow for some reason, so
-                    // as a workaround we translate it to `SUM(IF(expr IS NOT NULL, 1, 0))`
-                    // https://github.com/apache/datafusion-comet/issues/744
-
                     let children = expr
                         .children
                         .iter()
@@ -1919,7 +1915,6 @@ impl PhysicalPlanner {
                         .build()
                         .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
                 } else {
-                    assert!(!expr.children.is_empty());
                     // Using `count_udaf` from Comet is exceptionally slow for some reason, so
                     // as a workaround we translate it to `SUM(IF(expr IS NOT NULL, 1, 0))`
                     // https://github.com/apache/datafusion-comet/issues/744
