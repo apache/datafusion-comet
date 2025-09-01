@@ -27,7 +27,6 @@ Comet 0.10.0-SNAPSHOT User Guide
    :maxdepth: 1
    :caption: Comet 0.10.0-SNAPSHOT User Guide
 
-   Comet Overview <overview>
    Installing Comet <installation>
    Building From Source <source>
    Supported Data Sources <datasources>

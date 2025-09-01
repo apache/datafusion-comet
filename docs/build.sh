@@ -32,4 +32,7 @@ mv temp/user-guide/index.rst temp/user-guide/latest
 # Add user guide from published releases
 python3 generate-versions.py
 
+# Remove overview pages (this used to be part of the user guide but is now a top level page)
+find temp/user-guide -name overview.md -exec rm {} \;
+
 make SOURCEDIR=`pwd`/temp html

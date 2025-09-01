@@ -27,7 +27,6 @@ Comet 0.9.x User Guide
    :maxdepth: 1
    :caption: Comet 0.9.x User Guide
 
-   Comet Overview <overview>
    Installing Comet <installation>
    Building From Source <source>
    Supported Data Sources <datasources>
