@@ -142,6 +142,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[GetMapValue] -> CometMapExtract,
+    classOf[EqualTo] -> CometEqualTo,
+    classOf[EqualNullSafe] -> CometEqualNullSafe,
+    classOf[Not] -> CometNot,
+    classOf[And] -> CometAnd,
+    classOf[Or] -> CometOr,
     classOf[GreaterThan] -> CometGreaterThan,
     classOf[GreaterThanOrEqual] -> CometGreaterThanOrEqual,
     classOf[LessThan] -> CometLessThan,
@@ -716,42 +721,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case c @ Cast(child, dt, timeZoneId, _) =>
         handleCast(expr, child, inputs, binding, dt, timeZoneId, evalMode(c))
 
-      case EqualTo(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setEq(binaryExpr))
-
-      case Not(EqualTo(left, right)) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setNeq(binaryExpr))
-
-      case EqualNullSafe(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setEqNullSafe(binaryExpr))
-
-      case Not(EqualNullSafe(left, right)) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setNeqNullSafe(binaryExpr))
-
       case Literal(value, dataType)
           if supportedDataType(
             dataType,
@@ -956,24 +925,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case And(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setAnd(binaryExpr))
-
-      case Or(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setOr(binaryExpr))
-
       case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
         // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
         // `PromotePrecision` is just a wrapper, don't need to serialize it.
@@ -1162,17 +1113,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, allBranches: _*)
           None
         }
-
-      case n @ Not(In(_, _)) =>
-        CometNotIn.convert(n, inputs, binding)
-
-      case Not(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setNot(unaryExpr))
 
       case UnaryMinus(child, failOnError) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
