@@ -112,6 +112,10 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    if (expr.children.length > 1) {
+      withInfo(aggExpr, "COUNT only supports a single argument")
+      return None
+    }
     val exprChildren = expr.children.map(exprToProto(_, inputs, binding))
     if (exprChildren.forall(_.isDefined)) {
       val builder = ExprOuterClass.Count.newBuilder()
