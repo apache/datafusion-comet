@@ -310,6 +310,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
     case _: DecimalType =>
       // https://github.com/apache/datafusion-comet/issues/1371
       Incompatible(Some("There can be rounding differences"))
+    case _ =>
       unsupported(DataTypes.FloatType, toType)
   }
 
