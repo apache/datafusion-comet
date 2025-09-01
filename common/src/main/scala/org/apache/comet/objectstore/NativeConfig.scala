@@ -22,6 +22,7 @@ package org.apache.comet.objectstore
 import java.net.URI
 import java.util.Locale
 
+import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.conf.Configuration
 
 object NativeConfig {
@@ -40,6 +41,8 @@ object NativeConfig {
     // Azure Data Lake Storage Gen2 secure configurations (can use both prefixes)
     "abfss" -> Seq("fs.abfss.", "fs.abfs."))
 
+  val COMET_LIBHDFS_SCHEMES_KEY = "fs.comet.libhdfs.schemes"
+
   /**
    * Extract object store configurations from Hadoop configuration for native DataFusion usage.
    * This includes S3, GCS, Azure and other cloud storage configurations.
@@ -55,16 +58,22 @@ object NativeConfig {
   def extractObjectStoreOptions(hadoopConf: Configuration, uri: URI): Map[String, String] = {
     val scheme = uri.getScheme.toLowerCase(Locale.ROOT)
 
+    import scala.collection.JavaConverters._
+    val options = scala.collection.mutable.Map[String, String]()
+
+    // The schemes will use libhdfs
+    val libhdfsSchemes = hadoopConf.get(COMET_LIBHDFS_SCHEMES_KEY)
+    if (StringUtils.isNotBlank(libhdfsSchemes)) {
+      options(COMET_LIBHDFS_SCHEMES_KEY) = libhdfsSchemes
+    }
+
     // Get prefixes for this scheme, return early if none found
     val prefixes = objectStoreConfigPrefixes.get(scheme)
     if (prefixes.isEmpty) {
-      return Map.empty[String, String]
+      return options.toMap
     }
 
-    import scala.collection.JavaConverters._
-
     // Extract all configurations that match the object store prefixes
-    val options = scala.collection.mutable.Map[String, String]()
     hadoopConf.iterator().asScala.foreach { entry =>
       val key = entry.getKey
       val value = entry.getValue
