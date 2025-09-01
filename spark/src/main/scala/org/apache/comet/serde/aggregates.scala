@@ -103,6 +103,9 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
 }
 
 object CometCount extends CometAggregateExpressionSerde[Count] {
+
+  override def supportsDistinct: Boolean = true
+
   override def convert(
       aggExpr: AggregateExpression,
       expr: Count,
@@ -116,6 +119,7 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
       Some(
         ExprOuterClass.AggExpr
           .newBuilder()
+          .setDistinct(aggExpr.isDistinct)
           .setCount(builder)
           .build())
     } else {

@@ -508,19 +508,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
       binding: Boolean,
       conf: SQLConf): Option[AggExpr] = {
 
-    if (aggExpr.isDistinct) {
-      // https://github.com/apache/datafusion-comet/issues/1260
-      withInfo(aggExpr, "distinct aggregates are not supported")
-      return None
-    }
-
     val fn = aggExpr.aggregateFunction
     val cometExpr = aggrSerdeMap.get(fn.getClass)
     cometExpr match {
       case Some(handler) =>
-        handler
-          .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
-          .convert(aggExpr, fn, inputs, binding, conf)
+        val aggSerde = handler.asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
+        if (aggExpr.isDistinct && !aggSerde.supportsDistinct) {
+          // https://github.com/apache/datafusion-comet/issues/1260
+          withInfo(aggExpr, "distinct aggregates are not supported")
+          return None
+        }
+        aggSerde.convert(aggExpr, fn, inputs, binding, conf)
       case _ =>
         withInfo(
           aggExpr,
@@ -2180,6 +2178,8 @@ trait CometExpressionSerde[T <: Expression] {
  * Trait for providing serialization logic for aggregate expressions.
  */
 trait CometAggregateExpressionSerde[T <: AggregateFunction] {
+
+  def supportsDistinct: Boolean = false
 
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into

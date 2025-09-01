@@ -29,6 +29,7 @@ use crate::{
 };
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
@@ -1909,29 +1910,11 @@ impl PhysicalPlanner {
                     .map(|child| self.create_expr(child, Arc::clone(&schema)))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                // create `IS NOT NULL expr` and join them with `AND` if there are multiple
-                let not_null_expr: Arc<dyn PhysicalExpr> = children.iter().skip(1).fold(
-                    Arc::new(IsNotNullExpr::new(Arc::clone(&children[0]))) as Arc<dyn PhysicalExpr>,
-                    |acc, child| {
-                        Arc::new(BinaryExpr::new(
-                            acc,
-                            DataFusionOperator::And,
-                            Arc::new(IsNotNullExpr::new(Arc::clone(child))),
-                        ))
-                    },
-                );
-
-                let child = Arc::new(IfExpr::new(
-                    not_null_expr,
-                    Arc::new(Literal::new(ScalarValue::Int64(Some(1)))),
-                    Arc::new(Literal::new(ScalarValue::Int64(Some(0)))),
-                ));
-
-                AggregateExprBuilder::new(sum_udaf(), vec![child])
+                AggregateExprBuilder::new(count_udaf(), children)
                     .schema(schema)
                     .alias("count")
                     .with_ignore_nulls(false)
-                    .with_distinct(false)
+                    .with_distinct(spark_expr.distinct)
                     .build()
                     .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
             }
