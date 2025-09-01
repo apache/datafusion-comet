@@ -515,7 +515,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val aggSerde = handler.asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
         if (aggExpr.isDistinct && !aggSerde.supportsDistinct) {
           // https://github.com/apache/datafusion-comet/issues/1260
-          withInfo(aggExpr, "distinct aggregates are not supported")
+          withInfo(aggExpr, s"distinct aggregate not supported: $fn")
           return None
         }
         aggSerde.convert(aggExpr, fn, inputs, binding, conf)
