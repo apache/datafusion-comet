@@ -2255,12 +2255,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   }
 
+  // scalastyle:off
   /**
-   * Align w/ Arrow's [[https://github.com/apache/arrow-rs/blob/55.2.0/arrow-ord/src/rank.rs#L30-L40 can_rank]]
-   * and [[https://github.com/apache/arrow-rs/blob/55.2.0/arrow-ord/src/sort.rs#L193-L215 can_sort_to_indices]]
+   * Align w/ Arrow's
+   * [[https://github.com/apache/arrow-rs/blob/55.2.0/arrow-ord/src/rank.rs#L30-L40 can_rank]] and
+   * [[https://github.com/apache/arrow-rs/blob/55.2.0/arrow-ord/src/sort.rs#L193-L215 can_sort_to_indices]]
    *
    * TODO: Include SparkSQL's [[YearMonthIntervalType]] and [[DayTimeIntervalType]]
    */
+  // scalastyle:off
   def supportedSortType(op: SparkPlan, sortOrder: Seq[SortOrder]): Boolean = {
     def canRank(dt: DataType): Boolean = {
       dt match {
