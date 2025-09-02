@@ -19,8 +19,8 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Atan2, Attribute, Ceil, Expression, Floor, If, LessThanOrEqual, Literal, Log, Log10, Log2}
-import org.apache.spark.sql.types.DecimalType
+import org.apache.spark.sql.catalyst.expressions.{Atan2, Attribute, Ceil, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Unhex}
+import org.apache.spark.sql.types.{DecimalType, StringType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
@@ -109,6 +109,40 @@ object CometLog2 extends CometExpressionSerde[Log2] with MathExprBase {
     val optExpr = scalarFunctionExprToProto("log2", childExpr)
     optExprWithInfo(optExpr, expr, expr.child)
 
+  }
+}
+
+object CometHex extends CometExpressionSerde[Hex] with MathExprBase {
+  override def convert(
+      expr: Hex,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val optExpr = scalarFunctionExprToProtoWithReturnType("hex", StringType, childExpr)
+    optExprWithInfo(optExpr, expr, expr.child)
+  }
+}
+
+object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
+  override def convert(
+      expr: Unhex,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val unHex = unhexSerde(expr)
+
+    val childExpr = exprToProtoInternal(unHex._1, inputs, binding)
+    val failOnErrorExpr = exprToProtoInternal(unHex._2, inputs, binding)
+
+    val optExpr =
+      scalarFunctionExprToProtoWithReturnType("unhex", expr.dataType, childExpr, failOnErrorExpr)
+    optExprWithInfo(optExpr, expr, unHex._1)
+  }
+
+  /**
+   * Returns a tuple of expressions for the `unhex` function.
+   */
+  private def unhexSerde(unhex: Unhex): (Expression, Expression) = {
+    (unhex.child, Literal(unhex.failOnError))
   }
 }
 
