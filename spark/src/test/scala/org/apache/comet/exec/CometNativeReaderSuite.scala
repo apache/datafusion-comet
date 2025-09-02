@@ -558,7 +558,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
-  test("native reader - support ARRAY literal ARRAY fields") {
+  test("native reader - support ARRAY literal nested ARRAY fields") {
     testSingleLineQuery(
       """
           |select 1 a
