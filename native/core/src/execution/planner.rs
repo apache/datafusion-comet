@@ -86,7 +86,11 @@ use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
-use arrow::array::{new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray, NullArray, StringBuilder, TimestampMicrosecondArray};
+use arrow::array::{
+    new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
+    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray,
+    NullArray, StringBuilder, TimestampMicrosecondArray,
+};
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
@@ -482,7 +486,7 @@ impl PhysicalPlanner {
                             }
                         },
                         Value::ListVal(values) => {
-                            if let DataType::List(ref f) = data_type {
+                            if let DataType::List(_) = data_type {
                                 SingleRowListArrayBuilder::new(literal_to_array_ref(data_type, values.clone())?).build_list_scalar()
                             } else {
                                 return Err(GeneralError(format!(
@@ -2694,8 +2698,6 @@ fn literal_to_array_ref(
     list_literal: ListLiteral,
 ) -> Result<ArrayRef, ExecutionError> {
     let nulls = &list_literal.null_mask;
-    dbg!(&data_type);
-    dbg!(&list_literal);
     match data_type {
         DataType::Null => Ok(Arc::new(NullArray::new(nulls.len()))),
         DataType::Boolean => Ok(Arc::new(BooleanArray::new(
@@ -2823,14 +2825,15 @@ fn literal_to_array_ref(
         }
         DataType::List(ref f) => {
             let dt = f.data_type().clone();
-            
+
             // Build offsets and collect non-null child arrays
             let mut offsets = Vec::with_capacity(list_literal.list_values.len() + 1);
             offsets.push(0i32);
             let mut child_arrays: Vec<ArrayRef> = Vec::new();
-            
+
             for (i, child_literal) in list_literal.list_values.iter().enumerate() {
-                if list_literal.null_mask[i] {
+                // Check if the current child literal is non-null and not the empty array
+                if list_literal.null_mask[i] && *child_literal != ListLiteral::default() {
                     // Non-null entry: process the child array
                     let child_array = literal_to_array_ref(dt.clone(), child_literal.clone())?;
                     let len = child_array.len() as i32;
@@ -3679,21 +3682,21 @@ mod tests {
     #[tokio::test]
     async fn test_literal_to_list() -> Result<(), DataFusionError> {
         /*
-            [
-                [
-                    [1, 2, 3],
-                    [4, 5, 6],
-                    [7, 8, 9, null],
-                    [],
-                    null
-                ],
-                [
-                    [10, null, 12]
-                ],
-                null,
-                []
-           ]
-         */
+           [
+               [
+                   [1, 2, 3],
+                   [4, 5, 6],
+                   [7, 8, 9, null],
+                   [],
+                   null
+               ],
+               [
+                   [10, null, 12]
+               ],
+               null,
+               []
+          ]
+        */
         let data = ListLiteral {
             list_values: vec![
                 ListLiteral {
@@ -3765,22 +3768,17 @@ mod tests {
 
         let array = literal_to_array_ref(nested_type, data)?;
 
-        dbg!(&array);
-        dbg!(&array.nulls());
-
         // Top-level should be ListArray<ListArray<Int32>>
         let list_outer = array.as_any().downcast_ref::<ListArray>().unwrap();
         assert_eq!(list_outer.len(), 4);
 
         // First outer element: ListArray<Int32>
         let first_elem = list_outer.value(0);
-        dbg!(&first_elem);
         let list_inner = first_elem.as_any().downcast_ref::<ListArray>().unwrap();
         assert_eq!(list_inner.len(), 5);
 
         // Inner values
         let v0 = list_inner.value(0);
-        dbg!(&v0);
         let vals0 = v0.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(vals0.values(), &[1, 2, 3]);
 
@@ -3800,8 +3798,6 @@ mod tests {
         let v3 = list_inner2.value(0);
         let vals3 = v3.as_any().downcast_ref::<Int32Array>().unwrap();
         assert_eq!(vals3.values(), &[10, 0, 11]);
-
-        //println!("result 2 {:?}", build_array(&data));
 
         Ok(())
     }
