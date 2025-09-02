@@ -30,7 +30,7 @@ import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -534,13 +534,16 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case op =>
         op match {
           case _: CometExec | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
-              _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec =>
+              _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec |
+              _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec =>
             // Some execs should never be replaced. We include
             // these cases specially here so we do not add a misleading 'info' message
             op
           case _ =>
             // An operator that is not supported by Comet
-            withInfo(op, s"${op.nodeName} is not supported")
+            withInfo(
+              op,
+              s"[CometExecRule] ${op.nodeName} ${op.getClass.getName} is not supported")
         }
     }
   }
