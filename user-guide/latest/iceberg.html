@@ -19,40 +19,40 @@ under the License.
 
 <!DOCTYPE html>
 
-<html lang="en" data-content_root="../">
+<html lang="en" data-content_root="../../">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
     <title>Accelerating Apache Iceberg Parquet Scans using Comet (Experimental) &#8212; Apache DataFusion Comet  documentation</title>
     
-    <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
-<link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+    <link href="../../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
   
     
     <link rel="stylesheet"
-      href="../_static/vendor/fontawesome/5.13.0/css/all.min.css">
+      href="../../_static/vendor/fontawesome/5.13.0/css/all.min.css">
     <link rel="preload" as="font" type="font/woff2" crossorigin
-      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
+      href="../../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
     <link rel="preload" as="font" type="font/woff2" crossorigin
-      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
+      href="../../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
   
     
       
   
     
-    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
-    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=c6d785ac" />
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
+    <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=c6d785ac" />
     
-    <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+    <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
   
-    <script src="../_static/documentation_options.js?v=8a448e45"></script>
-    <script src="../_static/doctools.js?v=9bcbadda"></script>
-    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/documentation_options.js?v=8a448e45"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
-    <link rel="index" title="Index" href="../genindex.html" />
-    <link rel="search" title="Search" href="../search.html" />
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
     <link rel="next" title="Comet Kubernetes Support" href="kubernetes.html" />
     <link rel="prev" title="Comet Metrics" href="metrics.html" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -94,7 +94,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-<form class="bd-search d-flex align-items-center" action="../search.html" method="get">
+<form class="bd-search d-flex align-items-center" action="../../search.html" method="get">
   <i class="icon fas fa-search"></i>
   <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
 </form>
@@ -104,74 +104,122 @@ under the License.
     
     <p aria-level="2" class="caption" role="heading">
  <span class="caption-text">
-  User Guide
+  Overview:
  </span>
 </p>
-<ul class="current nav bd-sidenav">
+<ul class="nav bd-sidenav">
  <li class="toctree-l1">
-  <a class="reference internal" href="overview.html">
+  <a class="reference internal" href="../../overview.html">
    Comet Overview
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="installation.html">
-   Installing Comet
+  <a class="reference internal" href="../../gluten_comparison.html">
+   Comparison with Gluten
   </a>
  </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="source.html">
-   Building From Source
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  User Guides:
+ </span>
+</p>
+<ul class="current nav bd-sidenav">
+ <li class="toctree-l1 current active has-children">
+  <a class="reference internal" href="index.html">
+   Comet 0.10.0-SNAPSHOT
   </a>
+  <input checked="" class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" type="checkbox"/>
+  <label for="toctree-checkbox-1">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul class="current">
+   <li class="toctree-l2">
+    <a class="reference internal" href="installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2 current active">
+    <a class="current reference internal" href="#">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
  </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="datasources.html">
-   Supported Data Sources
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="../0.9/index.html">
+   Comet 0.9.x
   </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-2" name="toctree-checkbox-2" type="checkbox"/>
+  <label for="toctree-checkbox-2">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul class="simple">
+  </ul>
  </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="datatypes.html">
-   Supported Data Types
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="../0.8/index.html">
+   Comet 0.8.x
   </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="operators.html">
-   Supported Operators
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="expressions.html">
-   Supported Expressions
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="configs.html">
-   Configuration Settings
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="compatibility.html">
-   Compatibility Guide
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="tuning.html">
-   Tuning Guide
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="metrics.html">
-   Metrics Guide
-  </a>
- </li>
- <li class="toctree-l1 current active">
-  <a class="current reference internal" href="#">
-   Iceberg Guide
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="kubernetes.html">
-   Kubernetes Guide
-  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-3" name="toctree-checkbox-3" type="checkbox"/>
+  <label for="toctree-checkbox-3">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul class="simple">
+  </ul>
  </li>
 </ul>
 <p aria-level="2" class="caption" role="heading">
@@ -181,52 +229,52 @@ under the License.
 </p>
 <ul class="nav bd-sidenav">
  <li class="toctree-l1">
-  <a class="reference internal" href="../contributor-guide/contributing.html">
+  <a class="reference internal" href="../../contributor-guide/contributing.html">
    Getting Started
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="../contributor-guide/plugin_overview.html">
+  <a class="reference internal" href="../../contributor-guide/plugin_overview.html">
    Comet Plugin Architecture
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="../contributor-guide/development.html">
+  <a class="reference internal" href="../../contributor-guide/development.html">
    Development Guide
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="../contributor-guide/debugging.html">
+  <a class="reference internal" href="../../contributor-guide/debugging.html">
    Debugging Guide
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="../contributor-guide/benchmarking.html">
+  <a class="reference internal" href="../../contributor-guide/benchmarking.html">
    Benchmarking Guide
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="../contributor-guide/adding_a_new_expression.html">
+  <a class="reference internal" href="../../contributor-guide/adding_a_new_expression.html">
    Adding a New Expression
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="../contributor-guide/tracing.html">
+  <a class="reference internal" href="../../contributor-guide/tracing.html">
    Tracing
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="../contributor-guide/profiling_native_code.html">
+  <a class="reference internal" href="../../contributor-guide/profiling_native_code.html">
    Profiling Native Code
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="../contributor-guide/spark-sql-tests.html">
+  <a class="reference internal" href="../../contributor-guide/spark-sql-tests.html">
    Spark SQL Tests
   </a>
  </li>
  <li class="toctree-l1">
-  <a class="reference internal" href="../contributor-guide/roadmap.html">
+  <a class="reference internal" href="../../contributor-guide/roadmap.html">
    Roadmap
   </a>
  </li>
@@ -277,8 +325,8 @@ under the License.
     
   </div>
 
-  <a class="navbar-brand" href="../index.html">
-    <img src="../_static/images/DataFusionComet-Logo-Light.png" class="logo" alt="logo">
+  <a class="navbar-brand" href="../../index.html">
+    <img src="../../_static/images/DataFusionComet-Logo-Light.png" class="logo" alt="logo">
   </a>
 </nav>
 
@@ -330,7 +378,7 @@ under the License.
                 
 
 <div class="tocsection editthispage">
-    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/user-guide/iceberg.md">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/user-guide/latest/iceberg.md">
         <i class="fas fa-pencil-alt"></i> Edit this page
     </a>
 </div>
@@ -475,7 +523,7 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 <section id="known-issues">
 <h2>Known issues<a class="headerlink" href="#known-issues" title="Link to this heading">¶</a></h2>
 <ul class="simple">
-<li><p>We temporarily disable Comet when there are delete files in Iceberg scan, see Iceberg <a class="reference download internal" download="" href="../_downloads/c914efffd1a86ae4c00f4e1229838095/1.8.1.diff"><span class="xref download myst">1.8.1 diff</span></a> and this <a class="reference external" href="https://github.com/apache/iceberg/pull/13793">PR</a></p>
+<li><p>We temporarily disable Comet when there are delete files in Iceberg scan, see Iceberg <a class="reference internal" href="#../../../dev/diffs/iceberg/1.8.1.diff"><span class="xref myst">1.8.1 diff</span></a> and this <a class="reference external" href="https://github.com/apache/iceberg/pull/13793">PR</a></p>
 <ul>
 <li><p>Iceberg scan w/ delete files lead to <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2117">runtime exceptions</a> and <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2118">incorrect results</a></p></li>
 </ul>
@@ -518,7 +566,7 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
       </div>
     </div>
   
-    <script src="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
+    <script src="../../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
   
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">
