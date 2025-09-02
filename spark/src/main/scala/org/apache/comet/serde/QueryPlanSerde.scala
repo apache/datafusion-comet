@@ -764,10 +764,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
               (Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION)
                 .contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()) && dataType
                 .isInstanceOf[ArrayType] && (!isComplexType(
-                dataType.asInstanceOf[ArrayType].elementType))) || dataType
+                dataType.asInstanceOf[ArrayType].elementType) || dataType
                 .asInstanceOf[ArrayType]
                 .elementType
-                .isInstanceOf[ArrayType]) =>
+                .isInstanceOf[ArrayType]))) =>
         val exprBuilder = LiteralOuterClass.Literal.newBuilder()
 
         if (value == null) {
