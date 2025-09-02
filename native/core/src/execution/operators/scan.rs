@@ -81,6 +81,8 @@ pub struct ScanExec {
     jvm_fetch_time: Time,
     /// Time spent in FFI
     arrow_ffi_time: Time,
+    /// Whether native code can assume ownership of batches that it receives
+    arrow_ffi_safe: bool,
 }
 
 impl ScanExec {
@@ -89,6 +91,7 @@ impl ScanExec {
         input_source: Option<Arc<GlobalRef>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
+        arrow_ffi_safe: bool,
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
@@ -109,6 +112,7 @@ impl ScanExec {
                 data_types.len(),
                 &jvm_fetch_time,
                 &arrow_ffi_time,
+                arrow_ffi_safe,
             )?;
             timer.stop();
             batch
@@ -139,6 +143,7 @@ impl ScanExec {
             jvm_fetch_time,
             arrow_ffi_time,
             schema,
+            arrow_ffi_safe,
         })
     }
 
@@ -187,6 +192,7 @@ impl ScanExec {
                 self.data_types.len(),
                 &self.jvm_fetch_time,
                 &self.arrow_ffi_time,
+                self.arrow_ffi_safe,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -203,6 +209,7 @@ impl ScanExec {
         num_cols: usize,
         jvm_fetch_time: &Time,
         arrow_ffi_time: &Time,
+        arrow_ffi_safe: bool,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -281,10 +288,14 @@ impl ScanExec {
 
             let array = make_array(array_data);
 
-            // we copy the array to that we don't have to worry about potential memory
-            // corruption issues later on if underlying buffers are reused or freed
-            // TODO optimize this so that we only do this for Parquet inputs!
-            let array = copy_array(&array);
+            let array = if arrow_ffi_safe {
+                // ownership of this array has been transferred to native
+                array
+            } else {
+                // it is necessary to copy the array because the contents may be
+                // overwritten on the JVM side in the future
+                copy_array(&array)
+            };
 
             inputs.push(array);
 
