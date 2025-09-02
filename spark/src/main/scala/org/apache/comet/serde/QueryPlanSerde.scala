@@ -189,6 +189,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Log] -> CometLog,
     classOf[Log10] -> CometLog10,
     classOf[Log2] -> CometLog2,
+    classOf[Hex] -> CometHex,
+    classOf[Unhex] -> CometUnhex,
     classOf[Pow] -> CometScalarFunction[Pow]("pow"),
     classOf[If] -> CometIf,
     classOf[CaseWhen] -> CometCaseWhen)
@@ -1014,23 +1016,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
 //            withInfo(expr, child)
 //            None
 //          }
-
-      case Hex(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr =
-          scalarFunctionExprToProtoWithReturnType("hex", StringType, childExpr)
-
-        optExprWithInfo(optExpr, expr, child)
-
-      case e: Unhex =>
-        val unHex = unhexSerde(e)
-
-        val childExpr = exprToProtoInternal(unHex._1, inputs, binding)
-        val failOnErrorExpr = exprToProtoInternal(unHex._2, inputs, binding)
-
-        val optExpr =
-          scalarFunctionExprToProtoWithReturnType("unhex", e.dataType, childExpr, failOnErrorExpr)
-        optExprWithInfo(optExpr, expr, unHex._1)
 
       case RegExpReplace(subject, pattern, replacement, startPosition) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
