@@ -1456,7 +1456,7 @@ dependencies = [
  "log",
  "object_store",
  "parking_lot",
- "parquet 56.1.0",
+ "parquet",
  "rand 0.9.2",
  "regex",
  "sqlparser",
@@ -1547,7 +1547,7 @@ dependencies = [
  "once_cell",
  "opendal",
  "parking_lot",
- "parquet 55.2.0",
+ "parquet",
  "paste",
  "pprof",
  "procfs",
@@ -1636,7 +1636,7 @@ dependencies = [
  "libc",
  "log",
  "object_store",
- "parquet 56.1.0",
+ "parquet",
  "paste",
  "sqlparser",
  "tokio",
@@ -1676,7 +1676,7 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "object_store",
- "parquet 56.1.0",
+ "parquet",
  "rand 0.9.2",
  "tempfile",
  "tokio",
@@ -1758,7 +1758,7 @@ dependencies = [
  "log",
  "object_store",
  "parking_lot",
- "parquet 56.1.0",
+ "parquet",
  "rand 0.9.2",
  "tokio",
 ]
@@ -3639,25 +3639,6 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "parquet"
-version = "55.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b17da4150748086bd43352bc77372efa9b6e3dbd06a04831d2a98c041c225cfa"
-dependencies = [
- "ahash",
- "bytes",
- "chrono",
- "half",
- "hashbrown 0.15.5",
- "num",
- "num-bigint",
- "paste",
- "seq-macro",
- "thrift",
- "twox-hash",
 ]
 
 [[package]]
