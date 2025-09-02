@@ -189,7 +189,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Log] -> CometLog,
     classOf[Log10] -> CometLog10,
     classOf[Log2] -> CometLog2,
-    classOf[Pow] -> CometScalarFunction[Pow]("pow"))
+    classOf[Pow] -> CometScalarFunction[Pow]("pow"),
+    classOf[If] -> CometIf,
+    classOf[CaseWhen] -> CometCaseWhen)
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
@@ -1058,60 +1060,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           case _ =>
             withInfo(expr, "Comet only supports regexp_replace with an offset of 1 (no offset).")
             None
-        }
-
-      case If(predicate, trueValue, falseValue) =>
-        val predicateExpr = exprToProtoInternal(predicate, inputs, binding)
-        val trueExpr = exprToProtoInternal(trueValue, inputs, binding)
-        val falseExpr = exprToProtoInternal(falseValue, inputs, binding)
-        if (predicateExpr.isDefined && trueExpr.isDefined && falseExpr.isDefined) {
-          val builder = ExprOuterClass.IfExpr.newBuilder()
-          builder.setIfExpr(predicateExpr.get)
-          builder.setTrueExpr(trueExpr.get)
-          builder.setFalseExpr(falseExpr.get)
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setIf(builder)
-              .build())
-        } else {
-          withInfo(expr, predicate, trueValue, falseValue)
-          None
-        }
-
-      case CaseWhen(branches, elseValue) =>
-        var allBranches: Seq[Expression] = Seq()
-        val whenSeq = branches.map(elements => {
-          allBranches = allBranches :+ elements._1
-          exprToProtoInternal(elements._1, inputs, binding)
-        })
-        val thenSeq = branches.map(elements => {
-          allBranches = allBranches :+ elements._2
-          exprToProtoInternal(elements._2, inputs, binding)
-        })
-        assert(whenSeq.length == thenSeq.length)
-        if (whenSeq.forall(_.isDefined) && thenSeq.forall(_.isDefined)) {
-          val builder = ExprOuterClass.CaseWhen.newBuilder()
-          builder.addAllWhen(whenSeq.map(_.get).asJava)
-          builder.addAllThen(thenSeq.map(_.get).asJava)
-          if (elseValue.isDefined) {
-            val elseValueExpr =
-              exprToProtoInternal(elseValue.get, inputs, binding)
-            if (elseValueExpr.isDefined) {
-              builder.setElseExpr(elseValueExpr.get)
-            } else {
-              withInfo(expr, elseValue.get)
-              return None
-            }
-          }
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setCaseWhen(builder)
-              .build())
-        } else {
-          withInfo(expr, allBranches: _*)
-          None
         }
 
       case UnaryMinus(child, failOnError) =>
