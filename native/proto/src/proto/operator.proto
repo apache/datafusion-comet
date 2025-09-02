@@ -23,6 +23,7 @@ package spark.spark_operator;
 
 import "expr.proto";
 import "partitioning.proto";
+import "types.proto";
 
 option java_package = "org.apache.comet.serde";
 

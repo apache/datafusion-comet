@@ -52,10 +52,11 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
-import org.apache.comet.serde.ExprOuterClass.DataType._
+import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.Types.{DataType => ProtoDataType}
+import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.Types.ListLiteral
 import org.apache.comet.shims.CometExprShim
 
@@ -95,6 +96,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ArraysOverlap] -> CometArraysOverlap,
     classOf[ArrayUnion] -> CometArrayUnion,
     classOf[CreateArray] -> CometCreateArray,
+    classOf[GetArrayItem] -> CometGetArrayItem,
+    classOf[ElementAt] -> CometElementAt,
     classOf[Ascii] -> CometScalarFunction("ascii"),
     classOf[ConcatWs] -> CometScalarFunction("concat_ws"),
     classOf[Chr] -> CometScalarFunction("char"),
@@ -139,6 +142,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[GetMapValue] -> CometMapExtract,
+    classOf[EqualTo] -> CometEqualTo,
+    classOf[EqualNullSafe] -> CometEqualNullSafe,
+    classOf[Not] -> CometNot,
+    classOf[And] -> CometAnd,
+    classOf[Or] -> CometOr,
     classOf[GreaterThan] -> CometGreaterThan,
     classOf[GreaterThanOrEqual] -> CometGreaterThanOrEqual,
     classOf[LessThan] -> CometLessThan,
@@ -170,6 +178,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[DateSub] -> CometDateSub,
     classOf[TruncDate] -> CometTruncDate,
     classOf[TruncTimestamp] -> CometTruncTimestamp,
+    classOf[CreateNamedStruct] -> CometCreateNamedStruct,
+    classOf[GetStructField] -> CometGetStructField,
+    classOf[GetArrayStructFields] -> CometGetArrayStructFields,
+    classOf[StructsToJson] -> CometStructsToJson,
     classOf[Flatten] -> CometFlatten,
     classOf[Atan2] -> CometAtan2,
     classOf[Ceil] -> CometCeil,
@@ -224,7 +236,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * doesn't mean it is supported by Comet native execution, i.e., `supportedDataType` may return
    * false for it.
    */
-  def serializeDataType(dt: DataType): Option[ExprOuterClass.DataType] = {
+  def serializeDataType(dt: org.apache.spark.sql.types.DataType): Option[Types.DataType] = {
     val typeId = dt match {
       case _: BooleanType => 0
       case _: ByteType => 1
@@ -711,42 +723,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case c @ Cast(child, dt, timeZoneId, _) =>
         handleCast(expr, child, inputs, binding, dt, timeZoneId, evalMode(c))
 
-      case EqualTo(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setEq(binaryExpr))
-
-      case Not(EqualTo(left, right)) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setNeq(binaryExpr))
-
-      case EqualNullSafe(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setEqNullSafe(binaryExpr))
-
-      case Not(EqualNullSafe(left, right)) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setNeqNullSafe(binaryExpr))
-
       case Literal(value, dataType)
           if supportedDataType(
             dataType,
@@ -758,7 +734,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
                 .contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()) && dataType
                 .isInstanceOf[ArrayType]) && !isComplexType(
                 dataType.asInstanceOf[ArrayType].elementType)) =>
-        val exprBuilder = ExprOuterClass.Literal.newBuilder()
+        val exprBuilder = LiteralOuterClass.Literal.newBuilder()
 
         if (value == null) {
           exprBuilder.setIsNull(true)
@@ -924,66 +900,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             None
         }
 
-      case StructsToJson(options, child, timezoneId) =>
-        if (options.nonEmpty) {
-          withInfo(expr, "StructsToJson with options is not supported")
-          None
-        } else {
-
-          def isSupportedType(dt: DataType): Boolean = {
-            dt match {
-              case StructType(fields) =>
-                fields.forall(f => isSupportedType(f.dataType))
-              case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
-                  DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
-                  DataTypes.DoubleType | DataTypes.StringType =>
-                true
-              case DataTypes.DateType | DataTypes.TimestampType =>
-                // TODO implement these types with tests for formatting options and timezone
-                false
-              case _: MapType | _: ArrayType =>
-                // Spark supports map and array in StructsToJson but this is not yet
-                // implemented in Comet
-                false
-              case _ => false
-            }
-          }
-
-          val isSupported = child.dataType match {
-            case s: StructType =>
-              s.fields.forall(f => isSupportedType(f.dataType))
-            case _: MapType | _: ArrayType =>
-              // Spark supports map and array in StructsToJson but this is not yet
-              // implemented in Comet
-              false
-            case _ =>
-              false
-          }
-
-          if (isSupported) {
-            exprToProtoInternal(child, inputs, binding) match {
-              case Some(p) =>
-                val toJson = ExprOuterClass.ToJson
-                  .newBuilder()
-                  .setChild(p)
-                  .setTimezone(timezoneId.getOrElse("UTC"))
-                  .setIgnoreNullFields(true)
-                  .build()
-                Some(
-                  ExprOuterClass.Expr
-                    .newBuilder()
-                    .setToJson(toJson)
-                    .build())
-              case _ =>
-                withInfo(expr, child)
-                None
-            }
-          } else {
-            withInfo(expr, "Unsupported data type", child)
-            None
-          }
-        }
-
       case SortOrder(child, direction, nullOrdering, _) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
 
@@ -1010,24 +926,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, child)
           None
         }
-
-      case And(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setAnd(binaryExpr))
-
-      case Or(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setOr(binaryExpr))
 
       case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
         // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
@@ -1164,17 +1062,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             None
         }
 
-      case n @ Not(In(_, _)) =>
-        CometNotIn.convert(n, inputs, binding)
-
-      case Not(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setNot(unaryExpr))
-
       case UnaryMinus(child, failOnError) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
         if (childExpr.isDefined) {
@@ -1282,110 +1169,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
               .build())
         } else {
           withInfo(expr, bloomFilter, value)
-          None
-        }
-
-      case struct @ CreateNamedStruct(_) =>
-        if (struct.names.length != struct.names.distinct.length) {
-          withInfo(expr, "CreateNamedStruct with duplicate field names are not supported")
-          return None
-        }
-
-        val valExprs = struct.valExprs.map(exprToProtoInternal(_, inputs, binding))
-
-        if (valExprs.forall(_.isDefined)) {
-          val structBuilder = ExprOuterClass.CreateNamedStruct.newBuilder()
-          structBuilder.addAllValues(valExprs.map(_.get).asJava)
-          structBuilder.addAllNames(struct.names.map(_.toString).asJava)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setCreateNamedStruct(structBuilder)
-              .build())
-        } else {
-          withInfo(expr, "unsupported arguments for CreateNamedStruct", struct.valExprs: _*)
-          None
-        }
-
-      case GetStructField(child, ordinal, _) =>
-        exprToProtoInternal(child, inputs, binding).map { childExpr =>
-          val getStructFieldBuilder = ExprOuterClass.GetStructField
-            .newBuilder()
-            .setChild(childExpr)
-            .setOrdinal(ordinal)
-
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setGetStructField(getStructFieldBuilder)
-            .build()
-        }
-
-      case GetArrayItem(child, ordinal, failOnError) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val ordinalExpr = exprToProtoInternal(ordinal, inputs, binding)
-
-        if (childExpr.isDefined && ordinalExpr.isDefined) {
-          val listExtractBuilder = ExprOuterClass.ListExtract
-            .newBuilder()
-            .setChild(childExpr.get)
-            .setOrdinal(ordinalExpr.get)
-            .setOneBased(false)
-            .setFailOnError(failOnError)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setListExtract(listExtractBuilder)
-              .build())
-        } else {
-          withInfo(expr, "unsupported arguments for GetArrayItem", child, ordinal)
-          None
-        }
-
-      case ElementAt(child, ordinal, defaultValue, failOnError)
-          if child.dataType.isInstanceOf[ArrayType] =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val ordinalExpr = exprToProtoInternal(ordinal, inputs, binding)
-        val defaultExpr = defaultValue.flatMap(exprToProtoInternal(_, inputs, binding))
-
-        if (childExpr.isDefined && ordinalExpr.isDefined &&
-          defaultExpr.isDefined == defaultValue.isDefined) {
-          val arrayExtractBuilder = ExprOuterClass.ListExtract
-            .newBuilder()
-            .setChild(childExpr.get)
-            .setOrdinal(ordinalExpr.get)
-            .setOneBased(true)
-            .setFailOnError(failOnError)
-
-          defaultExpr.foreach(arrayExtractBuilder.setDefaultValue(_))
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setListExtract(arrayExtractBuilder)
-              .build())
-        } else {
-          withInfo(expr, "unsupported arguments for ElementAt", child, ordinal)
-          None
-        }
-
-      case GetArrayStructFields(child, _, ordinal, _, _) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-
-        if (childExpr.isDefined) {
-          val arrayStructFieldsBuilder = ExprOuterClass.GetArrayStructFields
-            .newBuilder()
-            .setChild(childExpr.get)
-            .setOrdinal(ordinal)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setGetArrayStructFields(arrayStructFieldsBuilder)
-              .build())
-        } else {
-          withInfo(expr, "unsupported arguments for GetArrayStructFields", child)
           None
         }
       case af @ ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
