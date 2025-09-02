@@ -395,13 +395,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("test coalesce lazy eval") {
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
-      val data = Seq((100, 0))
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      val data = Seq((9999999999999L, 0))
       withParquetTable(data, "t1") {
         val res = spark.sql("""
-            |SELECT coalesce(_1 , 1/0) from t1;
+            |SELECT coalesce(_1, CAST(_1 AS TINYINT)) from t1;
             |  """.stripMargin)
-        checkSparkAnswer(res)
+        checkSparkAnswerAndOperator(res)
       }
     }
   }
