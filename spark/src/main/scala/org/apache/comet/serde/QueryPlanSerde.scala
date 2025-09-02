@@ -510,7 +510,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
     if (aggExpr.isDistinct) {
       // https://github.com/apache/datafusion-comet/issues/1260
-      withInfo(aggExpr, "distinct aggregates are not supported")
+      withInfo(aggExpr, s"distinct aggregate not supported: $aggExpr")
       return None
     }
 

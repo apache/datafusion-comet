@@ -541,9 +541,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             op
           case _ =>
             // An operator that is not supported by Comet
-            withInfo(
-              op,
-              s"[CometExecRule] ${op.nodeName} ${op.getClass.getName} is not supported")
+            withInfo(op, s"${op.nodeName} is not supported")
         }
     }
   }
@@ -802,7 +800,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     if (!isCometPlan(s.child)) {
-      withInfo(s, s"Child ${s.child.getClass.getName} is not native")
+      // we do not need to report a fallback reason if the child plan is not a Comet plan
       return false
     }
 
