@@ -68,12 +68,6 @@ pub fn create_store(
     }
     let path = Path::parse(path)?;
 
-    if configs.contains_key("fs.s3a.endpoint") {
-        return Err(object_store::Error::NotSupported {
-            source: "Custom S3 endpoints are not supported".into(),
-        });
-    }
-
     let mut builder = AmazonS3Builder::new()
         .with_url(url.to_string())
         .with_allow_http(true);
