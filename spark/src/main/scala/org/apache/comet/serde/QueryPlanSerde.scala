@@ -1838,6 +1838,23 @@ object QueryPlanSerde extends Logging with CometExprShim {
           scanBuilder.setSource(source)
         }
 
+        val ffiSafe = op match {
+          case _ if isExchangeSink(op) =>
+            // Source of broadcast exchange batches is ArrowStreamReader
+            // Source of shuffle exchange batches is NativeBatchDecoderIterator
+            true
+          case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_COMET =>
+            // native_comet scan reuses mutable buffers
+            false
+          case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
+            // native_iceberg_compat scan reuses mutable buffers for constant columns
+            // https://github.com/apache/datafusion-comet/issues/2152
+            false
+          case _ =>
+            false
+        }
+        scanBuilder.setArrowFfiSafe(ffiSafe)
+
         val scanTypes = op.output.flatten { attr =>
           serializeDataType(attr.dataType)
         }
@@ -1889,6 +1906,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * called.
    */
   private def isCometSink(op: SparkPlan): Boolean = {
+    if (isExchangeSink(op)) {
+      return true
+    }
     op match {
       case s if isCometScan(s) => true
       case _: CometSparkToColumnarExec => true
@@ -1896,15 +1916,21 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case _: CoalesceExec => true
       case _: CollectLimitExec => true
       case _: UnionExec => true
+      case _: TakeOrderedAndProjectExec => true
+      case _: WindowExec => true
+      case _ => false
+    }
+  }
+
+  private def isExchangeSink(op: SparkPlan): Boolean = {
+    op match {
       case _: ShuffleExchangeExec => true
       case ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) => true
       case ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) => true
-      case _: TakeOrderedAndProjectExec => true
       case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
       case BroadcastQueryStageExec(_, ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) =>
         true
       case _: BroadcastExchangeExec => true
-      case _: WindowExec => true
       case _ => false
     }
   }
