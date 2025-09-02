@@ -1,0 +1,832 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Comet Configuration Settings &#8212; Apache DataFusion Comet  documentation</title>
+    
+    <link href="../../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+  
+    
+    <link rel="stylesheet"
+      href="../../_static/vendor/fontawesome/5.13.0/css/all.min.css">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
+  
+    
+      
+  
+    
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
+    <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=c6d785ac" />
+    
+    <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+  
+    <script src="../../_static/documentation_options.js?v=8a448e45"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Compatibility Guide" href="compatibility.html" />
+    <link rel="prev" title="Supported Spark Expressions" href="expressions.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="docsearch:language" content="en">
+    
+
+    <!-- Google Analytics -->
+    
+  </head>
+  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+    
+    <div class="container-fluid" id="banner"></div>
+
+    
+
+
+    <div class="container-xl">
+      <div class="row">
+          
+            
+            <!-- Only show if we have sidebars configured, else just a small margin  -->
+            <div class="col-12 col-md-3 bd-sidebar">
+              <div class="sidebar-start-items"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<form class="bd-search d-flex align-items-center" action="../../search.html" method="get">
+  <i class="icon fas fa-search"></i>
+  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
+</form>
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Overview:
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../overview.html">
+   Comet Overview
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../gluten_comparison.html">
+   Comparison with Gluten
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  User Guides:
+ </span>
+</p>
+<ul class="current nav bd-sidenav">
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="../latest/index.html">
+   Comet 0.10.0-SNAPSHOT
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" type="checkbox"/>
+  <label for="toctree-checkbox-1">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="../0.9/index.html">
+   Comet 0.9.x
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-2" name="toctree-checkbox-2" type="checkbox"/>
+  <label for="toctree-checkbox-2">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1 current active has-children">
+  <a class="reference internal" href="index.html">
+   Comet 0.8.x
+  </a>
+  <input checked="" class="toctree-checkbox" id="toctree-checkbox-3" name="toctree-checkbox-3" type="checkbox"/>
+  <label for="toctree-checkbox-3">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul class="current">
+   <li class="toctree-l2">
+    <a class="reference internal" href="installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2 current active">
+    <a class="current reference internal" href="#">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Contributor Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/contributing.html">
+   Getting Started
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/plugin_overview.html">
+   Comet Plugin Architecture
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/development.html">
+   Development Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/debugging.html">
+   Debugging Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/benchmarking.html">
+   Benchmarking Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/adding_a_new_expression.html">
+   Adding a New Expression
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/tracing.html">
+   Tracing
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/profiling_native_code.html">
+   Profiling Native Code
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/spark-sql-tests.html">
+   Spark SQL Tests
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/roadmap.html">
+   Roadmap
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/datafusion-comet">
+   Github and Issue Tracker
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  ASF Links
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference external" href="https://apache.org">
+   Apache Software Foundation
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/licenses/">
+   License
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/sponsorship.html">
+   Donate
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/thanks.html">
+   Thanks
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/security/">
+   Security
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/policies/conduct.html">
+   Code of conduct
+  </a>
+ </li>
+</ul>
+
+    
+  </div>
+
+  <a class="navbar-brand" href="../../index.html">
+    <img src="../../_static/images/DataFusionComet-Logo-Light.png" class="logo" alt="logo">
+  </a>
+</nav>
+
+              </div>
+              <div class="sidebar-end-items">
+              </div>
+            </div>
+            
+          
+
+          
+          <div class="d-none d-xl-block col-xl-2 bd-toc">
+            
+              
+              <div class="toc-item">
+                
+
+<nav id="bd-toc-nav">
+    
+</nav>
+              </div>
+              
+              <div class="toc-item">
+                
+
+<div class="tocsection editthispage">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/user-guide/0.8/configs.md">
+        <i class="fas fa-pencil-alt"></i> Edit this page
+    </a>
+</div>
+
+              </div>
+              
+            
+          </div>
+          
+
+          
+          
+            
+          
+          <main class="col-12 col-md-9 col-xl-7 py-md-5 pl-md-5 pr-md-4 bd-content" role="main">
+              
+              <div>
+                
+  <!---
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<!--
+TO MODIFY THIS CONTENT MAKE SURE THAT YOU MAKE YOUR CHANGES TO THE TEMPLATE FILE
+(docs/templates/configs-template.md) AND NOT THE GENERATED FILE
+(docs/source/user-guide/configs.md) OTHERWISE YOUR CHANGES MAY BE LOST
+-->
+<section id="comet-configuration-settings">
+<h1>Comet Configuration Settings<a class="headerlink" href="#comet-configuration-settings" title="Link to this heading">¶</a></h1>
+<p>Comet provides the following configuration settings.</p>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>spark.comet.batchSize</p></td>
+<td><p>The columnar batch size, i.e., the maximum number of rows that a batch can contain.</p></td>
+<td><p>8192</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.caseConversion.enabled</p></td>
+<td><p>Java uses locale-specific rules when converting strings to upper or lower case and Rust does not, so we disable upper and lower by default.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.cast.allowIncompatible</p></td>
+<td><p>Comet is not currently fully compatible with Spark for all cast operations. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.columnar.shuffle.async.enabled</p></td>
+<td><p>Whether to enable asynchronous shuffle for Arrow-based shuffle.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.columnar.shuffle.async.max.thread.num</p></td>
+<td><p>Maximum number of threads on an executor used for Comet async columnar shuffle. This is the upper bound of total number of shuffle threads per executor. In other words, if the number of cores * the number of shuffle threads per task <code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.async.thread.num</span></code> is larger than this config. Comet will use this config as the number of shuffle threads per executor instead.</p></td>
+<td><p>100</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.columnar.shuffle.async.thread.num</p></td>
+<td><p>Number of threads used for Comet async columnar shuffle per shuffle task. Note that more threads means more memory requirement to buffer shuffle data before flushing to disk. Also, more threads may not always improve performance, and should be set based on the number of cores available.</p></td>
+<td><p>3</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.convert.csv.enabled</p></td>
+<td><p>When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to Arrow format. Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.convert.json.enabled</p></td>
+<td><p>When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to Arrow format. Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.convert.parquet.enabled</p></td>
+<td><p>When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to Arrow format. Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.debug.enabled</p></td>
+<td><p>Whether to enable debug mode for Comet. When enabled, Comet will do additional checks for debugging purpose. For example, validating array when importing arrays from JVM at native side. Note that these checks may be expensive in performance and should only be enabled for debugging purpose.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.dppFallback.enabled</p></td>
+<td><p>Whether to fall back to Spark for queries that use DPP.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.enabled</p></td>
+<td><p>Whether to enable Comet extension for Spark. When this is turned on, Spark will use Comet to read Parquet data source. Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled. By default, this config is the value of the env var <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET</span></code> if set, or true otherwise.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exceptionOnDatetimeRebase</p></td>
+<td><p>Whether to throw exception when seeing dates/timestamps from the legacy hybrid (Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according to the Proleptic Gregorian calendar. When this is true, Comet will throw exceptions when seeing these dates/timestamps that were written by Spark version before 3.0. If this is false, these dates/timestamps will be read as if they were written to the Proleptic Gregorian calendar and will not be rebased.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.aggregate.enabled</p></td>
+<td><p>Whether to enable aggregate by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.broadcastExchange.enabled</p></td>
+<td><p>Whether to enable broadcastExchange by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.broadcastHashJoin.enabled</p></td>
+<td><p>Whether to enable broadcastHashJoin by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.coalesce.enabled</p></td>
+<td><p>Whether to enable coalesce by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.collectLimit.enabled</p></td>
+<td><p>Whether to enable collectLimit by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.enabled</p></td>
+<td><p>Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of ‘spark.comet.exec.&lt;operator_name&gt;.enabled’ at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.expand.enabled</p></td>
+<td><p>Whether to enable expand by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.filter.enabled</p></td>
+<td><p>Whether to enable filter by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.globalLimit.enabled</p></td>
+<td><p>Whether to enable globalLimit by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.hashJoin.enabled</p></td>
+<td><p>Whether to enable hashJoin by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.initCap.enabled</p></td>
+<td><p>Whether to enable initCap by default.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.localLimit.enabled</p></td>
+<td><p>Whether to enable localLimit by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.memoryPool</p></td>
+<td><p>The type of memory pool to be used for Comet native execution. When running Spark in on-heap mode, available pool types are ‘greedy’, ‘fair_spill’, ‘greedy_task_shared’, ‘fair_spill_task_shared’, ‘greedy_global’, ‘fair_spill_global’, and <code class="docutils literal notranslate"><span class="pre">unbounded</span></code>. When running Spark in off-heap mode, available pool types are ‘unified’ and <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code>. The default pool type is <code class="docutils literal notranslate"><span class="pre">greedy_task_shared</span></code> for on-heap mode and <code class="docutils literal notranslate"><span class="pre">unified</span></code> for off-heap mode. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
+<td><p>default</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.project.enabled</p></td>
+<td><p>Whether to enable project by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.replaceSortMergeJoin</p></td>
+<td><p>Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.shuffle.compression.codec</p></td>
+<td><p>The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and snappy are supported. Compression can be disabled by setting spark.shuffle.compress=false.</p></td>
+<td><p>lz4</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.shuffle.compression.zstd.level</p></td>
+<td><p>The compression level to use when compressing shuffle files with zstd.</p></td>
+<td><p>1</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.shuffle.enabled</p></td>
+<td><p>Whether to enable Comet native shuffle. Note that this requires setting ‘spark.shuffle.manager’ to ‘org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager’. ‘spark.shuffle.manager’ must be set before starting the Spark application and cannot be changed during the application.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.sort.enabled</p></td>
+<td><p>Whether to enable sort by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.sortMergeJoin.enabled</p></td>
+<td><p>Whether to enable sortMergeJoin by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.sortMergeJoinWithJoinFilter.enabled</p></td>
+<td><p>Experimental support for Sort Merge Join with filter</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.stddev.enabled</p></td>
+<td><p>Whether to enable stddev by default. stddev is slower than Spark’s implementation.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.takeOrderedAndProject.enabled</p></td>
+<td><p>Whether to enable takeOrderedAndProject by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.union.enabled</p></td>
+<td><p>Whether to enable union by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.window.enabled</p></td>
+<td><p>Whether to enable window by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.explain.native.enabled</p></td>
+<td><p>When this setting is enabled, Comet will provide a tree representation of the native query plan before execution and again after execution, with metrics.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.explain.verbose.enabled</p></td>
+<td><p>When this setting is enabled, Comet will provide a verbose tree representation of the extended information.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.explainFallback.enabled</p></td>
+<td><p>When this setting is enabled, Comet will provide logging explaining the reason(s) why a query stage cannot be executed natively. Set this to false to reduce the amount of logging.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.allowIncompatible</p></td>
+<td><p>Comet is not currently fully compatible with Spark for all expressions. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.memory.overhead.factor</p></td>
+<td><p>Fraction of executor memory to be allocated as additional memory for Comet when running Spark in on-heap mode. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
+<td><p>0.2</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.memory.overhead.min</p></td>
+<td><p>Minimum amount of additional memory to be allocated per executor process for Comet, in MiB, when running Spark in on-heap mode. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
+<td><p>402653184b</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.memoryOverhead</p></td>
+<td><p>The amount of additional memory to be allocated per executor process for Comet, in MiB, when running Spark in on-heap mode. This config is optional. If this is not specified, it will be set to <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> * <code class="docutils literal notranslate"><span class="pre">spark.executor.memory</span></code>. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.metrics.updateInterval</p></td>
+<td><p>The interval in milliseconds to update metrics. If interval is negative, metrics will be updated upon task completion.</p></td>
+<td><p>3000</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.nativeLoadRequired</p></td>
+<td><p>Whether to require Comet native library to load successfully when Comet is enabled. If not, Comet will silently fallback to Spark when it fails to load the native lib. Otherwise, an error will be thrown and the Spark job will be aborted.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.parquet.enable.directBuffer</p></td>
+<td><p>Whether to use Java direct byte buffer when reading Parquet.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.parquet.read.io.adjust.readRange.skew</p></td>
+<td><p>In the parallel reader, if the read ranges submitted are skewed in sizes, this option will cause the reader to break up larger read ranges into smaller ranges to reduce the skew. This will result in a slightly larger number of connections opened to the file system but may give improved performance.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.parquet.read.io.mergeRanges</p></td>
+<td><p>When enabled the parallel reader will try to merge ranges of data that are separated by less than ‘comet.parquet.read.io.mergeRanges.delta’ bytes. Longer continuous reads are faster on cloud storage.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.parquet.read.io.mergeRanges.delta</p></td>
+<td><p>The delta in bytes between consecutive read ranges below which the parallel reader will try to merge the ranges. The default is 8MB.</p></td>
+<td><p>8388608</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.parquet.read.parallel.io.enabled</p></td>
+<td><p>Whether to enable Comet’s parallel reader for Parquet files. The parallel reader reads ranges of consecutive data in a  file in parallel. It is faster for large files and row groups but uses more resources.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.parquet.read.parallel.io.thread-pool.size</p></td>
+<td><p>The maximum number of parallel threads the parallel reader will use in a single executor. For executors configured with a smaller number of cores, use a smaller number.</p></td>
+<td><p>16</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.regexp.allowIncompatible</p></td>
+<td><p>Comet is not currently fully compatible with Spark for all regular expressions. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.scan.allowIncompatible</p></td>
+<td><p>Comet is not currently fully compatible with Spark for all datatypes. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.scan.enabled</p></td>
+<td><p>Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.scan.preFetch.enabled</p></td>
+<td><p>Whether to enable pre-fetching feature of CometScan.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.scan.preFetch.threadNum</p></td>
+<td><p>The number of threads running pre-fetching for CometScan. Effective if spark.comet.scan.preFetch.enabled is enabled. Note that more pre-fetching threads means more memory requirement to store pre-fetched row groups.</p></td>
+<td><p>2</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.shuffle.preferDictionary.ratio</p></td>
+<td><p>The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. Note that this config is only used when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> is <code class="docutils literal notranslate"><span class="pre">jvm</span></code>.</p></td>
+<td><p>10.0</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.shuffle.sizeInBytesMultiplier</p></td>
+<td><p>Comet reports smaller sizes for shuffle due to using Arrow’s columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy.</p></td>
+<td><p>1.0</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.sparkToColumnar.supportedOperatorList</p></td>
+<td><p>A comma-separated list of operators that will be converted to Arrow columnar format when ‘spark.comet.sparkToColumnar.enabled’ is true</p></td>
+<td><p>Range,InMemoryTableScan</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+
+
+              </div>
+              
+              
+              <!-- Previous / next buttons -->
+<div class='prev-next-area'>
+    <a class='left-prev' id="prev-link" href="expressions.html" title="previous page">
+        <i class="fas fa-angle-left"></i>
+        <div class="prev-next-info">
+            <p class="prev-next-subtitle">previous</p>
+            <p class="prev-next-title">Supported Spark Expressions</p>
+        </div>
+    </a>
+    <a class='right-next' id="next-link" href="compatibility.html" title="next page">
+    <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Compatibility Guide</p>
+    </div>
+    <i class="fas fa-angle-right"></i>
+    </a>
+</div>
+              
+          </main>
+          
+
+      </div>
+    </div>
+  
+    <script src="../../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
+  
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p class="copyright">
+    &copy; Copyright 2023-2024, Apache Software Foundation.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p class="sphinx-version">
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 8.1.3.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>

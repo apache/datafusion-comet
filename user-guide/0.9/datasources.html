@@ -1,0 +1,942 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Supported Spark Data Sources &#8212; Apache DataFusion Comet  documentation</title>
+    
+    <link href="../../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+  
+    
+    <link rel="stylesheet"
+      href="../../_static/vendor/fontawesome/5.13.0/css/all.min.css">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
+  
+    
+      
+  
+    
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
+    <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=c6d785ac" />
+    
+    <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+  
+    <script src="../../_static/documentation_options.js?v=8a448e45"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Supported Spark Data Types" href="datatypes.html" />
+    <link rel="prev" title="Building Comet From Source" href="source.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="docsearch:language" content="en">
+    
+
+    <!-- Google Analytics -->
+    
+  </head>
+  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+    
+    <div class="container-fluid" id="banner"></div>
+
+    
+
+
+    <div class="container-xl">
+      <div class="row">
+          
+            
+            <!-- Only show if we have sidebars configured, else just a small margin  -->
+            <div class="col-12 col-md-3 bd-sidebar">
+              <div class="sidebar-start-items"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<form class="bd-search d-flex align-items-center" action="../../search.html" method="get">
+  <i class="icon fas fa-search"></i>
+  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
+</form>
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Overview:
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../overview.html">
+   Comet Overview
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../gluten_comparison.html">
+   Comparison with Gluten
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  User Guides:
+ </span>
+</p>
+<ul class="current nav bd-sidenav">
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="../latest/index.html">
+   Comet 0.10.0-SNAPSHOT
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" type="checkbox"/>
+  <label for="toctree-checkbox-1">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1 current active has-children">
+  <a class="reference internal" href="index.html">
+   Comet 0.9.x
+  </a>
+  <input checked="" class="toctree-checkbox" id="toctree-checkbox-2" name="toctree-checkbox-2" type="checkbox"/>
+  <label for="toctree-checkbox-2">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul class="current">
+   <li class="toctree-l2">
+    <a class="reference internal" href="installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2 current active">
+    <a class="current reference internal" href="#">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="../0.8/index.html">
+   Comet 0.8.x
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-3" name="toctree-checkbox-3" type="checkbox"/>
+  <label for="toctree-checkbox-3">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Contributor Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/contributing.html">
+   Getting Started
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/plugin_overview.html">
+   Comet Plugin Architecture
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/development.html">
+   Development Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/debugging.html">
+   Debugging Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/benchmarking.html">
+   Benchmarking Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/adding_a_new_expression.html">
+   Adding a New Expression
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/tracing.html">
+   Tracing
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/profiling_native_code.html">
+   Profiling Native Code
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/spark-sql-tests.html">
+   Spark SQL Tests
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/roadmap.html">
+   Roadmap
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/datafusion-comet">
+   Github and Issue Tracker
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  ASF Links
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference external" href="https://apache.org">
+   Apache Software Foundation
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/licenses/">
+   License
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/sponsorship.html">
+   Donate
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/thanks.html">
+   Thanks
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/security/">
+   Security
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/policies/conduct.html">
+   Code of conduct
+  </a>
+ </li>
+</ul>
+
+    
+  </div>
+
+  <a class="navbar-brand" href="../../index.html">
+    <img src="../../_static/images/DataFusionComet-Logo-Light.png" class="logo" alt="logo">
+  </a>
+</nav>
+
+              </div>
+              <div class="sidebar-end-items">
+              </div>
+            </div>
+            
+          
+
+          
+          <div class="d-none d-xl-block col-xl-2 bd-toc">
+            
+              
+              <div class="toc-item">
+                
+<div class="tocsection onthispage pt-5 pb-3">
+    <i class="fas fa-list"></i> On this page
+</div>
+
+<nav id="bd-toc-nav">
+    <ul class="visible nav section-nav flex-column">
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#file-formats">
+   File Formats
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#parquet">
+     Parquet
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#csv">
+     CSV
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#json">
+     JSON
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#data-catalogs">
+   Data Catalogs
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#apache-iceberg">
+     Apache Iceberg
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#supported-storages">
+   Supported Storages
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#hdfs">
+     HDFS
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#using-experimental-native-datafusion-reader">
+     Using experimental native DataFusion reader
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#local-hdfs-development">
+     Local HDFS development
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#s3">
+   S3
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#native-comet">
+     <code class="docutils literal notranslate">
+      <span class="pre">
+       native_comet
+      </span>
+     </code>
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#native-datafusion-and-native-iceberg-compat">
+     <code class="docutils literal notranslate">
+      <span class="pre">
+       native_datafusion
+      </span>
+     </code>
+     and
+     <code class="docutils literal notranslate">
+      <span class="pre">
+       native_iceberg_compat
+      </span>
+     </code>
+    </a>
+    <ul class="nav section-nav flex-column">
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#supported-credential-providers">
+       Supported Credential Providers
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#additional-s3-configuration-options">
+       Additional S3 Configuration Options
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#examples">
+       Examples
+      </a>
+     </li>
+     <li class="toc-h4 nav-item toc-entry">
+      <a class="reference internal nav-link" href="#limitations">
+       Limitations
+      </a>
+     </li>
+    </ul>
+   </li>
+  </ul>
+ </li>
+</ul>
+
+</nav>
+              </div>
+              
+              <div class="toc-item">
+                
+
+<div class="tocsection editthispage">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/user-guide/0.9/datasources.md">
+        <i class="fas fa-pencil-alt"></i> Edit this page
+    </a>
+</div>
+
+              </div>
+              
+            
+          </div>
+          
+
+          
+          
+            
+          
+          <main class="col-12 col-md-9 col-xl-7 py-md-5 pl-md-5 pr-md-4 bd-content" role="main">
+              
+              <div>
+                
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="supported-spark-data-sources">
+<h1>Supported Spark Data Sources<a class="headerlink" href="#supported-spark-data-sources" title="Link to this heading">¶</a></h1>
+<section id="file-formats">
+<h2>File Formats<a class="headerlink" href="#file-formats" title="Link to this heading">¶</a></h2>
+<section id="parquet">
+<h3>Parquet<a class="headerlink" href="#parquet" title="Link to this heading">¶</a></h3>
+<p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.enabled</span></code> is enabled, Parquet scans will be performed natively by Comet if all data types
+in the schema are supported. When this option is not enabled, the scan will fall back to Spark. In this case,
+enabling <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.parquet.enabled</span></code> will immediately convert the data into Arrow format, allowing native
+execution to happen after that, but the process may not be efficient.</p>
+</section>
+<section id="csv">
+<h3>CSV<a class="headerlink" href="#csv" title="Link to this heading">¶</a></h3>
+<p>Comet does not provide native CSV scan, but when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.csv.enabled</span></code> is enabled, data is immediately
+converted into Arrow format, allowing native execution to happen after that.</p>
+</section>
+<section id="json">
+<h3>JSON<a class="headerlink" href="#json" title="Link to this heading">¶</a></h3>
+<p>Comet does not provide native JSON scan, but when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.json.enabled</span></code> is enabled, data is immediately
+converted into Arrow format, allowing native execution to happen after that.</p>
+</section>
+</section>
+<section id="data-catalogs">
+<h2>Data Catalogs<a class="headerlink" href="#data-catalogs" title="Link to this heading">¶</a></h2>
+<section id="apache-iceberg">
+<h3>Apache Iceberg<a class="headerlink" href="#apache-iceberg" title="Link to this heading">¶</a></h3>
+<p>See the dedicated <a class="reference internal" href="iceberg.html"><span class="std std-doc">Comet and Iceberg Guide</span></a>.</p>
+</section>
+</section>
+<section id="supported-storages">
+<h2>Supported Storages<a class="headerlink" href="#supported-storages" title="Link to this heading">¶</a></h2>
+<p>Comet supports most standard storage systems, such as local file system and object storage.</p>
+<section id="hdfs">
+<h3>HDFS<a class="headerlink" href="#hdfs" title="Link to this heading">¶</a></h3>
+<p>Apache DataFusion Comet native reader seamlessly scans files from remote HDFS for <a class="reference internal" href="#supported-spark-data-sources">supported formats</a></p>
+</section>
+<section id="using-experimental-native-datafusion-reader">
+<h3>Using experimental native DataFusion reader<a class="headerlink" href="#using-experimental-native-datafusion-reader" title="Link to this heading">¶</a></h3>
+<p>Unlike to native Comet reader the Datafusion reader fully supports nested types processing. This reader is currently experimental only</p>
+<p>To build Comet with native DataFusion reader and remote HDFS support it is required to have a JDK installed</p>
+<p>Example:
+Build a Comet for <code class="docutils literal notranslate"><span class="pre">spark-3.5</span></code> provide a JDK path in <code class="docutils literal notranslate"><span class="pre">JAVA_HOME</span></code>
+Provide the JRE linker path in <code class="docutils literal notranslate"><span class="pre">RUSTFLAGS</span></code>, the path can vary depending on the system. Typically JRE linker is a part of installed JDK</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">JAVA_HOME</span><span class="o">=</span><span class="s2">&quot;/opt/homebrew/opt/openjdk@11&quot;</span>
+make<span class="w"> </span>release<span class="w"> </span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-3.5&quot;</span><span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span>hdfs<span class="w"> </span><span class="nv">RUSTFLAGS</span><span class="o">=</span><span class="s2">&quot;-L </span><span class="nv">$JAVA_HOME</span><span class="s2">/libexec/openjdk.jdk/Contents/Home/lib/server&quot;</span>
+</pre></div>
+</div>
+<p>Start Comet with experimental reader and HDFS support as <a class="reference internal" href="installation.html#run-spark-shell-with-comet-enabled"><span class="std std-ref">described</span></a>
+and add additional parameters</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--conf<span class="w"> </span>spark.comet.scan.impl<span class="o">=</span>native_datafusion<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.defaultFS<span class="o">=</span><span class="s2">&quot;hdfs://namenode:9000&quot;</span><span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.dfs.client.use.datanode.hostname<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>dfs.client.use.datanode.hostname<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span>
+</pre></div>
+</div>
+<p>Query a struct type from Remote HDFS</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>spark.read.parquet<span class="o">(</span><span class="s2">&quot;hdfs://namenode:9000/user/data&quot;</span><span class="o">)</span>.show<span class="o">(</span><span class="nb">false</span><span class="o">)</span>
+
+root
+<span class="w"> </span><span class="p">|</span>--<span class="w"> </span>id:<span class="w"> </span>integer<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
+<span class="w"> </span><span class="p">|</span>--<span class="w"> </span>first_name:<span class="w"> </span>string<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
+<span class="w"> </span><span class="p">|</span>--<span class="w"> </span>personal_info:<span class="w"> </span>struct<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
+<span class="w"> </span><span class="p">|</span><span class="w">    </span><span class="p">|</span>--<span class="w"> </span>firstName:<span class="w"> </span>string<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
+<span class="w"> </span><span class="p">|</span><span class="w">    </span><span class="p">|</span>--<span class="w"> </span>lastName:<span class="w"> </span>string<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
+<span class="w"> </span><span class="p">|</span><span class="w">    </span><span class="p">|</span>--<span class="w"> </span>ageInYears:<span class="w"> </span>integer<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
+
+<span class="m">25</span>/01/30<span class="w"> </span><span class="m">16</span>:50:43<span class="w"> </span>INFO<span class="w"> </span>core/src/lib.rs:<span class="w"> </span>Comet<span class="w"> </span>native<span class="w"> </span>library<span class="w"> </span>version<span class="w"> </span><span class="m">0</span>.9.1<span class="w"> </span><span class="nv">initialized</span>
+<span class="o">==</span><span class="w"> </span>Physical<span class="w"> </span><span class="nv">Plan</span><span class="w"> </span><span class="o">==</span>
+*<span class="w"> </span>CometColumnarToRow<span class="w"> </span><span class="o">(</span><span class="m">2</span><span class="o">)</span>
++-<span class="w"> </span>CometNativeScan:<span class="w">  </span><span class="o">(</span><span class="m">1</span><span class="o">)</span>
+
+
+<span class="o">(</span><span class="m">1</span><span class="o">)</span><span class="w"> </span>CometNativeScan:<span class="w"> </span>
+Output<span class="w"> </span><span class="o">[</span><span class="m">3</span><span class="o">]</span>:<span class="w"> </span><span class="o">[</span>id#0,<span class="w"> </span>first_name#1,<span class="w"> </span>personal_info#4<span class="o">]</span>
+Arguments:<span class="w"> </span><span class="o">[</span>id#0,<span class="w"> </span>first_name#1,<span class="w"> </span>personal_info#4<span class="o">]</span>
+
+<span class="o">(</span><span class="m">2</span><span class="o">)</span><span class="w"> </span>CometColumnarToRow<span class="w"> </span><span class="o">[</span>codegen<span class="w"> </span>id<span class="w"> </span>:<span class="w"> </span><span class="m">1</span><span class="o">]</span>
+Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><span class="o">]</span>:<span class="w"> </span><span class="o">[</span>id#0,<span class="w"> </span>first_name#1,<span class="w"> </span>personal_info#4<span class="o">]</span>
+
+
+<span class="m">25</span>/01/30<span class="w"> </span><span class="m">16</span>:50:44<span class="w"> </span>INFO<span class="w"> </span>fs-hdfs-0.1.12/src/hdfs.rs:<span class="w"> </span>Connecting<span class="w"> </span>to<span class="w"> </span>Namenode<span class="w"> </span><span class="o">(</span>hdfs://namenode:9000<span class="o">)</span>
++---+----------+-----------------+
+<span class="p">|</span>id<span class="w"> </span><span class="p">|</span>first_name<span class="p">|</span>personal_info<span class="w">    </span><span class="p">|</span>
++---+----------+-----------------+
+<span class="p">|</span><span class="m">2</span><span class="w">  </span><span class="p">|</span>Jane<span class="w">      </span><span class="p">|</span><span class="o">{</span>Jane,<span class="w"> </span>Smith,<span class="w"> </span><span class="m">34</span><span class="o">}</span><span class="p">|</span>
+<span class="p">|</span><span class="m">1</span><span class="w">  </span><span class="p">|</span>John<span class="w">      </span><span class="p">|</span><span class="o">{</span>John,<span class="w"> </span>Doe,<span class="w"> </span><span class="m">28</span><span class="o">}</span><span class="w">  </span><span class="p">|</span>
++---+----------+-----------------+
+</pre></div>
+</div>
+<p>Verify the native scan type should be <code class="docutils literal notranslate"><span class="pre">CometNativeScan</span></code>.</p>
+<p>More on <a class="reference internal" href="#../../../native/hdfs/README.md"><span class="xref myst">HDFS Reader</span></a></p>
+</section>
+<section id="local-hdfs-development">
+<h3>Local HDFS development<a class="headerlink" href="#local-hdfs-development" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p>Configure local machine network. Add hostname to <code class="docutils literal notranslate"><span class="pre">/etc/hosts</span></code></p></li>
+</ul>
+<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>127.0.0.1	localhost   namenode datanode1 datanode2 datanode3
+::1             localhost namenode datanode1 datanode2 datanode3
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Start local HDFS cluster, 3 datanodes, namenode url is <code class="docutils literal notranslate"><span class="pre">namenode:9000</span></code></p></li>
+</ul>
+<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>docker compose -f kube/local/hdfs-docker-compose.yml up
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Check the local namenode is up and running on <code class="docutils literal notranslate"><span class="pre">http://localhost:9870/dfshealth.html#tab-overview</span></code></p></li>
+<li><p>Build a project with HDFS support</p></li>
+</ul>
+<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>JAVA_HOME=&quot;/opt/homebrew/opt/openjdk@11&quot; make release PROFILES=&quot;-Pspark-3.5&quot; COMET_FEATURES=hdfs RUSTFLAGS=&quot;-L /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home/lib/server&quot;
+</pre></div>
+</div>
+<ul class="simple">
+<li><p>Run local test</p></li>
+</ul>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="w">    </span><span class="n">withSQLConf</span><span class="p">(</span>
+<span class="w">      </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_ENABLED</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_EXEC_ENABLED</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_NATIVE_SCAN_IMPL</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">SCAN_NATIVE_DATAFUSION</span><span class="p">,</span>
+<span class="w">      </span><span class="nc">SQLConf</span><span class="p">.</span><span class="nc">USE_V1_SOURCE_LIST</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;parquet&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="s">&quot;fs.defaultFS&quot;</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;hdfs://namenode:9000&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="s">&quot;dfs.client.use.datanode.hostname&quot;</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="kd">val</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">read</span><span class="p">.</span><span class="n">parquet</span><span class="p">(</span><span class="s">&quot;/tmp/2&quot;</span><span class="p">)</span>
+<span class="w">      </span><span class="n">df</span><span class="p">.</span><span class="n">show</span><span class="p">(</span><span class="kc">false</span><span class="p">)</span>
+<span class="w">      </span><span class="n">df</span><span class="p">.</span><span class="n">explain</span><span class="p">(</span><span class="s">&quot;extended&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+</pre></div>
+</div>
+<p>Or use <code class="docutils literal notranslate"><span class="pre">spark-shell</span></code> with HDFS support as described <a class="reference internal" href="#using-experimental-native-datafusion-reader">above</a></p>
+</section>
+</section>
+<section id="s3">
+<h2>S3<a class="headerlink" href="#s3" title="Link to this heading">¶</a></h2>
+<p>DataFusion Comet has <a class="reference internal" href="compatibility.html#parquet-scans"><span class="std std-ref">multiple Parquet scan implementations</span></a> that use different approaches to read data from S3.</p>
+<section id="native-comet">
+<h3><code class="docutils literal notranslate"><span class="pre">native_comet</span></code><a class="headerlink" href="#native-comet" title="Link to this heading">¶</a></h3>
+<p>The default <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> Parquet scan implementation reads data from S3 using the <a class="reference external" href="https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html">Hadoop-AWS module</a>, which is identical to the approach commonly used with vanilla Spark. AWS credential configuration and other Hadoop S3A configurations works the same way as in vanilla Spark.</p>
+</section>
+<section id="native-datafusion-and-native-iceberg-compat">
+<h3><code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code><a class="headerlink" href="#native-datafusion-and-native-iceberg-compat" title="Link to this heading">¶</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> Parquet scan implementations completely offload data loading to native code. They use the <a class="reference external" href="https://crates.io/crates/object_store"><code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate</a> to read data from S3 and support configuring S3 access using standard <a class="reference external" href="https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration">Hadoop S3A configurations</a> by translating them to the <code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate’s format.</p>
+<p>This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will continue to work as long as the configurations are supported and can be translated without loss of functionality.</p>
+<section id="supported-credential-providers">
+<h4>Supported Credential Providers<a class="headerlink" href="#supported-credential-providers" title="Link to this heading">¶</a></h4>
+<p>AWS credential providers can be configured using the <code class="docutils literal notranslate"><span class="pre">fs.s3a.aws.credentials.provider</span></code> configuration. The following table shows the supported credential providers and their configuration options:</p>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Credential provider</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Supported Options</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider</span></code></p></td>
+<td><p>Access S3 using access key and secret key</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.access.key</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.s3a.secret.key</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.fs.s3a.TemporaryAWSCredentialsProvider</span></code></p></td>
+<td><p>Access S3 using temporary credentials</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.access.key</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.s3a.secret.key</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.s3a.session.token</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider</span></code></p></td>
+<td><p>Access S3 using AWS STS assume role</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.assumed.role.arn</span></code>, <code class="docutils literal notranslate"><span class="pre">fs.s3a.assumed.role.session.name</span></code> (optional), <code class="docutils literal notranslate"><span class="pre">fs.s3a.assumed.role.credentials.provider</span></code> (optional)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.fs.s3a.auth.IAMInstanceCredentialsProvider</span></code></p></td>
+<td><p>Access S3 using EC2 instance profile or ECS task credentials (tries ECS first, then IMDS)</p></td>
+<td><p>None (auto-detected)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider</span></code><br/><code class="docutils literal notranslate"><span class="pre">com.amazonaws.auth.AnonymousAWSCredentials</span></code><br/><code class="docutils literal notranslate"><span class="pre">software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider</span></code></p></td>
+<td><p>Access S3 without authentication (public buckets only)</p></td>
+<td><p>None</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">com.amazonaws.auth.EnvironmentVariableCredentialsProvider</span></code><br/><code class="docutils literal notranslate"><span class="pre">software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider</span></code></p></td>
+<td><p>Load credentials from environment variables (<code class="docutils literal notranslate"><span class="pre">AWS_ACCESS_KEY_ID</span></code>, <code class="docutils literal notranslate"><span class="pre">AWS_SECRET_ACCESS_KEY</span></code>, <code class="docutils literal notranslate"><span class="pre">AWS_SESSION_TOKEN</span></code>)</p></td>
+<td><p>None</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">com.amazonaws.auth.InstanceProfileCredentialsProvider</span></code><br/><code class="docutils literal notranslate"><span class="pre">software.amazon.awssdk.auth.credentials.InstanceProfileCredentialsProvider</span></code></p></td>
+<td><p>Access S3 using EC2 instance metadata service (IMDS)</p></td>
+<td><p>None</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">com.amazonaws.auth.ContainerCredentialsProvider</span></code><br/><code class="docutils literal notranslate"><span class="pre">software.amazon.awssdk.auth.credentials.ContainerCredentialsProvider</span></code><br/><code class="docutils literal notranslate"><span class="pre">com.amazonaws.auth.EC2ContainerCredentialsProviderWrapper</span></code></p></td>
+<td><p>Access S3 using ECS task credentials</p></td>
+<td><p>None</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">com.amazonaws.auth.WebIdentityTokenCredentialsProvider</span></code><br/><code class="docutils literal notranslate"><span class="pre">software.amazon.awssdk.auth.credentials.WebIdentityTokenFileCredentialsProvider</span></code></p></td>
+<td><p>Authenticate using web identity token file</p></td>
+<td><p>None</p></td>
+</tr>
+</tbody>
+</table>
+<p>Multiple credential providers can be specified in a comma-separated list using the <code class="docutils literal notranslate"><span class="pre">fs.s3a.aws.credentials.provider</span></code> configuration, just as Hadoop AWS supports. If <code class="docutils literal notranslate"><span class="pre">fs.s3a.aws.credentials.provider</span></code> is not configured, Hadoop S3A’s default credential provider chain will be used. All configuration options also support bucket-specific overrides using the pattern <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.{bucket-name}.{option}</span></code>.</p>
+</section>
+<section id="additional-s3-configuration-options">
+<h4>Additional S3 Configuration Options<a class="headerlink" href="#additional-s3-configuration-options" title="Link to this heading">¶</a></h4>
+<p>Beyond credential providers, the <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> implementation supports additional S3 configuration options:</p>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Option</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.endpoint</span></code></p></td>
+<td><p>The endpoint of the S3 service</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.endpoint.region</span></code></p></td>
+<td><p>The AWS region for the S3 service. If not specified, the region will be auto-detected.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.path.style.access</span></code></p></td>
+<td><p>Whether to use path style access for the S3 service (true/false, defaults to virtual hosted style)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">fs.s3a.requester.pays.enabled</span></code></p></td>
+<td><p>Whether to enable requester pays for S3 requests (true/false)</p></td>
+</tr>
+</tbody>
+</table>
+<p>All configuration options support bucket-specific overrides using the pattern <code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.{bucket-name}.{option}</span></code>.</p>
+</section>
+<section id="examples">
+<h4>Examples<a class="headerlink" href="#examples" title="Link to this heading">¶</a></h4>
+<p>The following examples demonstrate how to configure S3 access with the <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> Parquet scan implementation using different authentication methods.</p>
+<p><strong>Example 1: Simple Credentials</strong></p>
+<p>This example shows how to access a private S3 bucket using an access key and secret key. The <code class="docutils literal notranslate"><span class="pre">fs.s3a.aws.credentials.provider</span></code> configuration can be omitted since <code class="docutils literal notranslate"><span class="pre">org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider</span></code> is included in Hadoop S3A’s default credential provider chain.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
+...
+--conf<span class="w"> </span>spark.comet.scan.impl<span class="o">=</span>native_datafusion<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.s3a.access.key<span class="o">=</span>my-access-key<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.s3a.secret.key<span class="o">=</span>my-secret-key
+...
+</pre></div>
+</div>
+<p><strong>Example 2: Assume Role with Web Identity Token</strong></p>
+<p>This example demonstrates using an assumed role credential to access a private S3 bucket, where the base credential for assuming the role is provided by a web identity token credentials provider.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
+...
+--conf<span class="w"> </span>spark.comet.scan.impl<span class="o">=</span>native_datafusion<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.s3a.aws.credentials.provider<span class="o">=</span>org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.s3a.assumed.role.arn<span class="o">=</span>arn:aws:iam::123456789012:role/my-role<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.s3a.assumed.role.session.name<span class="o">=</span>my-session<span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.s3a.assumed.role.credentials.provider<span class="o">=</span>com.amazonaws.auth.WebIdentityTokenCredentialsProvider
+...
+</pre></div>
+</div>
+</section>
+<section id="limitations">
+<h4>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">¶</a></h4>
+<p>The S3 support of <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> has the following limitations:</p>
+<ol class="arabic simple">
+<li><p><strong>Partial Hadoop S3A configuration support</strong>: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying <code class="docutils literal notranslate"><span class="pre">object_store</span></code> crate.</p></li>
+<li><p><strong>Custom credential providers</strong>: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from native code. See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1829">issue #1829</a> for more details.</p></li>
+</ol>
+</section>
+</section>
+</section>
+</section>
+
+
+              </div>
+              
+              
+              <!-- Previous / next buttons -->
+<div class='prev-next-area'>
+    <a class='left-prev' id="prev-link" href="source.html" title="previous page">
+        <i class="fas fa-angle-left"></i>
+        <div class="prev-next-info">
+            <p class="prev-next-subtitle">previous</p>
+            <p class="prev-next-title">Building Comet From Source</p>
+        </div>
+    </a>
+    <a class='right-next' id="next-link" href="datatypes.html" title="next page">
+    <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Supported Spark Data Types</p>
+    </div>
+    <i class="fas fa-angle-right"></i>
+    </a>
+</div>
+              
+          </main>
+          
+
+      </div>
+    </div>
+  
+    <script src="../../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
+  
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p class="copyright">
+    &copy; Copyright 2023-2024, Apache Software Foundation.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p class="sphinx-version">
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 8.1.3.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>

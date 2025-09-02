@@ -1,0 +1,802 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Installing DataFusion Comet &#8212; Apache DataFusion Comet  documentation</title>
+    
+    <link href="../../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+  
+    
+    <link rel="stylesheet"
+      href="../../_static/vendor/fontawesome/5.13.0/css/all.min.css">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
+  
+    
+      
+  
+    
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
+    <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=c6d785ac" />
+    
+    <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+  
+    <script src="../../_static/documentation_options.js?v=8a448e45"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Building Comet From Source" href="source.html" />
+    <link rel="prev" title="Comet 0.8.x User Guide" href="index.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="docsearch:language" content="en">
+    
+
+    <!-- Google Analytics -->
+    
+  </head>
+  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+    
+    <div class="container-fluid" id="banner"></div>
+
+    
+
+
+    <div class="container-xl">
+      <div class="row">
+          
+            
+            <!-- Only show if we have sidebars configured, else just a small margin  -->
+            <div class="col-12 col-md-3 bd-sidebar">
+              <div class="sidebar-start-items"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<form class="bd-search d-flex align-items-center" action="../../search.html" method="get">
+  <i class="icon fas fa-search"></i>
+  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
+</form>
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Overview:
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../overview.html">
+   Comet Overview
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../gluten_comparison.html">
+   Comparison with Gluten
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  User Guides:
+ </span>
+</p>
+<ul class="current nav bd-sidenav">
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="../latest/index.html">
+   Comet 0.10.0-SNAPSHOT
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" type="checkbox"/>
+  <label for="toctree-checkbox-1">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="../0.9/index.html">
+   Comet 0.9.x
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-2" name="toctree-checkbox-2" type="checkbox"/>
+  <label for="toctree-checkbox-2">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1 current active has-children">
+  <a class="reference internal" href="index.html">
+   Comet 0.8.x
+  </a>
+  <input checked="" class="toctree-checkbox" id="toctree-checkbox-3" name="toctree-checkbox-3" type="checkbox"/>
+  <label for="toctree-checkbox-3">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul class="current">
+   <li class="toctree-l2 current active">
+    <a class="current reference internal" href="#">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Contributor Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/contributing.html">
+   Getting Started
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/plugin_overview.html">
+   Comet Plugin Architecture
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/development.html">
+   Development Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/debugging.html">
+   Debugging Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/benchmarking.html">
+   Benchmarking Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/adding_a_new_expression.html">
+   Adding a New Expression
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/tracing.html">
+   Tracing
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/profiling_native_code.html">
+   Profiling Native Code
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/spark-sql-tests.html">
+   Spark SQL Tests
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/roadmap.html">
+   Roadmap
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/datafusion-comet">
+   Github and Issue Tracker
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  ASF Links
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference external" href="https://apache.org">
+   Apache Software Foundation
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/licenses/">
+   License
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/sponsorship.html">
+   Donate
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/thanks.html">
+   Thanks
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/security/">
+   Security
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/policies/conduct.html">
+   Code of conduct
+  </a>
+ </li>
+</ul>
+
+    
+  </div>
+
+  <a class="navbar-brand" href="../../index.html">
+    <img src="../../_static/images/DataFusionComet-Logo-Light.png" class="logo" alt="logo">
+  </a>
+</nav>
+
+              </div>
+              <div class="sidebar-end-items">
+              </div>
+            </div>
+            
+          
+
+          
+          <div class="d-none d-xl-block col-xl-2 bd-toc">
+            
+              
+              <div class="toc-item">
+                
+<div class="tocsection onthispage pt-5 pb-3">
+    <i class="fas fa-list"></i> On this page
+</div>
+
+<nav id="bd-toc-nav">
+    <ul class="visible nav section-nav flex-column">
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#prerequisites">
+   Prerequisites
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#supported-operating-systems">
+     Supported Operating Systems
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#supported-spark-versions">
+     Supported Spark Versions
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#using-a-published-jar-file">
+   Using a Published JAR File
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#building-from-source">
+   Building from source
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#deploying-to-kubernetes">
+   Deploying to Kubernetes
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#run-spark-shell-with-comet-enabled">
+   Run Spark Shell with Comet enabled
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#verify-comet-enabled-for-spark-sql-query">
+     Verify Comet enabled for Spark SQL query
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#additional-configuration">
+   Additional Configuration
+  </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#memory-tuning">
+     Memory tuning
+    </a>
+   </li>
+  </ul>
+ </li>
+</ul>
+
+</nav>
+              </div>
+              
+              <div class="toc-item">
+                
+
+<div class="tocsection editthispage">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/user-guide/0.8/installation.md">
+        <i class="fas fa-pencil-alt"></i> Edit this page
+    </a>
+</div>
+
+              </div>
+              
+            
+          </div>
+          
+
+          
+          
+            
+          
+          <main class="col-12 col-md-9 col-xl-7 py-md-5 pl-md-5 pr-md-4 bd-content" role="main">
+              
+              <div>
+                
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="installing-datafusion-comet">
+<h1>Installing DataFusion Comet<a class="headerlink" href="#installing-datafusion-comet" title="Link to this heading">¶</a></h1>
+<section id="prerequisites">
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">¶</a></h2>
+<p>Make sure the following requirements are met and software installed on your machine.</p>
+<section id="supported-operating-systems">
+<h3>Supported Operating Systems<a class="headerlink" href="#supported-operating-systems" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p>Linux</p></li>
+<li><p>Apple macOS (Intel and Apple Silicon)</p></li>
+</ul>
+</section>
+<section id="supported-spark-versions">
+<h3>Supported Spark Versions<a class="headerlink" href="#supported-spark-versions" title="Link to this heading">¶</a></h3>
+<p>Comet currently supports the following versions of Apache Spark. Note that this documentation is for the main
+branch. Please refer to the version of this documentation in the appropriate GitHub release branch for released
+Comet versions.</p>
+<p>We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI.
+Other versions may work well enough for development and evaluation purposes.</p>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Spark Version</p></th>
+<th class="head"><p>Java Version</p></th>
+<th class="head"><p>Scala Version</p></th>
+<th class="head"><p>Comet Tests in CI</p></th>
+<th class="head"><p>Spark Tests in CI</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>3.4.3</p></td>
+<td><p>8/11/17</p></td>
+<td><p>2.12/2.13</p></td>
+<td><p>Yes</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>3.5.2</p></td>
+<td><p>8/11/17</p></td>
+<td><p>2.12/2.13</p></td>
+<td><p>Partial*</p></td>
+<td><p>No</p></td>
+</tr>
+<tr class="row-even"><td><p>3.5.3</p></td>
+<td><p>8/11/17</p></td>
+<td><p>2.12/2.13</p></td>
+<td><p>Partial*</p></td>
+<td><p>No</p></td>
+</tr>
+<tr class="row-odd"><td><p>3.5.4</p></td>
+<td><p>8/11/17</p></td>
+<td><p>2.12/2.13</p></td>
+<td><p>Partial*</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>3.5.5</p></td>
+<td><p>8/11/17</p></td>
+<td><p>2.12/2.13</p></td>
+<td><p>Yes</p></td>
+<td><p>Yes</p></td>
+</tr>
+</tbody>
+</table>
+<p>* For older Spark 3.5.x releases, we do not test the full matrix of supported Java and Scala versions in CI.</p>
+<p>Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
+use only and should not be used in production yet.</p>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Spark Version</p></th>
+<th class="head"><p>Java Version</p></th>
+<th class="head"><p>Scala Version</p></th>
+<th class="head"><p>Comet Tests in CI</p></th>
+<th class="head"><p>Spark Tests in CI</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>4.0.0-preview1</p></td>
+<td><p>17</p></td>
+<td><p>2.13</p></td>
+<td><p>Yes</p></td>
+<td><p>Yes</p></td>
+</tr>
+</tbody>
+</table>
+<p>Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
+Cloud Service Providers.</p>
+</section>
+</section>
+<section id="using-a-published-jar-file">
+<h2>Using a Published JAR File<a class="headerlink" href="#using-a-published-jar-file" title="Link to this heading">¶</a></h2>
+<p>Comet jar files are available in <a class="reference external" href="https://central.sonatype.com/namespace/org.apache.datafusion">Maven Central</a> for amd64 and arm64 architectures for Linux. For Apple macOS, it
+is currently necessary to build from source.</p>
+<p>Here are the direct links for downloading the Comet 0.8.0 jar file.</p>
+<ul class="simple">
+<li><p><a class="reference external" href="https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.12/0.8.0/comet-spark-spark3.4_2.12-0.8.0.jar">Comet plugin for Spark 3.4 / Scala 2.12</a></p></li>
+<li><p><a class="reference external" href="https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.13/0.8.0/comet-spark-spark3.4_2.13-0.8.0.jar">Comet plugin for Spark 3.4 / Scala 2.13</a></p></li>
+<li><p><a class="reference external" href="https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.8.0/comet-spark-spark3.5_2.12-0.8.0.jar">Comet plugin for Spark 3.5 / Scala 2.12</a></p></li>
+<li><p><a class="reference external" href="https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.13/0.8.0/comet-spark-spark3.5_2.13-0.8.0.jar">Comet plugin for Spark 3.5 / Scala 2.13</a></p></li>
+</ul>
+</section>
+<section id="building-from-source">
+<h2>Building from source<a class="headerlink" href="#building-from-source" title="Link to this heading">¶</a></h2>
+<p>Refer to the <a class="reference internal" href="source.html"><span class="std std-doc">Building from Source</span></a> guide for instructions from building Comet from source, either from official
+source releases, or from the latest code in the GitHub repository.</p>
+</section>
+<section id="deploying-to-kubernetes">
+<h2>Deploying to Kubernetes<a class="headerlink" href="#deploying-to-kubernetes" title="Link to this heading">¶</a></h2>
+<p>See the <a class="reference internal" href="kubernetes.html"><span class="std std-doc">Comet Kubernetes Guide</span></a> guide.</p>
+</section>
+<section id="run-spark-shell-with-comet-enabled">
+<h2>Run Spark Shell with Comet enabled<a class="headerlink" href="#run-spark-shell-with-comet-enabled" title="Link to this heading">¶</a></h2>
+<p>Make sure <code class="docutils literal notranslate"><span class="pre">SPARK_HOME</span></code> points to the same Spark version as Comet was built for.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span>spark/target/comet-spark-spark3.5_2.12-0.8.0-SNAPSHOT.jar
+
+<span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--jars<span class="w"> </span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.driver.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>16g
+</pre></div>
+</div>
+<section id="verify-comet-enabled-for-spark-sql-query">
+<h3>Verify Comet enabled for Spark SQL query<a class="headerlink" href="#verify-comet-enabled-for-spark-sql-query" title="Link to this heading">¶</a></h3>
+<p>Create a test Parquet source</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="p">(</span><span class="mi">0</span><span class="w"> </span><span class="n">until</span><span class="w"> </span><span class="mi">10</span><span class="p">).</span><span class="n">toDF</span><span class="p">(</span><span class="s">&quot;a&quot;</span><span class="p">).</span><span class="n">write</span><span class="p">.</span><span class="n">mode</span><span class="p">(</span><span class="s">&quot;overwrite&quot;</span><span class="p">).</span><span class="n">parquet</span><span class="p">(</span><span class="s">&quot;/tmp/test&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Query the data from the test source and check:</p>
+<ul class="simple">
+<li><p>INFO message shows the native Comet library has been initialized.</p></li>
+<li><p>The query plan reflects Comet operators being used for this query instead of Spark ones</p></li>
+</ul>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">read</span><span class="p">.</span><span class="n">parquet</span><span class="p">(</span><span class="s">&quot;/tmp/test&quot;</span><span class="p">).</span><span class="n">createOrReplaceTempView</span><span class="p">(</span><span class="s">&quot;t1&quot;</span><span class="p">)</span>
+<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;select * from t1 where a &gt; 5&quot;</span><span class="p">).</span><span class="n">explain</span>
+<span class="nc">INFO</span><span class="w"> </span><span class="n">src</span><span class="o">/</span><span class="n">lib</span><span class="p">.</span><span class="n">rs</span><span class="p">:</span><span class="w"> </span><span class="nc">Comet</span><span class="w"> </span><span class="n">native</span><span class="w"> </span><span class="n">library</span><span class="w"> </span><span class="n">initialized</span>
+<span class="o">==</span><span class="w"> </span><span class="nc">Physical</span><span class="w"> </span><span class="nc">Plan</span><span class="w"> </span><span class="o">==</span>
+<span class="w">        </span><span class="o">*</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span><span class="w"> </span><span class="nc">ColumnarToRow</span>
+<span class="w">        </span><span class="o">+-</span><span class="w"> </span><span class="nc">CometFilter</span><span class="w"> </span><span class="p">[</span><span class="n">a#</span><span class="mi">14</span><span class="p">],</span><span class="w"> </span><span class="p">(</span><span class="n">isnotnull</span><span class="p">(</span><span class="n">a#</span><span class="mi">14</span><span class="p">)</span><span class="w"> </span><span class="nc">AND</span><span class="w"> </span><span class="p">(</span><span class="n">a#</span><span class="mi">14</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">5</span><span class="p">))</span>
+<span class="w">          </span><span class="o">+-</span><span class="w"> </span><span class="nc">CometScan</span><span class="w"> </span><span class="n">parquet</span><span class="w"> </span><span class="p">[</span><span class="n">a#</span><span class="mi">14</span><span class="p">]</span><span class="w"> </span><span class="nc">Batched</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nc">DataFilters</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="n">isnotnull</span><span class="p">(</span><span class="n">a#</span><span class="mi">14</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="n">a#</span><span class="mi">14</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">5</span><span class="p">)],</span>
+<span class="w">             </span><span class="nc">Format</span><span class="p">:</span><span class="w"> </span><span class="nc">CometParquet</span><span class="p">,</span><span class="w"> </span><span class="nc">Location</span><span class="p">:</span><span class="w"> </span><span class="nc">InMemoryFileIndex</span><span class="p">(</span><span class="mi">1</span><span class="w"> </span><span class="n">paths</span><span class="p">)[</span><span class="n">file</span><span class="p">:</span><span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">test</span><span class="p">],</span><span class="w"> </span><span class="nc">PartitionFilters</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">             </span><span class="nc">PushedFilters</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="nc">IsNotNull</span><span class="p">(</span><span class="n">a</span><span class="p">),</span><span class="w"> </span><span class="nc">GreaterThan</span><span class="p">(</span><span class="n">a</span><span class="p">,</span><span class="mi">5</span><span class="p">)],</span><span class="w"> </span><span class="nc">ReadSchema</span><span class="p">:</span><span class="w"> </span><span class="n">struct</span><span class="o">&lt;</span><span class="n">a</span><span class="p">:</span><span class="n">int</span><span class="o">&gt;</span>
+</pre></div>
+</div>
+<p>With the configuration <code class="docutils literal notranslate"><span class="pre">spark.comet.explainFallback.enabled=true</span></code>, Comet will log any reasons that prevent a plan from
+being executed natively.</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="nc">Seq</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span><span class="mi">2</span><span class="p">,</span><span class="mi">3</span><span class="p">,</span><span class="mi">4</span><span class="p">).</span><span class="n">toDF</span><span class="p">(</span><span class="s">&quot;a&quot;</span><span class="p">).</span><span class="n">write</span><span class="p">.</span><span class="n">parquet</span><span class="p">(</span><span class="s">&quot;/tmp/test.parquet&quot;</span><span class="p">)</span>
+<span class="nc">WARN</span><span class="w"> </span><span class="nc">CometSparkSessionExtensions$CometExecRule</span><span class="p">:</span><span class="w"> </span><span class="nc">Comet</span><span class="w"> </span><span class="n">cannot</span><span class="w"> </span><span class="n">execute</span><span class="w"> </span><span class="n">some</span><span class="w"> </span><span class="n">parts</span><span class="w"> </span><span class="n">of</span><span class="w"> </span><span class="bp">this</span><span class="w"> </span><span class="n">plan</span><span class="w"> </span><span class="n">natively</span><span class="w"> </span><span class="n">because</span><span class="p">:</span>
+<span class="w">  </span><span class="o">-</span><span class="w"> </span><span class="nc">LocalTableScan</span><span class="w"> </span><span class="n">is</span><span class="w"> </span><span class="n">not</span><span class="w"> </span><span class="n">supported</span>
+<span class="w">  </span><span class="o">-</span><span class="w"> </span><span class="nc">WriteFiles</span><span class="w"> </span><span class="n">is</span><span class="w"> </span><span class="n">not</span><span class="w"> </span><span class="n">supported</span>
+<span class="w">  </span><span class="o">-</span><span class="w"> </span><span class="nc">Execute</span><span class="w"> </span><span class="nc">InsertIntoHadoopFsRelationCommand</span><span class="w"> </span><span class="n">is</span><span class="w"> </span><span class="n">not</span><span class="w"> </span><span class="n">supported</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="additional-configuration">
+<h2>Additional Configuration<a class="headerlink" href="#additional-configuration" title="Link to this heading">¶</a></h2>
+<p>Depending on your deployment mode you may also need to set the driver &amp; executor class path(s) to
+explicitly contain Comet otherwise Spark may use a different class-loader for the Comet components than its internal
+components which will then fail at runtime. For example:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">driver</span><span class="o">-</span><span class="n">class</span><span class="o">-</span><span class="n">path</span> <span class="n">spark</span><span class="o">/</span><span class="n">target</span><span class="o">/</span><span class="n">comet</span><span class="o">-</span><span class="n">spark</span><span class="o">-</span><span class="n">spark3</span><span class="mf">.5_2.12</span><span class="o">-</span><span class="mf">0.8.0</span><span class="o">-</span><span class="n">SNAPSHOT</span><span class="o">.</span><span class="n">jar</span>
+</pre></div>
+</div>
+<p>Some cluster managers may require additional configuration, see <a class="reference external" href="https://spark.apache.org/docs/latest/cluster-overview.html">https://spark.apache.org/docs/latest/cluster-overview.html</a></p>
+<section id="memory-tuning">
+<h3>Memory tuning<a class="headerlink" href="#memory-tuning" title="Link to this heading">¶</a></h3>
+<p>In addition to Apache Spark memory configuration parameters, Comet introduces additional parameters to configure memory
+allocation for native execution. See <a class="reference internal" href="tuning.html"><span class="std std-doc">Comet Memory Tuning</span></a> for details.</p>
+</section>
+</section>
+</section>
+
+
+              </div>
+              
+              
+              <!-- Previous / next buttons -->
+<div class='prev-next-area'>
+    <a class='left-prev' id="prev-link" href="index.html" title="previous page">
+        <i class="fas fa-angle-left"></i>
+        <div class="prev-next-info">
+            <p class="prev-next-subtitle">previous</p>
+            <p class="prev-next-title">Comet 0.8.x User Guide</p>
+        </div>
+    </a>
+    <a class='right-next' id="next-link" href="source.html" title="next page">
+    <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Building Comet From Source</p>
+    </div>
+    <i class="fas fa-angle-right"></i>
+    </a>
+</div>
+              
+          </main>
+          
+
+      </div>
+    </div>
+  
+    <script src="../../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
+  
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p class="copyright">
+    &copy; Copyright 2023-2024, Apache Software Foundation.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p class="sphinx-version">
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 8.1.3.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
