@@ -1063,6 +1063,16 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withNulls(gen.generateLongs(dataSize)).toDF("a")
   }
 
+  // https://github.com/apache/datafusion-comet/issues/2038
+  test("test implicit cast to dictionary with case when and dictionary type") {
+    withSQLConf("parquet.enable.dictionary" -> "true") {
+      withParquetTable((0 until 10000).map(i => (i < 5000, "one")), "tbl") {
+        val df = spark.sql("select case when (_1 = true) then _2 else '' end as aaa from tbl")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
   private def generateDecimalsPrecision10Scale2(): DataFrame = {
     val values = Seq(
       BigDecimal("-99999999.999"),

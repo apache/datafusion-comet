@@ -52,10 +52,11 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.serde.ExprOuterClass.{AggExpr, DataType => ProtoDataType, Expr, ScalarFunc}
-import org.apache.comet.serde.ExprOuterClass.DataType._
+import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.Types.{DataType => ProtoDataType}
+import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.Types.ListLiteral
 import org.apache.comet.shims.CometExprShim
 
@@ -141,6 +142,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[MapValues] -> CometMapValues,
     classOf[MapFromArrays] -> CometMapFromArrays,
     classOf[GetMapValue] -> CometMapExtract,
+    classOf[EqualTo] -> CometEqualTo,
+    classOf[EqualNullSafe] -> CometEqualNullSafe,
+    classOf[Not] -> CometNot,
+    classOf[And] -> CometAnd,
+    classOf[Or] -> CometOr,
     classOf[GreaterThan] -> CometGreaterThan,
     classOf[GreaterThanOrEqual] -> CometGreaterThanOrEqual,
     classOf[LessThan] -> CometLessThan,
@@ -184,7 +190,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Log] -> CometLog,
     classOf[Log10] -> CometLog10,
     classOf[Log2] -> CometLog2,
-    classOf[Pow] -> CometScalarFunction[Pow]("pow"))
+    classOf[Pow] -> CometScalarFunction[Pow]("pow"),
+    classOf[If] -> CometIf,
+    classOf[CaseWhen] -> CometCaseWhen)
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
@@ -229,7 +237,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * doesn't mean it is supported by Comet native execution, i.e., `supportedDataType` may return
    * false for it.
    */
-  def serializeDataType(dt: DataType): Option[ExprOuterClass.DataType] = {
+  def serializeDataType(dt: org.apache.spark.sql.types.DataType): Option[Types.DataType] = {
     val typeId = dt match {
       case _: BooleanType => 0
       case _: ByteType => 1
@@ -632,42 +640,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val cast = Cast(child, expr.dataType, Some(timeZoneId), EvalMode.TRY)
         convert(cast, CometCast)
 
-      case EqualTo(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setEq(binaryExpr))
-
-      case Not(EqualTo(left, right)) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setNeq(binaryExpr))
-
-      case EqualNullSafe(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setEqNullSafe(binaryExpr))
-
-      case Not(EqualNullSafe(left, right)) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setNeqNullSafe(binaryExpr))
-
       case Literal(value, dataType)
           if supportedDataType(
             dataType,
@@ -679,7 +651,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
                 .contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()) && dataType
                 .isInstanceOf[ArrayType]) && !isComplexType(
                 dataType.asInstanceOf[ArrayType].elementType)) =>
-        val exprBuilder = ExprOuterClass.Literal.newBuilder()
+        val exprBuilder = LiteralOuterClass.Literal.newBuilder()
 
         if (value == null) {
           exprBuilder.setIsNull(true)
@@ -876,24 +848,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case And(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setAnd(binaryExpr))
-
-      case Or(left, right) =>
-        createBinaryExpr(
-          expr,
-          left,
-          right,
-          inputs,
-          binding,
-          (builder, binaryExpr) => builder.setOr(binaryExpr))
-
       case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
         // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
         // `PromotePrecision` is just a wrapper, don't need to serialize it.
@@ -1028,71 +982,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             withInfo(expr, "Comet only supports regexp_replace with an offset of 1 (no offset).")
             None
         }
-
-      case If(predicate, trueValue, falseValue) =>
-        val predicateExpr = exprToProtoInternal(predicate, inputs, binding)
-        val trueExpr = exprToProtoInternal(trueValue, inputs, binding)
-        val falseExpr = exprToProtoInternal(falseValue, inputs, binding)
-        if (predicateExpr.isDefined && trueExpr.isDefined && falseExpr.isDefined) {
-          val builder = ExprOuterClass.IfExpr.newBuilder()
-          builder.setIfExpr(predicateExpr.get)
-          builder.setTrueExpr(trueExpr.get)
-          builder.setFalseExpr(falseExpr.get)
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setIf(builder)
-              .build())
-        } else {
-          withInfo(expr, predicate, trueValue, falseValue)
-          None
-        }
-
-      case CaseWhen(branches, elseValue) =>
-        var allBranches: Seq[Expression] = Seq()
-        val whenSeq = branches.map(elements => {
-          allBranches = allBranches :+ elements._1
-          exprToProtoInternal(elements._1, inputs, binding)
-        })
-        val thenSeq = branches.map(elements => {
-          allBranches = allBranches :+ elements._2
-          exprToProtoInternal(elements._2, inputs, binding)
-        })
-        assert(whenSeq.length == thenSeq.length)
-        if (whenSeq.forall(_.isDefined) && thenSeq.forall(_.isDefined)) {
-          val builder = ExprOuterClass.CaseWhen.newBuilder()
-          builder.addAllWhen(whenSeq.map(_.get).asJava)
-          builder.addAllThen(thenSeq.map(_.get).asJava)
-          if (elseValue.isDefined) {
-            val elseValueExpr =
-              exprToProtoInternal(elseValue.get, inputs, binding)
-            if (elseValueExpr.isDefined) {
-              builder.setElseExpr(elseValueExpr.get)
-            } else {
-              withInfo(expr, elseValue.get)
-              return None
-            }
-          }
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setCaseWhen(builder)
-              .build())
-        } else {
-          withInfo(expr, allBranches: _*)
-          None
-        }
-
-      case n @ Not(In(_, _)) =>
-        CometNotIn.convert(n, inputs, binding)
-
-      case Not(child) =>
-        createUnaryExpr(
-          expr,
-          child,
-          inputs,
-          binding,
-          (builder, unaryExpr) => builder.setNot(unaryExpr))
 
       case UnaryMinus(child, failOnError) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
@@ -1870,6 +1759,23 @@ object QueryPlanSerde extends Logging with CometExprShim {
           scanBuilder.setSource(source)
         }
 
+        val ffiSafe = op match {
+          case _ if isExchangeSink(op) =>
+            // Source of broadcast exchange batches is ArrowStreamReader
+            // Source of shuffle exchange batches is NativeBatchDecoderIterator
+            true
+          case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_COMET =>
+            // native_comet scan reuses mutable buffers
+            false
+          case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
+            // native_iceberg_compat scan reuses mutable buffers for constant columns
+            // https://github.com/apache/datafusion-comet/issues/2152
+            false
+          case _ =>
+            false
+        }
+        scanBuilder.setArrowFfiSafe(ffiSafe)
+
         val scanTypes = op.output.flatten { attr =>
           serializeDataType(attr.dataType)
         }
@@ -1921,6 +1827,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * called.
    */
   private def isCometSink(op: SparkPlan): Boolean = {
+    if (isExchangeSink(op)) {
+      return true
+    }
     op match {
       case s if isCometScan(s) => true
       case _: CometSparkToColumnarExec => true
@@ -1928,15 +1837,21 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case _: CoalesceExec => true
       case _: CollectLimitExec => true
       case _: UnionExec => true
+      case _: TakeOrderedAndProjectExec => true
+      case _: WindowExec => true
+      case _ => false
+    }
+  }
+
+  private def isExchangeSink(op: SparkPlan): Boolean = {
+    op match {
       case _: ShuffleExchangeExec => true
       case ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) => true
       case ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) => true
-      case _: TakeOrderedAndProjectExec => true
       case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
       case BroadcastQueryStageExec(_, ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) =>
         true
       case _: BroadcastExchangeExec => true
-      case _: WindowExec => true
       case _ => false
     }
   }

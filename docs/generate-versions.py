@@ -1,5 +1,5 @@
-#!/bin/bash
-#
+#!/usr/bin/python
+##############################################################################
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -16,23 +16,15 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-#
+##############################################################################
 
-set -e
-rm -rf build 2> /dev/null
-rm -rf temp 2> /dev/null
-mkdir temp
-cp -rf source/* temp/
+# This script clones release branches such as branch-0.9 and then copies the user guide markdown
+# for inclusion in the published documentation so that we publish user guides for released versions
+# of Comet
 
-# move current user guide into "latest" directory
-mkdir temp/user-guide/latest
-mv temp/user-guide/*.md temp/user-guide/latest
-mv temp/user-guide/index.rst temp/user-guide/latest
+import os
 
-# Add user guide from published releases
-python3 generate-versions.py
-
-# Remove overview pages (this used to be part of the user guide but is now a top level page)
-find temp/user-guide -name overview.md -exec rm {} \;
-
-make SOURCEDIR=`pwd`/temp html
+for version in ["0.8", "0.9"]:
+    os.system(f"git clone --depth 1 https://github.com/apache/datafusion-comet.git -b branch-{version} comet-{version}")
+    os.system(f"mkdir temp/user-guide/{version}")
+    os.system(f"cp -rf comet-{version}/docs/source/user-guide/* temp/user-guide/{version}")

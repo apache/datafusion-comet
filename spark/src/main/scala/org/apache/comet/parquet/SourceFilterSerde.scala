@@ -29,13 +29,14 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.serde.ExprOuterClass
 import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.LiteralOuterClass
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
 object SourceFilterSerde extends Logging {
 
   def createNameExpr(
       name: String,
-      schema: StructType): Option[(DataType, ExprOuterClass.Expr)] = {
+      schema: StructType): Option[(org.apache.spark.sql.types.DataType, ExprOuterClass.Expr)] = {
     val filedWithIndex = schema.fields.zipWithIndex.find { case (field, _) =>
       field.name == name
     }
@@ -66,8 +67,10 @@ object SourceFilterSerde extends Logging {
   /**
    * create a literal value native expression for source filter value, the value is a scala value
    */
-  def createValueExpr(value: Any, dataType: DataType): Option[ExprOuterClass.Expr] = {
-    val exprBuilder = ExprOuterClass.Literal.newBuilder()
+  def createValueExpr(
+      value: Any,
+      dataType: org.apache.spark.sql.types.DataType): Option[ExprOuterClass.Expr] = {
+    val exprBuilder = LiteralOuterClass.Literal.newBuilder()
     var valueIsSet = true
     if (value == null) {
       exprBuilder.setIsNull(true)
