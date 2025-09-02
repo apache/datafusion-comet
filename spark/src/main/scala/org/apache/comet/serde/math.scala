@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Atan2, Attribute, Ceil, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Unhex}
-import org.apache.spark.sql.types.{DecimalType, StringType}
+import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
@@ -118,7 +118,7 @@ object CometHex extends CometExpressionSerde[Hex] with MathExprBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
-    val optExpr = scalarFunctionExprToProtoWithReturnType("hex", StringType, childExpr)
+    val optExpr = scalarFunctionExprToProtoWithReturnType("hex", expr.dataType, childExpr)
     optExprWithInfo(optExpr, expr, expr.child)
   }
 }
