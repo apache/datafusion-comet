@@ -143,66 +143,66 @@ public abstract class CometVector extends ColumnVector {
 
   @Override
   public boolean getBoolean(int rowId) {
-    throw new UnsupportedOperationException("Not yet supported");
+    throw notImplementedException();
   }
 
   @Override
   public byte getByte(int rowId) {
-    throw new UnsupportedOperationException("Not yet supported");
+    throw notImplementedException();
   }
 
   @Override
   public short getShort(int rowId) {
-    throw new UnsupportedOperationException("Not yet supported");
+    throw notImplementedException();
   }
 
   @Override
   public int getInt(int rowId) {
-    throw new UnsupportedOperationException("Not yet supported");
+    throw notImplementedException();
   }
 
   @Override
   public long getLong(int rowId) {
-    throw new UnsupportedOperationException("Not yet supported");
+    throw notImplementedException();
   }
 
   public long getLongDecimal(int rowId) {
-    throw new UnsupportedOperationException("Not yet supported");
+    throw notImplementedException();
   }
 
   @Override
   public float getFloat(int rowId) {
-    throw new UnsupportedOperationException("Not yet supported");
+    throw notImplementedException();
   }
 
   @Override
   public double getDouble(int rowId) {
-    throw new UnsupportedOperationException("Not yet supported");
+    throw notImplementedException();
   }
 
   @Override
   public UTF8String getUTF8String(int rowId) {
-    throw new UnsupportedOperationException("Not yet supported");
+    throw notImplementedException();
   }
 
   @Override
   public byte[] getBinary(int rowId) {
-    throw new UnsupportedOperationException("Not yet supported");
+    throw notImplementedException();
   }
 
   @Override
   public ColumnarArray getArray(int i) {
-    throw new UnsupportedOperationException("Not yet supported");
+    throw notImplementedException();
   }
 
   @Override
   public ColumnarMap getMap(int i) {
-    throw new UnsupportedOperationException("Not yet supported");
+    throw notImplementedException();
   }
 
   @Override
   public ColumnVector getChild(int i) {
-    throw new UnsupportedOperationException("Not yet supported");
+    throw notImplementedException();
   }
 
   @Override
@@ -260,5 +260,10 @@ public abstract class CometVector extends ColumnVector {
 
   protected static CometVector getVector(ValueVector vector, boolean useDecimal128) {
     return getVector(vector, useDecimal128, null);
+  }
+
+  private UnsupportedOperationException notImplementedException() {
+    return new UnsupportedOperationException(
+        "CometVector subclass " + this.getClass().getName() + " does not implement this method");
   }
 }
