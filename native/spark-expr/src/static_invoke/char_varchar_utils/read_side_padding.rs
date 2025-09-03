@@ -83,34 +83,13 @@ fn spark_read_side_padding2(
                 DataType::Utf8 => spark_read_side_padding_internal::<i32>(
                     array,
                     truncate,
-                    ColumnarValue::Array(Arc::<dyn arrow::array::Array>::clone(array_int)),
+                    ColumnarValue::Array(Arc::<dyn Array>::clone(array_int)),
                 ),
                 DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(
                     array,
                     truncate,
-                    ColumnarValue::Array(Arc::<dyn arrow::array::Array>::clone(array_int)),
+                    ColumnarValue::Array(Arc::<dyn Array>::clone(array_int)),
                 ),
-                // Dictionary support required for SPARK-48498
-                DataType::Dictionary(_, value_type) => {
-                    let dict = as_dictionary_array::<Int32Type>(array);
-                    let col = if value_type.as_ref() == &DataType::Utf8 {
-                        spark_read_side_padding_internal::<i32>(
-                            dict.values(),
-                            truncate,
-                            ColumnarValue::Array(Arc::<dyn arrow::array::Array>::clone(array_int)),
-                        )?
-                    } else {
-                        spark_read_side_padding_internal::<i64>(
-                            dict.values(),
-                            truncate,
-                            ColumnarValue::Array(Arc::<dyn arrow::array::Array>::clone(array_int)),
-                        )?
-                    };
-                    // col consists of an array, so arg of to_array() is not used. Can be anything
-                    let values = col.to_array(0)?;
-                    let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
-                    Ok(ColumnarValue::Array(make_array(result.into())))
-                }
                 other => Err(DataFusionError::Internal(format!(
                     "Unsupported data type {other:?} for function rpad/read_side_padding",
                 ))),
