@@ -114,18 +114,18 @@ object CometCoalesce extends CometExpressionSerde[Coalesce] {
       builder.addAllThen(thenSeq.map(_.get).asJava)
       val elseValueExpr = exprToProtoInternal(elseValue, inputs, binding)
       if (elseValueExpr.isDefined) {
-          builder.setElseExpr(elseValueExpr.get)
+        builder.setElseExpr(elseValueExpr.get)
       } else {
-          withInfo(expr, elseValue)
-          return None
-        }
+        withInfo(expr, elseValue)
+        return None
+      }
       Some(
         ExprOuterClass.Expr
           .newBuilder()
           .setCaseWhen(builder)
           .build())
     } else {
-      withInfo(expr, branches: _*)
+      withInfo(expr, branches.map(_._2): _*)
       None
     }
   }
