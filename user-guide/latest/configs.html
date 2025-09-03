@@ -531,255 +531,251 @@ under the License.
 <td><p>Java uses locale-specific rules when converting strings to upper or lower case and Rust does not, so we disable upper and lower by default.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.cast.allowIncompatible</p></td>
-<td><p>Comet is not currently fully compatible with Spark for all cast operations. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).</p></td>
-<td><p>false</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.columnar.shuffle.async.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.columnar.shuffle.async.enabled</p></td>
 <td><p>Whether to enable asynchronous shuffle for Arrow-based shuffle.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.columnar.shuffle.async.max.thread.num</p></td>
+<tr class="row-odd"><td><p>spark.comet.columnar.shuffle.async.max.thread.num</p></td>
 <td><p>Maximum number of threads on an executor used for Comet async columnar shuffle. This is the upper bound of total number of shuffle threads per executor. In other words, if the number of cores * the number of shuffle threads per task <code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.async.thread.num</span></code> is larger than this config. Comet will use this config as the number of shuffle threads per executor instead.</p></td>
 <td><p>100</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.columnar.shuffle.async.thread.num</p></td>
+<tr class="row-even"><td><p>spark.comet.columnar.shuffle.async.thread.num</p></td>
 <td><p>Number of threads used for Comet async columnar shuffle per shuffle task. Note that more threads means more memory requirement to buffer shuffle data before flushing to disk. Also, more threads may not always improve performance, and should be set based on the number of cores available.</p></td>
 <td><p>3</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.convert.csv.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.convert.csv.enabled</p></td>
 <td><p>When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to Arrow format. Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.convert.json.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.convert.json.enabled</p></td>
 <td><p>When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to Arrow format. Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.convert.parquet.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.convert.parquet.enabled</p></td>
 <td><p>When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to Arrow format. Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.debug.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.debug.enabled</p></td>
 <td><p>Whether to enable debug mode for Comet. When enabled, Comet will do additional checks for debugging purpose. For example, validating array when importing arrays from JVM at native side. Note that these checks may be expensive in performance and should only be enabled for debugging purpose.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.dppFallback.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.dppFallback.enabled</p></td>
 <td><p>Whether to fall back to Spark for queries that use DPP.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.enabled</p></td>
 <td><p>Whether to enable Comet extension for Spark. When this is turned on, Spark will use Comet to read Parquet data source. Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled. By default, this config is the value of the env var <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET</span></code> if set, or true otherwise.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exceptionOnDatetimeRebase</p></td>
+<tr class="row-odd"><td><p>spark.comet.exceptionOnDatetimeRebase</p></td>
 <td><p>Whether to throw exception when seeing dates/timestamps from the legacy hybrid (Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according to the Proleptic Gregorian calendar. When this is true, Comet will throw exceptions when seeing these dates/timestamps that were written by Spark version before 3.0. If this is false, these dates/timestamps will be read as if they were written to the Proleptic Gregorian calendar and will not be rebased.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.exec.aggregate.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.aggregate.enabled</p></td>
 <td><p>Whether to enable aggregate by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exec.broadcastExchange.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.exec.broadcastExchange.enabled</p></td>
 <td><p>Whether to enable broadcastExchange by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.exec.broadcastHashJoin.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.broadcastHashJoin.enabled</p></td>
 <td><p>Whether to enable broadcastHashJoin by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exec.coalesce.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.exec.coalesce.enabled</p></td>
 <td><p>Whether to enable coalesce by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.exec.collectLimit.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.collectLimit.enabled</p></td>
 <td><p>Whether to enable collectLimit by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exec.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.exec.enabled</p></td>
 <td><p>Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of ‘spark.comet.exec.&lt;operator_name&gt;.enabled’ at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.exec.expand.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.expand.enabled</p></td>
 <td><p>Whether to enable expand by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exec.filter.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.exec.filter.enabled</p></td>
 <td><p>Whether to enable filter by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.exec.globalLimit.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.globalLimit.enabled</p></td>
 <td><p>Whether to enable globalLimit by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exec.hashJoin.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.exec.hashJoin.enabled</p></td>
 <td><p>Whether to enable hashJoin by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.exec.initCap.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.initCap.enabled</p></td>
 <td><p>Whether to enable initCap by default.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exec.localLimit.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.exec.localLimit.enabled</p></td>
 <td><p>Whether to enable localLimit by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.exec.memoryPool</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.memoryPool</p></td>
 <td><p>The type of memory pool to be used for Comet native execution. When running Spark in on-heap mode, available pool types are ‘greedy’, ‘fair_spill’, ‘greedy_task_shared’, ‘fair_spill_task_shared’, ‘greedy_global’, ‘fair_spill_global’, and <code class="docutils literal notranslate"><span class="pre">unbounded</span></code>. When running Spark in off-heap mode, available pool types are ‘unified’ and <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code>. The default pool type is <code class="docutils literal notranslate"><span class="pre">greedy_task_shared</span></code> for on-heap mode and <code class="docutils literal notranslate"><span class="pre">unified</span></code> for off-heap mode. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
 <td><p>default</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exec.project.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.exec.project.enabled</p></td>
 <td><p>Whether to enable project by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.exec.replaceSortMergeJoin</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.replaceSortMergeJoin</p></td>
 <td><p>Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exec.shuffle.compression.codec</p></td>
+<tr class="row-odd"><td><p>spark.comet.exec.shuffle.compression.codec</p></td>
 <td><p>The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and snappy are supported. Compression can be disabled by setting spark.shuffle.compress=false.</p></td>
 <td><p>lz4</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.exec.shuffle.compression.zstd.level</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.shuffle.compression.zstd.level</p></td>
 <td><p>The compression level to use when compressing shuffle files with zstd.</p></td>
 <td><p>1</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exec.shuffle.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.exec.shuffle.enabled</p></td>
 <td><p>Whether to enable Comet native shuffle. Note that this requires setting ‘spark.shuffle.manager’ to ‘org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager’. ‘spark.shuffle.manager’ must be set before starting the Spark application and cannot be changed during the application.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.exec.sort.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.sort.enabled</p></td>
 <td><p>Whether to enable sort by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exec.sortMergeJoin.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.exec.sortMergeJoin.enabled</p></td>
 <td><p>Whether to enable sortMergeJoin by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.exec.sortMergeJoinWithJoinFilter.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.sortMergeJoinWithJoinFilter.enabled</p></td>
 <td><p>Experimental support for Sort Merge Join with filter</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exec.stddev.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.exec.stddev.enabled</p></td>
 <td><p>Whether to enable stddev by default. stddev is slower than Spark’s implementation.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.exec.takeOrderedAndProject.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.takeOrderedAndProject.enabled</p></td>
 <td><p>Whether to enable takeOrderedAndProject by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exec.union.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.exec.union.enabled</p></td>
 <td><p>Whether to enable union by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.exec.window.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.window.enabled</p></td>
 <td><p>Whether to enable window by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.explain.native.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.explain.native.enabled</p></td>
 <td><p>When this setting is enabled, Comet will provide a tree representation of the native query plan before execution and again after execution, with metrics.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.explain.verbose.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.explain.verbose.enabled</p></td>
 <td><p>When this setting is enabled, Comet will provide a verbose tree representation of the extended information.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.explainFallback.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.explainFallback.enabled</p></td>
 <td><p>When this setting is enabled, Comet will provide logging explaining the reason(s) why a query stage cannot be executed natively. Set this to false to reduce the amount of logging.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.expression.allowIncompatible</p></td>
+<tr class="row-even"><td><p>spark.comet.expression.allowIncompatible</p></td>
 <td><p>Comet is not currently fully compatible with Spark for all expressions. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.logFallbackReasons.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.logFallbackReasons.enabled</p></td>
 <td><p>When this setting is enabled, Comet will log warnings for all fallback reasons.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.memory.overhead.factor</p></td>
+<tr class="row-even"><td><p>spark.comet.memory.overhead.factor</p></td>
 <td><p>Fraction of executor memory to be allocated as additional memory for Comet when running Spark in on-heap mode. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
 <td><p>0.2</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.memory.overhead.min</p></td>
+<tr class="row-odd"><td><p>spark.comet.memory.overhead.min</p></td>
 <td><p>Minimum amount of additional memory to be allocated per executor process for Comet, in MiB, when running Spark in on-heap mode. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
 <td><p>402653184b</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.memoryOverhead</p></td>
+<tr class="row-even"><td><p>spark.comet.memoryOverhead</p></td>
 <td><p>The amount of additional memory to be allocated per executor process for Comet, in MiB, when running Spark in on-heap mode. This config is optional. If this is not specified, it will be set to <code class="docutils literal notranslate"><span class="pre">spark.comet.memory.overhead.factor</span></code> * <code class="docutils literal notranslate"><span class="pre">spark.executor.memory</span></code>. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.metrics.updateInterval</p></td>
+<tr class="row-odd"><td><p>spark.comet.metrics.updateInterval</p></td>
 <td><p>The interval in milliseconds to update metrics. If interval is negative, metrics will be updated upon task completion.</p></td>
 <td><p>3000</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.native.shuffle.partitioning.hash.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.native.shuffle.partitioning.hash.enabled</p></td>
 <td><p>Whether to enable hash partitioning for Comet native shuffle.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.native.shuffle.partitioning.range.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.native.shuffle.partitioning.range.enabled</p></td>
 <td><p>Experimental feature to enable range partitioning for Comet native shuffle. This feature is experimental while we investigate scenarios that don’t partition data correctly.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.nativeLoadRequired</p></td>
+<tr class="row-even"><td><p>spark.comet.nativeLoadRequired</p></td>
 <td><p>Whether to require Comet native library to load successfully when Comet is enabled. If not, Comet will silently fallback to Spark when it fails to load the native lib. Otherwise, an error will be thrown and the Spark job will be aborted.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.parquet.enable.directBuffer</p></td>
+<tr class="row-odd"><td><p>spark.comet.parquet.enable.directBuffer</p></td>
 <td><p>Whether to use Java direct byte buffer when reading Parquet.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.parquet.read.io.adjust.readRange.skew</p></td>
+<tr class="row-even"><td><p>spark.comet.parquet.read.io.adjust.readRange.skew</p></td>
 <td><p>In the parallel reader, if the read ranges submitted are skewed in sizes, this option will cause the reader to break up larger read ranges into smaller ranges to reduce the skew. This will result in a slightly larger number of connections opened to the file system but may give improved performance.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.parquet.read.io.mergeRanges</p></td>
+<tr class="row-odd"><td><p>spark.comet.parquet.read.io.mergeRanges</p></td>
 <td><p>When enabled the parallel reader will try to merge ranges of data that are separated by less than ‘comet.parquet.read.io.mergeRanges.delta’ bytes. Longer continuous reads are faster on cloud storage.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.parquet.read.io.mergeRanges.delta</p></td>
+<tr class="row-even"><td><p>spark.comet.parquet.read.io.mergeRanges.delta</p></td>
 <td><p>The delta in bytes between consecutive read ranges below which the parallel reader will try to merge the ranges. The default is 8MB.</p></td>
 <td><p>8388608</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.parquet.read.parallel.io.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.parquet.read.parallel.io.enabled</p></td>
 <td><p>Whether to enable Comet’s parallel reader for Parquet files. The parallel reader reads ranges of consecutive data in a  file in parallel. It is faster for large files and row groups but uses more resources.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.parquet.read.parallel.io.thread-pool.size</p></td>
+<tr class="row-even"><td><p>spark.comet.parquet.read.parallel.io.thread-pool.size</p></td>
 <td><p>The maximum number of parallel threads the parallel reader will use in a single executor. For executors configured with a smaller number of cores, use a smaller number.</p></td>
 <td><p>16</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.parquet.respectFilterPushdown</p></td>
+<tr class="row-odd"><td><p>spark.comet.parquet.respectFilterPushdown</p></td>
 <td><p>Whether to respect Spark’s PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be respected when running the Spark SQL test suite but the default setting results in poor performance in Comet when using the new native scans, disabled by default</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.regexp.allowIncompatible</p></td>
+<tr class="row-even"><td><p>spark.comet.regexp.allowIncompatible</p></td>
 <td><p>Comet is not currently fully compatible with Spark for all regular expressions. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.scan.allowIncompatible</p></td>
+<tr class="row-odd"><td><p>spark.comet.scan.allowIncompatible</p></td>
 <td><p>Some Comet scan implementations are not currently fully compatible with Spark for all datatypes. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.scan.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.scan.enabled</p></td>
 <td><p>Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.scan.preFetch.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.scan.preFetch.enabled</p></td>
 <td><p>Whether to enable pre-fetching feature of CometScan.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.scan.preFetch.threadNum</p></td>
+<tr class="row-even"><td><p>spark.comet.scan.preFetch.threadNum</p></td>
 <td><p>The number of threads running pre-fetching for CometScan. Effective if spark.comet.scan.preFetch.enabled is enabled. Note that more pre-fetching threads means more memory requirement to store pre-fetched row groups.</p></td>
 <td><p>2</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.shuffle.preferDictionary.ratio</p></td>
+<tr class="row-odd"><td><p>spark.comet.shuffle.preferDictionary.ratio</p></td>
 <td><p>The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. Note that this config is only used when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> is <code class="docutils literal notranslate"><span class="pre">jvm</span></code>.</p></td>
 <td><p>10.0</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.shuffle.sizeInBytesMultiplier</p></td>
+<tr class="row-even"><td><p>spark.comet.shuffle.sizeInBytesMultiplier</p></td>
 <td><p>Comet reports smaller sizes for shuffle due to using Arrow’s columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy.</p></td>
 <td><p>1.0</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.sparkToColumnar.supportedOperatorList</p></td>
+<tr class="row-odd"><td><p>spark.comet.sparkToColumnar.supportedOperatorList</p></td>
 <td><p>A comma-separated list of operators that will be converted to Arrow columnar format when ‘spark.comet.sparkToColumnar.enabled’ is true</p></td>
 <td><p>Range,InMemoryTableScan</p></td>
 </tr>

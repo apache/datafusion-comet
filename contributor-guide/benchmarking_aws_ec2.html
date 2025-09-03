@@ -689,7 +689,7 @@ wget<span class="w"> </span>https://repo1.maven.org/maven2/com/amazonaws/aws-jav
 <span class="w">  </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.comet.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span>spark.comet.cast.allowIncompatible<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span>spark.comet.expression.allowIncompatible<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.comet.exec.replaceSortMergeJoin<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.comet.exec.shuffle.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--conf<span class="w"> </span>spark.comet.exec.shuffle.fallbackToColumnar<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
