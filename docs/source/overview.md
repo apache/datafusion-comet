@@ -28,13 +28,13 @@ Spark ecosystem without requiring any code changes.
 
 The following diagram provides an overview of Comet's architecture.
 
-![Comet Overview](../_static/images/comet-overview.png)
+![Comet Overview](/_static/images/comet-overview.png)
 
 ## Architecture
 
 The following diagram shows how Comet integrates with Apache Spark.
 
-![Comet System Diagram](../_static/images/comet-system-diagram.png)
+![Comet System Diagram](/_static/images/comet-system-diagram.png)
 
 ## Feature Parity with Apache Spark
 
