@@ -563,6 +563,6 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
           |select 1 a
           |""".stripMargin,
-      "select array(array(1, 2, null), array(), array(10), null) from tbl")
+      "select array(array(1, 2, null), array(), array(10), null, array(null)) from tbl")
   }
 }

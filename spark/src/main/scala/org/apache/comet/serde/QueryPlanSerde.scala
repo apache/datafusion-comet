@@ -760,9 +760,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
             allowComplex = value == null ||
               // Nested literal support for native reader
               // can be tracked https://github.com/apache/datafusion-comet/issues/1937
-              // now supports only Array of primitive
-              (Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION)
-                .contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()) && dataType
+              (dataType
                 .isInstanceOf[ArrayType] && (!isComplexType(
                 dataType.asInstanceOf[ArrayType].elementType) || dataType
                 .asInstanceOf[ArrayType]
