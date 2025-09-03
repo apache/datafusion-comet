@@ -29,6 +29,7 @@ name: Deploy DataFusion Comet site
 jobs:
   build-docs:
     name: Build docs
+    if: ${{ startsWith(github.repository, 'apache/') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout docs sources
