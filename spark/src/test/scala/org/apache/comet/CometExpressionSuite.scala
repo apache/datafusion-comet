@@ -322,7 +322,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswer("SELECT try_add(_1, _2) FROM tbl")
     }
   }
-  test("fix_rpad") {
+  test("Verify rpad expr support for second arg instead of just literal") {
     withTable("t1") {
       val value = "IfIWasARoadIWouldBeBent"
       sql("create table t1(c1 varchar(100), c2 int) using parquet")
