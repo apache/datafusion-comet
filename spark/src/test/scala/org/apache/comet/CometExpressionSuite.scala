@@ -489,18 +489,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 <<<<<<< HEAD
 =======
   test("Verify coalesce performs lazy evaluation") {
-    val data = Seq((Integer.MIN_VALUE, 0))
-    withSQLConf(
-      SQLConf.ANSI_ENABLED.key -> "true",
-      "spark.comet.explainFallback.enabled" -> "true") {
+    val data = Seq((Integer.MAX_VALUE, 9999999999999L))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
         val res = spark.sql("""
                               |SELECT
-                              |  coalesce(_1, _1/0)
+                              |  coalesce(_1, CAST(_2 AS TINYINT))
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswer(res)
+        checkSparkAnswerAndOperator(res)
       }
     }
   }
