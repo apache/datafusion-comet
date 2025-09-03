@@ -920,6 +920,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
 <<<<<<< HEAD
 =======
@@ -1012,6 +1013,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
 >>>>>>> bbe63eb0 (undo_golden_file_generation_changes)
 >>>>>>> 90860a97 (lazy_coalesce_fallback_case_statement)
+=======
+>>>>>>> b001f6b9 (lazy_coalesce_fallback_case_statement_rebase)
       case UnaryMinus(child, failOnError) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
         if (childExpr.isDefined) {

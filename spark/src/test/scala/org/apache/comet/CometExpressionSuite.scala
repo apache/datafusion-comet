@@ -115,7 +115,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("Integral Division Overflow Handling Matches Spark Behavior") {
     withTable("t1") {
-      withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
         val value = Long.MinValue
         sql("create table t1(c1 long, c2 short) using parquet")
         sql(s"insert into t1 values($value, -1)")
@@ -397,8 +397,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("ANSI support for add") {
     assume(isSpark35Plus)
     val data = Seq((Integer.MAX_VALUE, 1), (Integer.MIN_VALUE, -1))
-    withSQLConf(
-      SQLConf.ANSI_ENABLED.key -> "true") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
         spark.table("tbl").printSchema()
         val res = spark.sql("""
@@ -443,8 +442,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("ANSI support for multiply") {
     val data = Seq((Integer.MAX_VALUE, 10))
-    withSQLConf(
-      SQLConf.ANSI_ENABLED.key -> "true") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
         val res = spark.sql("""
                               |SELECT
@@ -488,6 +486,26 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+<<<<<<< HEAD
+=======
+  test("Verify coalesce performs lazy evaluation") {
+    val data = Seq((Integer.MIN_VALUE, 0))
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      "spark.comet.explainFallback.enabled" -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  coalesce(_1, _1/0)
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkAnswer(res)
+      }
+    }
+  }
+
+>>>>>>> b001f6b9 (lazy_coalesce_fallback_case_statement_rebase)
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "true") {
@@ -626,7 +644,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast timestamp and timestamp_ntz") {
     withSQLConf(
-      SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+      SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
+      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
