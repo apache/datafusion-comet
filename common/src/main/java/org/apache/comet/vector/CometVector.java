@@ -22,8 +22,6 @@ package org.apache.comet.vector;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 
-import org.jetbrains.annotations.NotNull;
-
 import org.apache.arrow.vector.FixedWidthVector;
 import org.apache.arrow.vector.ValueVector;
 import org.apache.arrow.vector.complex.ListVector;
@@ -264,7 +262,7 @@ public abstract class CometVector extends ColumnVector {
     return getVector(vector, useDecimal128, null);
   }
 
-  private @NotNull UnsupportedOperationException notImplementedException() {
+  private UnsupportedOperationException notImplementedException() {
     return new UnsupportedOperationException(
         "CometVector subclass " + this.getClass().getName() + " does not implement this method");
   }
