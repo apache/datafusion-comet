@@ -25,6 +25,8 @@ import java.util.Locale
 import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.conf.Configuration
 
+import org.apache.comet.CometConf.COMET_LIBHDFS_SCHEMES_KEY
+
 object NativeConfig {
 
   private val objectStoreConfigPrefixes = Map(
@@ -40,8 +42,6 @@ object NativeConfig {
     "abfs" -> Seq("fs.abfs."),
     // Azure Data Lake Storage Gen2 secure configurations (can use both prefixes)
     "abfss" -> Seq("fs.abfss.", "fs.abfs."))
-
-  val COMET_LIBHDFS_SCHEMES_KEY = "fs.comet.libhdfs.schemes"
 
   /**
    * Extract object store configurations from Hadoop configuration for native DataFusion usage.

@@ -32,7 +32,6 @@ import org.apache.spark.sql.functions.{col, sum}
 
 import org.apache.comet.CometConf
 import org.apache.comet.hadoop.fs.FakeHDFSFileSystem
-import org.apache.comet.objectstore.NativeConfig.COMET_LIBHDFS_SCHEMES_KEY
 
 class ParquetReadFromFakeHadoopFsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -42,7 +41,7 @@ class ParquetReadFromFakeHadoopFsSuite extends CometTestBase with AdaptiveSparkP
     val conf = super.sparkConf
     conf.set("spark.hadoop.fs.fake.impl", "org.apache.comet.hadoop.fs.FakeHDFSFileSystem")
     conf.set("spark.hadoop.fs.defaultFS", FakeHDFSFileSystem.PREFIX)
-    conf.set(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY", "fake,hdfs")
+    conf.set(CometConf.COMET_LIBHDFS_SCHEMES.key, "fake,hdfs")
   }
 
   override def beforeAll(): Unit = {
