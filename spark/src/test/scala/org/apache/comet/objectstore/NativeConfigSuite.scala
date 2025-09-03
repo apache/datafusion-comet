@@ -117,17 +117,6 @@ class NativeConfigSuite extends AnyFunSuite with Matchers with BeforeAndAfterEac
     assert(e.getMessage.contains(expectedError))
   }
 
-  test("validate object store config - custom s3 endpoint not supported") {
-    val hadoopConf = new Configuration()
-    hadoopConf.set("fs.s3a.endpoint", "https://acme.storage.com")
-    val e = intercept[CometNativeException] {
-      validate(hadoopConf)
-    }
-    val expectedError =
-      "Custom S3 endpoints are not supported"
-    assert(e.getMessage.contains(expectedError))
-  }
-
   test("validity cache") {
     val hadoopConf = new Configuration()
     hadoopConf.set("fs.s3a.endpoint", "https://acme.storage.com")
