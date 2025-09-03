@@ -100,14 +100,11 @@ object CometCoalesce extends CometExpressionSerde[Coalesce] {
     val branches = expr.children.dropRight(1).map { child =>
       (IsNotNull(child), child)
     }
-    val elseValue = Some(expr.children.last)
-    var allBranches: Seq[Expression] = Seq()
+    val elseValue = expr.children.last
     val whenSeq = branches.map(elements => {
-      allBranches = allBranches :+ elements._1
       exprToProtoInternal(elements._1, inputs, binding)
     })
     val thenSeq = branches.map(elements => {
-      allBranches = allBranches :+ elements._2
       exprToProtoInternal(elements._2, inputs, binding)
     })
     assert(whenSeq.length == thenSeq.length)
@@ -115,23 +112,20 @@ object CometCoalesce extends CometExpressionSerde[Coalesce] {
       val builder = ExprOuterClass.CaseWhen.newBuilder()
       builder.addAllWhen(whenSeq.map(_.get).asJava)
       builder.addAllThen(thenSeq.map(_.get).asJava)
-      if (elseValue.isDefined) {
-        val elseValueExpr =
-          exprToProtoInternal(elseValue.get, inputs, binding)
-        if (elseValueExpr.isDefined) {
+      val elseValueExpr = exprToProtoInternal(elseValue, inputs, binding)
+      if (elseValueExpr.isDefined) {
           builder.setElseExpr(elseValueExpr.get)
-        } else {
-          withInfo(expr, elseValue.get)
+      } else {
+          withInfo(expr, elseValue)
           return None
         }
-      }
       Some(
         ExprOuterClass.Expr
           .newBuilder()
           .setCaseWhen(builder)
           .build())
     } else {
-      withInfo(expr, allBranches: _*)
+      withInfo(expr, branches: _*)
       None
     }
   }
