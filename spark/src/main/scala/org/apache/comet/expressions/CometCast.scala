@@ -19,11 +19,17 @@
 
 package org.apache.comet.expressions
 
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression}
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType}
 
-import org.apache.comet.serde.{Compatible, Incompatible, SupportLevel, Unsupported}
+import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
+import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
+import org.apache.comet.shims.CometExprShim
 
-object CometCast {
+object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
 
   def supportedTypes: Seq[DataType] =
     Seq(
@@ -41,6 +47,51 @@ object CometCast {
       DataTypes.TimestampType)
   // TODO add DataTypes.TimestampNTZType for Spark 3.4 and later
   // https://github.com/apache/datafusion-comet/issues/378
+
+  override def getSupportLevel(cast: Cast): SupportLevel = {
+    isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
+  }
+
+  override def convert(
+      cast: Cast,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(cast.child, inputs, binding)
+    if (childExpr.isDefined) {
+      castToProto(cast, cast.timeZoneId, cast.dataType, childExpr.get, evalMode(cast))
+    } else {
+      withInfo(cast, cast.child)
+      None
+    }
+  }
+
+  /**
+   * Wrap an already serialized expression in a cast.
+   */
+  def castToProto(
+      expr: Expression,
+      timeZoneId: Option[String],
+      dt: DataType,
+      childExpr: Expr,
+      evalMode: CometEvalMode.Value): Option[Expr] = {
+    serializeDataType(dt) match {
+      case Some(dataType) =>
+        val castBuilder = ExprOuterClass.Cast.newBuilder()
+        castBuilder.setChild(childExpr)
+        castBuilder.setDatatype(dataType)
+        castBuilder.setEvalMode(evalModeToProto(evalMode))
+        castBuilder.setAllowIncompat(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get())
+        castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
+        Some(
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setCast(castBuilder)
+            .build())
+      case _ =>
+        withInfo(expr, s"Unsupported datatype in castToProto: $dt")
+        None
+    }
+  }
 
   def isSupported(
       fromType: DataType,
@@ -62,7 +113,7 @@ object CometCast {
           case DataTypes.TimestampType | DataTypes.DateType | DataTypes.StringType =>
             Incompatible()
           case _ =>
-            Unsupported
+            unsupported(fromType, toType)
         }
       case (_: DecimalType, _: DecimalType) =>
         Compatible()
@@ -98,7 +149,7 @@ object CometCast {
           }
         }
         Compatible()
-      case _ => Unsupported
+      case _ => unsupported(fromType, toType)
     }
   }
 
@@ -136,7 +187,7 @@ object CometCast {
         // https://github.com/apache/datafusion-comet/issues/328
         Incompatible(Some("Not all valid formats are supported"))
       case _ =>
-        Unsupported
+        unsupported(DataTypes.StringType, toType)
     }
   }
 
@@ -171,13 +222,13 @@ object CometCast {
           isSupported(field.dataType, DataTypes.StringType, timeZoneId, evalMode) match {
             case s: Incompatible =>
               return s
-            case Unsupported =>
-              return Unsupported
+            case u: Unsupported =>
+              return u
             case _ =>
           }
         }
         Compatible()
-      case _ => Unsupported
+      case _ => unsupported(fromType, DataTypes.StringType)
     }
   }
 
@@ -187,13 +238,13 @@ object CometCast {
           DataTypes.IntegerType =>
         // https://github.com/apache/datafusion-comet/issues/352
         // this seems like an edge case that isn't important for us to support
-        Unsupported
+        unsupported(DataTypes.TimestampType, toType)
       case DataTypes.LongType =>
         // https://github.com/apache/datafusion-comet/issues/352
         Compatible()
       case DataTypes.StringType => Compatible()
       case DataTypes.DateType => Compatible()
-      case _ => Unsupported
+      case _ => unsupported(DataTypes.TimestampType, toType)
     }
   }
 
@@ -201,7 +252,7 @@ object CometCast {
     case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
         DataTypes.FloatType | DataTypes.DoubleType =>
       Compatible()
-    case _ => Unsupported
+    case _ => unsupported(DataTypes.BooleanType, toType)
   }
 
   private def canCastFromByte(toType: DataType): SupportLevel = toType match {
@@ -212,7 +263,7 @@ object CometCast {
     case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
       Compatible()
     case _ =>
-      Unsupported
+      unsupported(DataTypes.ByteType, toType)
   }
 
   private def canCastFromShort(toType: DataType): SupportLevel = toType match {
@@ -223,7 +274,7 @@ object CometCast {
     case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
       Compatible()
     case _ =>
-      Unsupported
+      unsupported(DataTypes.ShortType, toType)
   }
 
   private def canCastFromInt(toType: DataType): SupportLevel = toType match {
@@ -236,7 +287,7 @@ object CometCast {
     case _: DecimalType =>
       Incompatible(Some("No overflow check"))
     case _ =>
-      Unsupported
+      unsupported(DataTypes.IntegerType, toType)
   }
 
   private def canCastFromLong(toType: DataType): SupportLevel = toType match {
@@ -249,7 +300,7 @@ object CometCast {
     case _: DecimalType =>
       Incompatible(Some("No overflow check"))
     case _ =>
-      Unsupported
+      unsupported(DataTypes.LongType, toType)
   }
 
   private def canCastFromFloat(toType: DataType): SupportLevel = toType match {
@@ -259,7 +310,8 @@ object CometCast {
     case _: DecimalType =>
       // https://github.com/apache/datafusion-comet/issues/1371
       Incompatible(Some("There can be rounding differences"))
-    case _ => Unsupported
+    case _ =>
+      unsupported(DataTypes.FloatType, toType)
   }
 
   private def canCastFromDouble(toType: DataType): SupportLevel = toType match {
@@ -269,14 +321,17 @@ object CometCast {
     case _: DecimalType =>
       // https://github.com/apache/datafusion-comet/issues/1371
       Incompatible(Some("There can be rounding differences"))
-    case _ => Unsupported
+    case _ => unsupported(DataTypes.DoubleType, toType)
   }
 
   private def canCastFromDecimal(toType: DataType): SupportLevel = toType match {
     case DataTypes.FloatType | DataTypes.DoubleType | DataTypes.ByteType | DataTypes.ShortType |
         DataTypes.IntegerType | DataTypes.LongType =>
       Compatible()
-    case _ => Unsupported
+    case _ => Unsupported(Some(s"Cast from DecimalType to $toType is not supported"))
   }
 
+  private def unsupported(fromType: DataType, toType: DataType): Unsupported = {
+    Unsupported(Some(s"Cast from $fromType to $toType is not supported"))
+  }
 }

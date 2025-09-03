@@ -144,7 +144,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.comet.exec.shuffle.enableFastEncoding=true \
     --conf spark.comet.exec.shuffle.fallbackToColumnar=true \
     --conf spark.comet.exec.replaceSortMergeJoin=true \
-    --conf spark.comet.cast.allowIncompatible=true \
+    --conf spark.comet.expression.allowIncompatible=true \
     /path/to/datafusion-benchmarks/runners/datafusion-comet/tpcbench.py \
     --benchmark tpch \
     --data /path/to/tpch-data/ \
