@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.collection.JavaConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, CaseWhen, Expression, If}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, CaseWhen, Coalesce, Expression, If, IsNotNull}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
@@ -87,6 +87,45 @@ object CometCaseWhen extends CometExpressionSerde[CaseWhen] {
           .build())
     } else {
       withInfo(expr, allBranches: _*)
+      None
+    }
+  }
+}
+
+object CometCoalesce extends CometExpressionSerde[Coalesce] {
+  override def convert(
+      expr: Coalesce,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val branches = expr.children.dropRight(1).map { child =>
+      (IsNotNull(child), child)
+    }
+    val elseValue = expr.children.last
+    val whenSeq = branches.map(elements => {
+      exprToProtoInternal(elements._1, inputs, binding)
+    })
+    val thenSeq = branches.map(elements => {
+      exprToProtoInternal(elements._2, inputs, binding)
+    })
+    assert(whenSeq.length == thenSeq.length)
+    if (whenSeq.forall(_.isDefined) && thenSeq.forall(_.isDefined)) {
+      val builder = ExprOuterClass.CaseWhen.newBuilder()
+      builder.addAllWhen(whenSeq.map(_.get).asJava)
+      builder.addAllThen(thenSeq.map(_.get).asJava)
+      val elseValueExpr = exprToProtoInternal(elseValue, inputs, binding)
+      if (elseValueExpr.isDefined) {
+        builder.setElseExpr(elseValueExpr.get)
+      } else {
+        withInfo(expr, elseValue)
+        return None
+      }
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCaseWhen(builder)
+          .build())
+    } else {
+      withInfo(expr, branches.map(_._2): _*)
       None
     }
   }

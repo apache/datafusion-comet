@@ -194,7 +194,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Unhex] -> CometUnhex,
     classOf[Pow] -> CometScalarFunction[Pow]("pow"),
     classOf[If] -> CometIf,
-    classOf[CaseWhen] -> CometCaseWhen)
+    classOf[CaseWhen] -> CometCaseWhen,
+    classOf[Coalesce] -> CometCoalesce)
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
@@ -983,10 +984,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, child)
           None
         }
-
-      case a @ Coalesce(_) =>
-        val exprChildren = a.children.map(exprToProtoInternal(_, inputs, binding))
-        scalarFunctionExprToProto("coalesce", exprChildren: _*)
 
       // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
       // char types.
