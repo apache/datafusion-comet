@@ -397,7 +397,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("test coalesce lazy eval") {
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "true",
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       val data = Seq((9999999999999L, 0))
       withParquetTable(data, "t1") {
         val res = spark.sql("""
