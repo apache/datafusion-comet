@@ -31,6 +31,7 @@ on:
 jobs:
   docker:
     name: Docker
+    if: ${{ startsWith(github.repository, 'apache/') }}
     runs-on: ubuntu-22.04
     permissions:
       contents: read
