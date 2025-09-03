@@ -128,21 +128,12 @@ object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
       expr: Unhex,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val unHex = unhexSerde(expr)
-
-    val childExpr = exprToProtoInternal(unHex._1, inputs, binding)
-    val failOnErrorExpr = exprToProtoInternal(unHex._2, inputs, binding)
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val failOnErrorExpr = exprToProtoInternal(Literal(expr.failOnError), inputs, binding)
 
     val optExpr =
       scalarFunctionExprToProtoWithReturnType("unhex", expr.dataType, childExpr, failOnErrorExpr)
-    optExprWithInfo(optExpr, expr, unHex._1)
-  }
-
-  /**
-   * Returns a tuple of expressions for the `unhex` function.
-   */
-  private def unhexSerde(unhex: Unhex): (Expression, Expression) = {
-    (unhex.child, Literal(unhex.failOnError))
+    optExprWithInfo(optExpr, expr, expr.child)
   }
 }
 
