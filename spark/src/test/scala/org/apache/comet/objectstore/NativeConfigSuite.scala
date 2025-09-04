@@ -22,7 +22,6 @@ package org.apache.comet.objectstore
 import java.net.URI
 
 import scala.collection.mutable
-import scala.util.Try
 
 import org.scalatest.BeforeAndAfterEach
 import org.scalatest.funsuite.AnyFunSuite
@@ -30,7 +29,6 @@ import org.scalatest.matchers.should.Matchers
 
 import org.apache.hadoop.conf.Configuration
 
-import org.apache.comet.CometNativeException
 import org.apache.comet.rules.CometScanRule
 
 class NativeConfigSuite extends AnyFunSuite with Matchers with BeforeAndAfterEach {
