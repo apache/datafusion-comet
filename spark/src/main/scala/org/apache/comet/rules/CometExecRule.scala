@@ -741,7 +741,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         s"Comet shuffle is not enabled: ${COMET_EXEC_SHUFFLE_ENABLED.key} is not enabled")
       false
     } else if (!isCometShuffleManagerEnabled(op.conf)) {
-      withInfo(op, s"spark.shuffle.manager is not set to ${CometShuffleManager.getClass.getName}")
+      withInfo(op, s"spark.shuffle.manager is not set to ${classOf[CometShuffleManager].getName}")
       false
     } else {
       true
