@@ -64,59 +64,64 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
   }
 
   private def _apply(plan: SparkPlan): SparkPlan = {
-    if (!isCometLoaded(conf) || !isCometScanEnabled(conf)) {
-      if (!isCometLoaded(conf)) {
-        withInfo(plan, "Comet is not enabled")
-      } else if (!isCometScanEnabled(conf)) {
-        withInfo(plan, "Comet Scan is not enabled")
-      }
-      plan
-    } else {
+    if (!isCometLoaded(conf)) return plan
 
-      def hasMetadataCol(plan: SparkPlan): Boolean = {
-        plan.expressions.exists(_.exists {
-          case a: Attribute =>
-            a.isMetadataCol
-          case _ => false
-        })
-      }
+    def isSupportedScanNode(plan: SparkPlan): Boolean = plan match {
+      case _: FileSourceScanExec => true
+      case _: BatchScanExec => true
+      case _ => false
+    }
 
-      def isIcebergMetadataTable(scanExec: BatchScanExec): Boolean = {
-        // List of Iceberg metadata tables:
-        // https://iceberg.apache.org/docs/latest/spark-queries/#inspecting-tables
-        val metadataTableSuffix = Set(
-          "history",
-          "metadata_log_entries",
-          "snapshots",
-          "entries",
-          "files",
-          "manifests",
-          "partitions",
-          "position_deletes",
-          "all_data_files",
-          "all_delete_files",
-          "all_entries",
-          "all_manifests")
+    def hasMetadataCol(plan: SparkPlan): Boolean = {
+      plan.expressions.exists(_.exists {
+        case a: Attribute =>
+          a.isMetadataCol
+        case _ => false
+      })
+    }
 
-        metadataTableSuffix.exists(suffix => scanExec.table.name().endsWith(suffix))
-      }
+    def isIcebergMetadataTable(scanExec: BatchScanExec): Boolean = {
+      // List of Iceberg metadata tables:
+      // https://iceberg.apache.org/docs/latest/spark-queries/#inspecting-tables
+      val metadataTableSuffix = Set(
+        "history",
+        "metadata_log_entries",
+        "snapshots",
+        "entries",
+        "files",
+        "manifests",
+        "partitions",
+        "position_deletes",
+        "all_data_files",
+        "all_delete_files",
+        "all_entries",
+        "all_manifests")
 
-      plan.transform {
-        case scan if hasMetadataCol(scan) =>
-          withInfo(scan, "Metadata column is not supported")
+      metadataTableSuffix.exists(suffix => scanExec.table.name().endsWith(suffix))
+    }
 
-        // data source V1
-        case scanExec: FileSourceScanExec =>
-          transformV1Scan(scanExec)
+    def transformScan(plan: SparkPlan): SparkPlan = plan match {
+      case scan if !isCometScanEnabled(conf) =>
+        withInfo(scan, "Comet Scan is not enabled")
 
-        // data source V2
-        case scanExec: BatchScanExec =>
-          if (isIcebergMetadataTable(scanExec)) {
-            withInfo(scanExec, "Iceberg Metadata tables are not supported")
-          } else {
-            transformV2Scan(scanExec)
-          }
-      }
+      case scan if hasMetadataCol(scan) =>
+        withInfo(scan, "Metadata column is not supported")
+
+      // data source V1
+      case scanExec: FileSourceScanExec =>
+        transformV1Scan(scanExec)
+
+      // data source V2
+      case scanExec: BatchScanExec =>
+        if (isIcebergMetadataTable(scanExec)) {
+          withInfo(scanExec, "Iceberg Metadata tables are not supported")
+        } else {
+          transformV2Scan(scanExec)
+        }
+    }
+
+    plan.transform {
+      case scan if isSupportedScanNode(scan) => transformScan(scan)
     }
   }
 
