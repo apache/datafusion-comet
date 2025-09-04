@@ -171,3 +171,36 @@ jobs:
           maven_opts: ${{ matrix.profile.maven_opts }}
           scan_impl: ${{ matrix.profile.scan_impl }}
           upload-test-reports: true
+
+  # Java tests with native features
+  linux-test-features:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        java_version: [17]
+        features:
+          - value: "hdfs-opendal"
+            suites: |
+              org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite
+      fail-fast: false
+    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-features [${{ matrix.features.value }}]
+    runs-on: ${{ matrix.os }}
+    container:
+      image: amd64/rust
+      env:
+        JAVA_TOOL_OPTIONS: ${{ matrix.profile.java_version == '17' && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ matrix.java_version }}
+      - name: Java test steps
+        uses: ./.github/actions/java-test
+        with:
+          artifact_name: ${{ matrix.os }}-java-${{ matrix.java_version }}-features-${{ matrix.features.value }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+          features: ${{ matrix.features.value }}
+          suites: ${{ matrix.features.suites }}
+          upload-test-reports: true
