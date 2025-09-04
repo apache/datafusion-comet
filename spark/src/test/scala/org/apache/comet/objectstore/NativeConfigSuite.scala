@@ -98,10 +98,9 @@ class NativeConfigSuite extends AnyFunSuite with Matchers with BeforeAndAfterEac
   test("validate object store config - invalid provider") {
     val hadoopConf = new Configuration()
     hadoopConf.set("fs.s3a.aws.credentials.provider", "invalid")
-    val e = intercept[CometNativeException] {
-      validate(hadoopConf)
-    }
-    assert(e.getMessage.contains("Unsupported credential provider: invalid"))
+    val fallbackReasons = validate(hadoopConf)
+    val expectedError = "Unsupported credential provider: invalid"
+    assert(fallbackReasons.exists(_.contains(expectedError)))
   }
 
   test("validate object store config - mixed anonymous providers") {
@@ -109,12 +108,10 @@ class NativeConfigSuite extends AnyFunSuite with Matchers with BeforeAndAfterEac
     val provider1 = "com.amazonaws.auth.AnonymousAWSCredentials"
     val provider2 = "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider"
     hadoopConf.set("fs.s3a.aws.credentials.provider", Seq(provider1, provider2).mkString(","))
-    val e = intercept[CometNativeException] {
-      validate(hadoopConf)
-    }
+    val fallbackReasons = validate(hadoopConf)
     val expectedError =
       "Anonymous credential provider cannot be mixed with other credential providers"
-    assert(e.getMessage.contains(expectedError))
+    assert(fallbackReasons.exists(_.contains(expectedError)))
   }
 
   test("validity cache") {
@@ -125,19 +122,20 @@ class NativeConfigSuite extends AnyFunSuite with Matchers with BeforeAndAfterEac
 
     assert(CometScanRule.configValidityMap.isEmpty)
     for (_ <- 0 until 5) {
-      assert(Try(validate(hadoopConf)).isFailure)
+      assert(validate(hadoopConf).nonEmpty)
       assert(CometScanRule.configValidityMap.size == 1)
     }
 
     // set the same providers but in a different order
     hadoopConf.set("fs.s3a.aws.credentials.provider", Seq(provider2, provider1).mkString(","))
-    assert(Try(validate(hadoopConf)).isFailure)
+    assert(validate(hadoopConf).nonEmpty)
     assert(CometScanRule.configValidityMap.size == 2)
   }
 
-  private def validate(hadoopConf: Configuration): Unit = {
+  private def validate(hadoopConf: Configuration): Set[String] = {
     val path = "s3a://path/to/file.parquet"
     val fallbackReasons = mutable.ListBuffer[String]()
     CometScanRule.validateObjectStoreConfig(path, hadoopConf, fallbackReasons)
+    fallbackReasons.toSet
   }
 }

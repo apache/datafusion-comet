@@ -434,7 +434,6 @@ object CometScanRule extends Logging {
     configValidityMap.get(cacheKey) match {
       case Some(Some(reason)) =>
         fallbackReasons += reason
-        throw new CometNativeException(reason)
       case Some(None) =>
       // previously validated
       case _ =>
@@ -442,12 +441,11 @@ object CometScanRule extends Logging {
           val objectStoreOptions = JavaConverters.mapAsJavaMap(objectStoreConfigMap)
           Native.validateObjectStoreConfig(filePath, objectStoreOptions)
         } catch {
-          case e: Exception =>
+          case e: CometNativeException =>
             val reason = "Object store config not supported by " +
               s"$SCAN_NATIVE_ICEBERG_COMPAT: ${e.getMessage}"
             fallbackReasons += reason
             configValidityMap.put(cacheKey, Some(reason))
-            throw e
         }
     }
 
