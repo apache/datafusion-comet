@@ -647,7 +647,7 @@ object CometConf extends ShimCometConf {
     conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
       .doc(
         "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
-          "via libhdfs, separated by commas.")
+          "via libhdfs, separated by commas. Valid only when built with hdfs feature enabled.")
       .stringConf
       .createOptional
 
