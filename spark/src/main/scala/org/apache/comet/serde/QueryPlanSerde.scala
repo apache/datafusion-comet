@@ -1852,28 +1852,38 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   }
 
-  // TODO: Remove this constraint when we upgrade to new arrow-rs including
-  // https://github.com/apache/arrow-rs/pull/6225
+  // scalastyle:off
+  /**
+   * Align w/ Arrow's
+   * [[https://github.com/apache/arrow-rs/blob/55.2.0/arrow-ord/src/rank.rs#L30-L40 can_rank]] and
+   * [[https://github.com/apache/arrow-rs/blob/55.2.0/arrow-ord/src/sort.rs#L193-L215 can_sort_to_indices]]
+   *
+   * TODO: Include SparkSQL's [[YearMonthIntervalType]] and [[DayTimeIntervalType]]
+   */
+  // scalastyle:off
   def supportedSortType(op: SparkPlan, sortOrder: Seq[SortOrder]): Boolean = {
     def canRank(dt: DataType): Boolean = {
       dt match {
         case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-            _: DoubleType | _: TimestampType | _: DecimalType | _: DateType =>
+            _: DoubleType | _: DecimalType =>
           true
-        case _: BinaryType | _: StringType => true
+        case _: DateType | _: TimestampType | _: TimestampNTZType =>
+          true
+        case _: BooleanType | _: BinaryType | _: StringType => true
         case _ => false
       }
     }
 
     if (sortOrder.length == 1) {
       val canSort = sortOrder.head.dataType match {
-        case _: BooleanType => true
         case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-            _: DoubleType | _: TimestampType | _: TimestampNTZType | _: DecimalType |
-            _: DateType =>
+            _: DoubleType | _: DecimalType =>
           true
-        case _: BinaryType | _: StringType => true
+        case _: DateType | _: TimestampType | _: TimestampNTZType =>
+          true
+        case _: BooleanType | _: BinaryType | _: StringType => true
         case ArrayType(elementType, _) => canRank(elementType)
+        case MapType(_, valueType, _) => canRank(valueType)
         case _ => false
       }
       if (!canSort) {
