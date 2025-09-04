@@ -31,6 +31,7 @@ impl RangePartitioner {
     /// We use sample_size instead of k and num_rows instead of n.
     /// We use indices instead of actual values in the reservoir  since we'll do one take() on the
     /// input arrays at the end.
+    #[allow(dead_code)]
     fn reservoir_sample_indices(num_rows: usize, sample_size: usize, seed: u64) -> Vec<u64> {
         assert!(sample_size > 0);
         assert!(
@@ -76,6 +77,7 @@ impl RangePartitioner {
     /// Given input arrays and range partitioning metadata: samples the input arrays, generates
     /// partition bounds, and returns Rows (for comparison against) and a RowConverter (for
     /// adapting future incoming batches).
+    #[allow(dead_code)]
     pub fn generate_bounds(
         partition_arrays: &Vec<ArrayRef>,
         lex_ordering: &LexOrdering,
@@ -143,6 +145,7 @@ impl RangePartitioner {
     /// values since we don't have cross-partition samples to merge.
     /// We normalize the math to use ints instead of floating point by replacing 1.0 with a
     /// (imagined) num_candidates * partitions range.
+    #[allow(dead_code)]
     fn determine_bounds_for_rows(
         sort_fields: Vec<SortField>,
         sampled_columns: &[ArrayRef],

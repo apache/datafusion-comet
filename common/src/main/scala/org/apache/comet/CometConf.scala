@@ -332,7 +332,7 @@ object CometConf extends ShimCometConf {
         "This feature is experimental while we investigate scenarios that don't partition data " +
         "correctly.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")

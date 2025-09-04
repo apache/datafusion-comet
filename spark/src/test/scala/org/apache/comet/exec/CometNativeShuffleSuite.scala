@@ -26,7 +26,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkEnv
-import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
@@ -40,6 +40,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       withSQLConf(
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true",
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
@@ -246,6 +247,57 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         assert(diskBlockManager.getAllFiles().isEmpty)
       }
     }
+  }
+
+  // This adapts the PySpark example in https://github.com/apache/datafusion-comet/issues/1906 to
+  // test for incorrect partition values after native RangePartitioning
+  test("fix: range partitioning #1906") {
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true") {
+      withParquetTable((0 until 100000).map(i => (i, i + 1)), "tbl") {
+        val df = sql("SELECT * from tbl")
+
+        // Repartition with two sort columns
+        val df_range_partitioned = df.repartitionByRange(10, df.col("_1"), df.col("_2"))
+
+        val partition_bounds = df_range_partitioned.rdd
+          .mapPartitionsWithIndex((idx: Int, iterator: Iterator[Row]) => {
+            // Find the min and max value in each partition
+            var min: Option[Int] = None
+            var max: Option[Int] = None
+            iterator.foreach((row: Row) => {
+              val row_val = row.get(0).asInstanceOf[Int]
+              if (min.isEmpty || row_val < min.get) {
+                min = Some(row_val)
+              }
+              if (max.isEmpty || row_val > max.get) {
+                max = Some(row_val)
+              }
+            })
+            Iterator.single((idx, min, max))
+          })
+          .collect()
+
+        // Check min and max values in each partition
+        for (i <- partition_bounds.indices.init) {
+          val currentPartition = partition_bounds(i)
+          val nextPartition = partition_bounds(i + 1)
+
+          if (currentPartition._2.isDefined && currentPartition._3.isDefined) {
+            val currentMin = currentPartition._2.get
+            val currentMax = currentPartition._3.get
+            assert(currentMin <= currentMax)
+          }
+
+          if (currentPartition._3.isDefined && nextPartition._2.isDefined) {
+            val currentMax = currentPartition._3.get
+            val nextMin = nextPartition._2.get
+            assert(currentMax <= nextMin)
+          }
+        }
+
+      }
+    }
+
   }
 
   /**
