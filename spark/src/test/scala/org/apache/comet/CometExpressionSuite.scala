@@ -115,7 +115,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("Integral Division Overflow Handling Matches Spark Behavior") {
     withTable("t1") {
-      withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
         val value = Long.MinValue
         sql("create table t1(c1 long, c2 short) using parquet")
         sql(s"insert into t1 values($value, -1)")
@@ -409,7 +409,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             val cometErrorPattern =
-              """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] Integer/Float overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
+              """org.apache.spark.SparkArithmeticException: [ARITHMETIC_OVERFLOW] integer overflow. Use 'try_add' to tolerate overflow and return NULL instead. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
             assert(cometExc.getMessage.contains(cometErrorPattern))
             assert(sparkExc.getMessage.contains("overflow"))
           case _ => fail("Exception should be thrown")
@@ -427,11 +427,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  _1 - _2
                               |  from tbl
                               |  """.stripMargin)
-
         checkSparkMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             val cometErrorPattern =
-              """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] Integer/Float overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
+              """org.apache.spark.SparkArithmeticException: [ARITHMETIC_OVERFLOW] integer overflow. Use 'try_subtract' to tolerate overflow and return NULL instead. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error."""
             assert(cometExc.getMessage.contains(cometErrorPattern))
             assert(sparkExc.getMessage.contains("overflow"))
           case _ => fail("Exception should be thrown")
@@ -453,7 +452,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             val cometErrorPattern =
-              """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] Integer/Float overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
+              """org.apache.spark.SparkArithmeticException: [ARITHMETIC_OVERFLOW] integer overflow. Use 'try_multiply' to tolerate overflow and return NULL instead. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
             assert(cometExc.getMessage.contains(cometErrorPattern))
             assert(sparkExc.getMessage.contains("overflow"))
           case _ => fail("Exception should be thrown")
@@ -477,7 +476,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             val cometErrorPattern =
-              """org.apache.comet.CometNativeException: [DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+              """org.apache.spark.SparkArithmeticException: [DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
             assert(cometExc.getMessage.contains(cometErrorPattern))
             assert(sparkExc.getMessage.contains("Division by zero"))
           case _ => fail("Exception should be thrown")
@@ -643,7 +642,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast timestamp and timestamp_ntz") {
     withSQLConf(
       SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -665,7 +664,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast timestamp and timestamp_ntz to string") {
     withSQLConf(
       SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -687,7 +686,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast timestamp and timestamp_ntz to long, date") {
     withSQLConf(
       SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -775,7 +774,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("date_trunc with timestamp_ntz") {
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "timestamp_trunc.parquet")
@@ -810,7 +809,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("date_trunc with format array") {
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       val numRows = 1000
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
@@ -1477,7 +1476,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq("true", "false").foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary,
-        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
         withParquetTable(
           (-5 until 5).map(i => (i.toDouble + 0.3, i.toDouble + 0.8)),
           "tbl",
@@ -2028,7 +2027,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary.toString,
-        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col string, a int, b float) using parquet")
@@ -2134,7 +2133,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
         "parquet.enable.dictionary" -> dictionary.toString,
-        CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col string, a int, b float) using parquet")
@@ -2861,7 +2860,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // this test requires native_comet scan due to unsigned u8/u16 issue
     withSQLConf(
       CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
-      CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           val path1 = new Path(dir.toURI.toString, "test1.parquet")
