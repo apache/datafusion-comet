@@ -41,7 +41,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -466,6 +466,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("ANSI support for divide") {
     assume(isSpark40Plus)
     val data = Seq((Integer.MIN_VALUE, 0))
+<<<<<<< HEAD
     withSQLConf(
 <<<<<<< HEAD
       SQLConf.ANSI_ENABLED.key -> "true",
@@ -474,6 +475,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 =======
       SQLConf.ANSI_ENABLED.key -> "true") {
 >>>>>>> c5726856 (rebase_main)
+=======
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+>>>>>>> f5152d33 (rebase_main)
       withParquetTable(data, "tbl") {
         val res = spark.sql("""
                               |SELECT
