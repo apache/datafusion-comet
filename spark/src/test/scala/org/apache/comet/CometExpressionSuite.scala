@@ -395,7 +395,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for add") {
-    assume(isSpark35Plus)
+    assume(isSpark40Plus)
     val data = Seq((Integer.MAX_VALUE, 1), (Integer.MIN_VALUE, -1))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -419,8 +419,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for subtract") {
+    assume(isSpark40Plus)
     val data = Seq((Integer.MIN_VALUE, 1))
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true", "spark.comet.ansi.enabled" -> "true") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
         val res = spark.sql("""
                               |SELECT
@@ -440,6 +441,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for multiply") {
+    assume(isSpark40Plus)
     val data = Seq((Integer.MAX_VALUE, 10))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -462,11 +464,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for divide") {
+    assume(isSpark40Plus)
     val data = Seq((Integer.MIN_VALUE, 0))
     withSQLConf(
+<<<<<<< HEAD
       SQLConf.ANSI_ENABLED.key -> "true",
       CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
       "spark.comet.explainFallback.enabled" -> "true") {
+=======
+      SQLConf.ANSI_ENABLED.key -> "true") {
+>>>>>>> c5726856 (rebase_main)
       withParquetTable(data, "tbl") {
         val res = spark.sql("""
                               |SELECT
@@ -1965,7 +1972,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq(
           (
             s"SELECT cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as C from $table",
-            Set("make_interval is not supported")),
+            Set("Cast from CalendarIntervalType to StringType is not supported")),
           (
             "SELECT "
               + "date_part('YEAR', make_interval(c0, c1, c0, c1, c0, c0, c2))"
@@ -1984,8 +1991,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               + s"(SELECT c1, cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as casted from $table) as B "
               + "where A.c1 = B.c1 ",
             Set(
-              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled",
-              "make_interval is not supported")),
+              "Cast from CalendarIntervalType to StringType is not supported",
+              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled")),
           (s"select * from $table LIMIT 10 OFFSET 3", Set("Comet shuffle is not enabled")))
           .foreach(test => {
             val qry = test._1
