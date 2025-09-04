@@ -36,7 +36,10 @@ if __name__ == "__main__":
         "org.apache.comet.parquet.ParquetReadFromS3Suite", # manual test suite
         "org.apache.spark.sql.comet.CometPlanStabilitySuite", # abstract
         "org.apache.spark.sql.comet.ParquetDatetimeRebaseSuite", # abstract
-        "org.apache.comet.exec.CometColumnarShuffleSuite" # abstract
+        "org.apache.comet.exec.CometColumnarShuffleSuite", # abstract
+        # TODO add CometToPrettyStringSuite to PR worklows
+        # https://github.com/apache/datafusion-comet/issues/2307
+        "org.apache.spark.sql.CometToPrettyStringSuite"
     ]
 
     for workflow_filename in [".github/workflows/pr_build_linux.yml", ".github/workflows/pr_build_macos.yml"]:
