@@ -15,10 +15,11 @@ if __name__ == "__main__":
 
     # ignore traits, abstract classes, and intentionally skipped test suites
     ignore_list = [
-        "org.apache.comet.parquet.ParquetReadSuite",
-        "org.apache.comet.parquet.ParquetReadFromS3Suite",
-        "org.apache.spark.sql.comet.CometPlanStabilitySuite",
-        "org.apache.spark.sql.comet.ParquetDatetimeRebaseSuite"
+        "org.apache.comet.parquet.ParquetReadSuite", # abstract
+        "org.apache.comet.parquet.ParquetReadFromS3Suite", # manual test suite
+        "org.apache.spark.sql.comet.CometPlanStabilitySuite", # abstract
+        "org.apache.spark.sql.comet.ParquetDatetimeRebaseSuite", # abstract
+        "org.apache.comet.exec.CometColumnarShuffleSuite" # abstract
     ]
 
     for workflow_filename in [".github/workflows/pr_build_linux.yml", ".github/workflows/pr_build_macos.yml"]:
