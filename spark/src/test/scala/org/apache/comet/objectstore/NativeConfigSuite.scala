@@ -119,7 +119,9 @@ class NativeConfigSuite extends AnyFunSuite with Matchers with BeforeAndAfterEac
 
   test("validity cache") {
     val hadoopConf = new Configuration()
-    hadoopConf.set("fs.s3a.endpoint", "https://acme.storage.com")
+    val provider1 = "com.amazonaws.auth.AnonymousAWSCredentials"
+    val provider2 = "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider"
+    hadoopConf.set("fs.s3a.aws.credentials.provider", Seq(provider1, provider2).mkString(","))
 
     assert(CometScanRule.configValidityMap.isEmpty)
     for (_ <- 0 until 5) {
@@ -127,7 +129,8 @@ class NativeConfigSuite extends AnyFunSuite with Matchers with BeforeAndAfterEac
       assert(CometScanRule.configValidityMap.size == 1)
     }
 
-    hadoopConf.set("fs.s3a.endpoint", "https://acme2.storage.com")
+    // set the same providers but in a different order
+    hadoopConf.set("fs.s3a.aws.credentials.provider", Seq(provider2, provider1).mkString(","))
     assert(Try(validate(hadoopConf)).isFailure)
     assert(CometScanRule.configValidityMap.size == 2)
   }
