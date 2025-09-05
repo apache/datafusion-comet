@@ -20,6 +20,7 @@ use crate::{divide_by_zero_error, Cast, EvalMode, SparkCastOptions};
 use arrow::compute::kernels::numeric::rem;
 use arrow::datatypes::*;
 use datafusion::common::{exec_err, internal_err, DataFusionError, Result, ScalarValue};
+use datafusion::config::ConfigOptions;
 use datafusion::execution::FunctionRegistry;
 use datafusion::physical_expr::expressions::{lit, BinaryExpr};
 use datafusion::physical_expr::ScalarFunctionExpr;
@@ -195,6 +196,7 @@ fn create_modulo_scalar_function(
         modulo_expr,
         vec![left, right],
         Arc::new(Field::new(func_name, data_type.clone(), true)),
+        Arc::new(ConfigOptions::default()),
     )))
 }
 

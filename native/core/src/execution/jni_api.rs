@@ -35,14 +35,14 @@ use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::ScalarUDF;
 use datafusion::{
-    execution::{disk_manager::DiskManagerBuilder, runtime_env::RuntimeEnv},
+    execution::disk_manager::DiskManagerBuilder,
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::math::expm1::SparkExpm1;
-use datafusion_spark::function::string::char::SparkChar;
+use datafusion_spark::function::string::char::CharFunc;
 use futures::poll;
 use futures::stream::StreamExt;
 use jni::objects::JByteBuffer;
@@ -292,7 +292,7 @@ fn prepare_datafusion_session_context(
         );
 
     #[allow(deprecated)]
-    let runtime = RuntimeEnv::try_new(rt_config)?;
+    let runtime = rt_config.build()?;
 
     let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
 
@@ -301,7 +301,7 @@ fn prepare_datafusion_session_context(
     // register UDFs from datafusion-spark crate
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkChar::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(CharFunc::default()));
 
     // Must be the last one to override existing functions with the same name
     datafusion_comet_spark_expr::register_all_comet_functions(&mut session_ctx)?;
