@@ -199,15 +199,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ShiftRight] -> CometShiftRight)
 
   private val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[Year] -> CometYear,
-    classOf[Hour] -> CometHour,
-    classOf[Minute] -> CometMinute,
-    classOf[Second] -> CometSecond,
     classOf[DateAdd] -> CometDateAdd,
     classOf[DateSub] -> CometDateSub,
     classOf[FromUnixTime] -> CometFromUnixTime,
+    classOf[Hour] -> CometHour,
+    classOf[Minute] -> CometMinute,
+    classOf[Second] -> CometSecond,
     classOf[TruncDate] -> CometTruncDate,
-    classOf[TruncTimestamp] -> CometTruncTimestamp)
+    classOf[TruncTimestamp] -> CometTruncTimestamp,
+    classOf[Year] -> CometYear)
 
   private val conversionExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Cast] -> CometCast)
@@ -242,24 +242,24 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * Mapping of Spark aggregate expression class to Comet expression handler.
    */
   private val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
-    classOf[Sum] -> CometSum,
     classOf[Average] -> CometAverage,
-    classOf[Count] -> CometCount,
-    classOf[Min] -> CometMin,
-    classOf[Max] -> CometMax,
-    classOf[First] -> CometFirst,
-    classOf[Last] -> CometLast,
     classOf[BitAndAgg] -> CometBitAndAgg,
     classOf[BitOrAgg] -> CometBitOrAgg,
     classOf[BitXorAgg] -> CometBitXOrAgg,
-    classOf[CovSample] -> CometCovSample,
-    classOf[CovPopulation] -> CometCovPopulation,
-    classOf[VarianceSamp] -> CometVarianceSamp,
-    classOf[VariancePop] -> CometVariancePop,
-    classOf[StddevSamp] -> CometStddevSamp,
-    classOf[StddevPop] -> CometStddevPop,
+    classOf[BloomFilterAggregate] -> CometBloomFilterAggregate,
     classOf[Corr] -> CometCorr,
-    classOf[BloomFilterAggregate] -> CometBloomFilterAggregate)
+    classOf[Count] -> CometCount,
+    classOf[CovPopulation] -> CometCovPopulation,
+    classOf[CovSample] -> CometCovSample,
+    classOf[First] -> CometFirst,
+    classOf[Last] -> CometLast,
+    classOf[Max] -> CometMax,
+    classOf[Min] -> CometMin,
+    classOf[StddevPop] -> CometStddevPop,
+    classOf[StddevSamp] -> CometStddevSamp,
+    classOf[Sum] -> CometSum,
+    classOf[VariancePop] -> CometVariancePop,
+  classOf[VarianceSamp] -> CometVarianceSamp)
 
   def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
