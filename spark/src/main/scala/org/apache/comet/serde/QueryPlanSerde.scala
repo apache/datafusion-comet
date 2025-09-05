@@ -259,7 +259,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[StddevSamp] -> CometStddevSamp,
     classOf[Sum] -> CometSum,
     classOf[VariancePop] -> CometVariancePop,
-  classOf[VarianceSamp] -> CometVarianceSamp)
+    classOf[VarianceSamp] -> CometVarianceSamp)
 
   def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
