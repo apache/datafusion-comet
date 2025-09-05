@@ -55,20 +55,23 @@ The following Spark expressions are currently available. Any known compatibility
 | CaseWhen   |       |
 | If         |       |
 
-## Comparison
+## Predicate Expressions
 
 | Expression                | Notes |
 | ------------------------- | ----- |
+| And                       |       |
 | EqualTo (`=`)             |       |
 | EqualNullSafe (`<=>`)     |       |
 | GreaterThan (`>`)         |       |
 | GreaterThanOrEqual (`>=`) |       |
 | LessThan (`<`)            |       |
 | LessThanOrEqual (`<=`)    |       |
-| IsNull (`IS NULL`)        |       |
-| IsNotNull (`IS NOT NULL`) |       |
 | In (`IN`)                 |       |
+| IsNotNull (`IS NOT NULL`) |       |
+| IsNull (`IS NULL`)        |       |
 | InSet                     |       |
+| Not                       |       |
+| Or                        |       |
 
 ## String Functions
 
@@ -128,16 +131,20 @@ The following Spark expressions are currently available. Any known compatibility
 | Exp        |       |
 | Expm1      |       |
 | Floor      |       |
+| Hex        |       |
 | IsNaN      |       |
 | Log        |       |
 | Log2       |       |
 | Log10      |       |
 | Pow        |       |
+| Rand       |       |
+| Randn      |       |
 | Round      |       |
 | Signum     |       |
 | Sin        |       |
 | Sqrt       |       |
 | Tan        |       |
+| Unhex      |       |
 
 ## Hashing Functions
 
@@ -147,14 +154,6 @@ The following Spark expressions are currently available. Any known compatibility
 | Murmur3Hash |       |
 | Sha2        |       |
 | XxHash64    |       |
-
-## Boolean Expressions
-
-| Expression | Notes |
-| ---------- | ----- |
-| And        |       |
-| Or         |       |
-| Not        |       |
 
 ## Bitwise Expressions
 
@@ -213,6 +212,7 @@ The following Spark expressions are currently available. Any known compatibility
 | ArrayUnion     | Experimental: behaves differently than spark. Datafusion sorts the input arrays before performing the union, while spark preserves the order of the first array and appends unique elements from the second. |
 | CreateArray    |                                                                                                                                                                                                              |
 | ElementAt      | Arrays only                                                                                                                                                                                                  |
+| Flatten        |                                                                                                                                                                                                              |
 | GetArrayItem   |                                                                                                                                                                                                              |
 
 ## Maps
