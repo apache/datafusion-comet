@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::hash_funcs::*;
+use crate::map_funcs::map_to_list;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
@@ -156,6 +157,10 @@ pub fn create_comet_physical_fun(
             let func = Arc::new(spark_modulo);
             let fail_on_error = fail_on_error.unwrap_or(false);
             make_comet_scalar_udf!("spark_modulo", func, without data_type, fail_on_error)
+        }
+        "map_to_list" => {
+            let func = Arc::new(map_to_list);
+            make_comet_scalar_udf!("map_to_list", func, without data_type)
         }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
