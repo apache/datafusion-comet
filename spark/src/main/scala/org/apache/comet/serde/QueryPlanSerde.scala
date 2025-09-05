@@ -213,8 +213,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Cast] -> CometCast)
 
   private val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    // TODO Alias
-    // TODO AttributeReference
     // TODO Literal
     // TODO SortOrder (?)
     // TODO PromotePrecision
@@ -225,6 +223,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     // TODO MakeDecimal
     // TODO BloomFilterMightContain
     // TODO RegExpReplace
+    classOf[Alias] -> CometAlias,
+    classOf[AttributeReference] -> CometAttributeReference,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
     classOf[Coalesce] -> CometCoalesce)
@@ -667,13 +667,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
 
     versionSpecificExprToProtoInternal(expr, inputs, binding).orElse(expr match {
-      case a @ Alias(_, _) =>
-        val r = exprToProtoInternal(a.child, inputs, binding)
-        if (r.isEmpty) {
-          withInfo(expr, a.child)
-        }
-        r
-
       case cast @ Cast(_: Literal, dataType, _, _) =>
         // This can happen after promoting decimal precisions
         val value = cast.eval()
@@ -916,51 +909,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
               .build())
         } else {
           withInfo(expr, child)
-          None
-        }
-
-      case attr: AttributeReference =>
-        val dataType = serializeDataType(attr.dataType)
-
-        if (dataType.isDefined) {
-          if (binding) {
-            // Spark may produce unresolvable attributes in some cases,
-            // for example https://github.com/apache/datafusion-comet/issues/925.
-            // So, we allow the binding to fail.
-            val boundRef: Any = BindReferences
-              .bindReference(attr, inputs, allowFailures = true)
-
-            if (boundRef.isInstanceOf[AttributeReference]) {
-              withInfo(attr, s"cannot resolve $attr among ${inputs.mkString(", ")}")
-              return None
-            }
-
-            val boundExpr = ExprOuterClass.BoundReference
-              .newBuilder()
-              .setIndex(boundRef.asInstanceOf[BoundReference].ordinal)
-              .setDatatype(dataType.get)
-              .build()
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setBound(boundExpr)
-                .build())
-          } else {
-            val unboundRef = ExprOuterClass.UnboundReference
-              .newBuilder()
-              .setName(attr.name)
-              .setDatatype(dataType.get)
-              .build()
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setUnbound(unboundRef)
-                .build())
-          }
-        } else {
-          withInfo(attr, s"unsupported datatype: ${attr.dataType}")
           None
         }
 

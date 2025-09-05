@@ -396,6 +396,13 @@ object CometSparkSessionExtensions extends Logging {
     withInfos(node, Set.empty, exprs: _*)
   }
 
+  /**
+   * Checks whether a TreeNode has any explain information attached
+   */
+  def hasExplainInfo(node: TreeNode[_]): Boolean = {
+    node.getTagValue(CometExplainInfo.EXTENSION_INFO).exists(_.nonEmpty)
+  }
+
   // Helper to reduce boilerplate
   def createMessage(condition: Boolean, message: => String): Option[String] = {
     if (condition) {
