@@ -71,18 +71,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
   private val opSerdeMap: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
     Map(classOf[ProjectExec] -> CometProject, classOf[SortExec] -> CometSort)
 
-  /**
-   * Mapping of Spark expression class to Comet expression handler.
-   */
-  private val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[Add] -> CometAdd,
-    classOf[Subtract] -> CometSubtract,
-    classOf[Multiply] -> CometMultiply,
-    classOf[Divide] -> CometDivide,
-    classOf[IntegralDivide] -> CometIntegralDivide,
-    classOf[Remainder] -> CometRemainder,
-    classOf[Round] -> CometRound,
+  private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
+    // TODO move ArrayCompact here
     classOf[ArrayContains] -> CometArrayContains,
     classOf[ArrayDistinct] -> CometArrayDistinct,
     classOf[ArrayExcept] -> CometArrayExcept,
@@ -96,106 +87,145 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ArraysOverlap] -> CometArraysOverlap,
     classOf[ArrayUnion] -> CometArrayUnion,
     classOf[CreateArray] -> CometCreateArray,
-    classOf[GetArrayItem] -> CometGetArrayItem,
     classOf[ElementAt] -> CometElementAt,
-    classOf[Ascii] -> CometScalarFunction("ascii"),
-    classOf[ConcatWs] -> CometScalarFunction("concat_ws"),
-    classOf[Chr] -> CometScalarFunction("char"),
-    classOf[InitCap] -> CometInitCap,
-    classOf[BitwiseCount] -> CometBitwiseCount,
-    classOf[BitwiseGet] -> CometBitwiseGet,
-    classOf[BitwiseNot] -> CometBitwiseNot,
-    classOf[BitwiseAnd] -> CometBitwiseAnd,
-    classOf[BitwiseOr] -> CometBitwiseOr,
-    classOf[BitwiseXor] -> CometBitwiseXor,
-    classOf[BitLength] -> CometScalarFunction("bit_length"),
-    classOf[FromUnixTime] -> CometFromUnixTime,
-    classOf[Length] -> CometScalarFunction("length"),
-    classOf[Acos] -> CometScalarFunction("acos"),
-    classOf[Cos] -> CometScalarFunction("cos"),
-    classOf[Asin] -> CometScalarFunction("asin"),
-    classOf[Sin] -> CometScalarFunction("sin"),
-    classOf[Atan] -> CometScalarFunction("atan"),
-    classOf[Tan] -> CometScalarFunction("tan"),
-    classOf[Exp] -> CometScalarFunction("exp"),
-    classOf[Expm1] -> CometScalarFunction("expm1"),
-    classOf[Sqrt] -> CometScalarFunction("sqrt"),
-    classOf[Signum] -> CometScalarFunction("signum"),
-    classOf[Md5] -> CometScalarFunction("md5"),
-    classOf[ShiftLeft] -> CometShiftLeft,
-    classOf[ShiftRight] -> CometShiftRight,
-    classOf[StringInstr] -> CometScalarFunction("instr"),
-    classOf[StringRepeat] -> CometStringRepeat,
-    classOf[StringReplace] -> CometScalarFunction("replace"),
-    classOf[StringTranslate] -> CometScalarFunction("translate"),
-    classOf[StringTrim] -> CometScalarFunction("trim"),
-    classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),
-    classOf[StringTrimRight] -> CometScalarFunction("rtrim"),
-    classOf[StringTrimBoth] -> CometScalarFunction("btrim"),
-    classOf[Upper] -> CometUpper,
-    classOf[Lower] -> CometLower,
-    classOf[Murmur3Hash] -> CometMurmur3Hash,
-    classOf[XxHash64] -> CometXxHash64,
-    classOf[Sha2] -> CometSha2,
-    classOf[MapKeys] -> CometMapKeys,
-    classOf[MapEntries] -> CometMapEntries,
-    classOf[MapValues] -> CometMapValues,
-    classOf[MapFromArrays] -> CometMapFromArrays,
-    classOf[GetMapValue] -> CometMapExtract,
+    classOf[GetArrayItem] -> CometGetArrayItem)
+
+  private val arithmeticExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[Add] -> CometAdd,
+    classOf[Subtract] -> CometSubtract,
+    classOf[Multiply] -> CometMultiply,
+    classOf[Divide] -> CometDivide,
+    classOf[IntegralDivide] -> CometIntegralDivide,
+    classOf[Remainder] -> CometRemainder
+    // TODO move UnaryMinus here
+  )
+
+  private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map(classOf[CaseWhen] -> CometCaseWhen, classOf[If] -> CometIf)
+
+  private val comparisonExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[EqualTo] -> CometEqualTo,
     classOf[EqualNullSafe] -> CometEqualNullSafe,
-    classOf[Not] -> CometNot,
-    classOf[And] -> CometAnd,
-    classOf[Or] -> CometOr,
     classOf[GreaterThan] -> CometGreaterThan,
     classOf[GreaterThanOrEqual] -> CometGreaterThanOrEqual,
     classOf[LessThan] -> CometLessThan,
     classOf[LessThanOrEqual] -> CometLessThanOrEqual,
     classOf[IsNull] -> CometIsNull,
     classOf[IsNotNull] -> CometIsNotNull,
-    classOf[IsNaN] -> CometIsNaN,
     classOf[In] -> CometIn,
-    classOf[InSet] -> CometInSet,
-    classOf[Rand] -> CometRand,
-    classOf[Randn] -> CometRandn,
-    classOf[SparkPartitionID] -> CometSparkPartitionId,
-    classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
-    classOf[StringSpace] -> CometScalarFunction("string_space"),
-    classOf[StartsWith] -> CometScalarFunction("starts_with"),
-    classOf[EndsWith] -> CometScalarFunction("ends_with"),
+    classOf[InSet] -> CometInSet)
+
+  private val mathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[Acos] -> CometScalarFunction("acos"),
+    classOf[Asin] -> CometScalarFunction("asin"),
+    classOf[Atan] -> CometScalarFunction("atan"),
+    classOf[Atan2] -> CometAtan2,
+    classOf[Ceil] -> CometCeil,
+    classOf[Cos] -> CometScalarFunction("cos"),
+    classOf[Exp] -> CometScalarFunction("exp"),
+    classOf[Expm1] -> CometScalarFunction("expm1"),
+    classOf[Floor] -> CometFloor,
+    classOf[IsNaN] -> CometIsNaN,
+    classOf[Log] -> CometLog,
+    classOf[Log2] -> CometLog2,
+    classOf[Log10] -> CometLog10,
+    classOf[Pow] -> CometScalarFunction[Pow]("pow"),
+    classOf[Round] -> CometRound,
+    classOf[Signum] -> CometScalarFunction("signum"),
+    classOf[Sin] -> CometScalarFunction("sin"),
+    classOf[Sqrt] -> CometScalarFunction("sqrt"),
+    classOf[Tan] -> CometScalarFunction("tan"))
+
+  private val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[GetMapValue] -> CometMapExtract,
+    classOf[MapKeys] -> CometMapKeys,
+    classOf[MapEntries] -> CometMapEntries,
+    classOf[MapValues] -> CometMapValues,
+    classOf[MapFromArrays] -> CometMapFromArrays)
+
+  private val structExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[CreateNamedStruct] -> CometCreateNamedStruct,
+    classOf[GetArrayStructFields] -> CometGetArrayStructFields,
+    classOf[GetStructField] -> CometGetStructField,
+    classOf[StructsToJson] -> CometStructsToJson)
+
+  private val hashExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[Md5] -> CometScalarFunction("md5"),
+    classOf[Murmur3Hash] -> CometMurmur3Hash,
+    classOf[Sha2] -> CometSha2,
+    classOf[XxHash64] -> CometXxHash64)
+
+  private val stringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[Ascii] -> CometScalarFunction("ascii"),
+    classOf[BitLength] -> CometScalarFunction("bit_length"),
+    classOf[Chr] -> CometScalarFunction("char"),
+    classOf[ConcatWs] -> CometScalarFunction("concat_ws"),
     classOf[Contains] -> CometScalarFunction("contains"),
-    classOf[Substring] -> CometSubstring,
+    classOf[EndsWith] -> CometScalarFunction("ends_with"),
+    classOf[InitCap] -> CometInitCap,
+    classOf[Length] -> CometScalarFunction("length"),
     classOf[Like] -> CometLike,
-    classOf[RLike] -> CometRLike,
+    classOf[Lower] -> CometLower,
     classOf[OctetLength] -> CometScalarFunction("octet_length"),
     classOf[Reverse] -> CometScalarFunction("reverse"),
+    classOf[RLike] -> CometRLike,
+    classOf[StartsWith] -> CometScalarFunction("starts_with"),
+    classOf[StringInstr] -> CometScalarFunction("instr"),
+    classOf[StringRepeat] -> CometStringRepeat,
+    classOf[StringReplace] -> CometScalarFunction("replace"),
     classOf[StringRPad] -> CometStringRPad,
+    classOf[StringSpace] -> CometScalarFunction("string_space"),
+    classOf[StringTranslate] -> CometScalarFunction("translate"),
+    classOf[StringTrim] -> CometScalarFunction("trim"),
+    classOf[StringTrimBoth] -> CometScalarFunction("btrim"),
+    classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),
+    classOf[StringTrimRight] -> CometScalarFunction("rtrim"),
+    classOf[Substring] -> CometSubstring,
+    classOf[Upper] -> CometUpper)
+
+  private val bitwiseExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[BitwiseAnd] -> CometBitwiseAnd,
+    classOf[BitwiseCount] -> CometBitwiseCount,
+    classOf[BitwiseGet] -> CometBitwiseGet,
+    classOf[BitwiseOr] -> CometBitwiseOr,
+    classOf[BitwiseNot] -> CometBitwiseNot,
+    classOf[BitwiseXor] -> CometBitwiseXor,
+    classOf[ShiftLeft] -> CometShiftLeft,
+    classOf[ShiftRight] -> CometShiftRight)
+
+  private val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Year] -> CometYear,
     classOf[Hour] -> CometHour,
     classOf[Minute] -> CometMinute,
     classOf[Second] -> CometSecond,
     classOf[DateAdd] -> CometDateAdd,
     classOf[DateSub] -> CometDateSub,
+    classOf[FromUnixTime] -> CometFromUnixTime,
     classOf[TruncDate] -> CometTruncDate,
-    classOf[TruncTimestamp] -> CometTruncTimestamp,
+    classOf[TruncTimestamp] -> CometTruncTimestamp)
+
+  private val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[Not] -> CometNot,
+    classOf[And] -> CometAnd,
+    classOf[Or] -> CometOr,
+    classOf[Rand] -> CometRand,
+    classOf[Randn] -> CometRandn,
+    classOf[SparkPartitionID] -> CometSparkPartitionId,
+    classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
     classOf[Cast] -> CometCast,
-    classOf[CreateNamedStruct] -> CometCreateNamedStruct,
-    classOf[GetStructField] -> CometGetStructField,
-    classOf[GetArrayStructFields] -> CometGetArrayStructFields,
-    classOf[StructsToJson] -> CometStructsToJson,
     classOf[Flatten] -> CometFlatten,
-    classOf[Atan2] -> CometAtan2,
-    classOf[Ceil] -> CometCeil,
-    classOf[Floor] -> CometFloor,
-    classOf[Log] -> CometLog,
-    classOf[Log10] -> CometLog10,
-    classOf[Log2] -> CometLog2,
     classOf[Hex] -> CometHex,
     classOf[Unhex] -> CometUnhex,
-    classOf[Pow] -> CometScalarFunction[Pow]("pow"),
-    classOf[If] -> CometIf,
-    classOf[CaseWhen] -> CometCaseWhen,
     classOf[Coalesce] -> CometCoalesce)
+
+  /**
+   * Mapping of Spark expression class to Comet expression handler.
+   */
+  private val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    arithmeticExpressions ++ mathExpressions ++ hashExpressions ++ stringExpressions ++
+      conditionalExpressions ++ mapExpressions ++ comparisonExpressions ++
+      structExpressions ++ bitwiseExpressions ++ miscExpressions ++ arrayExpressions ++
+      temporalExpressions
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
@@ -922,22 +952,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(attr, s"unsupported datatype: ${attr.dataType}")
           None
         }
-
-      // abs implementation is not correct
-      // https://github.com/apache/datafusion-comet/issues/666
-//        case Abs(child, failOnErr) =>
-//          val childExpr = exprToProtoInternal(child, inputs)
-//          if (childExpr.isDefined) {
-//            val evalModeStr =
-//              if (failOnErr) ExprOuterClass.EvalMode.ANSI else ExprOuterClass.EvalMode.LEGACY
-//            val absBuilder = ExprOuterClass.Abs.newBuilder()
-//            absBuilder.setChild(childExpr.get)
-//            absBuilder.setEvalMode(evalModeStr)
-//            Some(Expr.newBuilder().setAbs(absBuilder).build())
-//          } else {
-//            withInfo(expr, child)
-//            None
-//          }
 
       case RegExpReplace(subject, pattern, replacement, startPosition) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
