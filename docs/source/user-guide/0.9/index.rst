@@ -15,14 +15,14 @@
 .. specific language governing permissions and limitations
 .. under the License.
 
-.. image:: _static/images/DataFusionComet-Logo-Light.png
+.. image:: /_static/images/DataFusionComet-Logo-Light.png
   :alt: DataFusion Comet Logo
 
 =======================
 Comet 0.9.x User Guide
 =======================
 
-.. _toc.user-guide-links:
+.. _toc.user-guide-links-09:
 .. toctree::
    :maxdepth: 1
    :caption: Comet 0.9.x User Guide
