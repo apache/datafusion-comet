@@ -540,8 +540,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             // these cases specially here so we do not add a misleading 'info' message
             op
           case _ =>
-            // An operator that is not supported by Comet
-            withInfo(op, s"${op.nodeName} is not supported")
+            if (!hasExplainInfo(op)) {
+              // An operator that is not supported by Comet
+              withInfo(op, s"${op.nodeName} is not supported")
+            } else {
+              // Already has fallback reason, do not override it
+              op
+            }
         }
     }
   }
