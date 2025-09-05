@@ -42,19 +42,16 @@ mod array_funcs;
 mod bitwise_funcs;
 mod comet_scalar_funcs;
 pub mod hash_funcs;
-
 mod string_funcs;
-
 mod datetime_funcs;
 pub use agg_funcs::*;
 
 pub use cast::{spark_cast, Cast, SparkCastOptions};
-
 mod bloom_filter;
 pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain};
-
 mod conditional_funcs;
 mod conversion_funcs;
+mod map_funcs;
 mod math_funcs;
 mod nondetermenistic_funcs;
 
@@ -78,6 +75,7 @@ pub use math_funcs::{
     spark_unhex, spark_unscaled_value, CheckOverflow, NegativeExpr, NormalizeNaNAndZero,
 };
 pub use string_funcs::*;
+pub use map_funcs::*;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
 /// the behavior when processing input values that are invalid or would result in an
