@@ -143,7 +143,7 @@ scala> spark.sql(s"SELECT * from t1").explain()
 ```
 
 ## Known issues
- - We temporarily disable Comet when there are delete files in Iceberg scan, see Iceberg [1.8.1 diff](../../../dev/diffs/iceberg/1.8.1.diff) and this [PR](https://github.com/apache/iceberg/pull/13793)
+ - We temporarily disable Comet when there are delete files in Iceberg scan, see Iceberg [1.8.1 diff](https://github.com/apache/datafusion-comet/blob/main/dev/diffs/iceberg/1.8.1.diff) and this [PR](https://github.com/apache/iceberg/pull/13793)
    - Iceberg scan w/ delete files lead to [runtime exceptions](https://github.com/apache/datafusion-comet/issues/2117) and [incorrect results](https://github.com/apache/datafusion-comet/issues/2118)
  - Enabling `CometShuffleManager` leads to [runtime exceptions](https://github.com/apache/datafusion-comet/issues/2086)
  - Spark Runtime Filtering isn't [working](https://github.com/apache/datafusion-comet/issues/2116)
