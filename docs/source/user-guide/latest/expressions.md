@@ -21,32 +21,44 @@
 
 The following Spark expressions are currently available. Any known compatibility issues are noted in the following tables.
 
-## Literal Values
+## Math Expressions
 
-| Expression                             | Notes |
-| -------------------------------------- | ----- |
-| Literal values of supported data types |       |
-
-## Arithmetic Expressions
-
-| Expression             | Notes                                                                                                                                                                                                                                              |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Add (`+`)              |                                                                                                                                                                                                                                                    |
-| Subtract (`-`)         |                                                                                                                                                                                                                                                    |
-| Multiply (`*`)         |                                                                                                                                                                                                                                                    |
-| Divide (`/`)           |                                                                                                                                                                                                                                                    |
-| IntegralDivide (`div`) | All operands are cast to DecimalType (in case the input type is not already decima type) with precision 19 and scale 0. Please set `spark.comet.expression.allowIncompatible` to `true` to enable DataFusion’s cast operation for LongType inputs. |
-| Remainder (`%`)        |                                                                                                                                                                                                                                                    |
-| UnaryMinus (`-`)       |                                                                                                                                                                                                                                                    |
-
-## Binary Try Arithmetic
-
-| Expression | Notes                                                                      |
-| ---------- | -------------------------------------------------------------------------- |
-| `try_add`  | Adds operands (IntegerTypes only) or results NULL incase of overflow       |
-| `try_sub`  | Subtracts operands (IntegerTypes only) or results NULL incase of overflow  |
-| `try_mul`  | Multiplies operands (IntegerTypes only) or results NULL incase of overflow |
-| `try_div`  | Subtracts operands (IntegerTypes only) or results NULL incase of overflow  |
+| Expression | SQL       | Notes                                                                                                                                                                                                                                              |
+| ---------- |-----------| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Acos       | `acos`    |                                                                                                                                                                                                                                                    |
+| Add        | `+`        |
+| Asin       |           |                                                                                                                                                                                                                                                    |
+| Atan       |           |                                                                                                                                                                                                                                                    |
+| Atan2      |           |                                                                                                                                                                                                                                                    |
+| Ceil       |           |                                                                                                                                                                                                                                                    |
+| Cos        |           |                                                                                                                                                                                                                                                    |
+| Divide     | `/`       |                                                                                                                                                                                                                                                    |
+| Exp        |           |                                                                                                                                                                                                                                                    |
+| Expm1      |           |                                                                                                                                                                                                                                                    |
+| Floor      |           |                                                                                                                                                                                                                                                    |
+| Hex        |           |                                                                                                                                                                                                                                                    |
+| IntegralDivide | `div`     | All operands are cast to DecimalType (in case the input type is not already decima type) with precision 19 and scale 0. Please set `spark.comet.expression.allowIncompatible` to `true` to enable DataFusion’s cast operation for LongType inputs. |
+| IsNaN      |           |                                                                                                                                                                                                                                                    |
+| Log        |           |                                                                                                                                                                                                                                                    |
+| Log2       |           |                                                                                                                                                                                                                                                    |
+| Log10      |           |                                                                                                                                                                                                                                                    |
+| Multiply   | `*`       |                                                                                                                                                                                                                                                    |
+| Pow        |           |                                                                                                                                                                                                                                                    |
+| Rand       |           |                                                                                                                                                                                                                                                    |
+| Randn      |           |                                                                                                                                                                                                                                                    |
+| Remainder  | `%`       |                                                                                                                                                                                                                                                    |
+| Round      |           |                                                                                                                                                                                                                                                    |
+| Signum     |           |                                                                                                                                                                                                                                                    |
+| Sin        |           |                                                                                                                                                                                                                                                    |
+| Sqrt       |           |                                                                                                                                                                                                                                                    |
+| Subtract   | `-`       |                                                                                                                                                                                                                                                    |
+| Tan        |           |                                                                                                                                                                                                                                                    |
+| TryAdd     | `try_add` | Adds operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                              |
+| TryDivide  | `try_div` | Subtracts operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                         |
+| TryMultiply | `try_mul` | Multiplies operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                        |
+| TrySubtract | `try_sub` | Subtracts operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                         |
+| UnaryMinus | `-`       |                                                                                                                                                                                                                                                    |
+| Unhex      |           |                                                                                                                                                                                                                                                    |
 
 ## Conditional Expressions
 
@@ -72,6 +84,12 @@ The following Spark expressions are currently available. Any known compatibility
 | InSet                     |       |
 | Not                       |       |
 | Or                        |       |
+
+## Conversion Expressions
+
+| Expression | Notes                                                                           |
+| ---------- | ------------------------------------------------------------------------------- |
+| Cast       | See compatibility guide for list of supported cast expressions and known issues |
 
 ## String Functions
 
@@ -117,34 +135,6 @@ The following Spark expressions are currently available. Any known compatibility
 | TruncDate      |                                                                               |
 | TruncTimestamp |                                                                               |
 | Year           |                                                                               |
-
-## Math Expressions
-
-| Expression | Notes |
-| ---------- | ----- |
-| Acos       |       |
-| Asin       |       |
-| Atan       |       |
-| Atan2      |       |
-| Ceil       |       |
-| Cos        |       |
-| Exp        |       |
-| Expm1      |       |
-| Floor      |       |
-| Hex        |       |
-| IsNaN      |       |
-| Log        |       |
-| Log2       |       |
-| Log10      |       |
-| Pow        |       |
-| Rand       |       |
-| Randn      |       |
-| Round      |       |
-| Signum     |       |
-| Sin        |       |
-| Sqrt       |       |
-| Tan        |       |
-| Unhex      |       |
 
 ## Hashing Functions
 
@@ -192,7 +182,7 @@ The following Spark expressions are currently available. Any known compatibility
 | VariancePop   |       |
 | VarianceSamp  |       |
 
-## Arrays
+## Array Expressions
 
 | Expression     | Notes                                                                                                                                                                                                        |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -215,7 +205,7 @@ The following Spark expressions are currently available. Any known compatibility
 | Flatten        |                                                                                                                                                                                                              |
 | GetArrayItem   |                                                                                                                                                                                                              |
 
-## Maps
+## Map Expressions
 
 | Expression    | Notes |
 | ------------- | ----- |
@@ -225,7 +215,7 @@ The following Spark expressions are currently available. Any known compatibility
 | MapValues     |       |
 | MapFromArrays |       |
 
-## Structs
+## Struct Expressions
 
 | Expression        | Notes |
 | ----------------- | ----- |
@@ -235,11 +225,21 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Other
 
-| Expression              | Notes                                                                           |
-| ----------------------- | ------------------------------------------------------------------------------- |
-| Cast                    | See compatibility guide for list of supported cast expressions and known issues |
-| BloomFilterMightContain |                                                                                 |
-| ScalarSubquery          |                                                                                 |
-| Coalesce                |                                                                                 |
-| NormalizeNaNAndZero     |                                                                                 |
-| ToPrettyString          |                                                                                 |
+| Expression                   | Notes                                  |
+| ---------------------------- | -------------------------------------- |
+| Alias                        |                                        |
+| AttributeRefernce            |                                        |
+| BloomFilterMightContain      |                                        |
+| Coalesce                     |                                        |
+| CheckOverflow                |                                        |
+| KnownFloatingPointNormalized |                                        |
+| Literal                      | Literal values of supported data types |
+| MakeDecimal                  |                                        |
+| MonotonicallyIncreasingID                |                                        |
+| NormalizeNaNAndZero          |                                        |
+| PromotePrecision             |                                        |
+| RegExpReplace                |                                        |
+| ScalarSubquery               |                                        |
+| SparkPartitionID                |                                        |
+| ToPrettyString               |                                        |
+| UnscaledValue                |                                        |

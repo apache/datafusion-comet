@@ -73,7 +73,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
-    // TODO move ArrayCompact here
+    // TODO ArrayCompact
     classOf[ArrayContains] -> CometArrayContains,
     classOf[ArrayDistinct] -> CometArrayDistinct,
     classOf[ArrayExcept] -> CometArrayExcept,
@@ -90,16 +90,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[ElementAt] -> CometElementAt,
     classOf[Flatten] -> CometFlatten,
     classOf[GetArrayItem] -> CometGetArrayItem)
-
-  private val arithmeticExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[Add] -> CometAdd,
-    classOf[Subtract] -> CometSubtract,
-    classOf[Multiply] -> CometMultiply,
-    classOf[Divide] -> CometDivide,
-    classOf[IntegralDivide] -> CometIntegralDivide,
-    classOf[Remainder] -> CometRemainder
-    // TODO move UnaryMinus here
-  )
 
   private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[CaseWhen] -> CometCaseWhen, classOf[If] -> CometIf)
@@ -121,27 +111,34 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   private val mathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Acos] -> CometScalarFunction("acos"),
+    classOf[Add] -> CometAdd,
     classOf[Asin] -> CometScalarFunction("asin"),
     classOf[Atan] -> CometScalarFunction("atan"),
     classOf[Atan2] -> CometAtan2,
     classOf[Ceil] -> CometCeil,
     classOf[Cos] -> CometScalarFunction("cos"),
+    classOf[Divide] -> CometDivide,
     classOf[Exp] -> CometScalarFunction("exp"),
     classOf[Expm1] -> CometScalarFunction("expm1"),
     classOf[Floor] -> CometFloor,
     classOf[Hex] -> CometHex,
+    classOf[IntegralDivide] -> CometIntegralDivide,
     classOf[IsNaN] -> CometIsNaN,
     classOf[Log] -> CometLog,
     classOf[Log2] -> CometLog2,
     classOf[Log10] -> CometLog10,
+    classOf[Multiply] -> CometMultiply,
     classOf[Pow] -> CometScalarFunction("pow"),
     classOf[Rand] -> CometRand,
     classOf[Randn] -> CometRandn,
+    classOf[Remainder] -> CometRemainder,
     classOf[Round] -> CometRound,
     classOf[Signum] -> CometScalarFunction("signum"),
     classOf[Sin] -> CometScalarFunction("sin"),
     classOf[Sqrt] -> CometScalarFunction("sqrt"),
+    classOf[Subtract] -> CometSubtract,
     classOf[Tan] -> CometScalarFunction("tan"),
+    // TODO UnaryMinus
     classOf[Unhex] -> CometUnhex)
 
   private val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
@@ -212,20 +209,34 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[TruncDate] -> CometTruncDate,
     classOf[TruncTimestamp] -> CometTruncTimestamp)
 
+  private val conversionExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[Cast] -> CometCast)
+
   private val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    // TODO Alias
+    // TODO AttributeReference
+    // TODO Literal
+    // TODO SortOrder (?)
+    // TODO PromotePrecision
+    // TODO CheckOverflow
+    // TODO KnownFloatingPointNormalized
+    // TODO ScalarSubquery
+    // TODO UnscaledValue
+    // TODO MakeDecimal
+    // TODO BloomFilterMightContain
+    // TODO RegExpReplace
     classOf[SparkPartitionID] -> CometSparkPartitionId,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
-    classOf[Cast] -> CometCast,
     classOf[Coalesce] -> CometCoalesce)
 
   /**
    * Mapping of Spark expression class to Comet expression handler.
    */
   private val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    arithmeticExpressions ++ mathExpressions ++ hashExpressions ++ stringExpressions ++
+    mathExpressions ++ hashExpressions ++ stringExpressions ++
       conditionalExpressions ++ mapExpressions ++ predicateExpressions ++
       structExpressions ++ bitwiseExpressions ++ miscExpressions ++ arrayExpressions ++
-      temporalExpressions
+      temporalExpressions ++ conversionExpressions
 
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
