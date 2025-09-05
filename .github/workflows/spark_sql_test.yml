@@ -88,7 +88,7 @@ jobs:
           fi
         env:
           LC_ALL: "C.UTF-8"
-      - name: Upload unit tests log files
+      - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
         uses: actions/upload-artifact@v4
         with:
@@ -137,7 +137,7 @@ jobs:
           fi
         env:
           LC_ALL: "C.UTF-8"
-      - name: Upload unit tests log files
+      - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
         uses: actions/upload-artifact@v4
         with:
@@ -186,7 +186,7 @@ jobs:
           fi
         env:
           LC_ALL: "C.UTF-8"
-      - name: Upload unit tests log files
+      - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
         uses: actions/upload-artifact@v4
         with:
