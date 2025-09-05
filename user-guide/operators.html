@@ -1,0 +1,559 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>&lt;no title&gt; &#8212; Apache DataFusion Comet  documentation</title>
+    
+    <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+  
+    
+    <link rel="stylesheet"
+      href="../_static/vendor/fontawesome/5.13.0/css/all.min.css">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
+  
+    
+      
+  
+    
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=c6d785ac" />
+    
+    <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+  
+    <script src="../_static/documentation_options.js?v=8a448e45"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="docsearch:language" content="en">
+    
+
+    <!-- Google Analytics -->
+    
+  </head>
+  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+    
+    <div class="container-fluid" id="banner"></div>
+
+    
+
+
+    <div class="container-xl">
+      <div class="row">
+          
+            
+            <!-- Only show if we have sidebars configured, else just a small margin  -->
+            <div class="col-12 col-md-3 bd-sidebar">
+              <div class="sidebar-start-items"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<form class="bd-search d-flex align-items-center" action="../search.html" method="get">
+  <i class="icon fas fa-search"></i>
+  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
+</form>
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Overview:
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../overview.html">
+   Comet Overview
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../gluten_comparison.html">
+   Comparison with Gluten
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  User Guides:
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="latest/index.html">
+   Comet 0.10.0-SNAPSHOT
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" type="checkbox"/>
+  <label for="toctree-checkbox-1">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="latest/installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="latest/source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="latest/datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="latest/datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="latest/operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="latest/expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="latest/configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="latest/compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="latest/tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="latest/metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="latest/iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="latest/kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="0.9/index.html">
+   Comet 0.9.x
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-2" name="toctree-checkbox-2" type="checkbox"/>
+  <label for="toctree-checkbox-2">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.9/installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.9/source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.9/datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.9/datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.9/operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.9/expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.9/configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.9/compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.9/tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.9/metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.9/iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.9/kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="0.8/index.html">
+   Comet 0.8.x
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-3" name="toctree-checkbox-3" type="checkbox"/>
+  <label for="toctree-checkbox-3">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.8/installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.8/source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.8/datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.8/datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.8/operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.8/expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.8/configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.8/compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.8/tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.8/metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.8/iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="0.8/kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Contributor Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributor-guide/contributing.html">
+   Getting Started
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributor-guide/plugin_overview.html">
+   Comet Plugin Architecture
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributor-guide/development.html">
+   Development Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributor-guide/debugging.html">
+   Debugging Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributor-guide/benchmarking.html">
+   Benchmarking Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributor-guide/adding_a_new_expression.html">
+   Adding a New Expression
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributor-guide/tracing.html">
+   Tracing
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributor-guide/profiling_native_code.html">
+   Profiling Native Code
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributor-guide/spark-sql-tests.html">
+   Spark SQL Tests
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../contributor-guide/roadmap.html">
+   Roadmap
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/datafusion-comet">
+   Github and Issue Tracker
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  ASF Links
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference external" href="https://apache.org">
+   Apache Software Foundation
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/licenses/">
+   License
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/sponsorship.html">
+   Donate
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/thanks.html">
+   Thanks
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/security/">
+   Security
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/policies/conduct.html">
+   Code of conduct
+  </a>
+ </li>
+</ul>
+
+    
+  </div>
+
+  <a class="navbar-brand" href="../index.html">
+    <img src="../_static/images/DataFusionComet-Logo-Light.png" class="logo" alt="logo">
+  </a>
+</nav>
+
+              </div>
+              <div class="sidebar-end-items">
+              </div>
+            </div>
+            
+          
+
+          
+          <div class="d-none d-xl-block col-xl-2 bd-toc">
+            
+              
+              <div class="toc-item">
+                
+<div class="tocsection onthispage pt-5 pb-3">
+    <i class="fas fa-list"></i> On this page
+</div>
+
+<nav id="bd-toc-nav">
+    <ul class="simple visible nav section-nav flex-column">
+</ul>
+
+</nav>
+              </div>
+              
+              <div class="toc-item">
+                
+
+<div class="tocsection editthispage">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/user-guide/operators.md">
+        <i class="fas fa-pencil-alt"></i> Edit this page
+    </a>
+</div>
+
+              </div>
+              
+            
+          </div>
+          
+
+          
+          
+            
+          
+          <main class="col-12 col-md-9 col-xl-7 py-md-5 pl-md-5 pr-md-4 bd-content" role="main">
+              
+              <div>
+                
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<p>This page has moved <a class="reference internal" href="latest/operators.html"><span class="std std-doc">here</span></a>.</p>
+
+
+              </div>
+              
+              
+              <!-- Previous / next buttons -->
+<div class='prev-next-area'>
+</div>
+              
+          </main>
+          
+
+      </div>
+    </div>
+  
+    <script src="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
+  
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p class="copyright">
+    &copy; Copyright 2023-2024, Apache Software Foundation.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p class="sphinx-version">
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 8.1.3.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
