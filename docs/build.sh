@@ -24,11 +24,6 @@ rm -rf temp 2> /dev/null
 mkdir temp
 cp -rf source/* temp/
 
-# move current user guide into "latest" directory
-mkdir temp/user-guide/latest
-mv temp/user-guide/*.md temp/user-guide/latest
-mv temp/user-guide/index.rst temp/user-guide/latest
-
 # Add user guide from published releases
 python3 generate-versions.py
 
