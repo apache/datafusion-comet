@@ -17,4 +17,4 @@
   under the License.
 -->
 
-This page has moved [here](/gluten_comparison.md).
+This page has moved [here](../gluten_comparison.md).
