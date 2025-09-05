@@ -723,28 +723,28 @@ Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><sp
 </pre></div>
 </div>
 <p>Verify the native scan type should be <code class="docutils literal notranslate"><span class="pre">CometNativeScan</span></code>.</p>
-<p>More on <a class="reference internal" href="#../../../native/hdfs/README.md"><span class="xref myst">HDFS Reader</span></a></p>
+<p>More on <a class="reference external" href="https://github.com/apache/datafusion-comet/blob/main/native/hdfs/README.md">HDFS Reader</a></p>
 </section>
 <section id="local-hdfs-development">
 <h3>Local HDFS development<a class="headerlink" href="#local-hdfs-development" title="Link to this heading">¶</a></h3>
 <ul class="simple">
 <li><p>Configure local machine network. Add hostname to <code class="docutils literal notranslate"><span class="pre">/etc/hosts</span></code></p></li>
 </ul>
-<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>127.0.0.1	localhost   namenode datanode1 datanode2 datanode3
-::1             localhost namenode datanode1 datanode2 datanode3
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="m">127</span>.0.0.1<span class="w">	</span>localhost<span class="w">   </span>namenode<span class="w"> </span>datanode1<span class="w"> </span>datanode2<span class="w"> </span>datanode3
+::1<span class="w">             </span>localhost<span class="w"> </span>namenode<span class="w"> </span>datanode1<span class="w"> </span>datanode2<span class="w"> </span>datanode3
 </pre></div>
 </div>
 <ul class="simple">
 <li><p>Start local HDFS cluster, 3 datanodes, namenode url is <code class="docutils literal notranslate"><span class="pre">namenode:9000</span></code></p></li>
 </ul>
-<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>docker compose -f kube/local/hdfs-docker-compose.yml up
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>compose<span class="w"> </span>-f<span class="w"> </span>kube/local/hdfs-docker-compose.yml<span class="w"> </span>up
 </pre></div>
 </div>
 <ul class="simple">
 <li><p>Check the local namenode is up and running on <code class="docutils literal notranslate"><span class="pre">http://localhost:9870/dfshealth.html#tab-overview</span></code></p></li>
 <li><p>Build a project with HDFS support</p></li>
 </ul>
-<div class="highlight-commandline notranslate"><div class="highlight"><pre><span></span>JAVA_HOME=&quot;/opt/homebrew/opt/openjdk@11&quot; make release PROFILES=&quot;-Pspark-3.5&quot; COMET_FEATURES=hdfs RUSTFLAGS=&quot;-L /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home/lib/server&quot;
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">JAVA_HOME</span><span class="o">=</span><span class="s2">&quot;/opt/homebrew/opt/openjdk@11&quot;</span><span class="w"> </span>make<span class="w"> </span>release<span class="w"> </span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-3.5&quot;</span><span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span>hdfs<span class="w"> </span><span class="nv">RUSTFLAGS</span><span class="o">=</span><span class="s2">&quot;-L /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home/lib/server&quot;</span>
 </pre></div>
 </div>
 <ul class="simple">
