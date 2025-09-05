@@ -46,6 +46,9 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
+  val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
+    """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] Integer/Float overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error."""
+
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
@@ -395,7 +398,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for add") {
-    assume(isSpark40Plus)
     val data = Seq((Integer.MAX_VALUE, 1), (Integer.MIN_VALUE, -1))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -408,9 +410,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         checkSparkMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
-            val cometErrorPattern =
-              """org.apache.spark.SparkArithmeticException: [ARITHMETIC_OVERFLOW] integer overflow. Use 'try_add' to tolerate overflow and return NULL instead. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
-            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("overflow"))
           case _ => fail("Exception should be thrown")
         }
@@ -419,7 +419,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for subtract") {
-    assume(isSpark40Plus)
     val data = Seq((Integer.MIN_VALUE, 1))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -430,9 +429,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  """.stripMargin)
         checkSparkMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
-            val cometErrorPattern =
-              """org.apache.spark.SparkArithmeticException: [ARITHMETIC_OVERFLOW] integer overflow. Use 'try_subtract' to tolerate overflow and return NULL instead. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error."""
-            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("overflow"))
           case _ => fail("Exception should be thrown")
         }
@@ -441,7 +438,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for multiply") {
-    assume(isSpark40Plus)
     val data = Seq((Integer.MAX_VALUE, 10))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -453,9 +449,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         checkSparkMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
-            val cometErrorPattern =
-              """org.apache.spark.SparkArithmeticException: [ARITHMETIC_OVERFLOW] integer overflow. Use 'try_multiply' to tolerate overflow and return NULL instead. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
-            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("overflow"))
           case _ => fail("Exception should be thrown")
         }
@@ -464,7 +458,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for divide") {
-    assume(isSpark40Plus)
     val data = Seq((Integer.MIN_VALUE, 0))
 <<<<<<< HEAD
     withSQLConf(
@@ -484,10 +477,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  _1 / _2
                               |  from tbl
                               |  """.stripMargin)
+
         checkSparkMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             val cometErrorPattern =
-              """org.apache.spark.SparkArithmeticException: [DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+              """org.apache.comet.CometNativeException: [DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
             assert(cometExc.getMessage.contains(cometErrorPattern))
             assert(sparkExc.getMessage.contains("Division by zero"))
           case _ => fail("Exception should be thrown")
