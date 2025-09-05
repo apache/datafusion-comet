@@ -545,8 +545,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             // Some execs that comet will not accelerate, such as command execs.
             op
           case _ =>
-            // An operator that is not supported by Comet
-            withInfo(op, s"${op.nodeName} is not supported")
+            if (!hasExplainInfo(op)) {
+              // An operator that is not supported by Comet
+              withInfo(op, s"${op.nodeName} is not supported")
+            } else {
+              // Already has fallback reason, do not override it
+              op
+            }
         }
     }
   }
@@ -746,7 +751,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         s"Comet shuffle is not enabled: ${COMET_EXEC_SHUFFLE_ENABLED.key} is not enabled")
       false
     } else if (!isCometShuffleManagerEnabled(op.conf)) {
-      withInfo(op, s"spark.shuffle.manager is not set to ${CometShuffleManager.getClass.getName}")
+      withInfo(op, s"spark.shuffle.manager is not set to ${classOf[CometShuffleManager].getName}")
       false
     } else {
       true
