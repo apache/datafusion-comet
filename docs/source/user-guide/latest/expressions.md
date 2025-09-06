@@ -30,21 +30,21 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Predicate Expressions
 
-| Expression                | Notes |
-| ------------------------- | ----- |
-| And                       |       |
-| EqualTo (`=`)             |       |
-| EqualNullSafe (`<=>`)     |       |
-| GreaterThan (`>`)         |       |
-| GreaterThanOrEqual (`>=`) |       |
-| LessThan (`<`)            |       |
-| LessThanOrEqual (`<=`)    |       |
-| In (`IN`)                 |       |
-| IsNotNull (`IS NOT NULL`) |       |
-| IsNull (`IS NULL`)        |       |
-| InSet                     |       |
-| Not                       |       |
-| Or                        |       |
+| Expression         | SQL           |
+| ------------------ | ------------- |
+| And                | `AND`         |
+| EqualTo            | `=`           |
+| EqualNullSafe      | `<=>`         |
+| GreaterThan        | `>`           |
+| GreaterThanOrEqual | `>=`          |
+| LessThan           | `<`           |
+| LessThanOrEqual    | `<=`          |
+| In                 | `IN`          |
+| IsNotNull          | `IS NOT NULL` |
+| IsNull             | `IS NULL`     |
+| InSet              | `IN (...)`    |
+| Not                | `NOT`         |
+| Or                 | `OR`          |
 
 ## String Functions
 
@@ -144,63 +144,63 @@ The following Spark expressions are currently available. Any known compatibility
 
 ## Bitwise Expressions
 
-| Expression        | Notes |
-| ----------------- | ----- |
-| BitwiseAnd (`&`)  |       |
-| BitwiseCount      |       |
-| BitwiseGet        |       |
-| BitwiseOr (`\|`)  |       |
-| BitwiseNot (`~`)  |       |
-| BitwiseXor (`^`)  |       |
-| ShiftLeft (`<<`)  |       |
-| ShiftRight (`>>`) |       |
+| Expression   | SQL  |
+| ------------ | ---- |
+| BitwiseAnd   | `&`  |
+| BitwiseCount |      |
+| BitwiseGet   |      |
+| BitwiseOr    | `\|` |
+| BitwiseNot   | `~`  |
+| BitwiseXor   | `^`  |
+| ShiftLeft    | `<<` |
+| ShiftRight   | `>>` |
 
 ## Aggregate Expressions
 
-| Expression           | Notes |
-| -------------------- | ----- |
-| Average              |       |
-| BitAndAgg            |       |
-| BitOrAgg             |       |
-| BitXorAgg            |       |
-| BoolAnd (`bool_and`) |       |
-| BoolOr (`bool_or`)   |       |
-| Corr                 |       |
-| Count                |       |
-| CovPopulation        |       |
-| CovSample            |       |
-| First                |       |
-| Last                 |       |
-| Max                  |       |
-| Min                  |       |
-| StddevPop            |       |
-| StddevSamp           |       |
-| Sum                  |       |
-| VariancePop          |       |
-| VarianceSamp         |       |
+| Expression    | Notes      |
+| ------------- | ---------- |
+| Average       |            |
+| BitAndAgg     |            |
+| BitOrAgg      |            |
+| BitXorAgg     |            |
+| BoolAnd       | `bool_and` |
+| BoolOr        | `bool_or`  |
+| Corr          |            |
+| Count         |            |
+| CovPopulation |            |
+| CovSample     |            |
+| First         |            |
+| Last          |            |
+| Max           |            |
+| Min           |            |
+| StddevPop     |            |
+| StddevSamp    |            |
+| Sum           |            |
+| VariancePop   |            |
+| VarianceSamp  |            |
 
 ## Array Expressions
 
-| Expression     | Notes                                                                                                                                                                                                        |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| ArrayAppend    | Experimental                                                                                                                                                                                                 |
-| ArrayCompact   | Experimental                                                                                                                                                                                                 |
-| ArrayContains  | Experimental                                                                                                                                                                                                 |
-| ArrayDistinct  | Experimental: behaves differently than spark. Datafusion first sorts then removes duplicates while spark preserves the original order.                                                                       |
-| ArrayExcept    | Experimental                                                                                                                                                                                                 |
-| ArrayInsert    | Experimental                                                                                                                                                                                                 |
-| ArrayIntersect | Experimental                                                                                                                                                                                                 |
-| ArrayJoin      | Experimental                                                                                                                                                                                                 |
-| ArrayMax       | Experimental                                                                                                                                                                                                 |
-| ArrayMin       |                                                                                                                                                                                                              |
-| ArrayRemove    |                                                                                                                                                                                                              |
-| ArrayRepeat    | Experimental                                                                                                                                                                                                 |
-| ArraysOverlap  | Experimental                                                                                                                                                                                                 |
-| ArrayUnion     | Experimental: behaves differently than spark. Datafusion sorts the input arrays before performing the union, while spark preserves the order of the first array and appends unique elements from the second. |
-| CreateArray    |                                                                                                                                                                                                              |
-| ElementAt      | Arrays only                                                                                                                                                                                                  |
-| Flatten        |                                                                                                                                                                                                              |
-| GetArrayItem   |                                                                                                                                                                                                              |
+| Expression     | Notes                                                                                                                                                                                          |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ArrayAppend    |                                                                                                                                                                                                |
+| ArrayCompact   |                                                                                                                                                                                                |
+| ArrayContains  |                                                                                                                                                                                                |
+| ArrayDistinct  | Behaves differently than spark. Datafusion first sorts then removes duplicates while spark preserves the original order.                                                                       |
+| ArrayExcept    |                                                                                                                                                                                                |
+| ArrayInsert    |                                                                                                                                                                                                |
+| ArrayIntersect |                                                                                                                                                                                                |
+| ArrayJoin      |                                                                                                                                                                                                |
+| ArrayMax       |                                                                                                                                                                                                |
+| ArrayMin       |                                                                                                                                                                                                |
+| ArrayRemove    |                                                                                                                                                                                                |
+| ArrayRepeat    |                                                                                                                                                                                                |
+| ArrayUnion     | Behaves differently than spark. Datafusion sorts the input arrays before performing the union, while spark preserves the order of the first array and appends unique elements from the second. |
+| ArraysOverlap  |                                                                                                                                                                                                |
+| CreateArray    |                                                                                                                                                                                                |
+| ElementAt      | Arrays only                                                                                                                                                                                    |
+| Flatten        |                                                                                                                                                                                                |
+| GetArrayItem   |                                                                                                                                                                                                |
 
 ## Map Expressions
 
