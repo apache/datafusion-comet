@@ -23,8 +23,34 @@
 # of Comet
 
 import os
+from pathlib import Path
 
-for version in ["0.8", "0.9"]:
-    os.system(f"git clone --depth 1 https://github.com/apache/datafusion-comet.git -b branch-{version} comet-{version}")
-    os.system(f"mkdir temp/user-guide/{version}")
-    os.system(f"cp -rf comet-{version}/docs/source/user-guide/* temp/user-guide/{version}")
+current_version = "0.10.0-SNAPSHOT"
+previous_versions = ["0.8", "0.9"]
+
+def replace_in_files(root: str, filename_pattern: str, search: str, replace: str):
+    root_path = Path(root)
+    for md_file in root_path.rglob(filename_pattern):
+        text = md_file.read_text(encoding="utf-8")
+        updated = text.replace(search, replace)
+        if text != updated:
+            md_file.write_text(updated, encoding="utf-8")
+            print(f"Replaced {search} with {replace} in {md_file}")
+
+def generate_docs():
+
+    # Replace $COMET_VERSION with actual version
+    for file_pattern in ["*.md", "*.rst"]:
+        replace_in_files(f"temp/user-guide/latest", file_pattern, "$COMET_VERSION", current_version)
+
+    for version in previous_versions:
+        os.system(f"git clone --depth 1 https://github.com/apache/datafusion-comet.git -b branch-{version} comet-{version}")
+        os.system(f"mkdir temp/user-guide/{version}")
+        os.system(f"cp -rf comet-{version}/docs/source/user-guide/* temp/user-guide/{version}")
+        # Replace $COMET_VERSION with actual version
+        for file_pattern in ["*.md", "*.rst"]:
+            replace_in_files(f"temp/user-guide/{version}", file_pattern, "$COMET_VERSION", current_version)
+
+if __name__ == "__main__":
+    print("Generating versioned user guide docs...")
+    generate_docs()
