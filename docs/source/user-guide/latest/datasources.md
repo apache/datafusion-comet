@@ -175,6 +175,13 @@ The `native_datafusion` and `native_iceberg_compat` Parquet scan implementations
 
 This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will continue to work as long as the configurations are supported and can be translated without loss of functionality.
 
+### Root CA Certificates
+
+One major difference between `native_comet` and the other scan implementations is the mechanism for discovering Root
+CA Certificates. The `native_comet` scan uses the JVM to read CA Certificates from the Java Trust Store, but the native
+scan implementations `native_datafusion` and `native_iceberg_compat` use System CA Certificates (typically stored 
+in `/etc/ssl/certs` on Linux).
+
 #### Supported Credential Providers
 
 AWS credential providers can be configured using the `fs.s3a.aws.credentials.provider` configuration. The following table shows the supported credential providers and their configuration options:
