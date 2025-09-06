@@ -25,19 +25,16 @@
 import os
 from pathlib import Path
 
-current_version = "0.10.0-SNAPSHOT"
-previous_versions = ["0.8", "0.9"]
-
 def replace_in_files(root: str, filename_pattern: str, search: str, replace: str):
     root_path = Path(root)
-    for md_file in root_path.rglob(filename_pattern):
-        text = md_file.read_text(encoding="utf-8")
+    for file in root_path.rglob(filename_pattern):
+        text = file.read_text(encoding="utf-8")
         updated = text.replace(search, replace)
         if text != updated:
-            md_file.write_text(updated, encoding="utf-8")
-            print(f"Replaced {search} with {replace} in {md_file}")
+            file.write_text(updated, encoding="utf-8")
+            print(f"Replaced {search} with {replace} in {file}")
 
-def generate_docs():
+def generate_docs(current_version: str, previous_versions: list[str]):
 
     # Replace $COMET_VERSION with actual version
     for file_pattern in ["*.md", "*.rst"]:
@@ -53,4 +50,6 @@ def generate_docs():
 
 if __name__ == "__main__":
     print("Generating versioned user guide docs...")
-    generate_docs()
+    current_version = "0.10.0-SNAPSHOT"
+    previous_versions = ["0.8", "0.9"]
+    generate_docs(current_version, previous_versions)
