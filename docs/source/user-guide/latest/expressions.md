@@ -21,46 +21,6 @@
 
 The following Spark expressions are currently available. Any known compatibility issues are noted in the following tables.
 
-## Math Expressions
-
-| Expression     | SQL       | Notes                                                                                                                                                                                                                                              |
-| -------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Acos           | `acos`    |                                                                                                                                                                                                                                                    |
-| Add            | `+`       |
-| Asin           | `asin`    |                                                                                                                                                                                                                                                    |
-| Atan           | `atan`    |                                                                                                                                                                                                                                                    |
-| Atan2          | `atan2`   |                                                                                                                                                                                                                                                    |
-| BRound         | `bround`  |                                                                                                                                                                                                                                                    |
-| Ceil           | `ceil`    |                                                                                                                                                                                                                                                    |
-| Cos            | `cos`     |                                                                                                                                                                                                                                                    |
-| Divide         | `/`       |                                                                                                                                                                                                                                                    |
-| Exp            | `exp`     |                                                                                                                                                                                                                                                    |
-| Expm1          | `expm1`   |                                                                                                                                                                                                                                                    |
-| Floor          | `floor`   |                                                                                                                                                                                                                                                    |
-| Hex            | `hex`     |                                                                                                                                                                                                                                                    |
-| IntegralDivide | `div`     | All operands are cast to DecimalType (in case the input type is not already decima type) with precision 19 and scale 0. Please set `spark.comet.expression.allowIncompatible` to `true` to enable DataFusion’s cast operation for LongType inputs. |
-| IsNaN          | `isnan`   |                                                                                                                                                                                                                                                    |
-| Log            | `log`     |                                                                                                                                                                                                                                                    |
-| Log2           | `log2`    |                                                                                                                                                                                                                                                    |
-| Log10          | `log10`   |                                                                                                                                                                                                                                                    |
-| Multiply       | `*`       |                                                                                                                                                                                                                                                    |
-| Pow            | `power`   |                                                                                                                                                                                                                                                    |
-| Rand           | `rand`    |                                                                                                                                                                                                                                                    |
-| Randn          | `randn`   |                                                                                                                                                                                                                                                    |
-| Remainder      | `%`       |                                                                                                                                                                                                                                                    |
-| Round          | `round`   |                                                                                                                                                                                                                                                    |
-| Signum         | `signum`  |                                                                                                                                                                                                                                                    |
-| Sin            | `sin`     |                                                                                                                                                                                                                                                    |
-| Sqrt           | `sqrt`    |                                                                                                                                                                                                                                                    |
-| Subtract       | `-`       |                                                                                                                                                                                                                                                    |
-| Tan            | `tan`     |                                                                                                                                                                                                                                                    |
-| TryAdd         | `try_add` | Adds operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                              |
-| TryDivide      | `try_div` | Subtracts operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                         |
-| TryMultiply    | `try_mul` | Multiplies operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                        |
-| TrySubtract    | `try_sub` | Subtracts operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                         |
-| UnaryMinus     | `-`       |                                                                                                                                                                                                                                                    |
-| Unhex          | `unhex`   |                                                                                                                                                                                                                                                    |
-
 ## Conditional Expressions
 
 | Expression | Notes |
@@ -85,12 +45,6 @@ The following Spark expressions are currently available. Any known compatibility
 | InSet                     |       |
 | Not                       |       |
 | Or                        |       |
-
-## Conversion Expressions
-
-| Expression | Notes                                                                           |
-| ---------- | ------------------------------------------------------------------------------- |
-| Cast       | See compatibility guide for list of supported cast expressions and known issues |
 
 ## String Functions
 
@@ -138,6 +92,46 @@ The following Spark expressions are currently available. Any known compatibility
 | TruncDate      |                                                                               |
 | TruncTimestamp |                                                                               |
 | Year           |                                                                               |
+
+## Math Expressions
+
+| Expression     | SQL       | Notes                                                                                                                                                                                                                                              |
+| -------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Acos           | `acos`    |                                                                                                                                                                                                                                                    |
+| Add            | `+`       |
+| Asin           | `asin`    |                                                                                                                                                                                                                                                    |
+| Atan           | `atan`    |                                                                                                                                                                                                                                                    |
+| Atan2          | `atan2`   |                                                                                                                                                                                                                                                    |
+| BRound         | `bround`  |                                                                                                                                                                                                                                                    |
+| Ceil           | `ceil`    |                                                                                                                                                                                                                                                    |
+| Cos            | `cos`     |                                                                                                                                                                                                                                                    |
+| Divide         | `/`       |                                                                                                                                                                                                                                                    |
+| Exp            | `exp`     |                                                                                                                                                                                                                                                    |
+| Expm1          | `expm1`   |                                                                                                                                                                                                                                                    |
+| Floor          | `floor`   |                                                                                                                                                                                                                                                    |
+| Hex            | `hex`     |                                                                                                                                                                                                                                                    |
+| IntegralDivide | `div`     | All operands are cast to DecimalType (in case the input type is not already decima type) with precision 19 and scale 0. Please set `spark.comet.expression.allowIncompatible` to `true` to enable DataFusion’s cast operation for LongType inputs. |
+| IsNaN          | `isnan`   |                                                                                                                                                                                                                                                    |
+| Log            | `log`     |                                                                                                                                                                                                                                                    |
+| Log2           | `log2`    |                                                                                                                                                                                                                                                    |
+| Log10          | `log10`   |                                                                                                                                                                                                                                                    |
+| Multiply       | `*`       |                                                                                                                                                                                                                                                    |
+| Pow            | `power`   |                                                                                                                                                                                                                                                    |
+| Rand           | `rand`    |                                                                                                                                                                                                                                                    |
+| Randn          | `randn`   |                                                                                                                                                                                                                                                    |
+| Remainder      | `%`       |                                                                                                                                                                                                                                                    |
+| Round          | `round`   |                                                                                                                                                                                                                                                    |
+| Signum         | `signum`  |                                                                                                                                                                                                                                                    |
+| Sin            | `sin`     |                                                                                                                                                                                                                                                    |
+| Sqrt           | `sqrt`    |                                                                                                                                                                                                                                                    |
+| Subtract       | `-`       |                                                                                                                                                                                                                                                    |
+| Tan            | `tan`     |                                                                                                                                                                                                                                                    |
+| TryAdd         | `try_add` | Adds operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                              |
+| TryDivide      | `try_div` | Subtracts operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                         |
+| TryMultiply    | `try_mul` | Multiplies operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                        |
+| TrySubtract    | `try_sub` | Subtracts operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                         |
+| UnaryMinus     | `-`       |                                                                                                                                                                                                                                                    |
+| Unhex          | `unhex`   |                                                                                                                                                                                                                                                    |
 
 ## Hashing Functions
 
@@ -226,6 +220,12 @@ The following Spark expressions are currently available. Any known compatibility
 | GetArrayStructFields |       |
 | GetStructField       |       |
 | StructsToJson        |       |
+
+## Conversion Expressions
+
+| Expression | Notes                                                                           |
+| ---------- | ------------------------------------------------------------------------------- |
+| Cast       | See compatibility guide for list of supported cast expressions and known issues |
 
 ## Other
 
