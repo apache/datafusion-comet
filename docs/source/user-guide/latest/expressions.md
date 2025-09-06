@@ -21,45 +21,37 @@
 
 The following Spark expressions are currently available. Any known compatibility issues are noted in the following tables.
 
-## Math Expressions
+## Literal Values
 
-| Expression     | SQL       | Notes                                                                                                                                                                                                                                              |
-| -------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Acos           | `acos`    |                                                                                                                                                                                                                                                    |
-| Add            | `+`       |
-| Asin           | `asin`    |                                                                                                                                                                                                                                                    |
-| Atan           | `atan`    |                                                                                                                                                                                                                                                    |
-| Atan2          | `atan2`   |                                                                                                                                                                                                                                                    |
-| BRound         | `bround`  |                                                                                                                                                                                                                                                    |
-| Ceil           | `ceil`    |                                                                                                                                                                                                                                                    |
-| Cos            | `cos`     |                                                                                                                                                                                                                                                    |
-| Divide         | `/`       |                                                                                                                                                                                                                                                    |
-| Exp            | `exp`     |                                                                                                                                                                                                                                                    |
-| Expm1          | `expm1`   |                                                                                                                                                                                                                                                    |
-| Floor          | `floor`   |                                                                                                                                                                                                                                                    |
-| Hex            | `hex`     |                                                                                                                                                                                                                                                    |
-| IntegralDivide | `div`     | All operands are cast to DecimalType (in case the input type is not already decima type) with precision 19 and scale 0. Please set `spark.comet.expression.allowIncompatible` to `true` to enable DataFusion’s cast operation for LongType inputs. |
-| IsNaN          | `isnan`   |                                                                                                                                                                                                                                                    |
-| Log            | `log`     |                                                                                                                                                                                                                                                    |
-| Log2           | `log2`    |                                                                                                                                                                                                                                                    |
-| Log10          | `log10`   |                                                                                                                                                                                                                                                    |
-| Multiply       | `*`       |                                                                                                                                                                                                                                                    |
-| Pow            | `power`   |                                                                                                                                                                                                                                                    |
-| Rand           | `rand`    |                                                                                                                                                                                                                                                    |
-| Randn          | `randn`   |                                                                                                                                                                                                                                                    |
-| Remainder      | `%`       |                                                                                                                                                                                                                                                    |
-| Round          | `round`   |                                                                                                                                                                                                                                                    |
-| Signum         | `signum`  |                                                                                                                                                                                                                                                    |
-| Sin            | `sin`     |                                                                                                                                                                                                                                                    |
-| Sqrt           | `sqrt`    |                                                                                                                                                                                                                                                    |
-| Subtract       | `-`       |                                                                                                                                                                                                                                                    |
-| Tan            | `tan`     |                                                                                                                                                                                                                                                    |
-| TryAdd         | `try_add` | Adds operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                              |
-| TryDivide      | `try_div` | Subtracts operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                         |
-| TryMultiply    | `try_mul` | Multiplies operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                        |
-| TrySubtract    | `try_sub` | Subtracts operands (IntegerTypes only) or returns NULL in case of overflow                                                                                                                                                                         |
-| UnaryMinus     | `-`       |                                                                                                                                                                                                                                                    |
-| Unhex          | `unhex`   |                                                                                                                                                                                                                                                    |
+| Expression                             | Notes |
+| -------------------------------------- | ----- |
+| Literal values of supported data types |       |
+
+## Unary Arithmetic
+
+| Expression       | Notes |
+| ---------------- | ----- |
+| UnaryMinus (`-`) |       |
+
+## Binary Arithmetic
+
+| Expression             | Notes                                                                                                                                                                                                                                              |
+|------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Add (`+`)              |                                                                                                                                                                                                                                                    |
+| Subtract (`-`)         |                                                                                                                                                                                                                                                    |
+| Multiply (`*`)         |                                                                                                                                                                                                                                                    |
+| Divide (`/`)           |                                                                                                                                                                                                                                                    |
+| IntegralDivide (`div`) | All operands are cast to DecimalType (in case the input type is not already decima type) with precision 19 and scale 0. Please set `spark.comet.expression.allowIncompatible` to `true` to enable DataFusion’s cast operation for LongType inputs. |
+| Remainder (`%`)        |                                                                                                                                                                                                                                                    |
+
+## Binary Try Arithmetic
+
+| Expression | Notes                                                                      |
+|------------|----------------------------------------------------------------------------|
+| `try_add`  | Adds operands (IntegerTypes only) or results NULL incase of overflow       |
+| `try_sub`  | Subtracts operands (IntegerTypes only) or results NULL incase of overflow  |
+| `try_mul`  | Multiplies operands (IntegerTypes only) or results NULL incase of overflow |
+| `try_div`  | Subtracts operands (IntegerTypes only) or results NULL incase of overflow  |
 
 ## Conditional Expressions
 
@@ -68,127 +60,143 @@ The following Spark expressions are currently available. Any known compatibility
 | CaseWhen   |       |
 | If         |       |
 
-## Predicate Expressions
+## Comparison
 
 | Expression                | Notes |
 | ------------------------- | ----- |
-| And                       |       |
 | EqualTo (`=`)             |       |
 | EqualNullSafe (`<=>`)     |       |
 | GreaterThan (`>`)         |       |
 | GreaterThanOrEqual (`>=`) |       |
 | LessThan (`<`)            |       |
 | LessThanOrEqual (`<=`)    |       |
-| In (`IN`)                 |       |
-| IsNotNull (`IS NOT NULL`) |       |
 | IsNull (`IS NULL`)        |       |
-| InSet                     |       |
-| Not                       |       |
-| Or                        |       |
-
-## Conversion Expressions
-
-| Expression | Notes                                                                           |
-| ---------- | ------------------------------------------------------------------------------- |
-| Cast       | See compatibility guide for list of supported cast expressions and known issues |
+| IsNotNull (`IS NOT NULL`) |       |
+| In (`IN`)                 |       |
 
 ## String Functions
 
-| Expression      | Notes                                                            |
-| --------------- | ---------------------------------------------------------------- |
-| Ascii           |                                                                  |
-| BitLength       |                                                                  |
-| Chr             |                                                                  |
-| ConcatWs        |                                                                  |
-| Contains        |                                                                  |
-| EndsWith        |                                                                  |
-| InitCap         |                                                                  |
-| Length          |                                                                  |
-| Like            |                                                                  |
-| Lower           |                                                                  |
-| OctetLength     |                                                                  |
-| Reverse         |                                                                  |
-| RLike           |                                                                  |
-| StartsWith      |                                                                  |
-| StringInstr     |                                                                  |
-| StringRepeat    | Negative argument for number of times to repeat causes exception |
-| StringReplace   |                                                                  |
-| StringRPad      |                                                                  |
-| StringSpace     |                                                                  |
-| StringTranslate |                                                                  |
-| StringTrim      |                                                                  |
-| StringTrimBoth  |                                                                  |
-| StringTrimLeft  |                                                                  |
-| StringTrimRight |                                                                  |
-| Substring       |                                                                  |
-| Upper           |                                                                  |
+| Expression      | Notes                                                                                                       |
+|-----------------| ----------------------------------------------------------------------------------------------------------- |
+| Ascii           |                                                                                                             |
+| BitLength       |                                                                                                             |
+| Chr             |                                                                                                             |
+| ConcatWs        |                                                                                                             |
+| Contains        |                                                                                                             |
+| EndsWith        |                                                                                                             |
+| InitCap         |                                                                                                             |
+| Instr           |                                                                                                             |
+| Length          |                                                                                                             |
+| Like            |                                                                                                             |
+| Lower           |                                                                                                             |
+| OctetLength     |                                                                                                             |
+| Repeat          | Negative argument for number of times to repeat causes exception                                            |
+| Replace         |                                                                                                             |
+| Reverse         |                                                                                                             |
+| StartsWith      |                                                                                                             |
+| StringRPad      |                                                                                                             |
+| StringSpace     |                                                                                                             |
+| StringTrim      |                                                                                                             |
+| StringTrimBoth  |                                                                                                             |
+| StringTrimLeft  |                                                                                                             |
+| StringTrimRight |                                                                                                             |
+| Substring       |                                                                                                             |
+| Translate       |                                                                                                             |
+| Upper           |                                                                                                             |
 
 ## Date/Time Functions
 
-| Expression     | Notes                                                                         |
-| -------------- | ----------------------------------------------------------------------------- |
-| DateAdd        |                                                                               |
-| DateSub        |                                                                               |
-| DatePart       | Only `year` is supported                                                      |
-| Extract        | Only `year` is supported                                                      |
-| FromUnixTime   | Does not support format, supports only -8334601211038 <= sec <= 8210266876799 |
-| Hour           |                                                                               |
-| Minute         |                                                                               |
-| Second         |                                                                               |
-| TruncDate      |                                                                               |
-| TruncTimestamp |                                                                               |
-| Year           |                                                                               |
+| Expression     | Notes                    |
+| -------------- | ------------------------ |
+| DatePart       | Only `year` is supported |
+| Extract        | Only `year` is supported |
+| Hour           |                          |
+| Minute         |                          |
+| Second         |                          |
+| TruncDate      |                          |
+| TruncTimestamp |                          |
+| Year           |                          |
+
+## Math Expressions
+
+| Expression | Notes                                                               |
+| ---------- | ------------------------------------------------------------------- |
+| Abs        |                                                                     |
+| Acos       |                                                                     |
+| Asin       |                                                                     |
+| Atan       |                                                                     |
+| Atan2      |                                                                     |
+| Ceil       |                                                                     |
+| Cos        |                                                                     |
+| Exp        |                                                                     |
+| Floor      |                                                                     |
+| IsNaN      |                                                                     |
+| Log        |                                                                     |
+| Log2       |                                                                     |
+| Log10      |                                                                     |
+| Pow        |                                                                     |
+| Round      |                                                                     |
+| Signum     |               |
+| Sin        |                                                                     |
+| Sqrt       |                                                                     |
+| Tan        |                                                                     |
 
 ## Hashing Functions
 
-| Expression  | Notes |
-| ----------- | ----- |
-| Md5         |       |
-| Murmur3Hash |       |
-| Sha2        |       |
-| XxHash64    |       |
+| Expression | Notes |
+| ---------- | ----- |
+| Md5        |       |
+| Hash       |       |
+| Sha2       |       |
+| XxHash64   |       |
+
+## Boolean Expressions
+
+| Expression | Notes |
+| ---------- | ----- |
+| And        |       |
+| Or         |       |
+| Not        |       |
 
 ## Bitwise Expressions
 
-| Expression        | Notes |
-| ----------------- | ----- |
-| BitwiseAnd (`&`)  |       |
-| BitwiseCount      |       |
-| BitwiseGet        |       |
-| BitwiseOr (`\|`)  |       |
-| BitwiseNot (`~`)  |       |
-| BitwiseXor (`^`)  |       |
-| ShiftLeft (`<<`)  |       |
-| ShiftRight (`>>`) |       |
+| Expression           | Notes |
+| -------------------- | ----- |
+| ShiftLeft (`<<`)     |       |
+| ShiftRight (`>>`)    |       |
+| BitAnd (`&`)         |       |
+| BitOr (`\|`)         |       |
+| BitXor (`^`)         |       |
+| BitwiseNot (`~`)     |       |
+| BoolAnd (`bool_and`) |       |
+| BoolOr (`bool_or`)   |       |
 
 ## Aggregate Expressions
 
-| Expression           | Notes |
-| -------------------- | ----- |
-| Average              |       |
-| BitAndAgg            |       |
-| BitOrAgg             |       |
-| BitXorAgg            |       |
-| BoolAnd (`bool_and`) |       |
-| BoolOr (`bool_or`)   |       |
-| Corr                 |       |
-| Count                |       |
-| CovPopulation        |       |
-| CovSample            |       |
-| First                |       |
-| Last                 |       |
-| Max                  |       |
-| Min                  |       |
-| StddevPop            |       |
-| StddevSamp           |       |
-| Sum                  |       |
-| VariancePop          |       |
-| VarianceSamp         |       |
+| Expression    | Notes |
+| ------------- | ----- |
+| Avg           |       |
+| BitAndAgg     |       |
+| BitOrAgg      |       |
+| BitXorAgg     |       |
+| Corr          |       |
+| Count         |       |
+| CovPopulation |       |
+| CovSample     |       |
+| First         |       |
+| Last          |       |
+| Max           |       |
+| Min           |       |
+| StddevPop     |       |
+| StddevSamp    |       |
+| Sum           |       |
+| VariancePop   |       |
+| VarianceSamp  |       |
 
-## Array Expressions
+## Arrays
 
 | Expression     | Notes                                                                                                                                                                                                        |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+|----------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | ArrayAppend    | Experimental                                                                                                                                                                                                 |
 | ArrayCompact   | Experimental                                                                                                                                                                                                 |
 | ArrayContains  | Experimental                                                                                                                                                                                                 |
@@ -203,47 +211,35 @@ The following Spark expressions are currently available. Any known compatibility
 | ArrayRepeat    | Experimental                                                                                                                                                                                                 |
 | ArraysOverlap  | Experimental                                                                                                                                                                                                 |
 | ArrayUnion     | Experimental: behaves differently than spark. Datafusion sorts the input arrays before performing the union, while spark preserves the order of the first array and appends unique elements from the second. |
-| CreateArray    |                                                                                                                                                                                                              |
 | ElementAt      | Arrays only                                                                                                                                                                                                  |
-| Flatten        |                                                                                                                                                                                                              |
-| GetArrayItem   |                                                                                                                                                                                                              |
+| GetArrayItem   |
 
-## Map Expressions
+## Maps
 
-| Expression    | Notes |
-| ------------- | ----- |
-| GetMapValue   |       |
-| MapKeys       |       |
-| MapEntries    |       |
-| MapValues     |       |
-| MapFromArrays |       |
+| Expression          | Notes        |
+|---------------------|--------------|
+| MapLookupByKey ([]) |              |
+| MapKeys             |              |
+| MapValues           |              |     
+| MapEntries          |              |   
+| MapFromArrays       |              |
 
-## Struct Expressions
+## Structs
 
-| Expression           | Notes |
-| -------------------- | ----- |
-| CreateNamedStruct    |       |
-| GetArrayStructFields |       |
-| GetStructField       |       |
-| StructsToJson        |       |
+| Expression        | Notes        |
+|-------------------|--------------|
+| CreateNamedStruct |              |
+| GetStructField    |              |
+| StructsToJson     |              |
 
 ## Other
 
-| Expression                   | Notes                                  |
-| ---------------------------- | -------------------------------------- |
-| Alias                        |                                        |
-| AttributeRefernce            |                                        |
-| BloomFilterMightContain      |                                        |
-| Coalesce                     |                                        |
-| CheckOverflow                |                                        |
-| KnownFloatingPointNormalized |                                        |
-| Literal                      | Literal values of supported data types |
-| MakeDecimal                  |                                        |
-| MonotonicallyIncreasingID    |                                        |
-| NormalizeNaNAndZero          |                                        |
-| PromotePrecision             |                                        |
-| RegExpReplace                |                                        |
-| ScalarSubquery               |                                        |
-| SparkPartitionID             |                                        |
-| ToPrettyString               |                                        |
-| UnscaledValue                |                                        |
+| Expression              | Notes                                                                           |
+|-------------------------| ------------------------------------------------------------------------------- |
+| Cast                    | See compatibility guide for list of supported cast expressions and known issues |
+| BloomFilterMightContain |                                                                                 |
+| ScalarSubquery          |                                                                                 |
+| Coalesce                |                                                                                 |
+| NormalizeNaNAndZero     |                                                                                 |
+| ToPrettyString          |                                                                                 |
+| FromUnixTime            | Does not support format, supports only -8334601211038 <= sec <= 8210266876799   |
