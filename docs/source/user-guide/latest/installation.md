@@ -30,9 +30,7 @@ Make sure the following requirements are met and software installed on your mach
 
 ### Supported Spark Versions
 
-Comet currently supports the following versions of Apache Spark. Note that this documentation is for the main
-branch. Please refer to the version of this documentation in the appropriate GitHub release branch for released
-Comet versions.
+Comet $COMET_VERSION supports the following versions of Apache Spark.
 
 We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI.
 Other versions may work well enough for development and evaluation purposes.
@@ -84,7 +82,7 @@ See the [Comet Kubernetes Guide](kubernetes.md) guide.
 Make sure `SPARK_HOME` points to the same Spark version as Comet was built for.
 
 ```shell
-export COMET_JAR=spark/target/comet-spark-spark3.5_2.12-0.10.0-SNAPSHOT.jar
+export COMET_JAR=spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar
 
 $SPARK_HOME/bin/spark-shell \
     --jars $COMET_JAR \
@@ -140,7 +138,7 @@ explicitly contain Comet otherwise Spark may use a different class-loader for th
 components which will then fail at runtime. For example:
 
 ```
---driver-class-path spark/target/comet-spark-spark3.5_2.12-0.10.0-SNAPSHOT.jar
+--driver-class-path spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar
 ```
 
 Some cluster managers may require additional configuration, see <https://spark.apache.org/docs/latest/cluster-overview.html>
