@@ -25,6 +25,10 @@
 import os
 from pathlib import Path
 
+def get_major_minor_version(version: str):
+    parts = version.split('.')
+    return f"{parts[0]}.{parts[1]}"
+
 def replace_in_files(root: str, filename_pattern: str, search: str, replace: str):
     root_path = Path(root)
     for file in root_path.rglob(filename_pattern):
@@ -34,7 +38,7 @@ def replace_in_files(root: str, filename_pattern: str, search: str, replace: str
             file.write_text(updated, encoding="utf-8")
             print(f"Replaced {search} with {replace} in {file}")
 
-def insert_warning_after_comment(root: str, warning: str):
+def insert_warning_after_asf_header(root: str, warning: str):
     root_path = Path(root)
     for file in root_path.rglob("*.md"):
         lines = file.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -48,12 +52,13 @@ def insert_warning_after_comment(root: str, warning: str):
         file.write_text("".join(new_lines), encoding="utf-8")
 
 def publish_released_version(version: str):
-    os.system(f"git clone --depth 1 https://github.com/apache/datafusion-comet.git -b branch-{version} comet-{version}")
-    os.system(f"mkdir temp/user-guide/{version}")
-    os.system(f"cp -rf comet-{version}/docs/source/user-guide/* temp/user-guide/{version}")
+    major_minor = get_major_minor_version(version)
+    os.system(f"git clone --depth 1 https://github.com/apache/datafusion-comet.git -b branch-{major_minor} comet-{major_minor}")
+    os.system(f"mkdir temp/user-guide/{major_minor}")
+    os.system(f"cp -rf comet-{major_minor}/docs/source/user-guide/* temp/user-guide/{major_minor}")
     # Replace $COMET_VERSION with actual version
     for file_pattern in ["*.md", "*.rst"]:
-        replace_in_files(f"temp/user-guide/{version}", file_pattern, "$COMET_VERSION", version)
+        replace_in_files(f"temp/user-guide/{major_minor}", file_pattern, "$COMET_VERSION", version)
 
 def generate_docs(snapshot_version: str, latest_released_version: str, previous_versions: list[str]):
 
@@ -71,11 +76,11 @@ def generate_docs(snapshot_version: str, latest_released_version: str, previous_
         warning = """```{warning}
 You’re viewing **out-of-date** documentation.
 ```"""
-        insert_warning_after_comment(f"temp/user-guide/{version}", warning)
+        insert_warning_after_asf_header(f"temp/user-guide/{version}", warning)
 
 if __name__ == "__main__":
     print("Generating versioned user guide docs...")
     snapshot_version = "0.10.0-SNAPSHOT"
-    latest_released_version = "0.9"
-    previous_versions = ["0.8"]
+    latest_released_version = "0.9.1"
+    previous_versions = ["0.8.0"]
     generate_docs(snapshot_version, latest_released_version, previous_versions)
