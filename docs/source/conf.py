@@ -52,6 +52,7 @@ extensions = [
     'sphinx.ext.viewcode',
     'sphinx.ext.napoleon',
     'myst_parser',
+    'sphinx_reredirects',
 ]
 
 source_suffix = {
@@ -119,3 +120,20 @@ myst_heading_anchors = 3
 
 # enable nice rendering of checkboxes for the task lists
 myst_enable_extensions = ["colon_fence", "deflist", "tasklist"]
+
+redirects = {
+    "user-guide/overview.html": "../overview.html",
+    "user-guide/gluten_comparison.html": "../gluten_comparison.html",
+    "user-guide/compatibility.html": "latest/compatibility.html",
+    "user-guide/configs.html": "latest/configs.html",
+    "user-guide/datasource.html": "latest/datasource.html",
+    "user-guide/datatypes.html": "latest/datatypes.html",
+    "user-guide/expressions.html": "latest/expressions.html",
+    "user-guide/iceberg.html": "latest/iceberg.html",
+    "user-guide/installation.html": "latest/installation.html",
+    "user-guide/kubernetes.html": "latest/kubernetes.html",
+    "user-guide/metrics.html": "latest/metrics.html",
+    "user-guide/operators.html": "latest/operators.html",
+    "user-guide/source.html": "latest/source.html",
+    "user-guide/tuning.html": "latest/tuning.html",
+}
