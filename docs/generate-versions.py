@@ -73,10 +73,11 @@ def generate_docs(snapshot_version: str, latest_released_version: str, previous_
     for version in previous_versions:
         publish_released_version(version)
         # add warning that this is out-of-date documentation
-        warning = """```{warning}
-You’re viewing **out-of-date** documentation.
+        warning = f"""```{{warning}}
+This is **out-of-date** documentation. The latest Comet release is version {latest_released_version}.
 ```"""
-        insert_warning_after_asf_header(f"temp/user-guide/{version}", warning)
+        major_minor = get_major_minor_version(version)
+        insert_warning_after_asf_header(f"temp/user-guide/{major_minor}", warning)
 
 if __name__ == "__main__":
     print("Generating versioned user guide docs...")
