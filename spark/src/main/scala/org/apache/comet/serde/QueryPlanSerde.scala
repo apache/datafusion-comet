@@ -172,7 +172,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[OctetLength] -> CometScalarFunction("octet_length"),
     classOf[Reverse] -> CometScalarFunction("reverse"),
     classOf[StringRPad] -> CometStringRPad,
+
+    // GetDateField functions
     classOf[Year] -> CometYear,
+    classOf[Month] -> CometMonth,
+    classOf[DayOfMonth] -> CometDayOfMonth,
+    classOf[DayOfWeek] -> CometDayOfWeek,
+    classOf[DayOfYear] -> CometDayOfYear,
+    classOf[WeekOfYear] -> CometWeekOfYear,
+    classOf[Quarter] -> CometQuarter,
     classOf[Hour] -> CometHour,
     classOf[Minute] -> CometMinute,
     classOf[Second] -> CometSecond,
