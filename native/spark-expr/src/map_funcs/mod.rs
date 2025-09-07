@@ -15,5 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+const COMET_MAP_TO_LIST_FIELD_METADATA_IS_SORTED_KEY: &str =
+    "comet.map.to.list.field.metadata.is_sorted";
+
+mod map_from_list;
 mod map_sort;
+
+pub use map_from_list::map_from_list;
 pub use map_sort::spark_map_sort;
