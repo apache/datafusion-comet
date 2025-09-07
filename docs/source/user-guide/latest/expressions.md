@@ -53,50 +53,50 @@ Expressions that are not Spark-compatible can be enabled by setting `spark.comet
 
 ## String Functions
 
-| Expression      | Spark-Compatible? | Compatibility Notes                                              |
-| --------------- | ----------------- | ---------------------------------------------------------------- |
-| Ascii           |                   |                                                                  |
-| BitLength       |                   |                                                                  |
-| Chr             |                   |                                                                  |
-| ConcatWs        |                   |                                                                  |
-| Contains        |                   |                                                                  |
-| EndsWith        |                   |                                                                  |
-| InitCap         |                   |                                                                  |
-| Length          |                   |                                                                  |
-| Like            |                   |                                                                  |
-| Lower           |                   |                                                                  |
-| OctetLength     |                   |                                                                  |
-| Reverse         |                   |                                                                  |
-| RLike           |                   |                                                                  |
-| StartsWith      |                   |                                                                  |
-| StringInstr     |                   |                                                                  |
-| StringRepeat    |                   | Negative argument for number of times to repeat causes exception |
-| StringReplace   |                   |                                                                  |
-| StringRPad      |                   |                                                                  |
-| StringSpace     |                   |                                                                  |
-| StringTranslate |                   |                                                                  |
-| StringTrim      |                   |                                                                  |
-| StringTrimBoth  |                   |                                                                  |
-| StringTrimLeft  |                   |                                                                  |
-| StringTrimRight |                   |                                                                  |
-| Substring       |                   |                                                                  |
-| Upper           |                   |                                                                  |
+| Expression      | Spark-Compatible? | Compatibility Notes                                                         |
+| --------------- | ----------------- | --------------------------------------------------------------------------- |
+| Ascii           | Yes               |                                                                             |
+| BitLength       | Yes               |                                                                             |
+| Chr             | Yes               |                                                                             |
+| ConcatWs        | Yes               |                                                                             |
+| Contains        | Yes               |                                                                             |
+| EndsWith        | Yes               |                                                                             |
+| InitCap         | No                | Requires `spark.comet.exec.initCap.enabled=true`                            |
+| Length          | Yes               |                                                                             |
+| Like            | Yes               |                                                                             |
+| Lower           | Depends on locale | Requires `spark.comet.caseConversion.enabled=true`                          |
+| OctetLength     | Yes               |                                                                             |
+| Reverse         | Yes               |                                                                             |
+| RLike           | No                | Uses Rust regexp engine, which has different behavior to Java regexp engine |
+| StartsWith      | Yes               |                                                                             |
+| StringInstr     | Yes               |                                                                             |
+| StringRepeat    | Yes               | Negative argument for number of times to repeat causes exception            |
+| StringReplace   | Yes               |                                                                             |
+| StringRPad      | Yes               |                                                                             |
+| StringSpace     | Yes               |                                                                             |
+| StringTranslate | Yes               |                                                                             |
+| StringTrim      | Yes               |                                                                             |
+| StringTrimBoth  | Yes               |                                                                             |
+| StringTrimLeft  | Yes               |                                                                             |
+| StringTrimRight | Yes               |                                                                             |
+| Substring       | Yes               |                                                                             |
+| Upper           | Depends on locale | Requires `spark.comet.caseConversion.enabled=true`                          |
 
 ## Date/Time Functions
 
-| Expression     | Spark-Compatible? | Compatibility Notes                                                           |
-| -------------- | ----------------- | ----------------------------------------------------------------------------- |
-| DateAdd        |                   |                                                                               |
-| DateSub        |                   |                                                                               |
-| DatePart       |                   | Only `year` is supported                                                      |
-| Extract        |                   | Only `year` is supported                                                      |
-| FromUnixTime   |                   | Does not support format, supports only -8334601211038 <= sec <= 8210266876799 |
-| Hour           |                   |                                                                               |
-| Minute         |                   |                                                                               |
-| Second         |                   |                                                                               |
-| TruncDate      |                   |                                                                               |
-| TruncTimestamp |                   |                                                                               |
-| Year           |                   |                                                                               |
+| Expression     | SQL                          | Spark-Compatible? | Compatibility Notes                                                           |
+| -------------- | ---------------------------- | ----------------- | ----------------------------------------------------------------------------- |
+| DateAdd        | `date_add`                   | Yes               |                                                                               |
+| DateSub        | `date_sub`                   | Yes               |                                                                               |
+| DatePart       | `date_part(field, source)`   | Yes               | Only `year` is supported                                                      |
+| Extract        | `extract(field FROM source)` | Yes               | Only `year` is supported                                                      |
+| FromUnixTime   | `from_unixtime`              | No                | Does not support format, supports only -8334601211038 <= sec <= 8210266876799 |
+| Hour           | `hour`                       | Yes               |                                                                               |
+| Minute         | `minute`                     | Yes               |                                                                               |
+| Second         | `second`                     | Yes               |                                                                               |
+| TruncDate      | `trunc`                      | Yes               |                                                                               |
+| TruncTimestamp | `trunc_date`                 | Yes               |                                                                               |
+| Year           | `year`                       | Yes               |                                                                               |
 
 ## Math Expressions
 
