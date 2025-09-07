@@ -603,8 +603,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, notes.getOrElse(""))
           None
         case Incompatible(notes) =>
-          val exprIncompatName = handler.getExprConfigName(expr)
-          val exprIncompatConf = s"spark.comet.expression.$exprIncompatName.allowIncompatible"
+          val exprConfName = handler.getExprConfigName(expr)
+          val exprIncompatConf = s"spark.comet.expression.$exprConfName.allowIncompatible"
           val exprEnabled = conf.contains(exprIncompatConf) &&
             conf.getConfString(exprIncompatConf) == "true"
           if (exprEnabled || CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
