@@ -48,10 +48,6 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
   // TODO add DataTypes.TimestampNTZType for Spark 3.4 and later
   // https://github.com/apache/datafusion-comet/issues/378
 
-  override def getExprConfigName(expr: Cast): String = {
-    s"Cast${expr.child.dataType}To${expr.dataType}"
-  }
-
   override def getSupportLevel(cast: Cast): SupportLevel = {
     isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
   }
