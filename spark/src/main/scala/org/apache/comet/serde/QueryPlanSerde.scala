@@ -621,7 +621,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
               expr,
               s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
                 s"set $exprIncompatConf=true, or set " +
-                s"set ${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true to enable all " +
+                s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true to enable all " +
                 s"incompatible expressions. ${CometConf.COMPAT_GUIDE}.")
             None
           }
