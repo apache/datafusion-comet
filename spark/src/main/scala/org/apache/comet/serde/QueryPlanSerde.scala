@@ -604,7 +604,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         case Incompatible(notes) =>
           val exprConfName = handler.getExprConfigName(expr)
-          val exprIncompatConf = s"spark.comet.expression.$exprConfName.allowIncompatible"
+          val exprIncompatConf = s"${CometConf.COMET_EXPR_CONFIG_PREFIX}.$exprConfName" +
+            ".allowIncompatible"
           val exprEnabled = conf.contains(exprIncompatConf) &&
             conf.getConfString(exprIncompatConf) == "true"
           if (exprEnabled || CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
@@ -1991,8 +1992,8 @@ trait CometOperatorSerde[T <: SparkPlan] {
 trait CometExpressionSerde[T <: Expression] {
 
   /**
-   * Get a short name for the expression that can be used as part of a config key
-   * related to the expression, such as enabling or disabling that expression.
+   * Get a short name for the expression that can be used as part of a config key related to the
+   * expression, such as enabling or disabling that expression.
    *
    * @param expr
    *   The Spark expression.

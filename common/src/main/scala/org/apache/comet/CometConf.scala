@@ -65,6 +65,8 @@ object CometConf extends ShimCometConf {
 
   val COMET_EXEC_CONFIG_PREFIX = "spark.comet.exec";
 
+  val COMET_EXPR_CONFIG_PREFIX = "spark.comet.expression";
+
   val COMET_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.enabled")
     .doc(
       "Whether to enable Comet extension for Spark. When this is turned on, Spark will use " +
