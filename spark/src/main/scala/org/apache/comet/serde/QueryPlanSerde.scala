@@ -211,6 +211,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Month] -> CometMonth,
     classOf[DayOfMonth] -> CometDayOfMonth,
     classOf[DayOfWeek] -> CometDayOfWeek,
+    // FIXME: current datafusion version does not support isodow (WeekDay)
+    //  , see: https://github.com/apache/datafusion-comet/issues/2330
+    // classOf[WeekDay] -> CometWeekDay,
     classOf[DayOfYear] -> CometDayOfYear,
     classOf[WeekOfYear] -> CometWeekOfYear,
     classOf[Quarter] -> CometQuarter)

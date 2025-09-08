@@ -1681,14 +1681,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("Year") {
+  test("DatePart functions: Year/Month/DayOfMonth/DayOfWeek/DayOfYear/WeekOfYear/Quarter") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col timestamp) using parquet")
           sql(s"insert into $table values (now()), (null)")
-          checkSparkAnswerAndOperator(s"SELECT year(col) FROM $table")
+          // TODO: weekday(col) https://github.com/apache/datafusion-comet/issues/2330
+          checkSparkAnswerAndOperator(
+            "SELECT col, year(col), month(col), day(col)," +
+              s" dayofweek(col), dayofyear(col), weekofyear(col), quarter(col) FROM $table")
         }
       }
     }

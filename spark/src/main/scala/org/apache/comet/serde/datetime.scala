@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.types.{DateType, IntegerType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -34,8 +34,11 @@ private object CometGetDateField extends Enumeration {
   val Year: Value = Value("year")
   val Month: Value = Value("month")
   val DayOfMonth: Value = Value("day")
-  val DayOfWeek: Value = Value("dow")
+  val DayOfWeek: Value = Value(
+    "dow"
+  ) // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday, 2 = Monday, ..., 7 = Saturday).
   val DayOfYear: Value = Value("doy")
+  val WeekDay: Value = Value("isodow") // day of the week where Monday is 0
   val WeekOfYear: Value = Value("week")
   val Quarter: Value = Value("quarter")
 }
@@ -108,7 +111,34 @@ object CometDayOfWeek
       expr: DayOfWeek,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    getDateField(expr, CometGetDateField.DayOfWeek, inputs, binding)
+    // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday, 2 = Monday, ..., 7 = Saturday).
+    // So we need to add 1 to the result of datepart(dow, ...)
+    val optExpr = getDateField(expr, CometGetDateField.DayOfWeek, inputs, binding)
+      .zip(exprToProtoInternal(Literal(1), inputs, binding))
+      .map { case (left, right) =>
+        Expr
+          .newBuilder()
+          .setAdd(
+            ExprOuterClass.MathExpr
+              .newBuilder()
+              .setLeft(left)
+              .setRight(right)
+              .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
+              .setReturnType(serializeDataType(IntegerType).get)
+              .build())
+          .build()
+      }
+      .headOption
+    optExprWithInfo(optExpr, expr, expr.child)
+  }
+}
+
+object CometWeekDay extends CometExpressionSerde[WeekDay] with CometExprGetDateField[WeekDay] {
+  override def convert(
+      expr: WeekDay,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    getDateField(expr, CometGetDateField.WeekDay, inputs, binding)
   }
 }
 
