@@ -19,10 +19,9 @@
 
 # Supported Spark Expressions
 
-The following Spark expressions are currently available. Any known compatibility issues are noted in the following tables.
-
-Expressions that are marked as Spark-compatible will either run natively in Comet and provide the same
-results as Spark, or will fall back to Spark for cases that would not be compatible.
+Comet supports the following Spark expressions. Expressions that are marked as Spark-compatible will either run
+natively in Comet and provide the same results as Spark, or will fall back to Spark for cases that would not
+be compatible.
 
 Expressions that are not Spark-compatible can be enabled by setting `spark.comet.expression.allowIncompatible=true`.
 
@@ -53,34 +52,34 @@ Expressions that are not Spark-compatible can be enabled by setting `spark.comet
 
 ## String Functions
 
-| Expression      | Spark-Compatible? | Compatibility Notes                                                         |
-| --------------- | ----------------- | --------------------------------------------------------------------------- |
-| Ascii           | Yes               |                                                                             |
-| BitLength       | Yes               |                                                                             |
-| Chr             | Yes               |                                                                             |
-| ConcatWs        | Yes               |                                                                             |
-| Contains        | Yes               |                                                                             |
-| EndsWith        | Yes               |                                                                             |
-| InitCap         | No                | Requires `spark.comet.exec.initCap.enabled=true`                            |
-| Length          | Yes               |                                                                             |
-| Like            | Yes               |                                                                             |
-| Lower           | Depends on locale | Requires `spark.comet.caseConversion.enabled=true`                          |
-| OctetLength     | Yes               |                                                                             |
-| Reverse         | Yes               |                                                                             |
-| RLike           | No                | Uses Rust regexp engine, which has different behavior to Java regexp engine |
-| StartsWith      | Yes               |                                                                             |
-| StringInstr     | Yes               |                                                                             |
-| StringRepeat    | Yes               | Negative argument for number of times to repeat causes exception            |
-| StringReplace   | Yes               |                                                                             |
-| StringRPad      | Yes               |                                                                             |
-| StringSpace     | Yes               |                                                                             |
-| StringTranslate | Yes               |                                                                             |
-| StringTrim      | Yes               |                                                                             |
-| StringTrimBoth  | Yes               |                                                                             |
-| StringTrimLeft  | Yes               |                                                                             |
-| StringTrimRight | Yes               |                                                                             |
-| Substring       | Yes               |                                                                             |
-| Upper           | Depends on locale | Requires `spark.comet.caseConversion.enabled=true`                          |
+| Expression      | Spark-Compatible? | Compatibility Notes                                                                                        |
+| --------------- | ----------------- | ---------------------------------------------------------------------------------------------------------- |
+| Ascii           | Yes               |                                                                                                            |
+| BitLength       | Yes               |                                                                                                            |
+| Chr             | Yes               |                                                                                                            |
+| ConcatWs        | Yes               |                                                                                                            |
+| Contains        | Yes               |                                                                                                            |
+| EndsWith        | Yes               |                                                                                                            |
+| InitCap         | No                | Requires `spark.comet.exec.initCap.enabled=true`                                                           |
+| Length          | Yes               |                                                                                                            |
+| Like            | Yes               |                                                                                                            |
+| Lower           | No                | Results can vary depending on locale and character set. Requires `spark.comet.caseConversion.enabled=true` |
+| OctetLength     | Yes               |                                                                                                            |
+| Reverse         | Yes               |                                                                                                            |
+| RLike           | No                | Uses Rust regexp engine, which has different behavior to Java regexp engine                                |
+| StartsWith      | Yes               |                                                                                                            |
+| StringInstr     | Yes               |                                                                                                            |
+| StringRepeat    | Yes               | Negative argument for number of times to repeat causes exception                                           |
+| StringReplace   | Yes               |                                                                                                            |
+| StringRPad      | Yes               |                                                                                                            |
+| StringSpace     | Yes               |                                                                                                            |
+| StringTranslate | Yes               |                                                                                                            |
+| StringTrim      | Yes               |                                                                                                            |
+| StringTrimBoth  | Yes               |                                                                                                            |
+| StringTrimLeft  | Yes               |                                                                                                            |
+| StringTrimRight | Yes               |                                                                                                            |
+| Substring       | Yes               |                                                                                                            |
+| Upper           | No                | Results can vary depending on locale and character set. Requires `spark.comet.caseConversion.enabled=true` |
 
 ## Date/Time Functions
 
@@ -162,50 +161,50 @@ Expressions that are not Spark-compatible can be enabled by setting `spark.comet
 
 ## Aggregate Expressions
 
-| Expression    | SQL        | Spark-Compatible? |
-| ------------- | ---------- | ----------------- |
-| Average       |            |                   |
-| BitAndAgg     |            |                   |
-| BitOrAgg      |            |                   |
-| BitXorAgg     |            |                   |
-| BoolAnd       | `bool_and` |                   |
-| BoolOr        | `bool_or`  |                   |
-| Corr          |            |                   |
-| Count         |            |                   |
-| CovPopulation |            |                   |
-| CovSample     |            |                   |
-| First         |            |                   |
-| Last          |            |                   |
-| Max           |            |                   |
-| Min           |            |                   |
-| StddevPop     |            |                   |
-| StddevSamp    |            |                   |
-| Sum           |            |                   |
-| VariancePop   |            |                   |
-| VarianceSamp  |            |                   |
+| Expression    | SQL        | Spark-Compatible?         | Compatibility Notes                                              |
+| ------------- | ---------- | ------------------------- | ---------------------------------------------------------------- |
+| Average       |            | Yes, except for ANSI mode |                                                                  |
+| BitAndAgg     |            | Yes                       |                                                                  |
+| BitOrAgg      |            | Yes                       |                                                                  |
+| BitXorAgg     |            | Yes                       |                                                                  |
+| BoolAnd       | `bool_and` | Yes                       |                                                                  |
+| BoolOr        | `bool_or`  | Yes                       |                                                                  |
+| Corr          |            | Yes                       |                                                                  |
+| Count         |            | Yes                       |                                                                  |
+| CovPopulation |            | Yes                       |                                                                  |
+| CovSample     |            | Yes                       |                                                                  |
+| First         |            | No                        | This function is not deterministic. Results may not match Spark. |
+| Last          |            | No                        | This function is not deterministic. Results may not match Spark. |
+| Max           |            | Yes                       |                                                                  |
+| Min           |            | Yes                       |                                                                  |
+| StddevPop     |            | Yes                       |                                                                  |
+| StddevSamp    |            | Yes                       |                                                                  |
+| Sum           |            | Yes, except for ANSI mode |                                                                  |
+| VariancePop   |            | Yes                       |                                                                  |
+| VarianceSamp  |            | Yes                       |                                                                  |
 
 ## Array Expressions
 
-| Expression     | Spark-Compatible? | Compatibility Notes                                                                                                                                                                            |
-| -------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ArrayAppend    | No                |                                                                                                                                                                                                |
-| ArrayCompact   | No                |                                                                                                                                                                                                |
-| ArrayContains  | Yes               |                                                                                                                                                                                                |
-| ArrayDistinct  | No                | Behaves differently than spark. DataFusion first sorts then removes duplicates while spark preserves the original order.                                                                       |
-| ArrayExcept    | No                |                                                                                                                                                                                                |
-| ArrayInsert    | No                |                                                                                                                                                                                                |
-| ArrayIntersect | No                |                                                                                                                                                                                                |
-| ArrayJoin      | No                |                                                                                                                                                                                                |
-| ArrayMax       | Yes               |                                                                                                                                                                                                |
-| ArrayMin       | Yes               |                                                                                                                                                                                                |
-| ArrayRemove    | Yes               |                                                                                                                                                                                                |
-| ArrayRepeat    | No                |                                                                                                                                                                                                |
-| ArrayUnion     | No                | Behaves differently than spark. DataFusion sorts the input arrays before performing the union, while spark preserves the order of the first array and appends unique elements from the second. |
-| ArraysOverlap  | No                |                                                                                                                                                                                                |
-| CreateArray    | Yes               |                                                                                                                                                                                                |
-| ElementAt      | Yes               | Arrays only                                                                                                                                                                                    |
-| Flatten        | Yes               |                                                                                                                                                                                                |
-| GetArrayItem   | Yes               |                                                                                                                                                                                                |
+| Expression     | Spark-Compatible? | Compatibility Notes                                                                                                                                                                       |
+| -------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ArrayAppend    | No                |                                                                                                                                                                                           |
+| ArrayCompact   | No                |                                                                                                                                                                                           |
+| ArrayContains  | Yes               |                                                                                                                                                                                           |
+| ArrayDistinct  | No                | Behaves differently than spark. Comet first sorts then removes duplicates while Spark preserves the original order.                                                                       |
+| ArrayExcept    | No                |                                                                                                                                                                                           |
+| ArrayInsert    | No                |                                                                                                                                                                                           |
+| ArrayIntersect | No                |                                                                                                                                                                                           |
+| ArrayJoin      | No                |                                                                                                                                                                                           |
+| ArrayMax       | Yes               |                                                                                                                                                                                           |
+| ArrayMin       | Yes               |                                                                                                                                                                                           |
+| ArrayRemove    | Yes               |                                                                                                                                                                                           |
+| ArrayRepeat    | No                |                                                                                                                                                                                           |
+| ArrayUnion     | No                | Behaves differently than spark. Comet sorts the input arrays before performing the union, while Spark preserves the order of the first array and appends unique elements from the second. |
+| ArraysOverlap  | No                |                                                                                                                                                                                           |
+| CreateArray    | Yes               |                                                                                                                                                                                           |
+| ElementAt      | Yes               | Arrays only                                                                                                                                                                               |
+| Flatten        | Yes               |                                                                                                                                                                                           |
+| GetArrayItem   | Yes               |                                                                                                                                                                                           |
 
 ## Map Expressions
 
@@ -228,9 +227,9 @@ Expressions that are not Spark-compatible can be enabled by setting `spark.comet
 
 ## Conversion Expressions
 
-| Expression | Spark-Compatible         | Compatibility Notes                                                             |
-| ---------- | ------------------------ | ------------------------------------------------------------------------------- |
-| Cast       | Depends on specific cast | See compatibility guide for list of supported cast expressions and known issues |
+| Expression | Spark-Compatible         | Compatibility Notes                                                                         |
+| ---------- | ------------------------ | ------------------------------------------------------------------------------------------- |
+| Cast       | Depends on specific cast | See the [Comet Compatibility Guide] for list of supported cast expressions and known issues |
 
 ## Other
 
@@ -252,3 +251,5 @@ Expressions that are not Spark-compatible can be enabled by setting `spark.comet
 | SparkPartitionID             | Yes               |                                                                             |
 | ToPrettyString               | Yes               |                                                                             |
 | UnscaledValue                | Yes               |                                                                             |
+
+[Comet Compatibility Guide]: compatibility.md
