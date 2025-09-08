@@ -643,6 +643,16 @@ object CometConf extends ShimCometConf {
       .longConf
       .createWithDefault(3000L)
 
+  val COMET_LIBHDFS_SCHEMES_KEY = "fs.comet.libhdfs.schemes"
+
+  val COMET_LIBHDFS_SCHEMES: OptionalConfigEntry[String] =
+    conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
+      .doc(
+        "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
+          "via libhdfs, separated by commas. Valid only when built with hdfs feature enabled.")
+      .stringConf
+      .createOptional
+
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
       exec: String,

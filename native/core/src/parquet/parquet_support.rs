@@ -336,6 +336,17 @@ fn value_field(entries_field: &FieldRef) -> Option<FieldRef> {
     }
 }
 
+fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>) -> bool {
+    const COMET_LIBHDFS_SCHEMES_KEY: &str = "fs.comet.libhdfs.schemes";
+    let scheme = url.scheme();
+    if let Some(libhdfs_schemes) = object_store_configs.get(COMET_LIBHDFS_SCHEMES_KEY) {
+        use itertools::Itertools;
+        libhdfs_schemes.split(",").contains(scheme)
+    } else {
+        scheme == "hdfs"
+    }
+}
+
 // Mirrors object_store::parse::parse_url for the hdfs object store
 #[cfg(feature = "hdfs")]
 fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
@@ -406,8 +417,9 @@ pub(crate) fn prepare_object_store_with_configs(
 ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
     let mut url = Url::parse(url.as_str())
         .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url}: {e}")))?;
+    let is_hdfs_scheme = is_hdfs_scheme(&url, object_store_configs);
     let mut scheme = url.scheme();
-    if scheme == "s3a" {
+    if !is_hdfs_scheme && scheme == "s3a" {
         scheme = "s3";
         url.set_scheme("s3").map_err(|_| {
             ExecutionError::GeneralError("Could not convert scheme from s3a to s3".to_string())
@@ -419,7 +431,7 @@ pub(crate) fn prepare_object_store_with_configs(
         &url[url::Position::BeforeHost..url::Position::AfterPort],
     );
 
-    let (object_store, object_store_path): (Box<dyn ObjectStore>, Path) = if scheme == "hdfs" {
+    let (object_store, object_store_path): (Box<dyn ObjectStore>, Path) = if is_hdfs_scheme {
         parse_hdfs_url(&url)
     } else if scheme == "s3" {
         objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
