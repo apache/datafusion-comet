@@ -22,16 +22,17 @@
 The following Spark operators are currently replaced with native versions. Query stages that contain any operators
 not supported by Comet will fall back to regular Spark execution.
 
-| Operator              | Notes |
-| --------------------- | ----- |
-| Projection            |       |
-| Filter                |       |
-| Sort                  |       |
-| Hash Aggregate        |       |
-| Limit                 |       |
-| Sort-merge Join       |       |
-| Hash Join             |       |
-| BroadcastHashJoinExec |       |
-| Shuffle               |       |
-| Expand                |       |
-| Union                 |       |
+| Operator              | Spark-Compatible? |
+| --------------------- | ----------------- |
+| BroadcastExchangeExec | Yes               |
+| BroadcastHashJoinExec | Yes               |
+| ExpandExec            | Yes               |
+| FilterExec            | Yes               |
+| HashAggregateExec     | Yes               |
+| LimitExec             | Yes               |
+| ProjectExec           | Yes               |
+| ShuffleExchangeExec   | Yes               |
+| ShuffledHashJoinExec  | Yes               |
+| SortExec              | Yes               |
+| SortMergeJoinExec     | Yes               |
+| UnionExec             | Yes               |
