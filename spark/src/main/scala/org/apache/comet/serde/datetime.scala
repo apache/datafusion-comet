@@ -34,9 +34,9 @@ private object CometGetDateField extends Enumeration {
   val Year: Value = Value("year")
   val Month: Value = Value("month")
   val DayOfMonth: Value = Value("day")
-  val DayOfWeek: Value = Value(
-    "dow"
-  ) // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday, 2 = Monday, ..., 7 = Saturday).
+  // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday,
+  // 2 = Monday, ..., 7 = Saturday).
+  val DayOfWeek: Value = Value("dow")
   val DayOfYear: Value = Value("doy")
   val WeekDay: Value = Value("isodow") // day of the week where Monday is 0
   val WeekOfYear: Value = Value("week")
@@ -111,8 +111,8 @@ object CometDayOfWeek
       expr: DayOfWeek,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday, 2 = Monday, ..., 7 = Saturday).
-    // So we need to add 1 to the result of datepart(dow, ...)
+    // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday,
+    // 2 = Monday, ..., 7 = Saturday). So we need to add 1 to the result of datepart(dow, ...)
     val optExpr = getDateField(expr, CometGetDateField.DayOfWeek, inputs, binding)
       .zip(exprToProtoInternal(Literal(1), inputs, binding))
       .map { case (left, right) =>
