@@ -23,7 +23,7 @@ Comet supports the following Spark expressions. Expressions that are marked as S
 natively in Comet and provide the same results as Spark, or will fall back to Spark for cases that would not
 be compatible.
 
-Expressions that are not Spark-compatible are disabled by default and can be enabled by setting 
+Expressions that are not Spark-compatible are disabled by default and can be enabled by setting
 `spark.comet.expression.allowIncompatible=true`.
 
 ## Conditional Expressions
@@ -100,43 +100,43 @@ Expressions that are not Spark-compatible are disabled by default and can be ena
 
 ## Math Expressions
 
-| Expression     | SQL       | Spark-Compatible?          | Compatibility Notes               |
-| -------------- | --------- | -------------------------- | --------------------------------- |
-| Acos           | `acos`    | Yes                        |                                   |
-| Add            | `+`       | Yes                        | ANSI mode is not supported.       |
-| Asin           | `asin`    | Yes                        |                                   |
-| Atan           | `atan`    | Yes                        |                                   |
-| Atan2          | `atan2`   | Yes                        |                                   |
-| BRound         | `bround`  | Yes                        | ANSI mode is not supported.       |
-| Ceil           | `ceil`    | Yes                        |                                   |
-| Cos            | `cos`     | Yes                        |                                   |
-| Divide         | `/`       | Yes                        | ANSI mode is not supported.       |
-| Exp            | `exp`     | Yes                        |                                   |
-| Expm1          | `expm1`   | Yes                        |                                   |
-| Floor          | `floor`   | Yes                        |                                   |
-| Hex            | `hex`     | Yes                        |                                   |
-| IntegralDivide | `div`     | Yes, except for ANSI mode. | ANSI mode is not supported.       |
-| IsNaN          | `isnan`   | Yes                        |                                   |
-| Log            | `log`     | Yes                        |                                   |
-| Log2           | `log2`    | Yes                        |                                   |
-| Log10          | `log10`   | Yes                        |                                   |
-| Multiply       | `*`       | Yes                        | ANSI mode is not supported.       |
-| Pow            | `power`   | Yes                        |                                   |
-| Rand           | `rand`    | Yes                        |                                   |
-| Randn          | `randn`   | Yes                        |                                   |
-| Remainder      | `%`       | Yes                        | ANSI mode is not supported.       |
-| Round          | `round`   | Yes                        | ANSI mode is not supported.       |
-| Signum         | `signum`  | Yes                        |                                   |
-| Sin            | `sin`     | Yes                        |                                   |
-| Sqrt           | `sqrt`    | Yes                        |                                   |
-| Subtract       | `-`       | Yes                        | ANSI mode is not supported.       |
-| Tan            | `tan`     | Yes                        |                                   |
-| TryAdd         | `try_add` | Yes                        | Only integer inputs are supported |
-| TryDivide      | `try_div` | Yes                        | Only integer inputs are supported |
-| TryMultiply    | `try_mul` | Yes                        | Only integer inputs are supported |
-| TrySubtract    | `try_sub` | Yes                        | Only integer inputs are supported |
-| UnaryMinus     | `-`       | Yes                        |                                   |
-| Unhex          | `unhex`   | Yes                        |                                   |
+| Expression     | SQL       | Spark-Compatible? | Compatibility Notes               |
+| -------------- | --------- | ----------------- | --------------------------------- |
+| Acos           | `acos`    | Yes               |                                   |
+| Add            | `+`       | Yes               | ANSI mode is not supported.       |
+| Asin           | `asin`    | Yes               |                                   |
+| Atan           | `atan`    | Yes               |                                   |
+| Atan2          | `atan2`   | Yes               |                                   |
+| BRound         | `bround`  | Yes               | ANSI mode is not supported.       |
+| Ceil           | `ceil`    | Yes               |                                   |
+| Cos            | `cos`     | Yes               |                                   |
+| Divide         | `/`       | Yes               | ANSI mode is not supported.       |
+| Exp            | `exp`     | Yes               |                                   |
+| Expm1          | `expm1`   | Yes               |                                   |
+| Floor          | `floor`   | Yes               |                                   |
+| Hex            | `hex`     | Yes               |                                   |
+| IntegralDivide | `div`     | Yes               | ANSI mode is not supported.       |
+| IsNaN          | `isnan`   | Yes               |                                   |
+| Log            | `log`     | Yes               |                                   |
+| Log2           | `log2`    | Yes               |                                   |
+| Log10          | `log10`   | Yes               |                                   |
+| Multiply       | `*`       | Yes               | ANSI mode is not supported.       |
+| Pow            | `power`   | Yes               |                                   |
+| Rand           | `rand`    | Yes               |                                   |
+| Randn          | `randn`   | Yes               |                                   |
+| Remainder      | `%`       | Yes               | ANSI mode is not supported.       |
+| Round          | `round`   | Yes               | ANSI mode is not supported.       |
+| Signum         | `signum`  | Yes               |                                   |
+| Sin            | `sin`     | Yes               |                                   |
+| Sqrt           | `sqrt`    | Yes               |                                   |
+| Subtract       | `-`       | Yes               | ANSI mode is not supported.       |
+| Tan            | `tan`     | Yes               |                                   |
+| TryAdd         | `try_add` | Yes               | Only integer inputs are supported |
+| TryDivide      | `try_div` | Yes               | Only integer inputs are supported |
+| TryMultiply    | `try_mul` | Yes               | Only integer inputs are supported |
+| TrySubtract    | `try_sub` | Yes               | Only integer inputs are supported |
+| UnaryMinus     | `-`       | Yes               |                                   |
+| Unhex          | `unhex`   | Yes               |                                   |
 
 ## Hashing Functions
 
@@ -203,7 +203,7 @@ Expressions that are not Spark-compatible are disabled by default and can be ena
 | ArrayUnion     | No                | Behaves differently than spark. Comet sorts the input arrays before performing the union, while Spark preserves the order of the first array and appends unique elements from the second. |
 | ArraysOverlap  | No                |                                                                                                                                                                                           |
 | CreateArray    | Yes               |                                                                                                                                                                                           |
-| ElementAt      | Yes               | Arrays only                                                                                                                                                                               |
+| ElementAt      | Yes               | Input must be an array. Map inputs are not supported.                                                                                                                                     |
 | Flatten        | Yes               |                                                                                                                                                                                           |
 | GetArrayItem   | Yes               |                                                                                                                                                                                           |
 
