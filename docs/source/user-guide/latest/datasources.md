@@ -179,7 +179,7 @@ This implementation maintains compatibility with existing Hadoop S3A configurati
 
 One major difference between `native_comet` and the other scan implementations is the mechanism for discovering Root
 CA Certificates. The `native_comet` scan uses the JVM to read CA Certificates from the Java Trust Store, but the native
-scan implementations `native_datafusion` and `native_iceberg_compat` use System CA Certificates (typically stored 
+scan implementations `native_datafusion` and `native_iceberg_compat` use system Root CA Certificates (typically stored 
 in `/etc/ssl/certs` on Linux).
 
 #### Supported Credential Providers
