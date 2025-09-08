@@ -22,17 +22,24 @@
 The following Spark operators are currently replaced with native versions. Query stages that contain any operators
 not supported by Comet will fall back to regular Spark execution.
 
-| Operator              | Spark-Compatible? |
-| --------------------- | ----------------- |
-| BroadcastExchangeExec | Yes               |
-| BroadcastHashJoinExec | Yes               |
-| ExpandExec            | Yes               |
-| FilterExec            | Yes               |
-| HashAggregateExec     | Yes               |
-| LimitExec             | Yes               |
-| ProjectExec           | Yes               |
-| ShuffleExchangeExec   | Yes               |
-| ShuffledHashJoinExec  | Yes               |
-| SortExec              | Yes               |
-| SortMergeJoinExec     | Yes               |
-| UnionExec             | Yes               |
+| Operator                | Spark-Compatible? | Compatibility Notes                                                                                                |
+| ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------ |
+| BatchScanExec           | Yes               | Supports Parquet files and Apache Iceberg Parquet scans. See the [Comet Compatibility Guide] for more information. |
+| BroadcastExchangeExec   | Yes               |                                                                                                                    |
+| BroadcastHashJoinExec   | Yes               |                                                                                                                    |
+| ExpandExec              | Yes               |                                                                                                                    |
+| FileSourceScanExec      | Yes               | Supports Parquet files. See the [Comet Compatibility Guide] for more information.                                  |
+| FilterExec              | Yes               |                                                                                                                    |
+| GlobalLimitExec         | Yes               |                                                                                                                    |
+| HashAggregateExec       | Yes               |                                                                                                                    |
+| LocalLimitExec          | Yes               |                                                                                                                    |
+| ObjectHashAggregateExec | Yes               | Limited support                                                                                                    |
+| ProjectExec             | Yes               |                                                                                                                    |
+| ShuffleExchangeExec     | Yes               |                                                                                                                    |
+| ShuffledHashJoinExec    | Yes               |                                                                                                                    |
+| SortExec                | Yes               |                                                                                                                    |
+| SortMergeJoinExec       | Yes               |                                                                                                                    |
+| UnionExec               | Yes               |                                                                                                                    |
+| WindowExec              | Yes               |                                                                                                                    |
+
+[Comet Compatibility Guide]: compatibility.md
