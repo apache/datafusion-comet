@@ -75,7 +75,7 @@ The `native_datafusion` scan has some additional limitations:
 
 ### S3 Support with `native_iceberg_compat`
 
-- When using the default AWS S3 endpoint (no custom endpoint configured), a valid region is required. Comet
+- When using the default AWS S3 endpoint (no custom endpoint configured), a valid region is required. Comet 
   will attempt to resolve the region if it is not provided.
 
 ## ANSI Mode
