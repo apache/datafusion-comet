@@ -99,43 +99,43 @@ Expressions that are not Spark-compatible can be enabled by setting `spark.comet
 
 ## Math Expressions
 
-| Expression     | SQL       | Spark-Compatible?          | Compatibility Notes                                                                                                                                                                                                                                |
-| -------------- | --------- | -------------------------- |----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Acos           | `acos`    | Yes                        |                                                                                                                                                                                                                                                    |
-| Add            | `+`       | Yes                        | ANSI mode is not supported.                                                                                                                                                                                                                        |
-| Asin           | `asin`    | Yes                        |                                                                                                                                                                                                                                                    |
-| Atan           | `atan`    | Yes                        |                                                                                                                                                                                                                                                    |
-| Atan2          | `atan2`   | Yes                        |                                                                                                                                                                                                                                                    |
-| BRound         | `bround`  | Yes                        | ANSI mode is not supported.                                                                                                                                                                                                                                                   |
-| Ceil           | `ceil`    | Yes                        |                                                                                                                                                                                                                                                    |
-| Cos            | `cos`     | Yes                        |                                                                                                                                                                                                                                                    |
-| Divide         | `/`       | Yes                        | ANSI mode is not supported.                                                                                                                                                                                                                                                   |
-| Exp            | `exp`     | Yes                        |                                                                                                                                                                                                                                                    |
-| Expm1          | `expm1`   | Yes                        |                                                                                                                                                                                                                                                    |
-| Floor          | `floor`   | Yes                        |                                                                                                                                                                                                                                                    |
-| Hex            | `hex`     | Yes                        |                                                                                                                                                                                                                                                    |
-| IntegralDivide | `div`     | Yes, except for ANSI mode. | ANSI mode is not supported. |
-| IsNaN          | `isnan`   | Yes                        |                                                                                                                                                                                                                                                    |
-| Log            | `log`     | Yes                        |                                                                                                                                                                                                                                                    |
-| Log2           | `log2`    | Yes                        |                                                                                                                                                                                                                                                    |
-| Log10          | `log10`   | Yes                        |                                                                                                                                                                                                                                                    |
-| Multiply       | `*`       | Yes                        | ANSI mode is not supported.                                                                                                                                                                                                                                                   |
-| Pow            | `power`   | Yes                        |                                                                                                                                                                                                                                                    |
-| Rand           | `rand`    | Yes                        |                                                                                                                                                                                                                                                    |
-| Randn          | `randn`   | Yes                        |                                                                                                                                                                                                                                                    |
-| Remainder      | `%`       | Yes                        | ANSI mode is not supported.                                                                                                                                                                                                                                                   |
-| Round          | `round`   | Yes                        | ANSI mode is not supported.                                                                                                                                                                                                                                                   |
-| Signum         | `signum`  | Yes                        |                                                                                                                                                                                                                                                    |
-| Sin            | `sin`     | Yes                        |                                                                                                                                                                                                                                                    |
-| Sqrt           | `sqrt`    | Yes                        |                                                                                                                                                                                                                                                    |
-| Subtract       | `-`       | Yes                        | ANSI mode is not supported.                                                                                                                                                                                                                                                   |
-| Tan            | `tan`     | Yes                        |                                                                                                                                                                                                                                                    |
-| TryAdd         | `try_add` | Yes                        | Only integer inputs are supported                                                                                                                                                                                                                  |
-| TryDivide      | `try_div` | Yes                        | Only integer inputs are supported                                                                                                                                                                                                                  |
-| TryMultiply    | `try_mul` | Yes                        | Only integer inputs are supported                                                                                                                                                                                                                  |
-| TrySubtract    | `try_sub` | Yes                        | Only integer inputs are supported                                                                                                                                                                                                                  |
-| UnaryMinus     | `-`       | Yes                        |                                                                                                                                                                                                                                                    |
-| Unhex          | `unhex`   | Yes                        |                                                                                                                                                                                                                                                    |
+| Expression     | SQL       | Spark-Compatible?          | Compatibility Notes               |
+| -------------- | --------- | -------------------------- | --------------------------------- |
+| Acos           | `acos`    | Yes                        |                                   |
+| Add            | `+`       | Yes                        | ANSI mode is not supported.       |
+| Asin           | `asin`    | Yes                        |                                   |
+| Atan           | `atan`    | Yes                        |                                   |
+| Atan2          | `atan2`   | Yes                        |                                   |
+| BRound         | `bround`  | Yes                        | ANSI mode is not supported.       |
+| Ceil           | `ceil`    | Yes                        |                                   |
+| Cos            | `cos`     | Yes                        |                                   |
+| Divide         | `/`       | Yes                        | ANSI mode is not supported.       |
+| Exp            | `exp`     | Yes                        |                                   |
+| Expm1          | `expm1`   | Yes                        |                                   |
+| Floor          | `floor`   | Yes                        |                                   |
+| Hex            | `hex`     | Yes                        |                                   |
+| IntegralDivide | `div`     | Yes, except for ANSI mode. | ANSI mode is not supported.       |
+| IsNaN          | `isnan`   | Yes                        |                                   |
+| Log            | `log`     | Yes                        |                                   |
+| Log2           | `log2`    | Yes                        |                                   |
+| Log10          | `log10`   | Yes                        |                                   |
+| Multiply       | `*`       | Yes                        | ANSI mode is not supported.       |
+| Pow            | `power`   | Yes                        |                                   |
+| Rand           | `rand`    | Yes                        |                                   |
+| Randn          | `randn`   | Yes                        |                                   |
+| Remainder      | `%`       | Yes                        | ANSI mode is not supported.       |
+| Round          | `round`   | Yes                        | ANSI mode is not supported.       |
+| Signum         | `signum`  | Yes                        |                                   |
+| Sin            | `sin`     | Yes                        |                                   |
+| Sqrt           | `sqrt`    | Yes                        |                                   |
+| Subtract       | `-`       | Yes                        | ANSI mode is not supported.       |
+| Tan            | `tan`     | Yes                        |                                   |
+| TryAdd         | `try_add` | Yes                        | Only integer inputs are supported |
+| TryDivide      | `try_div` | Yes                        | Only integer inputs are supported |
+| TryMultiply    | `try_mul` | Yes                        | Only integer inputs are supported |
+| TrySubtract    | `try_sub` | Yes                        | Only integer inputs are supported |
+| UnaryMinus     | `-`       | Yes                        |                                   |
+| Unhex          | `unhex`   | Yes                        |                                   |
 
 ## Hashing Functions
 
