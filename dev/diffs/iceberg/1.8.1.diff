@@ -1,5 +1,5 @@
 diff --git a/build.gradle b/build.gradle
-index 7327b38905..7967109f03 100644
+index 7327b38905d..7967109f039 100644
 --- a/build.gradle
 +++ b/build.gradle
 @@ -780,6 +780,13 @@ project(':iceberg-parquet') {
@@ -17,7 +17,7 @@ index 7327b38905..7967109f03 100644
        exclude group: 'org.apache.avro', module: 'avro'
        // already shaded by Parquet
 diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
-index 04ffa8f4ed..cc0099ccc9 100644
+index 04ffa8f4edc..cc0099ccc93 100644
 --- a/gradle/libs.versions.toml
 +++ b/gradle/libs.versions.toml
 @@ -34,6 +34,7 @@ azuresdk-bom = "1.2.31"
@@ -39,7 +39,7 @@ index 04ffa8f4ed..cc0099ccc9 100644
  tez010 = "0.10.4"
 diff --git a/parquet/src/main/java/org/apache/iceberg/parquet/CometTypeUtils.java b/parquet/src/main/java/org/apache/iceberg/parquet/CometTypeUtils.java
 new file mode 100644
-index 0000000000..ddf6c7de5a
+index 00000000000..ddf6c7de5ae
 --- /dev/null
 +++ b/parquet/src/main/java/org/apache/iceberg/parquet/CometTypeUtils.java
 @@ -0,0 +1,255 @@
@@ -300,7 +300,7 @@ index 0000000000..ddf6c7de5a
 +}
 diff --git a/parquet/src/main/java/org/apache/iceberg/parquet/CometVectorizedParquetReader.java b/parquet/src/main/java/org/apache/iceberg/parquet/CometVectorizedParquetReader.java
 new file mode 100644
-index 0000000000..88b195b76a
+index 00000000000..88b195b76a2
 --- /dev/null
 +++ b/parquet/src/main/java/org/apache/iceberg/parquet/CometVectorizedParquetReader.java
 @@ -0,0 +1,255 @@
@@ -560,7 +560,7 @@ index 0000000000..88b195b76a
 +  }
 +}
 diff --git a/parquet/src/main/java/org/apache/iceberg/parquet/Parquet.java b/parquet/src/main/java/org/apache/iceberg/parquet/Parquet.java
-index 2c37a52449..3442cfc437 100644
+index 2c37a52449e..3442cfc4375 100644
 --- a/parquet/src/main/java/org/apache/iceberg/parquet/Parquet.java
 +++ b/parquet/src/main/java/org/apache/iceberg/parquet/Parquet.java
 @@ -1075,6 +1075,7 @@ public class Parquet {
@@ -639,7 +639,7 @@ index 2c37a52449..3442cfc437 100644
            return new org.apache.iceberg.parquet.ParquetReader<>(
                file, schema, options, readerFunc, mapping, filter, reuseContainers, caseSensitive);
 diff --git a/parquet/src/main/java/org/apache/iceberg/parquet/ReadConf.java b/parquet/src/main/java/org/apache/iceberg/parquet/ReadConf.java
-index 1fb2372ba5..142e5fbadf 100644
+index 1fb2372ba56..142e5fbadf1 100644
 --- a/parquet/src/main/java/org/apache/iceberg/parquet/ReadConf.java
 +++ b/parquet/src/main/java/org/apache/iceberg/parquet/ReadConf.java
 @@ -157,6 +157,14 @@ class ReadConf<T> {
@@ -658,7 +658,7 @@ index 1fb2372ba5..142e5fbadf 100644
      return model;
    }
 diff --git a/spark/v3.5/build.gradle b/spark/v3.5/build.gradle
-index e2d2c7a7ac..f64232dc57 100644
+index e2d2c7a7ac0..f64232dc57f 100644
 --- a/spark/v3.5/build.gradle
 +++ b/spark/v3.5/build.gradle
 @@ -75,7 +75,7 @@ project(":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}") {
@@ -699,7 +699,7 @@ index e2d2c7a7ac..f64232dc57 100644
      relocate 'io.airlift', 'org.apache.iceberg.shaded.io.airlift'
      relocate 'org.apache.hc.client5', 'org.apache.iceberg.shaded.org.apache.hc.client5'
 diff --git a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/ExtensionsTestBase.java b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/ExtensionsTestBase.java
-index 578845e3da..0118b30683 100644
+index 578845e3da2..0118b30683d 100644
 --- a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/ExtensionsTestBase.java
 +++ b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/ExtensionsTestBase.java
 @@ -57,6 +57,16 @@ public abstract class ExtensionsTestBase extends CatalogTestBase {
@@ -720,7 +720,7 @@ index 578845e3da..0118b30683 100644
              .getOrCreate();
  
 diff --git a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
-index ade19de36f..150a2cddbc 100644
+index ade19de36fe..150a2cddbc8 100644
 --- a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
 +++ b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
 @@ -56,6 +56,16 @@ public class TestCallStatementParser {
@@ -741,7 +741,7 @@ index ade19de36f..150a2cddbc 100644
      TestCallStatementParser.parser = spark.sessionState().sqlParser();
    }
 diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java
-index 64edb1002e..5bb449f1ac 100644
+index 64edb1002e9..5bb449f1ac7 100644
 --- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java
 +++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/DeleteOrphanFilesBenchmark.java
 @@ -179,6 +179,16 @@ public class DeleteOrphanFilesBenchmark {
@@ -762,7 +762,7 @@ index 64edb1002e..5bb449f1ac 100644
      spark = builder.getOrCreate();
    }
 diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java
-index a5d0456b0b..4af408f486 100644
+index a5d0456b0b2..4af408f4861 100644
 --- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java
 +++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/action/IcebergSortCompactionBenchmark.java
 @@ -392,6 +392,16 @@ public class IcebergSortCompactionBenchmark {
@@ -783,7 +783,7 @@ index a5d0456b0b..4af408f486 100644
      spark = builder.getOrCreate();
      Configuration sparkHadoopConf = spark.sessionState().newHadoopConf();
 diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVReaderBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVReaderBenchmark.java
-index c6794e43c6..f735919740 100644
+index c6794e43c63..f7359197407 100644
 --- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVReaderBenchmark.java
 +++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVReaderBenchmark.java
 @@ -239,6 +239,16 @@ public class DVReaderBenchmark {
@@ -804,7 +804,7 @@ index c6794e43c6..f735919740 100644
              .getOrCreate();
    }
 diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVWriterBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVWriterBenchmark.java
-index ac74fb5a10..e011b8b251 100644
+index ac74fb5a109..e011b8b2510 100644
 --- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVWriterBenchmark.java
 +++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/DVWriterBenchmark.java
 @@ -223,6 +223,16 @@ public class DVWriterBenchmark {
@@ -825,7 +825,7 @@ index ac74fb5a10..e011b8b251 100644
              .getOrCreate();
    }
 diff --git a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java
-index 68c537e34a..f66be2f389 100644
+index 68c537e34a4..f66be2f3896 100644
 --- a/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java
 +++ b/spark/v3.5/spark/src/jmh/java/org/apache/iceberg/spark/source/IcebergSourceBenchmark.java
 @@ -94,7 +94,19 @@ public abstract class IcebergSourceBenchmark {
@@ -850,7 +850,7 @@ index 68c537e34a..f66be2f389 100644
        builder
            .config("parquet.dictionary.page.size", "1")
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
-index 4794863ab1..8bb508f19f 100644
+index 4794863ab1b..8bb508f19f8 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnReader.java
 @@ -20,21 +20,25 @@ package org.apache.iceberg.spark.data.vectorized;
@@ -953,7 +953,7 @@ index 4794863ab1..8bb508f19f 100644
  
    @Override
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnarBatchReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnarBatchReader.java
-index 1440e5d1d3..85cca62e90 100644
+index 1440e5d1d3f..85cca62e90f 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnarBatchReader.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometColumnarBatchReader.java
 @@ -22,8 +22,12 @@ import java.io.IOException;
@@ -1038,7 +1038,7 @@ index 1440e5d1d3..85cca62e90 100644
          }
        }
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometConstantColumnReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometConstantColumnReader.java
-index 047c96314b..88d691a607 100644
+index 047c96314b1..88d691a607a 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometConstantColumnReader.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometConstantColumnReader.java
 @@ -21,6 +21,7 @@ package org.apache.iceberg.spark.data.vectorized;
@@ -1063,7 +1063,7 @@ index 047c96314b..88d691a607 100644
  
    @Override
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometDeleteColumnReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometDeleteColumnReader.java
-index 6235bfe486..cba108e432 100644
+index 6235bfe4865..cba108e4326 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometDeleteColumnReader.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometDeleteColumnReader.java
 @@ -51,10 +51,10 @@ class CometDeleteColumnReader<T> extends CometColumnReader {
@@ -1080,7 +1080,7 @@ index 6235bfe486..cba108e432 100644
      }
  
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometPositionColumnReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometPositionColumnReader.java
-index bcc0e514c2..98e80068c5 100644
+index bcc0e514c28..98e80068c51 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometPositionColumnReader.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometPositionColumnReader.java
 @@ -20,6 +20,7 @@ package org.apache.iceberg.spark.data.vectorized;
@@ -1101,7 +1101,7 @@ index bcc0e514c2..98e80068c5 100644
            false /* isConstant = false */);
      }
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometVectorizedReaderBuilder.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometVectorizedReaderBuilder.java
-index d36f1a7274..56f8c9bff9 100644
+index d36f1a72747..56f8c9bff93 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometVectorizedReaderBuilder.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/data/vectorized/CometVectorizedReaderBuilder.java
 @@ -142,6 +142,7 @@ class CometVectorizedReaderBuilder extends TypeWithSchemaVisitor<VectorizedReade
@@ -1114,7 +1114,7 @@ index d36f1a7274..56f8c9bff9 100644
    }
  }
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java
-index 780e1750a5..57892ac4c5 100644
+index 780e1750a52..57892ac4c59 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/BaseBatchReader.java
 @@ -109,6 +109,7 @@ abstract class BaseBatchReader<T extends ScanTask> extends BaseReader<ColumnarBa
@@ -1126,7 +1126,7 @@ index 780e1750a5..57892ac4c5 100644
    }
  
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
-index 11f054b117..f443042ba4 100644
+index 11f054b1171..f443042ba48 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkBatch.java
 @@ -172,17 +172,32 @@ class SparkBatch implements Batch {
@@ -1165,7 +1165,7 @@ index 11f054b117..f443042ba4 100644
    // - ORC vectorization is enabled
    // - all tasks are of type FileScanTask and read only ORC files with no delete files
 diff --git a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java
-index 019f3919dc..656e0600ac 100644
+index 019f3919dc5..656e0600ac0 100644
 --- a/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java
 +++ b/spark/v3.5/spark/src/main/java/org/apache/iceberg/spark/source/SparkScan.java
 @@ -23,6 +23,7 @@ import java.util.List;
@@ -1197,7 +1197,7 @@ index 019f3919dc..656e0600ac 100644
 +  }
  }
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
-index 404ba72846..19d0cd5c82 100644
+index 404ba728460..19d0cd5c827 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
 @@ -90,6 +90,16 @@ public abstract class SparkDistributedDataScanTestBase
@@ -1218,7 +1218,7 @@ index 404ba72846..19d0cd5c82 100644
    }
  }
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java
-index 659507e4c5..eb9cedc34c 100644
+index 659507e4c5e..eb9cedc34c5 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanDeletes.java
 @@ -73,6 +73,16 @@ public class TestSparkDistributedDataScanDeletes
@@ -1239,7 +1239,7 @@ index 659507e4c5..eb9cedc34c 100644
    }
  
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java
-index a218f965ea..395c02441e 100644
+index a218f965ea6..395c02441e7 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanFilterFiles.java
 @@ -62,6 +62,16 @@ public class TestSparkDistributedDataScanFilterFiles
@@ -1260,7 +1260,7 @@ index a218f965ea..395c02441e 100644
    }
  
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java
-index 2665d7ba8d..306e859ce1 100644
+index 2665d7ba8d3..306e859ce1a 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/TestSparkDistributedDataScanReporting.java
 @@ -63,6 +63,16 @@ public class TestSparkDistributedDataScanReporting
@@ -1281,7 +1281,7 @@ index 2665d7ba8d..306e859ce1 100644
    }
  
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
-index de68351f6e..3ab0d3db47 100644
+index de68351f6e3..3ab0d3db477 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/TestBase.java
 @@ -77,6 +77,17 @@ public abstract class TestBase extends SparkTestHelperBase {
@@ -1303,7 +1303,7 @@ index de68351f6e..3ab0d3db47 100644
              .getOrCreate();
  
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/parquet/vectorized/TestParquetDictionaryEncodedVectorizedReads.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/parquet/vectorized/TestParquetDictionaryEncodedVectorizedReads.java
-index bc4e722bc8..1a40d8edcb 100644
+index bc4e722bc86..1a40d8edcb3 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/parquet/vectorized/TestParquetDictionaryEncodedVectorizedReads.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/parquet/vectorized/TestParquetDictionaryEncodedVectorizedReads.java
 @@ -59,7 +59,20 @@ public class TestParquetDictionaryEncodedVectorizedReads extends TestParquetVect
@@ -1329,7 +1329,7 @@ index bc4e722bc8..1a40d8edcb 100644
  
    @AfterAll
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
-index 3a269740b7..59592eb2ad 100644
+index 3a269740b70..59592eb2ad7 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/ScanTestBase.java
 @@ -54,7 +54,20 @@ public abstract class ScanTestBase extends AvroDataTest {
@@ -1355,7 +1355,7 @@ index 3a269740b7..59592eb2ad 100644
    }
  
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java
-index f411920a5d..367c2e2cb4 100644
+index f411920a5dc..367c2e2cb45 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestCompressionSettings.java
 @@ -144,7 +144,20 @@ public class TestCompressionSettings extends CatalogTestBase {
@@ -1381,7 +1381,7 @@ index f411920a5d..367c2e2cb4 100644
  
    @BeforeEach
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java
-index c4ba96e634..a0e77db99b 100644
+index c4ba96e6340..a0e77db99b9 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestDataSourceOptions.java
 @@ -75,7 +75,20 @@ public class TestDataSourceOptions extends TestBaseWithCatalog {
@@ -1407,7 +1407,7 @@ index c4ba96e634..a0e77db99b 100644
  
    @AfterAll
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java
-index 348173596e..bdd31528d3 100644
+index 348173596e4..bdd31528d3f 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestFilteredScan.java
 @@ -110,7 +110,20 @@ public class TestFilteredScan {
@@ -1433,7 +1433,7 @@ index 348173596e..bdd31528d3 100644
  
    @AfterAll
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java
-index 84c99a575c..6f4b2af003 100644
+index 84c99a575c8..6f4b2af003b 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestForwardCompatibility.java
 @@ -93,7 +93,20 @@ public class TestForwardCompatibility {
@@ -1459,7 +1459,7 @@ index 84c99a575c..6f4b2af003 100644
  
    @AfterAll
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java
-index 7eff93d204..1774acd056 100644
+index 7eff93d204e..1774acd056b 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestIcebergSpark.java
 @@ -46,7 +46,20 @@ public class TestIcebergSpark {
@@ -1485,7 +1485,7 @@ index 7eff93d204..1774acd056 100644
  
    @AfterAll
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java
-index 9464f687b0..b5dbb88dd5 100644
+index 9464f687b0e..b5dbb88dd5a 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionPruning.java
 @@ -112,7 +112,20 @@ public class TestPartitionPruning {
@@ -1511,7 +1511,7 @@ index 9464f687b0..b5dbb88dd5 100644
  
      String optionKey = String.format("fs.%s.impl", CountOpenLocalFileSystem.scheme);
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java
-index 5c218f21c4..e48e6d121f 100644
+index 5c218f21c47..e48e6d121f0 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestPartitionValues.java
 @@ -107,7 +107,20 @@ public class TestPartitionValues {
@@ -1537,7 +1537,7 @@ index 5c218f21c4..e48e6d121f 100644
  
    @AfterAll
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java
-index a7334a580c..dca7fdd9c6 100644
+index a7334a580ca..dca7fdd9c69 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSnapshotSelection.java
 @@ -87,7 +87,20 @@ public class TestSnapshotSelection {
@@ -1563,7 +1563,7 @@ index a7334a580c..dca7fdd9c6 100644
  
    @AfterAll
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java
-index 182b1ef8f5..5da4a3c90a 100644
+index 182b1ef8f5a..5da4a3c90aa 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataFile.java
 @@ -120,7 +120,20 @@ public class TestSparkDataFile {
@@ -1589,7 +1589,7 @@ index 182b1ef8f5..5da4a3c90a 100644
    }
  
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
-index fb2b312bed..5927a408c6 100644
+index fb2b312bed9..5927a408c6b 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkDataWrite.java
 @@ -96,7 +96,20 @@ public class TestSparkDataWrite {
@@ -1696,7 +1696,7 @@ index fb2b312bed..5927a408c6 100644
      assertThat(actual)
          .describedAs("Result rows should match")
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
-index becf6a064d..beb7c801b0 100644
+index becf6a064dc..beb7c801b05 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReadProjection.java
 @@ -83,7 +83,20 @@ public class TestSparkReadProjection extends TestReadProjection {
@@ -1722,7 +1722,7 @@ index becf6a064d..beb7c801b0 100644
          ImmutableMap.of(
              "type", "hive",
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
-index 4f1cef5d37..0e34e08db4 100644
+index 4f1cef5d373..0e34e08db4a 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
 @@ -136,6 +136,16 @@ public class TestSparkReaderDeletes extends DeleteReadTests {
@@ -1743,7 +1743,7 @@ index 4f1cef5d37..0e34e08db4 100644
              .getOrCreate();
  
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
-index baf7fa8f88..509c5deba5 100644
+index baf7fa8f88a..509c5deba51 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
 @@ -182,6 +182,16 @@ public class TestSparkReaderWithBloomFilter {
@@ -1764,7 +1764,7 @@ index baf7fa8f88..509c5deba5 100644
              .getOrCreate();
  
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java
-index 17db46b85c..d68b638ce0 100644
+index 17db46b85c3..d68b638ce09 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestStructuredStreaming.java
 @@ -65,6 +65,16 @@ public class TestStructuredStreaming {
@@ -1785,7 +1785,7 @@ index 17db46b85c..d68b638ce0 100644
    }
  
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java
-index 306444b9f2..0ed52fd6cf 100644
+index 306444b9f29..0ed52fd6cfb 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestTimestampWithoutZone.java
 @@ -75,7 +75,20 @@ public class TestTimestampWithoutZone extends TestBase {
@@ -1811,7 +1811,7 @@ index 306444b9f2..0ed52fd6cf 100644
  
    @AfterAll
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java
-index 841268a6be..e290c246f7 100644
+index 841268a6be0..e290c246f7b 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestWriteMetricsConfig.java
 @@ -80,7 +80,20 @@ public class TestWriteMetricsConfig {
@@ -1837,7 +1837,7 @@ index 841268a6be..e290c246f7 100644
    }
  
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java
-index 6e09252704..438bc4da57 100644
+index 6e09252704a..438bc4da575 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestAggregatePushDown.java
 @@ -60,6 +60,16 @@ public class TestAggregatePushDown extends CatalogTestBase {
@@ -1858,7 +1858,7 @@ index 6e09252704..438bc4da57 100644
              .getOrCreate();
  
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
-index 9d2ce2b388..5e23368848 100644
+index 9d2ce2b388a..5e233688488 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
 @@ -598,9 +598,7 @@ public class TestFilterPushDown extends TestBaseWithCatalog {
@@ -1873,7 +1873,7 @@ index 9d2ce2b388..5e23368848 100644
        assertThat(planAsString).as("Should be no post scan filter").doesNotContain("Filter (");
      }
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
-index 6719c45ca9..2515454401 100644
+index 6719c45ca96..2515454401a 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/sql/TestStoragePartitionedJoins.java
 @@ -616,7 +616,7 @@ public class TestStoragePartitionedJoins extends TestBaseWithCatalog {
