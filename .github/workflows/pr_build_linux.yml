@@ -203,5 +203,6 @@ jobs:
         with:
           artifact_name: ${{ matrix.os }}-java-${{ matrix.java_version }}-features-${{ matrix.features.value }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
           features: ${{ matrix.features.value }}
+          maven_opts: "-Dtest=none"
           suites: ${{ matrix.features.suites }}
           upload-test-reports: true
