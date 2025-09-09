@@ -22,10 +22,10 @@
 Comet 0.9.x User Guide
 =======================
 
-.. _toc.user-guide-links-09:
+.. _toc.user-guide-links-0.9.1:
 .. toctree::
    :maxdepth: 1
-   :caption: Comet 0.9.x User Guide
+   :caption: Comet 0.9.1 User Guide
 
    Installing Comet <installation>
    Building From Source <source>

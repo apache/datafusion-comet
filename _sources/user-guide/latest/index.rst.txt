@@ -22,7 +22,7 @@
 Comet 0.10.0-SNAPSHOT User Guide
 ================================
 
-.. _toc.user-guide-links-latest:
+.. _toc.user-guide-links-0.10.0-SNAPSHOT:
 .. toctree::
    :maxdepth: 1
    :caption: Comet 0.10.0-SNAPSHOT User Guide

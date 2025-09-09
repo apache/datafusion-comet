@@ -29,10 +29,10 @@ Official source releases can be downloaded from https://dist.apache.org/repos/di
 # Pick the latest version
 export COMET_VERSION=0.9.1
 # Download the tarball
-curl -O "https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-$COMET_VERSION/apache-datafusion-comet-$COMET_VERSION.tar.gz"
+curl -O "https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.9.1/apache-datafusion-comet-0.9.1.tar.gz"
 # Unpack
-tar -xzf apache-datafusion-comet-$COMET_VERSION.tar.gz
-cd apache-datafusion-comet-$COMET_VERSION
+tar -xzf apache-datafusion-comet-0.9.1.tar.gz
+cd apache-datafusion-comet-0.9.1
 ```
 
 Build

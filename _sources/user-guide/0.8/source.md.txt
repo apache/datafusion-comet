@@ -16,6 +16,9 @@
   specific language governing permissions and limitations
   under the License.
 -->
+```{warning}
+This is **out-of-date** documentation. The latest Comet release is version 0.9.1.
+```
 
 # Building Comet From Source
 
@@ -29,10 +32,10 @@ Official source releases can be downloaded from https://dist.apache.org/repos/di
 # Pick the latest version
 export COMET_VERSION=0.8.0
 # Download the tarball
-curl -O "https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-$COMET_VERSION/apache-datafusion-comet-$COMET_VERSION.tar.gz"
+curl -O "https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.8.0/apache-datafusion-comet-0.8.0.tar.gz"
 # Unpack
-tar -xzf apache-datafusion-comet-$COMET_VERSION.tar.gz
-cd apache-datafusion-comet-$COMET_VERSION
+tar -xzf apache-datafusion-comet-0.8.0.tar.gz
+cd apache-datafusion-comet-0.8.0
 ```
 
 Build
