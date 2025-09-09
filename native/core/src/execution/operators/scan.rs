@@ -237,15 +237,15 @@ impl ScanExec {
             return Ok(InputBatch::EOF);
         }
 
-        let mut timer = arrow_ffi_time.timer();
-
         // Check for selection vectors and get selection indices if needed from
         // JVM via FFI
         // Selection vectors can be provided by, for instance, Iceberg to
         // remove rows that have been deleted.
-        let selection_indices_arrays = Self::get_selection_indices(&mut env, iter, num_cols)?;
+        let selection_indices_arrays =
+            Self::get_selection_indices(&mut env, iter, num_cols, jvm_fetch_time, arrow_ffi_time)?;
 
-        // fetch batch data from JVMi via FFI
+        // fetch batch data from JVM via FFI
+        let mut timer = arrow_ffi_time.timer();
         let (num_rows, array_addrs, schema_addrs) =
             Self::allocate_and_fetch_batch(&mut env, iter, num_cols)?;
 
@@ -366,15 +366,21 @@ impl ScanExec {
         env: &mut jni::JNIEnv,
         iter: &JObject,
         num_cols: usize,
+        jvm_fetch_time: &Time,
+        arrow_ffi_time: &Time,
     ) -> Result<Option<Vec<ArrayRef>>, CometError> {
         // Check if all columns have selection vectors
+        let mut timer = jvm_fetch_time.timer();
         let has_selection_vectors_result: jni::sys::jboolean = unsafe {
             jni_call!(env,
                 comet_batch_iterator(iter).has_selection_vectors() -> jni::sys::jboolean)?
         };
+        timer.stop();
         let has_selection_vectors = has_selection_vectors_result != 0;
 
         let selection_indices_arrays = if has_selection_vectors {
+            let mut timer = arrow_ffi_time.timer();
+
             // Allocate arrays for selection indices export (one per column)
             let mut indices_array_addrs = Vec::with_capacity(num_cols);
             let mut indices_schema_addrs = Vec::with_capacity(num_cols);
@@ -392,7 +398,10 @@ impl ScanExec {
             env.set_long_array_region(&indices_array_obj, 0, &indices_array_addrs)?;
             env.set_long_array_region(&indices_schema_obj, 0, &indices_schema_addrs)?;
 
+            timer.stop();
+
             // Export selection indices from JVM
+            let mut timer = jvm_fetch_time.timer();
             let _exported_count: i32 = unsafe {
                 jni_call!(env,
                     comet_batch_iterator(iter).export_selection_indices(
@@ -400,8 +409,10 @@ impl ScanExec {
                         JValueGen::Object(JObject::from(indices_schema_obj).as_ref())
                     ) -> i32)?
             };
+            timer.stop();
 
             // Convert to ArrayRef for easier handling
+            let mut timer = arrow_ffi_time.timer();
             let mut selection_arrays = Vec::with_capacity(num_cols);
             for i in 0..num_cols {
                 let array_data =
@@ -414,6 +425,7 @@ impl ScanExec {
                     Rc::from_raw(indices_schema_addrs[i] as *const FFI_ArrowSchema);
                 }
             }
+            timer.stop();
 
             Some(selection_arrays)
         } else {

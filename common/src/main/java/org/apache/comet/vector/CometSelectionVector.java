@@ -108,7 +108,7 @@ public class CometSelectionVector extends CometVector {
    * @return The corresponding index in the original vector
    * @throws IndexOutOfBoundsException if selectionIndex is out of bounds
    */
-  public int getValuesIndex(int selectionIndex) {
+  private int getValuesIndex(int selectionIndex) {
     if (selectionIndex < 0 || selectionIndex >= numValues) {
       throw new IndexOutOfBoundsException(
           String.format(
@@ -141,7 +141,7 @@ public class CometSelectionVector extends CometVector {
    *
    * @return Array of selected indices
    */
-  int[] getSelectedIndices() {
+  private int[] getSelectedIndices() {
     return selectionIndices;
   }
 
