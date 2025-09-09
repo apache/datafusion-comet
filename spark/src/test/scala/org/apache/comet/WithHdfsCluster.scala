@@ -21,7 +21,6 @@ package org.apache.comet
 
 import java.io.{File, FileWriter}
 import java.net.InetAddress
-import java.nio.file.Files
 import java.util.UUID
 
 import scala.collection.JavaConverters._
@@ -32,6 +31,7 @@ import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.hdfs.MiniDFSCluster
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys
 import org.apache.spark.internal.Logging
+import org.apache.spark.network.util.JavaUtils
 
 /**
  * Trait for starting and stopping a MiniDFSCluster for testing.
@@ -65,7 +65,7 @@ trait WithHdfsCluster extends Logging {
       "NameNode address in configuration is " +
         s"${hdfsConf.get(HdfsClientConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY)}")
     hadoopConfDir =
-      Files.createTempDirectory(s"comet_hdfs_conf_${UUID.randomUUID().toString}").toFile
+      JavaUtils.createDirectory(System.getProperty("java.io.tmpdir"), "comet_hdfs_conf")
     saveHadoopConf(hadoopConfDir)
 
     fileSystem = hdfsCluster.getFileSystem

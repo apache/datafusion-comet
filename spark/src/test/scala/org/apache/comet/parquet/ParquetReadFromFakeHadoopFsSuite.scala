@@ -20,11 +20,10 @@
 package org.apache.comet.parquet
 
 import java.io.File
-import java.nio.file.Files
-import java.util.UUID
 
 import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkConf
+import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -46,7 +45,7 @@ class ParquetReadFromFakeHadoopFsSuite extends CometTestBase with AdaptiveSparkP
 
   override def beforeAll(): Unit = {
     // Initialize fake root dir
-    fake_root_dir = Files.createTempDirectory(s"comet_fake_${UUID.randomUUID().toString}").toFile
+    fake_root_dir = JavaUtils.createDirectory(System.getProperty("java.io.tmpdir"), "comet_test")
     // Initialize Spark session
     super.beforeAll()
   }
