@@ -62,7 +62,7 @@ class ParquetReadFromHdfsSuite
         .startsWith("hdfs://"))
   }
 
-  test("test native_datafusion scan on fake fs") {
+  test("test native_datafusion scan on hdfs") {
     withTmpHdfsDir { dir =>
       {
         val testFilePath = dir.toString
