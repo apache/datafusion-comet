@@ -173,22 +173,14 @@ index 41fd4de2a09..44cd244d3b0 100644
  --CONFIG_DIM1 spark.sql.codegen.wholeStage=true
  --CONFIG_DIM1 spark.sql.codegen.wholeStage=false,spark.sql.codegen.factoryMode=CODEGEN_ONLY
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
-<<<<<<< Updated upstream
-index 3a409eea348..48533823533 100644
-=======
 index 3a409eea348..b0a1fa5c20a 100644
->>>>>>> Stashed changes
 --- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
 @@ -69,6 +69,7 @@ SELECT '' AS one, i.* FROM INT4_TBL i WHERE (i.f1 % smallint('2')) = smallint('1
  -- any evens
  SELECT '' AS three, i.* FROM INT4_TBL i WHERE (i.f1 % int('2')) = smallint('0');
  
-<<<<<<< Updated upstream
-+--SET spark.comet.enabled=false
-=======
 +--SET spark.comet.exec.enabled=false
->>>>>>> Stashed changes
  -- [SPARK-28024] Incorrect value when out of range
  SELECT '' AS five, i.f1, i.f1 * smallint('2') AS x FROM INT4_TBL i;
  
@@ -551,6 +543,57 @@ index 93275487f29..01e5c601763 100644
            }.flatten
            assert(filters.contains(GreaterThan(scan.logicalPlan.output.head, Literal(5L))))
          }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
+new file mode 100644
+index 00000000000..5691536c114
+--- /dev/null
++++ b/sql/core/src/test/scala/org/apache/spark/sql/IgnoreComet.scala
+@@ -0,0 +1,45 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to You under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License.  You may obtain a copy of the License at
++ *
++ *    http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package org.apache.spark.sql
++
++import org.scalactic.source.Position
++import org.scalatest.Tag
++
++import org.apache.spark.sql.test.SQLTestUtils
++
++/**
++ * Tests with this tag will be ignored when Comet is enabled (e.g., via `ENABLE_COMET`).
++ */
++case class IgnoreComet(reason: String) extends Tag("DisableComet")
++case class IgnoreCometNativeIcebergCompat(reason: String) extends Tag("DisableComet")
++case class IgnoreCometNativeDataFusion(reason: String) extends Tag("DisableComet")
++case class IgnoreCometNativeScan(reason: String) extends Tag("DisableComet")
++
++/**
++ * Helper trait that disables Comet for all tests regardless of default config values.
++ */
++trait IgnoreCometSuite extends SQLTestUtils {
++  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)
++    (implicit pos: Position): Unit = {
++    if (isCometEnabled) {
++      ignore(testName + " (disabled when Comet is on)", testTags: _*)(testFun)
++    } else {
++      super.test(testName, testTags: _*)(testFun)
++    }
++  }
++}
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
 index 7af826583bd..3c3def1eb67 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinHintSuite.scala
@@ -835,11 +878,7 @@ index c26757c9cff..d55775f09d7 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-<<<<<<< Updated upstream
-index 793a0da6a86..3726f11fdc8 100644
-=======
 index 793a0da6a86..181bfc16e4b 100644
->>>>>>> Stashed changes
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1521,7 +1521,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -858,13 +897,6 @@ index 793a0da6a86..181bfc16e4b 100644
    test("SPARK-39166: Query context of binary arithmetic should be serialized to executors" +
 -    " when WSCG is off") {
 +    " when WSCG is off",
-<<<<<<< Updated upstream
-+    IgnoreComet("ignore comet https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
-@@ -4497,14 +4499,19 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-=======
 +    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
        SQLConf.ANSI_ENABLED.key -> "true") {
@@ -880,7 +912,6 @@ index 793a0da6a86..181bfc16e4b 100644
        SQLConf.ANSI_ENABLED.key -> "true") {
        withTable("t") {
 @@ -4497,14 +4500,19 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
->>>>>>> Stashed changes
            val msg = intercept[SparkException] {
              sql(query).collect()
            }.getMessage
@@ -898,11 +929,7 @@ index 793a0da6a86..181bfc16e4b 100644
    test("SPARK-39190,SPARK-39208,SPARK-39210: Query context of decimal overflow error should " +
 -    "be serialized to executors when WSCG is off") {
 +    "be serialized to executors when WSCG is off",
-<<<<<<< Updated upstream
-+    IgnoreComet("ignore comet https://github.com/apache/datafusion-comet/issues/2215")) {
-=======
 +    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
->>>>>>> Stashed changes
      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
        SQLConf.ANSI_ENABLED.key -> "true") {
        withTable("t") {
