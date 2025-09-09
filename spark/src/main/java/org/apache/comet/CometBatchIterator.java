@@ -23,6 +23,7 @@ import scala.collection.Iterator;
 
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
+import org.apache.comet.vector.CometSelectionVector;
 import org.apache.comet.vector.NativeUtil;
 
 /**
@@ -89,5 +90,50 @@ public class CometBatchIterator {
     currentBatch = null;
 
     return numRows;
+  }
+
+  /**
+   * Check if the current batch has selection vectors for all columns.
+   *
+   * @return true if all columns are CometSelectionVector instances, false otherwise
+   */
+  public boolean hasSelectionVectors() {
+    if (currentBatch == null) {
+      return false;
+    }
+
+    // Check if all columns are CometSelectionVector instances
+    for (int i = 0; i < currentBatch.numCols(); i++) {
+      if (!(currentBatch.column(i) instanceof CometSelectionVector)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Export selection indices for all columns when they are selection vectors.
+   *
+   * @param arrayAddrs The addresses of the ArrowArray structures for indices
+   * @param schemaAddrs The addresses of the ArrowSchema structures for indices
+   * @return Number of selection indices arrays exported
+   */
+  public int exportSelectionIndices(long[] arrayAddrs, long[] schemaAddrs) {
+    if (currentBatch == null) {
+      return 0;
+    }
+
+    int exportCount = 0;
+    for (int i = 0; i < currentBatch.numCols(); i++) {
+      if (currentBatch.column(i) instanceof CometSelectionVector) {
+        CometSelectionVector selectionVector = (CometSelectionVector) currentBatch.column(i);
+
+        // Export the indices vector
+        nativeUtil.exportSingleVector(
+            selectionVector.getIndices(), arrayAddrs[exportCount], schemaAddrs[exportCount]);
+        exportCount++;
+      }
+    }
+    return exportCount;
   }
 }

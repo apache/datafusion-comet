@@ -75,6 +75,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * Mapping of Spark expression class to Comet expression handler.
    */
   private val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    classOf[AttributeReference] -> CometAttributeReference,
+    classOf[Alias] -> CometAlias,
     classOf[Add] -> CometAdd,
     classOf[Subtract] -> CometSubtract,
     classOf[Multiply] -> CometMultiply,
@@ -626,13 +628,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
 
     versionSpecificExprToProtoInternal(expr, inputs, binding).orElse(expr match {
-      case a @ Alias(_, _) =>
-        val r = exprToProtoInternal(a.child, inputs, binding)
-        if (r.isEmpty) {
-          withInfo(expr, a.child)
-        }
-        r
-
       case cast @ Cast(_: Literal, dataType, _, _) =>
         // This can happen after promoting decimal precisions
         val value = cast.eval()
@@ -878,51 +873,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case attr: AttributeReference =>
-        val dataType = serializeDataType(attr.dataType)
-
-        if (dataType.isDefined) {
-          if (binding) {
-            // Spark may produce unresolvable attributes in some cases,
-            // for example https://github.com/apache/datafusion-comet/issues/925.
-            // So, we allow the binding to fail.
-            val boundRef: Any = BindReferences
-              .bindReference(attr, inputs, allowFailures = true)
-
-            if (boundRef.isInstanceOf[AttributeReference]) {
-              withInfo(attr, s"cannot resolve $attr among ${inputs.mkString(", ")}")
-              return None
-            }
-
-            val boundExpr = ExprOuterClass.BoundReference
-              .newBuilder()
-              .setIndex(boundRef.asInstanceOf[BoundReference].ordinal)
-              .setDatatype(dataType.get)
-              .build()
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setBound(boundExpr)
-                .build())
-          } else {
-            val unboundRef = ExprOuterClass.UnboundReference
-              .newBuilder()
-              .setName(attr.name)
-              .setDatatype(dataType.get)
-              .build()
-
-            Some(
-              ExprOuterClass.Expr
-                .newBuilder()
-                .setUnbound(unboundRef)
-                .build())
-          }
-        } else {
-          withInfo(attr, s"unsupported datatype: ${attr.dataType}")
-          None
-        }
-
       // abs implementation is not correct
       // https://github.com/apache/datafusion-comet/issues/666
 //        case Abs(child, failOnErr) =>
@@ -1076,6 +1026,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
       case af @ ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
         convert(af, CometArrayCompact)
+      case l @ Length(child) if child.dataType == BinaryType =>
+        withInfo(l, "Length on BinaryType is not supported")
+        None
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) =>
@@ -1852,28 +1805,38 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   }
 
-  // TODO: Remove this constraint when we upgrade to new arrow-rs including
-  // https://github.com/apache/arrow-rs/pull/6225
+  // scalastyle:off
+  /**
+   * Align w/ Arrow's
+   * [[https://github.com/apache/arrow-rs/blob/55.2.0/arrow-ord/src/rank.rs#L30-L40 can_rank]] and
+   * [[https://github.com/apache/arrow-rs/blob/55.2.0/arrow-ord/src/sort.rs#L193-L215 can_sort_to_indices]]
+   *
+   * TODO: Include SparkSQL's [[YearMonthIntervalType]] and [[DayTimeIntervalType]]
+   */
+  // scalastyle:off
   def supportedSortType(op: SparkPlan, sortOrder: Seq[SortOrder]): Boolean = {
     def canRank(dt: DataType): Boolean = {
       dt match {
         case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-            _: DoubleType | _: TimestampType | _: DecimalType | _: DateType =>
+            _: DoubleType | _: DecimalType =>
           true
-        case _: BinaryType | _: StringType => true
+        case _: DateType | _: TimestampType | _: TimestampNTZType =>
+          true
+        case _: BooleanType | _: BinaryType | _: StringType => true
         case _ => false
       }
     }
 
     if (sortOrder.length == 1) {
       val canSort = sortOrder.head.dataType match {
-        case _: BooleanType => true
         case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-            _: DoubleType | _: TimestampType | _: TimestampNTZType | _: DecimalType |
-            _: DateType =>
+            _: DoubleType | _: DecimalType =>
           true
-        case _: BinaryType | _: StringType => true
+        case _: DateType | _: TimestampType | _: TimestampNTZType =>
+          true
+        case _: BooleanType | _: BinaryType | _: StringType => true
         case ArrayType(elementType, _) => canRank(elementType)
+        case MapType(_, valueType, _) => canRank(valueType)
         case _ => false
       }
       if (!canSort) {

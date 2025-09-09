@@ -62,4 +62,4 @@ hardware.
 
 Refer to the [Comet Installation Guide] to get started.
 
-[Comet Installation Guide]: installation.md
+[Comet Installation Guide]: user-guide/latest/installation.md

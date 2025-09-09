@@ -43,7 +43,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    Comet Overview <overview>
    Comparison with Gluten <gluten_comparison>
 
-.. _toc.user-guide-links:
+.. _toc.user-guide-links-versioned:
 .. toctree::
    :maxdepth: 2
    :caption: User Guides:
@@ -52,7 +52,6 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    Comet 0.10.0-SNAPSHOT <user-guide/latest/index>
    Comet 0.9.x <user-guide/0.9/index>
    Comet 0.8.x <user-guide/0.8/index>
-   Comet 0.7.x <user-guide/0.7/index>
 
 .. _toc.contributor-guide-links:
 .. toctree::

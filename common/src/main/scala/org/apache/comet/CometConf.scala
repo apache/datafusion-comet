@@ -486,7 +486,8 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.logFallbackReasons.enabled")
       .doc("When this setting is enabled, Comet will log warnings for all fallback reasons.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(
+        sys.env.getOrElse("ENABLE_COMET_LOG_FALLBACK_REASONS", "false").toBoolean)
 
   val COMET_EXPLAIN_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explainFallback.enabled")
@@ -639,6 +640,16 @@ object CometConf extends ShimCometConf {
           " metrics will be updated upon task completion.")
       .longConf
       .createWithDefault(3000L)
+
+  val COMET_LIBHDFS_SCHEMES_KEY = "fs.comet.libhdfs.schemes"
+
+  val COMET_LIBHDFS_SCHEMES: OptionalConfigEntry[String] =
+    conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
+      .doc(
+        "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
+          "via libhdfs, separated by commas. Valid only when built with hdfs feature enabled.")
+      .stringConf
+      .createOptional
 
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(

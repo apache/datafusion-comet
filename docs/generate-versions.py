@@ -23,8 +23,65 @@
 # of Comet
 
 import os
+from pathlib import Path
 
-for version in ["0.8", "0.9"]:
-    os.system(f"git clone --depth 1 https://github.com/apache/datafusion-comet.git -b branch-{version} comet-{version}")
-    os.system(f"mkdir temp/user-guide/{version}")
-    os.system(f"cp -rf comet-{version}/docs/source/user-guide/* temp/user-guide/{version}")
+def get_major_minor_version(version: str):
+    parts = version.split('.')
+    return f"{parts[0]}.{parts[1]}"
+
+def replace_in_files(root: str, filename_pattern: str, search: str, replace: str):
+    root_path = Path(root)
+    for file in root_path.rglob(filename_pattern):
+        text = file.read_text(encoding="utf-8")
+        updated = text.replace(search, replace)
+        if text != updated:
+            file.write_text(updated, encoding="utf-8")
+            print(f"Replaced {search} with {replace} in {file}")
+
+def insert_warning_after_asf_header(root: str, warning: str):
+    root_path = Path(root)
+    for file in root_path.rglob("*.md"):
+        lines = file.read_text(encoding="utf-8").splitlines(keepends=True)
+        new_lines = []
+        inserted = False
+        for line in lines:
+            new_lines.append(line)
+            if not inserted and "-->" in line:
+                new_lines.append(warning + "\n")
+                inserted = True
+        file.write_text("".join(new_lines), encoding="utf-8")
+
+def publish_released_version(version: str):
+    major_minor = get_major_minor_version(version)
+    os.system(f"git clone --depth 1 https://github.com/apache/datafusion-comet.git -b branch-{major_minor} comet-{major_minor}")
+    os.system(f"mkdir temp/user-guide/{major_minor}")
+    os.system(f"cp -rf comet-{major_minor}/docs/source/user-guide/* temp/user-guide/{major_minor}")
+    # Replace $COMET_VERSION with actual version
+    for file_pattern in ["*.md", "*.rst"]:
+        replace_in_files(f"temp/user-guide/{major_minor}", file_pattern, "$COMET_VERSION", version)
+
+def generate_docs(snapshot_version: str, latest_released_version: str, previous_versions: list[str]):
+
+    # Replace $COMET_VERSION with actual version for snapshot version
+    for file_pattern in ["*.md", "*.rst"]:
+        replace_in_files(f"temp/user-guide/latest", file_pattern, "$COMET_VERSION", snapshot_version)
+
+    # Add user guide content for latest released versions
+    publish_released_version(latest_released_version)
+
+    # Add user guide content for older released versions
+    for version in previous_versions:
+        publish_released_version(version)
+        # add warning that this is out-of-date documentation
+        warning = f"""```{{warning}}
+This is **out-of-date** documentation. The latest Comet release is version {latest_released_version}.
+```"""
+        major_minor = get_major_minor_version(version)
+        insert_warning_after_asf_header(f"temp/user-guide/{major_minor}", warning)
+
+if __name__ == "__main__":
+    print("Generating versioned user guide docs...")
+    snapshot_version = "0.10.0-SNAPSHOT"
+    latest_released_version = "0.9.1"
+    previous_versions = ["0.8.0"]
+    generate_docs(snapshot_version, latest_released_version, previous_versions)
