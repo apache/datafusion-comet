@@ -33,7 +33,7 @@ not supported by Comet will fall back to regular Spark execution.
 | GlobalLimitExec         | Yes               |                                                                                                                    |
 | HashAggregateExec       | Yes               |                                                                                                                    |
 | LocalLimitExec          | Yes               |                                                                                                                    |
-| ObjectHashAggregateExec | Yes               | Limited support                                                                                                    |
+| ObjectHashAggregateExec | Yes               | Supports a limited number of aggregates, such as `bloom_filter_agg`.                                               |
 | ProjectExec             | Yes               |                                                                                                                    |
 | ShuffleExchangeExec     | Yes               |                                                                                                                    |
 | ShuffledHashJoinExec    | Yes               |                                                                                                                    |
