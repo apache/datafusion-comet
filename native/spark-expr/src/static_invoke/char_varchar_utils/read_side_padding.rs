@@ -78,23 +78,21 @@ fn spark_read_side_padding2(
                 ))),
             }
         }
-        [ColumnarValue::Array(array), ColumnarValue::Array(array_int)] => {
-            match array.data_type() {
-                DataType::Utf8 => spark_read_side_padding_internal::<i32>(
-                    array,
-                    truncate,
-                    ColumnarValue::Array(Arc::<dyn Array>::clone(array_int)),
-                ),
-                DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(
-                    array,
-                    truncate,
-                    ColumnarValue::Array(Arc::<dyn Array>::clone(array_int)),
-                ),
-                other => Err(DataFusionError::Internal(format!(
-                    "Unsupported data type {other:?} for function rpad/read_side_padding",
-                ))),
-            }
-        }
+        [ColumnarValue::Array(array), ColumnarValue::Array(array_int)] => match array.data_type() {
+            DataType::Utf8 => spark_read_side_padding_internal::<i32>(
+                array,
+                truncate,
+                ColumnarValue::Array(Arc::<dyn Array>::clone(array_int)),
+            ),
+            DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(
+                array,
+                truncate,
+                ColumnarValue::Array(Arc::<dyn Array>::clone(array_int)),
+            ),
+            other => Err(DataFusionError::Internal(format!(
+                "Unsupported data type {other:?} for function rpad/read_side_padding",
+            ))),
+        },
         other => Err(DataFusionError::Internal(format!(
             "Unsupported arguments {other:?} for function rpad/read_side_padding",
         ))),
