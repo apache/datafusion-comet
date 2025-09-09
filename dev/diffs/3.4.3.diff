@@ -893,7 +893,11 @@ index b5b34922694..a72403780c4 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
+<<<<<<< Updated upstream
 index 525d97e4998..9c609e4bcd7 100644
+=======
+index 525d97e4998..843f0472c23 100644
+>>>>>>> Stashed changes
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1508,7 +1508,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -912,11 +916,29 @@ index 525d97e4998..9c609e4bcd7 100644
    test("SPARK-39166: Query context of binary arithmetic should be serialized to executors" +
 -    " when WSCG is off") {
 +    " when WSCG is off",
+<<<<<<< Updated upstream
 +    IgnoreComet("ignore comet https://github.com/apache/datafusion-comet/issues/2215")) {
      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
        SQLConf.ANSI_ENABLED.key -> "true") {
        withTable("t") {
 @@ -4467,14 +4469,19 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+=======
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
+     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+       SQLConf.ANSI_ENABLED.key -> "true") {
+       withTable("t") {
+@@ -4450,7 +4452,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+   }
+ 
+   test("SPARK-39175: Query context of Cast should be serialized to executors" +
+-    " when WSCG is off") {
++    " when WSCG is off",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
+     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+       SQLConf.ANSI_ENABLED.key -> "true") {
+       withTable("t") {
+@@ -4467,14 +4470,19 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+>>>>>>> Stashed changes
            val msg = intercept[SparkException] {
              sql(query).collect()
            }.getMessage
@@ -934,7 +956,11 @@ index 525d97e4998..9c609e4bcd7 100644
    test("SPARK-39190,SPARK-39208,SPARK-39210: Query context of decimal overflow error should " +
 -    "be serialized to executors when WSCG is off") {
 +    "be serialized to executors when WSCG is off",
+<<<<<<< Updated upstream
 +    IgnoreComet("ignore comet https://github.com/apache/datafusion-comet/issues/2215")) {
+=======
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
+>>>>>>> Stashed changes
      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
        SQLConf.ANSI_ENABLED.key -> "true") {
        withTable("t") {
