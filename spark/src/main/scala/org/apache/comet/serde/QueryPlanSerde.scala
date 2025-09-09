@@ -1026,6 +1026,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
       case af @ ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
         convert(af, CometArrayCompact)
+      case l @ Length(child) if child.dataType == BinaryType =>
+        withInfo(l, "Length on BinaryType is not supported")
+        None
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) =>

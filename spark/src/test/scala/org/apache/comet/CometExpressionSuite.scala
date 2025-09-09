@@ -2953,4 +2953,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("test length function") {
+    withTable("t1") {
+      sql(
+        "create table t1 using parquet as select cast(id as string) as c1, cast(id as binary) as c2 from range(10)")
+      // FIXME: Change checkSparkAnswer to checkSparkAnswerAndOperator after resolving
+      //  https://github.com/apache/datafusion-comet/issues/2348
+      checkSparkAnswer("select length(c1), length(c2) AS x FROM t1 ORDER BY c1")
+    }
+  }
+
 }
