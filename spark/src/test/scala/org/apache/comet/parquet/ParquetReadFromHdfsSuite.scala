@@ -39,6 +39,11 @@ class ParquetReadFromHdfsSuite
     sparkSession
   }
 
+  protected override def afterAll(): Unit = {
+    super.afterAll()
+    stopHdfsCluster()
+  }
+
   private def writeTestParquetFile(filePath: String): Unit = {
     val df = spark.range(0, 1000)
     df.write.format("parquet").mode(SaveMode.Overwrite).save(filePath)
