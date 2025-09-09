@@ -24,7 +24,7 @@ index 04ffa8f4edc..cc0099ccc93 100644
  awssdk-s3accessgrants = "2.3.0"
  caffeine = "2.9.3"
  calcite = "1.10.0"
-+comet = "0.10.0-SNAPSHOT"
++comet = "0.10.0"
  datasketches = "6.2.0"
  delta-standalone = "3.3.0"
  delta-spark = "3.3.0"
