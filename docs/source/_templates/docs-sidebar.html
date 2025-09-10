@@ -24,11 +24,7 @@ under the License.
 
 <nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
   <div class="bd-toc-item active">
-    {% if "python/api" in pagename or "python/generated" in pagename %}
-    {{ generate_nav_html("sidebar", startdepth=0, maxdepth=3, collapse=False, includehidden=True, titles_only=True) }}
-    {% else %}
-    {{ generate_nav_html("sidebar", startdepth=0, maxdepth=4, collapse=False, includehidden=True, titles_only=True) }}
-    {% endif %}
+    {{ toctree(maxdepth=4, collapse=False, includehidden=True, titles_only=True) }}
   </div>
 
   <a class="navbar-brand" href="{{ pathto(master_doc) }}">
