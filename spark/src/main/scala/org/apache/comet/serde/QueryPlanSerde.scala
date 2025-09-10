@@ -138,7 +138,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Sqrt] -> CometScalarFunction("sqrt"),
     classOf[Subtract] -> CometSubtract,
     classOf[Tan] -> CometScalarFunction("tan"),
-    // TODO UnaryMinus
+    classOf[UnaryMinus] -> CometUnaryMinus,
     classOf[Unhex] -> CometUnhex)
 
   private val mapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
@@ -940,22 +940,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           case _ =>
             withInfo(expr, "Comet only supports regexp_replace with an offset of 1 (no offset).")
             None
-        }
-
-      case UnaryMinus(child, failOnError) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        if (childExpr.isDefined) {
-          val builder = ExprOuterClass.UnaryMinus.newBuilder()
-          builder.setChild(childExpr.get)
-          builder.setFailOnError(failOnError)
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setUnaryMinus(builder)
-              .build())
-        } else {
-          withInfo(expr, child)
-          None
         }
 
       // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
