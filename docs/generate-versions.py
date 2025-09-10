@@ -23,11 +23,25 @@
 # of Comet
 
 import os
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 def get_major_minor_version(version: str):
     parts = version.split('.')
     return f"{parts[0]}.{parts[1]}"
+
+def get_version_from_pom():
+    pom_path = Path(__file__).parent.parent / "pom.xml"
+    tree = ET.parse(pom_path)
+    root = tree.getroot()
+    
+    namespace = {'maven': 'http://maven.apache.org/POM/4.0.0'}
+    version_element = root.find('maven:version', namespace)
+    
+    if version_element is not None:
+        return version_element.text
+    else:
+        raise ValueError("Could not find version in pom.xml")
 
 def replace_in_files(root: str, filename_pattern: str, search: str, replace: str):
     root_path = Path(root)
@@ -81,7 +95,7 @@ This is **out-of-date** documentation. The latest Comet release is version {late
 
 if __name__ == "__main__":
     print("Generating versioned user guide docs...")
-    snapshot_version = "0.10.0-SNAPSHOT"
+    snapshot_version = get_version_from_pom()
     latest_released_version = "0.9.1"
     previous_versions = ["0.8.0"]
     generate_docs(snapshot_version, latest_released_version, previous_versions)
