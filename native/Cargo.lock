@@ -1457,7 +1457,7 @@ dependencies = [
  "object_store",
  "parking_lot",
  "parquet",
- "rand 0.9.2",
+ "rand",
  "regex",
  "sqlparser",
  "tempfile",
@@ -1677,7 +1677,7 @@ dependencies = [
  "log",
  "object_store",
  "parquet",
- "rand 0.9.2",
+ "rand",
  "tempfile",
  "tokio",
  "url",
@@ -1759,7 +1759,7 @@ dependencies = [
  "object_store",
  "parking_lot",
  "parquet",
- "rand 0.9.2",
+ "rand",
  "tokio",
 ]
 
