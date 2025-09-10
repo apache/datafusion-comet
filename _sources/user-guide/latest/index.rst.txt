@@ -19,13 +19,13 @@
   :alt: DataFusion Comet Logo
 
 ================================
-Comet 0.10.0-SNAPSHOT User Guide
+Comet 0.11.0-SNAPSHOT User Guide
 ================================
 
-.. _toc.user-guide-links-0.10.0-SNAPSHOT:
+.. _toc.user-guide-links-0.11.0-SNAPSHOT:
 .. toctree::
    :maxdepth: 1
-   :caption: Comet 0.10.0-SNAPSHOT User Guide
+   :caption: Comet 0.11.0-SNAPSHOT User Guide
 
    Installing Comet <installation>
    Building From Source <source>

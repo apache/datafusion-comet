@@ -39,7 +39,7 @@ make release
 Set `COMET_JAR` env var:
 
 ```shell
-export COMET_JAR=`pwd`/spark/target/comet-spark-spark3.5_2.12-0.10.0-SNAPSHOT.jar
+export COMET_JAR=`pwd`/spark/target/comet-spark-spark3.5_2.12-0.11.0-SNAPSHOT.jar
 ```
 
 ## Build Iceberg
