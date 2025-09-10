@@ -100,6 +100,37 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
 
 const LOG_PATTERN: &str = "{d(%y/%m/%d %H:%M:%S)} {l} {f}: {m}{n}";
 
+/// JNI method to check if a specific feature is enabled in the native Rust code.
+/// 
+/// # Arguments
+/// * `feature_name` - The name of the feature to check. Supported features:
+///   - "jemalloc" - tikv-jemallocator memory allocator
+///   - "hdfs" - HDFS object store support
+///   - "hdfs-opendal" - HDFS support via OpenDAL
+/// 
+/// # Returns
+/// * `1` (true) if the feature is enabled
+/// * `0` (false) if the feature is disabled or unknown
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
+    env: JNIEnv,
+    _: JClass,
+    feature_name: JString,
+) -> jni::sys::jboolean {
+    try_unwrap_or_throw(&env, |mut env| {
+        let feature: String = env.get_string(&feature_name)?.into();
+
+        let enabled = match feature.as_str() {
+            "jemalloc" => cfg!(feature = "jemalloc"),
+            "hdfs" => cfg!(feature = "hdfs"),
+            "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
+            _ => false, // Unknown features return false
+        };
+
+        Ok(if enabled { 1 } else { 0 })
+    })
+}
+
 // Creates a default log4rs config, which logs to console with `INFO` level.
 fn default_logger_config() -> CometResult<Config> {
     let console_append = ConsoleAppender::builder()

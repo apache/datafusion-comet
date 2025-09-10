@@ -23,6 +23,8 @@ import java.io.File
 import java.nio.file.Files
 import java.util.UUID
 
+import org.junit.Assume
+
 import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
@@ -30,7 +32,7 @@ import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, sum}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, NativeBase}
 import org.apache.comet.hadoop.fs.FakeHDFSFileSystem
 
 class ParquetReadFromFakeHadoopFsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -74,7 +76,19 @@ class ParquetReadFromFakeHadoopFsSuite extends CometTestBase with AdaptiveSparkP
         .startsWith(FakeHDFSFileSystem.PREFIX))
   }
 
+  // This test fails for 'hdfs' but succeeds for 'open-dal'. 'hdfs' requires this fix
+  // https://github.com/datafusion-contrib/fs-hdfs/pull/29
   ignore("test native_datafusion scan on fake fs") {
+    // Skip test if HDFS feature is not enabled in native library
+    val hdfsEnabled =
+      try {
+        NativeBase.isFeatureEnabled("hdfs") ||
+        NativeBase.isFeatureEnabled("hdfs-opendal")
+      } catch {
+        case _: Throwable =>
+          false
+      }
+    assume(hdfsEnabled)
     val testFilePath =
       s"${FakeHDFSFileSystem.PREFIX}${fake_root_dir.getAbsolutePath}/data/test-file.parquet"
     writeTestParquetFile(testFilePath)
