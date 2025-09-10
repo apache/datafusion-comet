@@ -28,9 +28,15 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 
 class CometNativeSuite extends CometTestBase {
   test("test handling NPE thrown by JVM") {
-    val rdd = spark.range(0, 1).rdd.map { value =>
+    val dataset = spark.range(0, 1)
+    val rdd = dataset.rdd.map { value =>
       val limitOp =
-        CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get
+        CometExecUtils
+          .getLimitNativePlan(
+            dataset.queryExecution.executedPlan.children.head,
+            Seq(PrettyAttribute("test", LongType)),
+            100)
+          .get
       val cometIter = CometExec.getCometIterator(
         Seq(new Iterator[ColumnarBatch] {
           override def hasNext: Boolean = true

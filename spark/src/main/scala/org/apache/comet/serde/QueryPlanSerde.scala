@@ -19,6 +19,7 @@
 
 package org.apache.comet.serde
 
+import scala.annotation.tailrec
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
 
@@ -819,31 +820,18 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case SortOrder(child, direction, nullOrdering, _) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
+      case sortOrder @ SortOrder(child, direction, nullOrdering, _) =>
+        val sortOrderProto = sortOrderingToProto(sortOrder, inputs, binding)
 
-        if (childExpr.isDefined) {
-          val sortOrderBuilder = ExprOuterClass.SortOrder.newBuilder()
-          sortOrderBuilder.setChild(childExpr.get)
-
-          direction match {
-            case Ascending => sortOrderBuilder.setDirectionValue(0)
-            case Descending => sortOrderBuilder.setDirectionValue(1)
-          }
-
-          nullOrdering match {
-            case NullsFirst => sortOrderBuilder.setNullOrderingValue(0)
-            case NullsLast => sortOrderBuilder.setNullOrderingValue(1)
-          }
-
+        if (sortOrderProto.isEmpty) {
+          withInfo(expr, child)
+          None
+        } else {
           Some(
             ExprOuterClass.Expr
               .newBuilder()
-              .setSortOrder(sortOrderBuilder)
+              .setSortOrder(sortOrderProto.get)
               .build())
-        } else {
-          withInfo(expr, child)
-          None
         }
 
       case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
@@ -1363,18 +1351,16 @@ object QueryPlanSerde extends Logging with CometExprShim {
           if CometConf.COMET_EXEC_WINDOW_ENABLED.get(conf) =>
         val output = child.output
 
-        val winExprs: Array[WindowExpression] = windowExpression.flatMap { expr =>
-          expr match {
-            case alias: Alias =>
-              alias.child match {
-                case winExpr: WindowExpression =>
-                  Some(winExpr)
-                case _ =>
-                  None
-              }
-            case _ =>
-              None
-          }
+        val winExprs: Array[WindowExpression] = windowExpression.flatMap {
+          case alias: Alias =>
+            alias.child match {
+              case winExpr: WindowExpression =>
+                Some(winExpr)
+              case _ =>
+                None
+            }
+          case _ =>
+            None
         }.toArray
 
         if (winExprs.length != windowExpression.length) {
@@ -1694,6 +1680,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
           scanBuilder.setSource(source)
         }
 
+        if (op.children.length == 1) {
+          scanBuilder.addAllInputOrdering(
+            QueryPlanSerde.parsePlanSortOrderAsMuchAsCan(op.children.head).asJava)
+        }
+
         val ffiSafe = op match {
           case _ if isExchangeSink(op) =>
             // Source of broadcast exchange batches is ArrowStreamReader
@@ -1926,6 +1917,79 @@ object QueryPlanSerde extends Logging with CometExprShim {
       partitionBuilder.addPartitionedFile(fileBuilder.build())
     })
     nativeScanBuilder.addFilePartitions(partitionBuilder.build())
+  }
+
+  def sortOrderingToProto(
+      sortOrder: SortOrder,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.SortOrder] = {
+    val childExpr = exprToProtoInternal(sortOrder.child, inputs, binding)
+
+    if (childExpr.isDefined) {
+      val sortOrderBuilder = ExprOuterClass.SortOrder.newBuilder()
+      sortOrderBuilder.setChild(childExpr.get)
+
+      sortOrder.direction match {
+        case Ascending => sortOrderBuilder.setDirectionValue(0)
+        case Descending => sortOrderBuilder.setDirectionValue(1)
+      }
+
+      sortOrder.nullOrdering match {
+        case NullsFirst => sortOrderBuilder.setNullOrderingValue(0)
+        case NullsLast => sortOrderBuilder.setNullOrderingValue(1)
+      }
+
+      Some(sortOrderBuilder.build())
+    } else {
+      withInfo(sortOrder, sortOrder.child)
+      None
+    }
+  }
+
+  /**
+   * Return the plan input sort order.
+   *
+   * This will not return the full sort order if it can't be fully mapped to the child (if the
+   * sort order is on an expression that is not a direct child of the input)
+   *
+   * in case this is the sort: Sort by a, b, coalesce(c, d), e
+   *
+   * We will return this sort order: a, b
+   *
+   * as it is still correct, the data IS ordered by a, b.
+   *
+   * And not: a, b, e
+   *
+   * as the data IS NOT ordered by a, b, e.
+   *
+   * This is meant to use for scan where we don't want to lose the input ordering information as
+   * it can allow certain optimization.
+   */
+  def parsePlanSortOrderAsMuchAsCan(plan: SparkPlan): Seq[ExprOuterClass.SortOrder] = {
+    if (plan.outputOrdering.isEmpty) {
+      Seq.empty
+    } else {
+      val outputAttributes = plan.output
+      val sortOrders = plan.outputOrdering.map(so => {
+        if (!isExprOneOfAttributes(so.child, outputAttributes)) {
+          None
+        } else {
+          QueryPlanSerde.sortOrderingToProto(so, outputAttributes, binding = true)
+        }
+      })
+
+      // Take the sort orders until the first None
+      sortOrders.takeWhile(_.isDefined).map(_.get)
+    }
+  }
+
+  @tailrec
+  private def isExprOneOfAttributes(expr: Expression, attrs: Seq[Attribute]): Boolean = {
+    expr match {
+      case attr: Attribute => attrs.exists(_.exprId == attr.exprId)
+      case alias: Alias => isExprOneOfAttributes(alias.child, attrs)
+      case _ => false
+    }
   }
 }
 

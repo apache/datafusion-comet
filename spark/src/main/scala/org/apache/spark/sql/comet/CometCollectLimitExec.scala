@@ -77,7 +77,7 @@ case class CometCollectLimitExec(
         childRDD
       } else {
         val localLimitedRDD = if (limit >= 0) {
-          CometExecUtils.getNativeLimitRDD(childRDD, output, limit)
+          CometExecUtils.getNativeLimitRDD(child, childRDD, output, limit)
         } else {
           childRDD
         }
@@ -92,7 +92,7 @@ case class CometCollectLimitExec(
 
         new CometShuffledBatchRDD(dep, readMetrics)
       }
-      CometExecUtils.getNativeLimitRDD(singlePartitionRDD, output, limit, offset)
+      CometExecUtils.getNativeLimitRDD(child, singlePartitionRDD, output, limit, offset)
     }
   }
 

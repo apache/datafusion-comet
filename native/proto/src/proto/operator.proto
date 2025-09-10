@@ -79,6 +79,8 @@ message Scan {
   string source = 2;
   // Whether native code can assume ownership of batches that it receives
   bool arrow_ffi_safe = 3;
+
+  repeated spark.spark_expression.SortOrder input_ordering = 4;
 }
 
 message NativeScan {
