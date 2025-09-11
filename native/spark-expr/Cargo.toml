@@ -37,6 +37,10 @@ thiserror = { workspace = true }
 futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
+datafusion-comet-proto = { workspace = true }
+prost = "0.14.1"
+hex = "0.4.3"
+base64 = "0.22.1"
 
 [dev-dependencies]
 arrow = {workspace = true}

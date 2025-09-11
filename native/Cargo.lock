@@ -1579,12 +1579,16 @@ name = "datafusion-comet-spark-expr"
 version = "0.11.0"
 dependencies = [
  "arrow",
+ "base64",
  "chrono",
  "chrono-tz",
  "criterion",
  "datafusion",
+ "datafusion-comet-proto",
  "futures",
+ "hex",
  "num",
+ "prost",
  "rand",
  "regex",
  "thiserror 2.0.16",

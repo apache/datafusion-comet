@@ -19,9 +19,11 @@ use crate::timezone;
 use crate::utils::array_with_timezone;
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
-use arrow::array::{DictionaryArray, StringArray, StructArray};
+use arrow::array::{DictionaryArray, GenericByteArray, StringArray, StructArray};
 use arrow::compute::can_cast_types;
-use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema};
+use arrow::datatypes::{
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, GenericBinaryType, Schema,
+};
 use arrow::{
     array::{
         cast::AsArray,
@@ -59,6 +61,9 @@ use std::{
     num::Wrapping,
     sync::Arc,
 };
+
+use base64::prelude::*;
+use datafusion_comet_proto::spark_expression;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -152,6 +157,27 @@ impl Hash for Cast {
         self.child.hash(state);
         self.data_type.hash(state);
         self.cast_options.hash(state);
+    }
+}
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub enum BinaryOutputStyle {
+    Utf8,
+    Basic,
+    Base64,
+    Hex,
+    HexDiscrete,
+}
+
+fn from_protobuf_binary_output_style(
+    value: i32,
+) -> Result<BinaryOutputStyle, prost::UnknownEnumValue> {
+    match spark_expression::BinaryOutputStyle::try_from(value)? {
+        spark_expression::BinaryOutputStyle::Utf8 => Ok(BinaryOutputStyle::Utf8),
+        spark_expression::BinaryOutputStyle::Basic => Ok(BinaryOutputStyle::Basic),
+        spark_expression::BinaryOutputStyle::Base64 => Ok(BinaryOutputStyle::Base64),
+        spark_expression::BinaryOutputStyle::Hex => Ok(BinaryOutputStyle::Hex),
+        spark_expression::BinaryOutputStyle::HexDiscrete => Ok(BinaryOutputStyle::HexDiscrete),
     }
 }
 
@@ -816,6 +842,8 @@ pub struct SparkCastOptions {
     pub is_adapting_schema: bool,
     /// String to use to represent null values
     pub null_string: String,
+    /// SparkSQL's binaryOutputStyle
+    pub binary_output_style: i32,
 }
 
 impl SparkCastOptions {
@@ -827,6 +855,7 @@ impl SparkCastOptions {
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
+            binary_output_style: BinaryOutputStyle::HexDiscrete as i32,
         }
     }
 
@@ -838,6 +867,7 @@ impl SparkCastOptions {
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
+            binary_output_style: BinaryOutputStyle::HexDiscrete as i32,
         }
     }
 }
@@ -1027,6 +1057,7 @@ fn cast_array(
         {
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
+        (Binary, Utf8) => Ok(cast_binary_to_string::<i32>(&array, cast_options)?),
         _ if cast_options.is_adapting_schema
             || is_datafusion_spark_compatible(from_type, to_type, cast_options.allow_incompat) =>
         {
@@ -1043,6 +1074,66 @@ fn cast_array(
         }
     };
     Ok(spark_cast_postprocess(cast_result?, from_type, to_type))
+}
+
+fn cast_binary_to_string<O: OffsetSizeTrait>(
+    array: &dyn Array,
+    spark_cast_options: &SparkCastOptions,
+) -> Result<ArrayRef, ArrowError> {
+    let input = array
+        .as_any()
+        .downcast_ref::<GenericByteArray<GenericBinaryType<O>>>()
+        .unwrap();
+
+    let binary_output_style =
+        from_protobuf_binary_output_style(spark_cast_options.binary_output_style);
+
+    let output_array = input
+        .iter()
+        .map(|value| match value {
+            Some(value) => Ok(Some(spark_binary_formatter(
+                value,
+                binary_output_style.unwrap(),
+            ))),
+            _ => Ok(None),
+        })
+        .collect::<Result<GenericStringArray<O>, ArrowError>>()?;
+
+    Ok(Arc::new(output_array))
+}
+/// This function mimics the [BinaryFormatter]: https://github.com/apache/spark/blob/v4.0.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/ToStringBase.scala#L449-L468
+/// used by SparkSQL's ToPrettyString expression.
+/// The BinaryFormatter was [introduced]: https://issues.apache.org/jira/browse/SPARK-47911 in Spark 4.0.0
+/// Before Spark 4.0.0, the default is SPACE_DELIMITED_UPPERCASE_HEX
+fn spark_binary_formatter(value: &[u8], binary_output_style: BinaryOutputStyle) -> String {
+    match binary_output_style {
+        BinaryOutputStyle::Utf8 => String::from_utf8(value.to_vec()).unwrap(),
+        BinaryOutputStyle::Basic => {
+            format!(
+                "{:?}",
+                value
+                    .iter()
+                    .map(|v| i8::from_ne_bytes([*v]))
+                    .collect::<Vec<i8>>()
+            )
+        }
+        BinaryOutputStyle::Base64 => BASE64_STANDARD_NO_PAD.encode(value),
+        BinaryOutputStyle::Hex => value
+            .iter()
+            .map(|v| hex::encode_upper([*v]))
+            .collect::<String>(),
+        BinaryOutputStyle::HexDiscrete => {
+            // Spark's default SPACE_DELIMITED_UPPERCASE_HEX
+            format!(
+                "[{}]",
+                value
+                    .iter()
+                    .map(|v| hex::encode_upper([*v]))
+                    .collect::<Vec<String>>()
+                    .join(" ")
+            )
+        }
+    }
 }
 
 /// Determines if DataFusion supports the given cast in a way that is
