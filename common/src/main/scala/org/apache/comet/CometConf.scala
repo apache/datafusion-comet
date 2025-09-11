@@ -666,9 +666,8 @@ object CometConf extends ShimCometConf {
   }
 
   def isExprEnabled(name: String, conf: SQLConf = SQLConf.get): Boolean = {
-    val value = getExprEnabledConfigKey(name)
+    val key = getExprEnabledConfigKey(name)
     // all expressions are enabled by default
-    val key = value
     if (conf.contains(key)) {
       conf.getConfString(key) == "true"
     } else {
