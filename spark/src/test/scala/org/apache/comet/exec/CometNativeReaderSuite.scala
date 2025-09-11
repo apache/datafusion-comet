@@ -557,4 +557,12 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       assert(sql("SELECT * FROM array_tbl where arr = ARRAY(1L)").count == 1)
     }
   }
+
+  test("native reader - support ARRAY literal nested ARRAY fields") {
+    testSingleLineQuery(
+      """
+          |select 1 a
+          |""".stripMargin,
+      "select array(array(1, 2, null), array(), array(10), null, array(null)) from tbl")
+  }
 }
