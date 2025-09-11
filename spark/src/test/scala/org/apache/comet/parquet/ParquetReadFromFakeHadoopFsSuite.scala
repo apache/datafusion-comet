@@ -45,10 +45,10 @@ class ParquetReadFromFakeHadoopFsSuite extends CometTestBase with AdaptiveSparkP
   }
 
   override def beforeAll(): Unit = {
-    // Initialize fake root dir
-    fake_root_dir = Files.createTempDirectory(s"comet_fake_${UUID.randomUUID().toString}").toFile
     // Initialize Spark session
     super.beforeAll()
+    // Initialize fake root dir
+    fake_root_dir = Files.createTempDirectory(s"comet_fake_${UUID.randomUUID().toString}").toFile
   }
 
   protected override def afterAll(): Unit = {
