@@ -896,6 +896,7 @@ impl PhysicalPlanner {
                     SparkCastOptions::new(EvalMode::Try, &expr.timezone, true);
                 let null_string = "NULL";
                 spark_cast_options.null_string = null_string.to_string();
+                spark_cast_options.binary_output_style = expr.binary_output_style;
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let cast = Arc::new(Cast::new(
                     Arc::clone(&child),
