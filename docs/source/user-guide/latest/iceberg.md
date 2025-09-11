@@ -39,7 +39,7 @@ make release
 Set `COMET_JAR` env var:
 
 ```shell
-export COMET_JAR=`pwd`/spark/target/comet-spark-spark3.5_2.12-0.10.0-SNAPSHOT.jar
+export COMET_JAR=`pwd`/spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar
 ```
 
 ## Build Iceberg
@@ -80,7 +80,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.catalog.spark_catalog.type=hadoop \
     --conf spark.sql.catalog.spark_catalog.warehouse=/tmp/warehouse \
     --conf spark.plugins=org.apache.spark.CometPlugin \
-    --conf spark.comet.exec.shuffle.enabled=false \
+    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.sql.iceberg.parquet.reader-type=COMET \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
@@ -143,8 +143,5 @@ scala> spark.sql(s"SELECT * from t1").explain()
 ```
 
 ## Known issues
- - We temporarily disable Comet when there are delete files in Iceberg scan, see Iceberg [1.8.1 diff](https://github.com/apache/datafusion-comet/blob/main/dev/diffs/iceberg/1.8.1.diff) and this [PR](https://github.com/apache/iceberg/pull/13793)
-   - Iceberg scan w/ delete files lead to [runtime exceptions](https://github.com/apache/datafusion-comet/issues/2117) and [incorrect results](https://github.com/apache/datafusion-comet/issues/2118)
- - Enabling `CometShuffleManager` leads to [runtime exceptions](https://github.com/apache/datafusion-comet/issues/2086)
  - Spark Runtime Filtering isn't [working](https://github.com/apache/datafusion-comet/issues/2116)
    - You can bypass the issue by either setting `spark.sql.adaptive.enabled=false` or `spark.comet.exec.broadcastExchange.enabled=false`

@@ -94,7 +94,7 @@ root
  |    |-- lastName: string (nullable = true)
  |    |-- ageInYears: integer (nullable = true)
 
-25/01/30 16:50:43 INFO core/src/lib.rs: Comet native library version 0.9.0 initialized
+25/01/30 16:50:43 INFO core/src/lib.rs: Comet native library version $COMET_VERSION initialized
 == Physical Plan ==
 * CometColumnarToRow (2)
 +- CometNativeScan:  (1)
@@ -174,6 +174,14 @@ The default `native_comet` Parquet scan implementation reads data from S3 using 
 The `native_datafusion` and `native_iceberg_compat` Parquet scan implementations completely offload data loading to native code. They use the [`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and support configuring S3 access using standard [Hadoop S3A configurations](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration) by translating them to the `object_store` crate's format.
 
 This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will continue to work as long as the configurations are supported and can be translated without loss of functionality.
+
+#### Root CA Certificates
+
+One major difference between `native_comet` and the other scan implementations is the mechanism for discovering Root
+CA Certificates. The `native_comet` scan uses the JVM to read CA Certificates from the Java Trust Store, but the native
+scan implementations `native_datafusion` and `native_iceberg_compat` use system Root CA Certificates (typically stored 
+in `/etc/ssl/certs` on Linux). These scans will not be able to interact with S3 if the Root CA Certificates are not
+installed.
 
 #### Supported Credential Providers
 

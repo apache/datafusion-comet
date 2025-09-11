@@ -19,27 +19,29 @@
 
 # Supported Spark Data Types
 
-The following Spark data types are currently available:
+Comet supports the following Spark data types. Refer to the [Comet Compatibility Guide] for information about data 
+type support in scans and other operators. 
+
+[Comet Compatibility Guide]: compatibility.md
 
 <!-- based on org.apache.comet.serde.QueryPlanSerde.supportedDataType -->
 
-- Primitives
-  - Boolean
-  - Byte
-  - Short
-  - Integer
-  - Long
-  - Float
-  - Double
-- String
-- Binary
-- Decimal
-- Temporal
-  - Date
-  - Timestamp
-  - TimestampNTZ
-- Null
-- Complex Types
-  - Struct
-  - Array
-  - Map
+| Data Type    |
+| ------------ |
+| Null         |
+| Boolean      |
+| Byte         |
+| Short        |
+| Integer      |
+| Long         |
+| Float        |
+| Double       |
+| Decimal      |
+| String       |
+| Binary       |
+| Date         |
+| Timestamp    |
+| TimestampNTZ |
+| Struct       |
+| Array        |
+| Map          |

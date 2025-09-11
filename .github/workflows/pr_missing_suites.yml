@@ -15,9 +15,16 @@
 # specific language governing permissions and limitations
 # under the License.
 
-sphinx
-sphinx-reredirects
-pydata-sphinx-theme==0.8.0
-myst-parser
-maturin
-jinja2
+name: Check that all test suites are added to PR workflows
+
+on:
+  pull_request:
+    types: [opened, edited, reopened]
+
+jobs:
+  check-missing-suites:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check Missing Suites
+        run: python3 dev/ci/check-suites.py

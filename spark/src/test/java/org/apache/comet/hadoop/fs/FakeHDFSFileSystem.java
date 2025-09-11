@@ -17,27 +17,29 @@
  * under the License.
  */
 
-package org.apache.comet.parquet;
+package org.apache.comet.hadoop.fs;
 
-import java.util.HashMap;
+import java.net.URI;
 
-import org.apache.spark.sql.types.StructType;
-import org.apache.spark.sql.vectorized.ColumnarBatch;
+import org.apache.hadoop.fs.RawLocalFileSystem;
 
-import org.apache.comet.vector.CometVector;
+public class FakeHDFSFileSystem extends RawLocalFileSystem {
 
-/** This class is a public interface used by Apache Iceberg to read batches using Comet */
-public class IcebergCometBatchReader extends BatchReader {
-  public IcebergCometBatchReader(int numColumns, StructType schema) {
-    this.columnReaders = new AbstractColumnReader[numColumns];
-    this.vectors = new CometVector[numColumns];
-    this.currentBatch = new ColumnarBatch(vectors);
-    this.metrics = new HashMap<>();
-    this.sparkSchema = schema;
+  public static final String PREFIX = "fake://fake-bucket";
+
+  public FakeHDFSFileSystem() {
+    // Avoid `URI scheme is not "file"` error on
+    // RawLocalFileSystem$DeprecatedRawLocalFileStatus.getOwner
+    RawLocalFileSystem.useStatIfAvailable();
   }
 
-  public void init(AbstractColumnReader[] columnReaders) {
-    this.columnReaders = columnReaders;
-    this.isInitialized = true;
+  @Override
+  public String getScheme() {
+    return "fake";
+  }
+
+  @Override
+  public URI getUri() {
+    return URI.create(PREFIX);
   }
 }
