@@ -1318,6 +1318,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("enable incompat expression using dynamic config") {
+    def countSparkProjectExec(plan: SparkPlan) = {
+      plan.collect { case _: ProjectExec =>
+        true
+      }.length
+    }
+    withParquetTable(Seq(0, 1, 2).map(n => (n.toString, n.toString)), "tbl") {
+      val sql = "select initcap(_1) from tbl"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      assert(1 == countSparkProjectExec(cometPlan))
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true") {
+        val (_, cometPlan) = checkSparkAnswer(sql)
+        assert(0 == countSparkProjectExec(cometPlan))
+      }
+    }
+  }
+
   test("signum") {
     testDoubleScalarExpr("signum")
   }
