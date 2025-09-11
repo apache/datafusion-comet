@@ -844,6 +844,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
                 .newBuilder()
                 .setChild(p)
                 .setTimezone(timezoneId.getOrElse("UTC"))
+                .setBinaryOutputStyle(binaryOutputStyle)
                 .build()
               Some(
                 ExprOuterClass.Expr
