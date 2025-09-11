@@ -2455,7 +2455,6 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_sort_expr(expr, Arc::clone(&input_schema)))
                     .collect();
                 let lex_ordering = LexOrdering::new(exprs?).unwrap();
-                let boundary_row_len = lex_ordering.len();
 
                 // Generate the row converter for comparing incoming batches to boundary rows
                 let sort_fields: Vec<SortField> = lex_ordering
@@ -2472,21 +2471,28 @@ impl PhysicalPlanner {
                     .boundary_rows
                     .iter()
                     .for_each(|boundary_row| {
-                        assert_eq!(boundary_row.partition_bounds.len(), boundary_row_len);
                         // For each serialized expr in a boundary row, convert to a Literal
                         // expression, then extract the ScalarValue from the Literal and push it
                         // into the collection of ScalarValues
-                        boundary_row.partition_bounds.iter().enumerate().for_each(
-                            |(col_idx, literal_expr)| {
-                                // TODO: Is there a quicker/cleaner way to go from serialized expr
-                                // that we know is a literal to a ScalarValue?
+
+                        lex_ordering
+                            .iter()
+                            .enumerate()
+                            .for_each(|(col_idx, sort_expr)| {
                                 let expr = self
-                                    .create_expr(literal_expr, Arc::clone(&input_schema))
+                                    .create_expr(
+                                        &boundary_row.partition_bounds[sort_expr
+                                            .expr
+                                            .as_any()
+                                            .downcast_ref::<Column>()
+                                            .unwrap()
+                                            .index()],
+                                        Arc::clone(&input_schema),
+                                    )
                                     .unwrap();
                                 let literal_expr = expr.as_any().downcast_ref::<Literal>().unwrap();
                                 scalar_values[col_idx].push(literal_expr.value().clone());
-                            },
-                        );
+                            });
                     });
 
                 // Convert the collection of ScalarValues to collection of Arrow Arrays
