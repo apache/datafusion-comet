@@ -32,9 +32,9 @@ class ParquetReadFromHdfsSuite
     with WithHdfsCluster {
 
   override protected def createSparkSession: SparkSessionType = {
+    val sparkSession = super.createSparkSession
     // start HDFS cluster and add hadoop conf
     startHdfsCluster()
-    val sparkSession = super.createSparkSession
     sparkSession.sparkContext.hadoopConfiguration.addResource(getHadoopConfFile)
     sparkSession
   }
