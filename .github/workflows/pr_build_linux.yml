@@ -183,6 +183,9 @@ jobs:
             suites: |
               org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite
               org.apache.comet.parquet.ParquetReadFromHdfsSuite
+          - value: "hdfs"
+            suites: |
+              org.apache.comet.parquet.ParquetReadFromHdfsSuite
       fail-fast: false
     name: ${{ matrix.os }}/java ${{ matrix.java_version }}-features [${{ matrix.features.value }}]
     runs-on: ${{ matrix.os }}
@@ -203,6 +206,6 @@ jobs:
         with:
           artifact_name: ${{ matrix.os }}-java-${{ matrix.java_version }}-features-${{ matrix.features.value }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
           features: ${{ matrix.features.value }}
-          maven_opts: "-Dtest=none"
+          maven_opts: "-Dtest=none -Dfeatures=${{ matrix.features.value }}"
           suites: ${{ matrix.features.suites }}
           upload-test-reports: true

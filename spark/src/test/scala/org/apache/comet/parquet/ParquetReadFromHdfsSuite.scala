@@ -63,6 +63,8 @@ class ParquetReadFromHdfsSuite
   }
 
   test("test native_datafusion scan on hdfs") {
+    assume(featureEnabled("hdfs") || featureEnabled("hdfs-opendal"))
+
     withTmpHdfsDir { dir =>
       {
         val testFilePath = dir.toString
