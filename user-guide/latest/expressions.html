@@ -585,8 +585,13 @@ under the License.
 <p>Comet supports the following Spark expressions. Expressions that are marked as Spark-compatible will either run
 natively in Comet and provide the same results as Spark, or will fall back to Spark for cases that would not
 be compatible.</p>
-<p>Expressions that are not Spark-compatible are disabled by default and can be enabled by setting
-<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.allowIncompatible=true</span></code>.</p>
+<p>All expressions are enabled by default, but can be disabled by setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.enabled=false</span></code>, where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the expression name as specified in
+the following tables, such as <code class="docutils literal notranslate"><span class="pre">Length</span></code>, or <code class="docutils literal notranslate"><span class="pre">StartsWith</span></code>.</p>
+<p>Expressions that are not Spark-compatible will fall back to Spark by default and can be enabled by setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code>.</p>
+<p>It is also possible to specify <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.allowIncompatible=true</span></code> to enable all
+incompatible expressions.</p>
 <section id="conditional-expressions">
 <h2>Conditional Expressions<a class="headerlink" href="#conditional-expressions" title="Link to this heading">¶</a></h2>
 <table class="table">
