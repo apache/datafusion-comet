@@ -30,8 +30,10 @@ import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.command.ExecutedCommandExec
+import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
@@ -534,13 +536,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case op =>
         op match {
           case _: CometExec | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
-              _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec =>
+              _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec |
+              _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec =>
             // Some execs should never be replaced. We include
             // these cases specially here so we do not add a misleading 'info' message
             op
+          case _: ExecutedCommandExec | _: V2CommandExec =>
+            // Some execs that comet will not accelerate, such as command execs.
+            op
           case _ =>
-            // An operator that is not supported by Comet
-            withInfo(op, s"${op.nodeName} is not supported")
+            if (!hasExplainInfo(op)) {
+              // An operator that is not supported by Comet
+              withInfo(op, s"${op.nodeName} is not supported")
+            } else {
+              // Already has fallback reason, do not override it
+              op
+            }
         }
     }
   }
@@ -740,7 +751,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         s"Comet shuffle is not enabled: ${COMET_EXEC_SHUFFLE_ENABLED.key} is not enabled")
       false
     } else if (!isCometShuffleManagerEnabled(op.conf)) {
-      withInfo(op, s"spark.shuffle.manager is not set to ${CometShuffleManager.getClass.getName}")
+      withInfo(op, s"spark.shuffle.manager is not set to ${classOf[CometShuffleManager].getName}")
       false
     } else {
       true
@@ -808,7 +819,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     if (!isCometPlan(s.child)) {
-      withInfo(s, s"Child ${s.child.getClass.getName} is not native")
+      // we do not need to report a fallback reason if the child plan is not a Comet plan
       return false
     }
 

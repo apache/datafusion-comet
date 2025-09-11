@@ -35,29 +35,29 @@ Apache DataFusion Comet
 Apache DataFusion Comet is an Apache Spark plugin that uses Apache DataFusion
 as a native runtime to achieve improvement in terms of query efficiency and query runtime.
 
-.. _toc.user-guide-links:
+.. _toc.main-links:
 .. toctree::
    :maxdepth: 1
-   :caption: User Guide
+   :caption: Overview:
 
-   Comet Overview <user-guide/overview>
-   Installing Comet <user-guide/installation>
-   Building From Source <user-guide/source>
-   Supported Data Sources <user-guide/datasources>
-   Supported Data Types <user-guide/datatypes>
-   Supported Operators <user-guide/operators>
-   Supported Expressions <user-guide/expressions>
-   Configuration Settings <user-guide/configs>
-   Compatibility Guide <user-guide/compatibility>
-   Tuning Guide <user-guide/tuning>
-   Metrics Guide <user-guide/metrics>
-   Iceberg Guide <user-guide/iceberg>
-   Kubernetes Guide <user-guide/kubernetes>
+   Comet Overview <overview>
+   Comparison with Gluten <gluten_comparison>
+
+.. _toc.user-guide-links-versioned:
+.. toctree::
+   :maxdepth: 2
+   :caption: User Guides:
+   :hidden:
+
+   Comet 0.10.0-SNAPSHOT <user-guide/latest/index>
+   Comet 0.9.x <user-guide/0.9/index>
+   Comet 0.8.x <user-guide/0.8/index>
 
 .. _toc.contributor-guide-links:
 .. toctree::
    :maxdepth: 1
    :caption: Contributor Guide
+   :hidden:
 
    Getting Started <contributor-guide/contributing>
    Comet Plugin Overview <contributor-guide/plugin_overview>
@@ -75,6 +75,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
 .. toctree::
    :maxdepth: 1
    :caption: ASF Links
+   :hidden:
 
    Apache Software Foundation <https://apache.org>
    License <https://www.apache.org/licenses/>

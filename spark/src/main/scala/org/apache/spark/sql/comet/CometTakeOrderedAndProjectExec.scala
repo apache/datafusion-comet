@@ -29,6 +29,7 @@ import org.apache.spark.sql.execution.{SparkPlan, TakeOrderedAndProjectExec, Una
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
 import org.apache.comet.serde.QueryPlanSerde.supportedSortType
 
@@ -133,8 +134,20 @@ case class CometTakeOrderedAndProjectExec(
 
 object CometTakeOrderedAndProjectExec {
   def isSupported(plan: TakeOrderedAndProjectExec): Boolean = {
-    val exprs = plan.projectList.map(exprToProto(_, plan.child.output))
-    val sortOrders = plan.sortOrder.map(exprToProto(_, plan.child.output))
+    val exprs = plan.projectList.map { p =>
+      val o = exprToProto(p, plan.child.output)
+      if (o.isEmpty) {
+        withInfo(plan, s"unsupported projection: $p")
+      }
+      o
+    }
+    val sortOrders = plan.sortOrder.map { s =>
+      val o = exprToProto(s, plan.child.output)
+      if (o.isEmpty) {
+        withInfo(plan, s"unsupported sort order: $s")
+      }
+      o
+    }
     exprs.forall(_.isDefined) && sortOrders.forall(_.isDefined) &&
     supportedSortType(plan, plan.sortOrder)
   }

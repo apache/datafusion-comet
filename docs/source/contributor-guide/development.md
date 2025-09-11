@@ -30,7 +30,7 @@ under the License.
 
 ## Development Setup
 
-1. Make sure `JAVA_HOME` is set and point to JDK using [support matrix](/docs/source/user-guide/installation.md)
+1. Make sure `JAVA_HOME` is set and point to JDK using [support matrix](../user-guide/latest/installation.md)
 2. Install Rust toolchain. The easiest way is to use
    [rustup](https://rustup.rs).
 

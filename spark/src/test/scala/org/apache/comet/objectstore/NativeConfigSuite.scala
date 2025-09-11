@@ -21,12 +21,21 @@ package org.apache.comet.objectstore
 
 import java.net.URI
 
+import scala.collection.mutable
+
+import org.scalatest.BeforeAndAfterEach
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.hadoop.conf.Configuration
 
-class NativeConfigSuite extends AnyFunSuite with Matchers {
+import org.apache.comet.rules.CometScanRule
+
+class NativeConfigSuite extends AnyFunSuite with Matchers with BeforeAndAfterEach {
+
+  override protected def beforeEach(): Unit = {
+    CometScanRule.configValidityMap.clear()
+  }
 
   test("extractObjectStoreOptions - multiple cloud provider configurations") {
     val hadoopConf = new Configuration()
@@ -69,5 +78,62 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       hadoopConf,
       new URI("unsupported://test-bucket/test-object"))
     assert(unsupportedOptions.isEmpty, "Unsupported scheme should return empty options")
+  }
+
+  test("validate object store config - no provider") {
+    val hadoopConf = new Configuration()
+    validate(hadoopConf)
+  }
+
+  test("validate object store config - valid providers") {
+    val hadoopConf = new Configuration()
+    val provider1 = "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    val provider2 = "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
+    hadoopConf.set("fs.s3a.aws.credentials.provider", Seq(provider1, provider2).mkString(","))
+    validate(hadoopConf)
+  }
+
+  test("validate object store config - invalid provider") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.s3a.aws.credentials.provider", "invalid")
+    val fallbackReasons = validate(hadoopConf)
+    val expectedError = "Unsupported credential provider: invalid"
+    assert(fallbackReasons.exists(_.contains(expectedError)))
+  }
+
+  test("validate object store config - mixed anonymous providers") {
+    val hadoopConf = new Configuration()
+    val provider1 = "com.amazonaws.auth.AnonymousAWSCredentials"
+    val provider2 = "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider"
+    hadoopConf.set("fs.s3a.aws.credentials.provider", Seq(provider1, provider2).mkString(","))
+    val fallbackReasons = validate(hadoopConf)
+    val expectedError =
+      "Anonymous credential provider cannot be mixed with other credential providers"
+    assert(fallbackReasons.exists(_.contains(expectedError)))
+  }
+
+  test("validity cache") {
+    val hadoopConf = new Configuration()
+    val provider1 = "com.amazonaws.auth.AnonymousAWSCredentials"
+    val provider2 = "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider"
+    hadoopConf.set("fs.s3a.aws.credentials.provider", Seq(provider1, provider2).mkString(","))
+
+    assert(CometScanRule.configValidityMap.isEmpty)
+    for (_ <- 0 until 5) {
+      assert(validate(hadoopConf).nonEmpty)
+      assert(CometScanRule.configValidityMap.size == 1)
+    }
+
+    // set the same providers but in a different order
+    hadoopConf.set("fs.s3a.aws.credentials.provider", Seq(provider2, provider1).mkString(","))
+    assert(validate(hadoopConf).nonEmpty)
+    assert(CometScanRule.configValidityMap.size == 2)
+  }
+
+  private def validate(hadoopConf: Configuration): Set[String] = {
+    val path = "s3a://path/to/file.parquet"
+    val fallbackReasons = mutable.ListBuffer[String]()
+    CometScanRule.validateObjectStoreConfig(path, hadoopConf, fallbackReasons)
+    fallbackReasons.toSet
   }
 }

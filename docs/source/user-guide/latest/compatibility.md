@@ -73,6 +73,11 @@ The `native_datafusion` scan has some additional limitations:
 [#1545]: https://github.com/apache/datafusion-comet/issues/1545
 [#1758]: https://github.com/apache/datafusion-comet/issues/1758
 
+### S3 Support with `native_iceberg_compat`
+
+- When using the default AWS S3 endpoint (no custom endpoint configured), a valid region is required. Comet
+  will attempt to resolve the region if it is not provided.
+
 ## ANSI Mode
 
 Comet will fall back to Spark for the following expressions when ANSI mode is enabled, unless
@@ -125,7 +130,7 @@ Cast operations in Comet fall into three levels of support:
 - **Compatible**: The results match Apache Spark
 - **Incompatible**: The results may match Apache Spark for some inputs, but there are known issues where some inputs
   will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
-  `spark.comet.cast.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
+  `spark.comet.expression.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
   recommended for production use.
 - **Unsupported**: Comet does not provide a native version of this cast expression and the query stage will fall back to
   Spark.

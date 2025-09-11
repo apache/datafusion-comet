@@ -122,24 +122,24 @@ Input [3]: [id#0, first_name#1, personal_info#4]
 
 Verify the native scan type should be `CometNativeScan`.
 
-More on [HDFS Reader](../../../native/hdfs/README.md)
+More on [HDFS Reader](https://github.com/apache/datafusion-comet/blob/main/native/hdfs/README.md)
 
 ### Local HDFS development
 
 - Configure local machine network. Add hostname to `/etc/hosts`
-```commandline
+```shell
 127.0.0.1	localhost   namenode datanode1 datanode2 datanode3
 ::1             localhost namenode datanode1 datanode2 datanode3
 ```
 
 - Start local HDFS cluster, 3 datanodes, namenode url is `namenode:9000` 
-```commandline
+```shell
 docker compose -f kube/local/hdfs-docker-compose.yml up
 ```
 
 - Check the local namenode is up and running on `http://localhost:9870/dfshealth.html#tab-overview`
 - Build a project with HDFS support
-```commandline
+```shell
 JAVA_HOME="/opt/homebrew/opt/openjdk@11" make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
@@ -174,6 +174,14 @@ The default `native_comet` Parquet scan implementation reads data from S3 using 
 The `native_datafusion` and `native_iceberg_compat` Parquet scan implementations completely offload data loading to native code. They use the [`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and support configuring S3 access using standard [Hadoop S3A configurations](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration) by translating them to the `object_store` crate's format.
 
 This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will continue to work as long as the configurations are supported and can be translated without loss of functionality.
+
+#### Root CA Certificates
+
+One major difference between `native_comet` and the other scan implementations is the mechanism for discovering Root
+CA Certificates. The `native_comet` scan uses the JVM to read CA Certificates from the Java Trust Store, but the native
+scan implementations `native_datafusion` and `native_iceberg_compat` use system Root CA Certificates (typically stored 
+in `/etc/ssl/certs` on Linux). These scans will not be able to interact with S3 if the Root CA Certificates are not
+installed.
 
 #### Supported Credential Providers
 

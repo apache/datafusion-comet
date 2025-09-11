@@ -23,6 +23,7 @@ package spark.spark_operator;
 
 import "expr.proto";
 import "partitioning.proto";
+import "types.proto";
 
 option java_package = "org.apache.comet.serde";
 
@@ -76,6 +77,8 @@ message Scan {
   // is purely for informational purposes when viewing native query plans in
   // debug mode.
   string source = 2;
+  // Whether native code can assume ownership of batches that it receives
+  bool arrow_ffi_safe = 3;
 }
 
 message NativeScan {
