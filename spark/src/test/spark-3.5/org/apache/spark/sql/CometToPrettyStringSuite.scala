@@ -51,7 +51,7 @@ class CometToPrettyStringSuite extends CometTestBase {
   override def beforeAll(): Unit = {
     super.beforeAll()
     val tempDir = System.getProperty("java.io.tmpdir")
-    filename = s"$tempDir/CometFuzzTestSuite_${System.currentTimeMillis()}.parquet"
+    filename = s"$tempDir/CometToPrettyStringSuite_${System.currentTimeMillis()}.parquet"
     val random = new Random(42)
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "false",
