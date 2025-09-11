@@ -666,7 +666,7 @@ object CometConf extends ShimCometConf {
   }
 
   def isExprEnabled(name: String, conf: SQLConf = SQLConf.get): Boolean = {
-    getBooleanConf(getExprEnabledConfigKey(name), conf)
+    getBooleanConf(getExprEnabledConfigKey(name), true, conf)
   }
 
   def getExprEnabledConfigKey(name: String): String = {
@@ -674,15 +674,15 @@ object CometConf extends ShimCometConf {
   }
 
   def isExprAllowIncompat(name: String, conf: SQLConf = SQLConf.get): Boolean = {
-    getBooleanConf(getExprAllowIncompatConfigKey(name), conf)
+    getBooleanConf(getExprAllowIncompatConfigKey(name), false, conf)
   }
 
   def getExprAllowIncompatConfigKey(name: String): String = {
     s"${CometConf.COMET_EXPR_CONFIG_PREFIX}.$name.allowIncompatible"
   }
 
-  def getBooleanConf(name: String, conf: SQLConf): Boolean = {
-    conf.getConfString(name, "true").toLowerCase(Locale.ROOT) == "true"
+  def getBooleanConf(name: String, defaultValue: Boolean, conf: SQLConf): Boolean = {
+    conf.getConfString(name, defaultValue.toString).toLowerCase(Locale.ROOT) == "true"
   }
 }
 
