@@ -212,58 +212,6 @@ case class CometShuffleExchangeExec(
 
 object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
 
-  /**
-   * Computes range partition bounds by sampling across all partitions. This ensures all executors
-   * use the same partition boundaries for range partitioning.
-   */
-  def computeRangePartitionBounds(
-      rdd: RDD[ColumnarBatch],
-      rangePartitioning: RangePartitioning,
-      outputAttributes: Seq[Attribute]): Seq[InternalRow] = {
-
-    // The code block below is mostly brought over from
-    // ShuffleExchangeExec::prepareShuffleDependency and modified for columnar batches
-    val rangePartitioner = {
-      // Extract only fields used for sorting to avoid collecting large fields that does not
-      // affect sorting result when deciding partition bounds in RangePartitioner
-      val rddForSampling = rdd.mapPartitionsInternal { iter =>
-        val projection =
-          UnsafeProjection.create(rangePartitioning.ordering.map(_.child), outputAttributes)
-        val mutablePair = new MutablePair[InternalRow, Null]()
-
-        // Internally, RangePartitioner runs a job on the RDD that samples keys to compute
-        // partition bounds. To get accurate samples, we need to copy the mutable keys.
-        iter.flatMap { batch =>
-          val rowIter = batch.rowIterator().asScala
-          rowIter.map { row =>
-            mutablePair.update(projection(row).copy(), null)
-          }
-        }
-      }
-
-      // Construct ordering on extracted sort key.
-      val orderingAttributes = rangePartitioning.ordering.zipWithIndex.map { case (ord, i) =>
-        ord.copy(child = BoundReference(i, ord.dataType, ord.nullable))
-      }
-      implicit val ordering = new LazilyGeneratedOrdering(orderingAttributes)
-      // Use Spark's RangePartitioner to compute bounds from global samples
-      new RangePartitioner(
-        rangePartitioning.numPartitions,
-        rddForSampling,
-        ascending = true,
-        samplePointsPerPartitionHint = SQLConf.get.rangeExchangeSampleSizePerPartition)
-    }
-
-    // Use reflection to access the private rangeBounds field
-    val rangePartitionerClass = rangePartitioner.getClass
-    val rangeBoundsField = rangePartitionerClass.getDeclaredField("rangeBounds")
-    rangeBoundsField.setAccessible(true)
-    val rangeBounds =
-      rangeBoundsField.get(rangePartitioner).asInstanceOf[Array[InternalRow]].toSeq
-
-    rangeBounds
-  }
-
   def prepareShuffleDependency(
       rdd: RDD[ColumnarBatch],
       outputAttributes: Seq[Attribute],
@@ -272,11 +220,55 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
       metrics: Map[String, SQLMetric]): ShuffleDependency[Int, ColumnarBatch, ColumnarBatch] = {
     val numParts = rdd.getNumPartitions
 
-    // Compute range partition bounds for range partitioning
-    val rangePartitionBounds: Option[Seq[InternalRow]] = outputPartitioning match {
+    // The code block below is mostly brought over from
+    // ShuffleExchangeExec::prepareShuffleDependency
+    val (partitioner, rangePartitionBounds) = outputPartitioning match {
       case rangePartitioning: RangePartitioning =>
-        Some(computeRangePartitionBounds(rdd, rangePartitioning, outputAttributes))
-      case _ => None
+        // Extract only fields used for sorting to avoid collecting large fields that does not
+        // affect sorting result when deciding partition bounds in RangePartitioner
+        val rddForSampling = rdd.mapPartitionsInternal { iter =>
+          val projection =
+            UnsafeProjection.create(rangePartitioning.ordering.map(_.child), outputAttributes)
+          val mutablePair = new MutablePair[InternalRow, Null]()
+
+          // Internally, RangePartitioner runs a job on the RDD that samples keys to compute
+          // partition bounds. To get accurate samples, we need to copy the mutable keys.
+          iter.flatMap { batch =>
+            val rowIter = batch.rowIterator().asScala
+            rowIter.map { row =>
+              mutablePair.update(projection(row).copy(), null)
+            }
+          }
+        }
+
+        // Construct ordering on extracted sort key.
+        val orderingAttributes = rangePartitioning.ordering.zipWithIndex.map { case (ord, i) =>
+          ord.copy(child = BoundReference(i, ord.dataType, ord.nullable))
+        }
+        implicit val ordering = new LazilyGeneratedOrdering(orderingAttributes)
+        // Use Spark's RangePartitioner to compute bounds from global samples
+        val rangePartitioner = new RangePartitioner(
+          rangePartitioning.numPartitions,
+          rddForSampling,
+          ascending = true,
+          samplePointsPerPartitionHint = SQLConf.get.rangeExchangeSampleSizePerPartition)
+
+        // Use reflection to access the private rangeBounds field
+        val rangeBoundsField = rangePartitioner.getClass.getDeclaredField("rangeBounds")
+        rangeBoundsField.setAccessible(true)
+        val rangeBounds =
+          rangeBoundsField.get(rangePartitioner).asInstanceOf[Array[InternalRow]].toSeq
+
+        (rangePartitioner.asInstanceOf[Partitioner], Some(rangeBounds))
+
+      case _ =>
+        (
+          new Partitioner {
+            override def numPartitions: Int = outputPartitioning.numPartitions
+
+            override def getPartition(key: Any): Int = key.asInstanceOf[Int]
+          },
+          None)
     }
 
     val dependency = new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
@@ -286,11 +278,7 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
       serializer = serializer,
       shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(metrics),
       shuffleType = CometNativeShuffle,
-      partitioner = new Partitioner {
-        override def numPartitions: Int = outputPartitioning.numPartitions
-
-        override def getPartition(key: Any): Int = key.asInstanceOf[Int]
-      },
+      partitioner = partitioner,
       decodeTime = metrics("decode_time"),
       outputPartitioning = Some(outputPartitioning),
       outputAttributes = outputAttributes,
