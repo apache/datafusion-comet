@@ -1448,9 +1448,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
 
         if (emptyExprs.nonEmpty) {
-          withInfo(
-            op,
-            s"Not all grouping expressions are supported. Unsupported: ${emptyExprs.mkString(", ")}")
+          withInfo(op, s"Unsupported group expressions: ${emptyExprs.mkString(", ")}")
           return None
         }
 
