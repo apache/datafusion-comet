@@ -23,8 +23,15 @@ Comet supports the following Spark expressions. Expressions that are marked as S
 natively in Comet and provide the same results as Spark, or will fall back to Spark for cases that would not
 be compatible.
 
-Expressions that are not Spark-compatible are disabled by default and can be enabled by setting
-`spark.comet.expression.allowIncompatible=true`.
+All expressions are enabled by default, but can be disabled by setting
+`spark.comet.expression.EXPRNAME.enabled=false`, where `EXPRNAME` is the expression name as specified in 
+the following tables, such as `Length`, or `StartsWith`.
+
+Expressions that are not Spark-compatible will fall back to Spark by default and can be enabled by setting
+`spark.comet.expression.EXPRNAME.allowIncompatible=true`.
+
+It is also possible to specify `spark.comet.expression.allowIncompatible=true` to enable all 
+incompatible expressions.
 
 ## Conditional Expressions
 
