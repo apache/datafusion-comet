@@ -90,7 +90,8 @@ runs:
         MAVEN_SUITES="$(echo "${{ inputs.suites }}" | paste -sd, -)"
         echo "Running with MAVEN_SUITES=$MAVEN_SUITES"
         MAVEN_OPTS="-Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B clean install ${{ inputs.maven_opts }}
-        // clean tmp dir to avoid hashFiles error
+        # Hadoop mini cluster may interfere with spark shutdown hook, causing the tmp directory to not be fully cleaned up.
+        # Clean tmp dir to avoid hashFiles error
         ls spark/target/tmp
         rm -rf spark/target/tmp
     - name: Upload crash logs
