@@ -666,13 +666,7 @@ object CometConf extends ShimCometConf {
   }
 
   def isExprEnabled(name: String, conf: SQLConf = SQLConf.get): Boolean = {
-    val key = getExprEnabledConfigKey(name)
-    // all expressions are enabled by default
-    if (conf.contains(key)) {
-      conf.getConfString(key) == "true"
-    } else {
-      true
-    }
+    getBooleanConf(getExprEnabledConfigKey(name), conf)
   }
 
   def getExprEnabledConfigKey(name: String): String = {
@@ -680,12 +674,15 @@ object CometConf extends ShimCometConf {
   }
 
   def isExprAllowIncompat(name: String, conf: SQLConf = SQLConf.get): Boolean = {
-    val key = getExprAllowIncompatConfigKey(name)
-    conf.contains(key) && conf.getConfString(key) == "true"
+    getBooleanConf(getExprAllowIncompatConfigKey(name), conf)
   }
 
   def getExprAllowIncompatConfigKey(name: String): String = {
     s"${CometConf.COMET_EXPR_CONFIG_PREFIX}.$name.allowIncompatible"
+  }
+
+  def getBooleanConf(name: String, conf: SQLConf): Boolean = {
+    conf.getConfString(name, "true").toLowerCase == "true"
   }
 }
 
