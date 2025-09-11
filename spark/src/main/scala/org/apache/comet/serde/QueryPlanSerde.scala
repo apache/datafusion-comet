@@ -598,17 +598,21 @@ object QueryPlanSerde extends Logging with CometExprShim {
     val conf = SQLConf.get
 
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
+      val exprConfName = handler.getExprConfigName(expr)
+      if (!CometConf.isExprEnabled(exprConfName)) {
+        withInfo(
+          expr,
+          "Expression support is disabled. Set " +
+            s"${CometConf.getExprEnabledConfigKey(exprConfName)}=true to enable it.")
+        return None
+      }
       handler.getSupportLevel(expr) match {
         case Unsupported(notes) =>
           withInfo(expr, notes.getOrElse(""))
           None
         case Incompatible(notes) =>
-          val exprConfName = handler.getExprConfigName(expr)
-          val exprIncompatConf = s"${CometConf.COMET_EXPR_CONFIG_PREFIX}.$exprConfName" +
-            ".allowIncompatible"
-          val exprEnabled = conf.contains(exprIncompatConf) &&
-            conf.getConfString(exprIncompatConf) == "true"
-          if (exprEnabled || CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
+          val exprAllowIncompat = CometConf.isExprAllowIncompat(exprConfName)
+          if (exprAllowIncompat || CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
             if (notes.isDefined) {
               logWarning(
                 s"Comet supports $expr when ${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true " +
@@ -620,7 +624,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
             withInfo(
               expr,
               s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
-                s"set $exprIncompatConf=true, or set " +
+                s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true, or set " +
                 s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true to enable all " +
                 s"incompatible expressions. ${CometConf.COMPAT_GUIDE}.")
             None
