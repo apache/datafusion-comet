@@ -33,7 +33,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Literal}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec, CometWindowExec}
-import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
@@ -1297,6 +1297,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           p
         }
         assert(projections.length == 1)
+      }
+    }
+  }
+
+  test("disable expression using dynamic config") {
+    def countSparkProjectExec(plan: SparkPlan) = {
+      plan.collect { case _: ProjectExec =>
+        true
+      }.length
+    }
+    withParquetTable(Seq(0, 1, 2).map(n => (n, n)), "tbl") {
+      val sql = "select _1+_2 from tbl"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      assert(0 == countSparkProjectExec(cometPlan))
+      withSQLConf(CometConf.getExprEnabledConfigKey("Add") -> "false") {
+        val (_, cometPlan) = checkSparkAnswer(sql)
+        assert(1 == countSparkProjectExec(cometPlan))
       }
     }
   }
