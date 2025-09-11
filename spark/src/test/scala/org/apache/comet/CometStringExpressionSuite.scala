@@ -103,12 +103,7 @@ class CometStringExpressionSuite extends CometTestBase {
         s"insert into $table values(1, 'james smith'), (2, 'michael rose'), " +
           "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith'), " +
           "(6, 'robert rose-smith'), (7, 'james ähtäri')")
-      if (CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
-        // TODO: remove this if clause https://github.com/apache/datafusion-comet/issues/1052
-        checkSparkAnswerAndOperator(s"SELECT initcap(name) FROM $table")
-      } else {
-        checkSparkAnswer(s"SELECT initcap(name) FROM $table")
-      }
+      checkSparkAnswer(s"SELECT initcap(name) FROM $table")
     }
   }
 
