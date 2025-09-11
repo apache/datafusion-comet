@@ -682,7 +682,7 @@ object CometConf extends ShimCometConf {
   }
 
   def getBooleanConf(name: String, conf: SQLConf): Boolean = {
-    conf.getConfString(name, "true").toLowerCase == "true"
+    conf.getConfString(name, "true").toLowerCase(Locale.ROOT) == "true"
   }
 }
 
