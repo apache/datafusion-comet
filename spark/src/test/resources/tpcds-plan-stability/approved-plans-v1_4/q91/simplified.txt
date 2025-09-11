@@ -2,7 +2,7 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometSort [Call_Center,Call_Center_Name,Manager,Returns_Loss]
-        CometColumnarExchange [Returns_Loss] #1
+        CometExchange [Returns_Loss] #1
           CometHashAggregate [Call_Center,Call_Center_Name,Manager,Returns_Loss,cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status,sum,sum(UnscaledValue(cr_net_loss))]
             CometExchange [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status] #2
               CometHashAggregate [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status,sum,cr_net_loss]
