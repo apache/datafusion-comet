@@ -167,7 +167,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
           exprBuilder.setListVal(listLiteralBuilder.build())
           exprBuilder.setDatatype(serializeDataType(dataType).get)
         case dt =>
-          withInfo(s"Unexpected datatype '$dt' for literal value '$value'")
+          withInfo(expr, s"Unexpected datatype '$dt' for literal value '$value'")
           return None
       }
     }
