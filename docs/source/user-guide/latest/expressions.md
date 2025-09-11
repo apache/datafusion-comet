@@ -24,7 +24,7 @@ natively in Comet and provide the same results as Spark, or will fall back to Sp
 be compatible.
 
 All expressions are enabled by default, but can be disabled by setting
-`spark.comet.expression.EXPRNAME.enabled=false`, where `EXPRNAME` is the expressio name as specified in 
+`spark.comet.expression.EXPRNAME.enabled=false`, where `EXPRNAME` is the expression name as specified in 
 the following tables, such as `Length`, or `StartsWith`.
 
 Expressions that are not Spark-compatible will fall back to Spark by default and can be enabled by setting
