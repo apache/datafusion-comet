@@ -435,7 +435,7 @@ impl ScanExec {
         Ok(selection_indices_arrays)
     }
 
-    pub fn with_ordering(mut self, input_sorted: Vec<PhysicalSortExpr>) -> Self {
+    pub(crate) fn with_ordering(mut self, input_sorted: Vec<PhysicalSortExpr>) -> Self {
         assert_ne!(input_sorted.len(), 0, "input_sorted cannot be empty");
         let mut eq_properties = self.cache.eq_properties.clone();
 
