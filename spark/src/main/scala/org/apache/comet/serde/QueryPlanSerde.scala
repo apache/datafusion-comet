@@ -595,15 +595,24 @@ object QueryPlanSerde extends Logging with CometExprShim {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    SQLConf.get
+    val conf = SQLConf.get
 
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
+      val exprConfName = handler.getExprConfigName(expr)
+      if (!CometConf.isExprEnabled(exprConfName)) {
+        withInfo(
+          expr,
+          "Expression support is disabled. Set " +
+            s"${CometConf.getExprEnabledConfigKey(exprConfName)}=true to enable it.")
+        return None
+      }
       handler.getSupportLevel(expr) match {
         case Unsupported(notes) =>
           withInfo(expr, notes.getOrElse(""))
           None
         case Incompatible(notes) =>
-          if (CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
+          val exprAllowIncompat = CometConf.isExprAllowIncompat(exprConfName)
+          if (exprAllowIncompat || CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get()) {
             if (notes.isDefined) {
               logWarning(
                 s"Comet supports $expr when ${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true " +
@@ -615,8 +624,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
             withInfo(
               expr,
               s"$expr is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
-                s"set ${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true. " +
-                s"${CometConf.COMPAT_GUIDE}.")
+                s"set ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true, or set " +
+                s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true to enable all " +
+                s"incompatible expressions. ${CometConf.COMPAT_GUIDE}.")
             None
           }
         case Compatible(notes) =>
@@ -634,7 +644,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         exprToProtoInternal(Literal(value, dataType), inputs, binding)
 
       case UnaryExpression(child) if expr.prettyName == "trycast" =>
-        val timeZoneId = SQLConf.get.sessionLocalTimeZone
+        val timeZoneId = conf.sessionLocalTimeZone
         val cast = Cast(child, expr.dataType, Some(timeZoneId), EvalMode.TRY)
         convert(cast, CometCast)
 
@@ -1987,6 +1997,17 @@ trait CometOperatorSerde[T <: SparkPlan] {
  * Trait for providing serialization logic for expressions.
  */
 trait CometExpressionSerde[T <: Expression] {
+
+  /**
+   * Get a short name for the expression that can be used as part of a config key related to the
+   * expression, such as enabling or disabling that expression.
+   *
+   * @param expr
+   *   The Spark expression.
+   * @return
+   *   Short name for the expression, defaulting to the Spark class name
+   */
+  def getExprConfigName(expr: T): String = expr.getClass.getSimpleName
 
   /**
    * Determine the support level of the expression based on its attributes.
