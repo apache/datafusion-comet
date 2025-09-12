@@ -1305,11 +1305,19 @@ object QueryPlanSerde extends Logging with CometExprShim {
           return None
         }
 
-        val groupingExprs = groupingExpressions.map(exprToProto(_, child.output))
-        if (groupingExprs.exists(_.isEmpty)) {
-          withInfo(op, "Not all grouping expressions are supported")
+        val groupingExprsWithInput =
+          groupingExpressions.map(expr => expr.name -> exprToProto(expr, child.output))
+
+        val emptyExprs = groupingExprsWithInput.collect {
+          case (expr, proto) if proto.isEmpty => expr
+        }
+
+        if (emptyExprs.nonEmpty) {
+          withInfo(op, s"Unsupported group expressions: ${emptyExprs.mkString(", ")}")
           return None
         }
+
+        val groupingExprs = groupingExprsWithInput.map(_._2)
 
         // In some of the cases, the aggregateExpressions could be empty.
         // For example, if the aggregate functions only have group by or if the aggregate
