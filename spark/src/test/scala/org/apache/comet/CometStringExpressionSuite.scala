@@ -114,9 +114,8 @@ class CometStringExpressionSuite extends CometTestBase {
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
       // Comet and Spark differ on hyphenated names
-      sql(
-        s"insert into $table values(6, 'robert rose-smith')")
-        checkSparkAnswer(s"SELECT initcap(name) FROM $table")
+      sql(s"insert into $table values(6, 'robert rose-smith')")
+      checkSparkAnswer(s"SELECT initcap(name) FROM $table")
     }
   }
 
