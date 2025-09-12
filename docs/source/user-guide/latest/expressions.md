@@ -68,7 +68,7 @@ incompatible expressions.
 | ConcatWs        | Yes               |                                                                                                            |
 | Contains        | Yes               |                                                                                                            |
 | EndsWith        | Yes               |                                                                                                            |
-| InitCap         | No                | Requires `spark.comet.exec.initCap.enabled=true`                                                           |
+| InitCap         | No                | Behavior is different in some cases, such as hyphenated names.
 | Length          | Yes               |                                                                                                            |
 | Like            | Yes               |                                                                                                            |
 | Lower           | No                | Results can vary depending on locale and character set. Requires `spark.comet.caseConversion.enabled=true` |

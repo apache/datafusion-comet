@@ -95,15 +95,28 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
-  test("InitCap") {
+  test("InitCap compatible cases") {
     val table = "names"
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true") {
+        sql(
+          s"insert into $table values(1, 'james smith'), (2, 'michael rose'), " +
+            "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith'), " +
+            "(7, 'james ähtäri')")
+        checkSparkAnswerAndOperator(s"SELECT initcap(name) FROM $table")
+      }
+    }
+  }
+
+  test("InitCap incompatible cases") {
+    val table = "names"
+    withTable(table) {
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+      // Comet and Spark differ on hyphenated names
       sql(
-        s"insert into $table values(1, 'james smith'), (2, 'michael rose'), " +
-          "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith'), " +
-          "(6, 'robert rose-smith'), (7, 'james ähtäri')")
-      checkSparkAnswer(s"SELECT initcap(name) FROM $table")
+        s"insert into $table values(6, 'robert rose-smith')")
+        checkSparkAnswer(s"SELECT initcap(name) FROM $table")
     }
   }
 
