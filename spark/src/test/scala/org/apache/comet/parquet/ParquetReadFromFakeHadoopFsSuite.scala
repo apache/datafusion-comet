@@ -76,11 +76,10 @@ class ParquetReadFromFakeHadoopFsSuite extends CometTestBase with AdaptiveSparkP
 
   // This test fails for 'hdfs' but succeeds for 'open-dal'. 'hdfs' requires this fix
   // https://github.com/datafusion-contrib/fs-hdfs/pull/29
-  ignore("test native_datafusion scan on fake fs") {
+  test("test native_datafusion scan on fake fs") {
     // Skip test if HDFS feature is not enabled in native library
     val hdfsEnabled =
       try {
-        NativeBase.isFeatureEnabled("hdfs") ||
         NativeBase.isFeatureEnabled("hdfs-opendal")
       } catch {
         case _: Throwable =>
