@@ -23,8 +23,6 @@ import java.io.File
 import java.nio.file.Files
 import java.util.UUID
 
-import org.junit.Assume
-
 import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}

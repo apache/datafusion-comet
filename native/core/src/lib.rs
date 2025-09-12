@@ -101,13 +101,11 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
 const LOG_PATTERN: &str = "{d(%y/%m/%d %H:%M:%S)} {l} {f}: {m}{n}";
 
 /// JNI method to check if a specific feature is enabled in the native Rust code.
-/// 
 /// # Arguments
 /// * `feature_name` - The name of the feature to check. Supported features:
 ///   - "jemalloc" - tikv-jemallocator memory allocator
 ///   - "hdfs" - HDFS object store support
 ///   - "hdfs-opendal" - HDFS support via OpenDAL
-/// 
 /// # Returns
 /// * `1` (true) if the feature is enabled
 /// * `0` (false) if the feature is disabled or unknown
