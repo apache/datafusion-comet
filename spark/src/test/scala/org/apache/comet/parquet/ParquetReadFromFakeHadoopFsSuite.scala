@@ -26,7 +26,7 @@ import java.util.UUID
 import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
-import org.apache.spark.sql.comet.CometNativeScanExec
+import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, sum}
 
@@ -62,16 +62,21 @@ class ParquetReadFromFakeHadoopFsSuite extends CometTestBase with AdaptiveSparkP
   }
 
   private def assertCometNativeScanOnFakeFs(df: DataFrame): Unit = {
-    val scans = collect(df.queryExecution.executedPlan) { case p: CometNativeScanExec =>
-      p
+    val scans = collect(df.queryExecution.executedPlan) {
+      case p: CometNativeScanExec =>
+        assert(
+          p.nativeOp.getNativeScan
+            .getFilePartitions(0)
+            .getPartitionedFile(0)
+            .getFilePath
+            .startsWith(FakeHDFSFileSystem.PREFIX))
+        p
+      case p: CometScanExec if p.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
+        assert(p.toString().contains(FakeHDFSFileSystem.PREFIX))
+        p
     }
     assert(scans.size == 1)
-    assert(
-      scans.head.nativeOp.getNativeScan
-        .getFilePartitions(0)
-        .getPartitionedFile(0)
-        .getFilePath
-        .startsWith(FakeHDFSFileSystem.PREFIX))
+
   }
 
   // This test fails for 'hdfs' but succeeds for 'open-dal'. 'hdfs' requires this fix
@@ -82,10 +87,13 @@ class ParquetReadFromFakeHadoopFsSuite extends CometTestBase with AdaptiveSparkP
     val testFilePath =
       s"${FakeHDFSFileSystem.PREFIX}${fake_root_dir.getAbsolutePath}/data/test-file.parquet"
     writeTestParquetFile(testFilePath)
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
-      val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
-      assertCometNativeScanOnFakeFs(df)
-      assert(df.first().getLong(0) == 499500)
+    Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach {
+      scanImpl =>
+        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl) {
+          val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
+          assertCometNativeScanOnFakeFs(df)
+          assert(df.first().getLong(0) == 499500)
+        }
     }
   }
 }

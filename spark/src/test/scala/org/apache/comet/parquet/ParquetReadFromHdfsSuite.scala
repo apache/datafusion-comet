@@ -20,7 +20,7 @@
 package org.apache.comet.parquet
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, SaveMode}
-import org.apache.spark.sql.comet.CometNativeScanExec
+import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, sum}
 
@@ -50,16 +50,20 @@ class ParquetReadFromHdfsSuite
   }
 
   private def assertCometNativeScanOnHDFS(df: DataFrame): Unit = {
-    val scans = collect(df.queryExecution.executedPlan) { case p: CometNativeScanExec =>
-      p
+    val scans = collect(df.queryExecution.executedPlan) {
+      case p: CometNativeScanExec =>
+        assert(
+          p.nativeOp.getNativeScan
+            .getFilePartitions(0)
+            .getPartitionedFile(0)
+            .getFilePath
+            .startsWith("hdfs://"))
+        p
+      case p: CometScanExec if p.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
+        assert(p.toString().contains("hdfs://"))
+        p
     }
     assert(scans.size == 1)
-    assert(
-      scans.head.nativeOp.getNativeScan
-        .getFilePartitions(0)
-        .getPartitionedFile(0)
-        .getFilePath
-        .startsWith("hdfs://"))
   }
 
   test("test native_datafusion scan on hdfs") {
@@ -69,10 +73,13 @@ class ParquetReadFromHdfsSuite
       {
         val testFilePath = dir.toString
         writeTestParquetFile(testFilePath)
-        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
-          val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
-          assertCometNativeScanOnHDFS(df)
-          assert(df.first().getLong(0) == 499500)
+        Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach {
+          scanImpl =>
+            withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl) {
+              val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
+              assertCometNativeScanOnHDFS(df)
+              assert(df.first().getLong(0) == 499500)
+            }
         }
       }
     }
