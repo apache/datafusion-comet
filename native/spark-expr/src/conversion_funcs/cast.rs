@@ -843,7 +843,7 @@ pub struct SparkCastOptions {
     /// String to use to represent null values
     pub null_string: String,
     /// SparkSQL's binaryOutputStyle
-    pub binary_output_style: i32,
+    pub binary_output_style: Option<i32>,
 }
 
 impl SparkCastOptions {
@@ -855,7 +855,7 @@ impl SparkCastOptions {
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
-            binary_output_style: BinaryOutputStyle::HexDiscrete as i32,
+            binary_output_style: None,
         }
     }
 
@@ -867,7 +867,7 @@ impl SparkCastOptions {
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
-            binary_output_style: BinaryOutputStyle::HexDiscrete as i32,
+            binary_output_style: None,
         }
     }
 }
@@ -1085,22 +1085,26 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
         .downcast_ref::<GenericByteArray<GenericBinaryType<O>>>()
         .unwrap();
 
-    let binary_output_style =
-        from_protobuf_binary_output_style(spark_cast_options.binary_output_style);
+    fn binary_formatter(value: &[u8], spark_cast_options: &SparkCastOptions) -> String {
+        match spark_cast_options.binary_output_style {
+            Some(s) => {
+                let binary_output_style = from_protobuf_binary_output_style(s);
+                spark_binary_formatter(value, binary_output_style.unwrap())
+            }
+            None => df_binary_formatter(value),
+        }
+    }
 
     let output_array = input
         .iter()
         .map(|value| match value {
-            Some(value) => Ok(Some(spark_binary_formatter(
-                value,
-                binary_output_style.unwrap(),
-            ))),
+            Some(value) => Ok(Some(binary_formatter(value, spark_cast_options))),
             _ => Ok(None),
         })
         .collect::<Result<GenericStringArray<O>, ArrowError>>()?;
-
     Ok(Arc::new(output_array))
 }
+
 /// This function mimics the [BinaryFormatter]: https://github.com/apache/spark/blob/v4.0.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/ToStringBase.scala#L449-L468
 /// used by SparkSQL's ToPrettyString expression.
 /// The BinaryFormatter was [introduced]: https://issues.apache.org/jira/browse/SPARK-47911 in Spark 4.0.0
@@ -1133,6 +1137,13 @@ fn spark_binary_formatter(value: &[u8], binary_output_style: BinaryOutputStyle) 
                     .join(" ")
             )
         }
+    }
+}
+
+fn df_binary_formatter(value: &[u8]) -> String {
+    match String::from_utf8(value.to_vec()) {
+        Ok(value) => value,
+        Err(_) => unsafe { String::from_utf8_unchecked(value.to_vec()) },
     }
 }
 
