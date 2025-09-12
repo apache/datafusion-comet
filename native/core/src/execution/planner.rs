@@ -2474,25 +2474,16 @@ impl PhysicalPlanner {
                         // For each serialized expr in a boundary row, convert to a Literal
                         // expression, then extract the ScalarValue from the Literal and push it
                         // into the collection of ScalarValues
-
-                        lex_ordering
-                            .iter()
-                            .enumerate()
-                            .for_each(|(col_idx, sort_expr)| {
-                                let expr = self
-                                    .create_expr(
-                                        &boundary_row.partition_bounds[sort_expr
-                                            .expr
-                                            .as_any()
-                                            .downcast_ref::<Column>()
-                                            .unwrap()
-                                            .index()],
-                                        Arc::clone(&input_schema),
-                                    )
-                                    .unwrap();
-                                let literal_expr = expr.as_any().downcast_ref::<Literal>().unwrap();
-                                scalar_values[col_idx].push(literal_expr.value().clone());
-                            });
+                        (0..lex_ordering.len()).for_each(|col_idx| {
+                            let expr = self
+                                .create_expr(
+                                    &boundary_row.partition_bounds[col_idx],
+                                    Arc::clone(&input_schema),
+                                )
+                                .unwrap();
+                            let literal_expr = expr.as_any().downcast_ref::<Literal>().unwrap();
+                            scalar_values[col_idx].push(literal_expr.value().clone());
+                        });
                     });
 
                 // Convert the collection of ScalarValues to collection of Arrow Arrays

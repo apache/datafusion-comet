@@ -192,6 +192,21 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("order by random columns") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+
+    for (_ <- 1 to 10) {
+      // We only do order by primitive, non-variable length types to exercise native shuffle's
+      // RangePartitioning which only supports those types.
+      val shuffledPrimitiveCols = Random.shuffle(df.columns.slice(0, 12).toList)
+      val randomSize = Random.nextInt(shuffledPrimitiveCols.length) + 1
+      val randomColsSubset = shuffledPrimitiveCols.take(randomSize).toArray.mkString(",")
+      val sql = s"SELECT $randomColsSubset FROM t1 ORDER BY $randomColsSubset"
+      checkSparkAnswerAndOperator(sql)
+    }
+  }
+
   test("aggregate group by single column") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
