@@ -28,7 +28,9 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Alias, ToPrettyString}
 import org.apache.spark.sql.catalyst.plans.logical.Project
+import org.apache.spark.sql.classic.Dataset
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.SQLConf.BinaryOutputStyle
 import org.apache.spark.sql.types.DataTypes
 
 import java.io.File
@@ -75,21 +77,31 @@ class CometToPrettyStringSuite extends CometTestBase {
   }
 
   test("ToPrettyString") {
-    val df = spark.read.parquet(filename)
-    df.createOrReplaceTempView("t1")
-    val table = spark.sessionState.catalog.lookupRelation(TableIdentifier("t1"))
+    val style = List(
+      BinaryOutputStyle.UTF8,
+      BinaryOutputStyle.BASIC,
+      BinaryOutputStyle.BASE64,
+      BinaryOutputStyle.HEX,
+      BinaryOutputStyle.HEX_DISCRETE
+    )
+    style.foreach(s =>
+      withSQLConf(SQLConf.BINARY_OUTPUT_STYLE.key -> s.toString) {
+        val df = spark.read.parquet(filename)
+        df.createOrReplaceTempView("t1")
+        val table = spark.sessionState.catalog.lookupRelation(TableIdentifier("t1"))
 
-    for (field <- df.schema.fields) {
-      val col = field.name
-      val prettyExpr = Alias(ToPrettyString(UnresolvedAttribute(col)), s"pretty_$col")()
-      val plan = Project(Seq(prettyExpr), table)
-      val analyzed = spark.sessionState.analyzer.execute(plan)
-      val result: DataFrame = Dataset.ofRows(spark, analyzed)
-      CometCast.isSupported(field.dataType, DataTypes.StringType, Some(spark.sessionState.conf.sessionLocalTimeZone), CometEvalMode.TRY) match {
-        case _: Compatible => checkSparkAnswerAndOperator(result)
-        case _ => checkSparkAnswer(result)
+        for (field <- df.schema.fields) {
+          val col = field.name
+          val prettyExpr = Alias(ToPrettyString(UnresolvedAttribute(col)), s"pretty_$col")()
+          val plan = Project(Seq(prettyExpr), table)
+          val analyzed = spark.sessionState.analyzer.execute(plan)
+          val result: DataFrame = Dataset.ofRows(spark, analyzed)
+          CometCast.isSupported(field.dataType, DataTypes.StringType, Some(spark.sessionState.conf.sessionLocalTimeZone), CometEvalMode.TRY) match {
+            case _: Compatible => checkSparkAnswerAndOperator(result)
+            case _ => checkSparkAnswer(result)
+          }
+        }
       }
-    }
+    )
   }
-
 }

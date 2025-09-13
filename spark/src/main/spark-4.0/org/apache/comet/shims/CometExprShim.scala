@@ -20,9 +20,10 @@ package org.apache.comet.shims
 
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.CommonStringExprs
-import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.{BinaryType, BooleanType, StringType}
 
@@ -32,6 +33,16 @@ import org.apache.spark.sql.types.{BinaryType, BooleanType, StringType}
 trait CometExprShim extends CommonStringExprs {
     protected def evalMode(c: Cast): CometEvalMode.Value =
         CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
+
+    protected def binaryOutputStyle: BinaryOutputStyle = {
+        SQLConf.get.getConf(SQLConf.BINARY_OUTPUT_STYLE).map(SQLConf.BinaryOutputStyle.withName) match {
+        case Some(SQLConf.BinaryOutputStyle.UTF8) => BinaryOutputStyle.UTF8
+        case Some(SQLConf.BinaryOutputStyle.BASIC) => BinaryOutputStyle.BASIC
+        case Some(SQLConf.BinaryOutputStyle.BASE64) => BinaryOutputStyle.BASE64
+        case Some(SQLConf.BinaryOutputStyle.HEX) => BinaryOutputStyle.HEX
+        case _ => BinaryOutputStyle.HEX_DISCRETE
+      }
+    }
 
     def versionSpecificExprToProtoInternal(
         expr: Expression,

@@ -215,8 +215,9 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
             "There can be formatting differences in some case due to Spark using " +
               "scientific notation where Comet does not"))
       case DataTypes.BinaryType =>
-        // https://github.com/apache/datafusion-comet/issues/377
-        Incompatible(Some("Only works for binary data representing valid UTF-8 strings"))
+        // Before Spark 4.0, the default format is discrete HEX string
+        // Since Spark 4.0, the format is controlled by Spark's SQLConf.BINARY_OUTPUT_STYLE
+        Compatible()
       case StructType(fields) =>
         for (field <- fields) {
           isSupported(field.dataType, DataTypes.StringType, timeZoneId, evalMode) match {
