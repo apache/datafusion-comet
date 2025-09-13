@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.math.min
 
-import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract}
+import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -368,5 +368,27 @@ object CometRound extends CometExpressionSerde[Round] {
         optExprWithInfo(optExpr, r, r.child)
     }
 
+  }
+}
+object CometUnaryMinus extends CometExpressionSerde[UnaryMinus] {
+
+  override def convert(
+      expr: UnaryMinus,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    if (childExpr.isDefined) {
+      val builder = ExprOuterClass.UnaryMinus.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setFailOnError(expr.failOnError)
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setUnaryMinus(builder)
+          .build())
+    } else {
+      withInfo(expr, expr.child)
+      None
+    }
   }
 }

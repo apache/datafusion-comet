@@ -68,15 +68,14 @@ object CometLower extends CometCaseConversionBase[Lower]("lower")
 
 object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
 
+  override def getSupportLevel(expr: InitCap): SupportLevel = {
+    // Behavior differs from Spark. One example is that for the input "robert rose-smith", Spark
+    // will produce "Robert Rose-smith", but Comet will produce "Robert Rose-Smith".
+    // https://github.com/apache/datafusion-comet/issues/1052
+    Incompatible(None)
+  }
+
   override def convert(expr: InitCap, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    if (!CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
-      withInfo(
-        expr,
-        "Comet initCap is not compatible with Spark yet. " +
-          "See https://github.com/apache/datafusion-comet/issues/1052 ." +
-          s"Set ${CometConf.COMET_EXEC_INITCAP_ENABLED.key}=true to enable it anyway.")
-      return None
-    }
     super.convert(expr, inputs, binding)
   }
 }

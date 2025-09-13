@@ -72,7 +72,8 @@ where
         }
         _ => {
             return Err(DataFusionError::Internal(format!(
-                "Unsupported operation: {op:?}"
+                "Unsupported operation: {:?}",
+                op
             )))
         }
     }
@@ -140,7 +141,8 @@ fn checked_arithmetic_internal(
             op,
         ),
         _ => Err(DataFusionError::Internal(format!(
-            "Unsupported data type: {data_type:?}"
+            "Unsupported data type: {:?}",
+            data_type
         ))),
     };
 

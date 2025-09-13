@@ -65,6 +65,8 @@ object CometConf extends ShimCometConf {
 
   val COMET_EXEC_CONFIG_PREFIX = "spark.comet.exec";
 
+  val COMET_EXPR_CONFIG_PREFIX = "spark.comet.expression";
+
   val COMET_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.enabled")
     .doc(
       "Whether to enable Comet extension for Spark. When this is turned on, Spark will use " +
@@ -228,8 +230,6 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("window", defaultValue = true)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
-  val COMET_EXEC_INITCAP_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig("initCap", defaultValue = false)
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
@@ -663,6 +663,26 @@ object CometConf extends ShimCometConf {
           .getOrElse(""))
       .booleanConf
       .createWithDefault(defaultValue)
+  }
+
+  def isExprEnabled(name: String, conf: SQLConf = SQLConf.get): Boolean = {
+    getBooleanConf(getExprEnabledConfigKey(name), defaultValue = true, conf)
+  }
+
+  def getExprEnabledConfigKey(name: String): String = {
+    s"${CometConf.COMET_EXPR_CONFIG_PREFIX}.$name.enabled"
+  }
+
+  def isExprAllowIncompat(name: String, conf: SQLConf = SQLConf.get): Boolean = {
+    getBooleanConf(getExprAllowIncompatConfigKey(name), defaultValue = false, conf)
+  }
+
+  def getExprAllowIncompatConfigKey(name: String): String = {
+    s"${CometConf.COMET_EXPR_CONFIG_PREFIX}.$name.allowIncompatible"
+  }
+
+  def getBooleanConf(name: String, defaultValue: Boolean, conf: SQLConf): Boolean = {
+    conf.getConfString(name, defaultValue.toString).toLowerCase(Locale.ROOT) == "true"
   }
 }
 
