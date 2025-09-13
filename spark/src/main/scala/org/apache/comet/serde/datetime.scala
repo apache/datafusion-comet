@@ -19,19 +19,43 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateSub, Hour, Literal, Minute, Second, TruncDate, TruncTimestamp, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.types.{DateType, IntegerType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
-object CometYear extends CometExpressionSerde[Year] {
-  override def convert(
-      expr: Year,
+private object CometGetDateField extends Enumeration {
+  type CometGetDateField = Value
+
+  // See: https://datafusion.apache.org/user-guide/sql/scalar_functions.html#date-part
+  val Year: Value = Value("year")
+  val Month: Value = Value("month")
+  val DayOfMonth: Value = Value("day")
+  // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday,
+  // 2 = Monday, ..., 7 = Saturday).
+  val DayOfWeek: Value = Value("dow")
+  val DayOfYear: Value = Value("doy")
+  val WeekDay: Value = Value("isodow") // day of the week where Monday is 0
+  val WeekOfYear: Value = Value("week")
+  val Quarter: Value = Value("quarter")
+}
+
+/**
+ * Convert spark [[org.apache.spark.sql.catalyst.expressions.GetDateField]] expressions to
+ * Datafusion
+ * [[https://datafusion.apache.org/user-guide/sql/scalar_functions.html#date-part datepart]]
+ * function.
+ */
+trait CometExprGetDateField[T <: GetDateField] {
+  def getDateField(
+      expr: T,
+      field: CometGetDateField,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val periodType = exprToProtoInternal(Literal("year"), inputs, binding)
+    val periodType = exprToProtoInternal(Literal(field.toString), inputs, binding)
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val optExpr = scalarFunctionExprToProto("datepart", Seq(periodType, childExpr): _*)
       .map(e => {
@@ -48,6 +72,104 @@ object CometYear extends CometExpressionSerde[Year] {
           .build()
       })
     optExprWithInfo(optExpr, expr, expr.child)
+  }
+}
+
+object CometYear extends CometExpressionSerde[Year] with CometExprGetDateField[Year] {
+  override def convert(
+      expr: Year,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    getDateField(expr, CometGetDateField.Year, inputs, binding)
+  }
+}
+
+object CometMonth extends CometExpressionSerde[Month] with CometExprGetDateField[Month] {
+  override def convert(
+      expr: Month,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    getDateField(expr, CometGetDateField.Month, inputs, binding)
+  }
+}
+
+object CometDayOfMonth
+    extends CometExpressionSerde[DayOfMonth]
+    with CometExprGetDateField[DayOfMonth] {
+  override def convert(
+      expr: DayOfMonth,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    getDateField(expr, CometGetDateField.DayOfMonth, inputs, binding)
+  }
+}
+
+object CometDayOfWeek
+    extends CometExpressionSerde[DayOfWeek]
+    with CometExprGetDateField[DayOfWeek] {
+  override def convert(
+      expr: DayOfWeek,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // Datafusion: day of the week where Sunday is 0, but spark sunday is 1 (1 = Sunday,
+    // 2 = Monday, ..., 7 = Saturday). So we need to add 1 to the result of datepart(dow, ...)
+    val optExpr = getDateField(expr, CometGetDateField.DayOfWeek, inputs, binding)
+      .zip(exprToProtoInternal(Literal(1), inputs, binding))
+      .map { case (left, right) =>
+        Expr
+          .newBuilder()
+          .setAdd(
+            ExprOuterClass.MathExpr
+              .newBuilder()
+              .setLeft(left)
+              .setRight(right)
+              .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
+              .setReturnType(serializeDataType(IntegerType).get)
+              .build())
+          .build()
+      }
+      .headOption
+    optExprWithInfo(optExpr, expr, expr.child)
+  }
+}
+
+object CometWeekDay extends CometExpressionSerde[WeekDay] with CometExprGetDateField[WeekDay] {
+  override def convert(
+      expr: WeekDay,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    getDateField(expr, CometGetDateField.WeekDay, inputs, binding)
+  }
+}
+
+object CometDayOfYear
+    extends CometExpressionSerde[DayOfYear]
+    with CometExprGetDateField[DayOfYear] {
+  override def convert(
+      expr: DayOfYear,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    getDateField(expr, CometGetDateField.DayOfYear, inputs, binding)
+  }
+}
+
+object CometWeekOfYear
+    extends CometExpressionSerde[WeekOfYear]
+    with CometExprGetDateField[WeekOfYear] {
+  override def convert(
+      expr: WeekOfYear,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    getDateField(expr, CometGetDateField.WeekOfYear, inputs, binding)
+  }
+}
+
+object CometQuarter extends CometExpressionSerde[Quarter] with CometExprGetDateField[Quarter] {
+  override def convert(
+      expr: Quarter,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    getDateField(expr, CometGetDateField.Quarter, inputs, binding)
   }
 }
 
