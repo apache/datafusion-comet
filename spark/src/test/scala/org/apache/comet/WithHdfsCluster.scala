@@ -74,6 +74,9 @@ trait WithHdfsCluster extends Logging {
   }
 
   def stopHdfsCluster(): Unit = {
+    // wait for hdfs async blocking thread exit to avoid jvm crash, see:
+    //  https://github.com/apache/datafusion-comet/issues/2354
+    Thread.sleep(2000)
     if (hdfsCluster != null) hdfsCluster.shutdown(true)
     if (hadoopConfDir != null) FileUtils.deleteDirectory(hadoopConfDir)
   }

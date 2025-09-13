@@ -1138,4 +1138,9 @@ abstract class CometTestBase
     usingDataSourceExec(conf) &&
     !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get(conf)
   }
+
+  def featureEnabled(feature: String): Boolean = {
+    System.getProperty("feature", "").split(",").contains(feature)
+  }
+
 }
