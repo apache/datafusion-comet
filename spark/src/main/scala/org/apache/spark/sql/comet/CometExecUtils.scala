@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, So
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
@@ -48,13 +48,14 @@ object CometExecUtils {
    * partition. The limit operation is performed on the native side.
    */
   def getNativeLimitRDD(
+      child: SparkPlan,
       childPlan: RDD[ColumnarBatch],
       outputAttribute: Seq[Attribute],
       limit: Int,
       offset: Int = 0): RDD[ColumnarBatch] = {
     val numParts = childPlan.getNumPartitions
     childPlan.mapPartitionsWithIndexInternal { case (idx, iter) =>
-      val limitOp = CometExecUtils.getLimitNativePlan(outputAttribute, limit, offset).get
+      val limitOp = CometExecUtils.getLimitNativePlan(child, outputAttribute, limit, offset).get
       CometExec.getCometIterator(Seq(iter), outputAttribute.length, limitOp, numParts, idx)
     }
   }
@@ -90,10 +91,15 @@ object CometExecUtils {
    * child partition
    */
   def getLimitNativePlan(
+      child: SparkPlan,
       outputAttributes: Seq[Attribute],
       limit: Int,
       offset: Int = 0): Option[Operator] = {
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("LimitInput")
+    val scanBuilder = OperatorOuterClass.Scan
+      .newBuilder()
+      .setSource("LimitInput")
+      .addAllInputOrdering(QueryPlanSerde.parsePlanSortOrderAsMuchAsCan(child).asJava)
+
     val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
 
     val scanTypes = outputAttributes.flatten { attr =>
@@ -125,7 +131,11 @@ object CometExecUtils {
       child: SparkPlan,
       limit: Int,
       offset: Int = 0): Option[Operator] = {
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("TopKInput")
+    val scanBuilder = OperatorOuterClass.Scan
+      .newBuilder()
+      .setSource("TopKInput")
+      .addAllInputOrdering(QueryPlanSerde.parsePlanSortOrderAsMuchAsCan(child).asJava)
+
     val scanOpBuilder = OperatorOuterClass.Operator.newBuilder()
 
     val scanTypes = outputAttributes.flatten { attr =>
