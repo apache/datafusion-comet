@@ -22,7 +22,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark.ShuffleDependency
 import org.apache.spark.SparkConf

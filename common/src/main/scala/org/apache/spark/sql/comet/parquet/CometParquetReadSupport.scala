@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet.parquet
 
 import java.util.{Locale, UUID}
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 import org.apache.parquet.schema._
 import org.apache.parquet.schema.LogicalTypeAnnotation.ListLogicalTypeAnnotation

@@ -33,6 +33,8 @@ import org.apache.spark.sql.types.DataType;
 import org.apache.comet.CometSchemaImporter;
 import org.apache.comet.vector.*;
 
+import static scala.jdk.javaapi.CollectionConverters.*;
+
 // TODO: extend ColumnReader instead of AbstractColumnReader to reduce code duplication
 public class NativeColumnReader extends AbstractColumnReader {
   protected static final Logger LOG = LoggerFactory.getLogger(NativeColumnReader.class);
@@ -145,9 +147,7 @@ public class NativeColumnReader extends AbstractColumnReader {
     ArrowSchema[] schemas = {schema};
 
     CometDecodedVector cometVector =
-        (CometDecodedVector)
-            scala.collection.JavaConverters.seqAsJavaList(nativeUtil.importVector(arrays, schemas))
-                .get(0);
+        (CometDecodedVector) asJava(nativeUtil.importVector(arrays, schemas)).get(0);
 
     // Update whether the current vector contains any null values. This is used in the following
     // batch(s) to determine whether we can skip loading the native vector.

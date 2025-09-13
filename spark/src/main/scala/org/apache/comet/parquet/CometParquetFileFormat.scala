@@ -19,7 +19,7 @@
 
 package org.apache.comet.parquet
 
-import scala.collection.JavaConverters
+import scala.jdk.CollectionConverters._
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.parquet.filter2.predicate.FilterApi
@@ -164,7 +164,7 @@ class CometParquetFileFormat(scanImpl: String)
             datetimeRebaseSpec.mode == CORRECTED,
             partitionSchema,
             file.partitionValues,
-            JavaConverters.mapAsJavaMap(metrics))
+            metrics.asJava)
           try {
             batchReader.init()
           } catch {
@@ -198,7 +198,7 @@ class CometParquetFileFormat(scanImpl: String)
             datetimeRebaseSpec.mode == CORRECTED,
             partitionSchema,
             file.partitionValues,
-            JavaConverters.mapAsJavaMap(metrics))
+            metrics.asJava)
           try {
             batchReader.init()
           } catch {

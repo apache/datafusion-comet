@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.comet
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SparkContext
 import org.apache.spark.internal.Logging

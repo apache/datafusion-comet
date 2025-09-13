@@ -21,7 +21,7 @@ package org.apache.spark.sql.benchmark
 
 import java.io.File
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path

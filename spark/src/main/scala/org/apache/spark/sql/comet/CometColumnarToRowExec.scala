@@ -22,8 +22,8 @@ package org.apache.spark.sql.comet
 import java.util.UUID
 import java.util.concurrent.{Future, TimeoutException, TimeUnit}
 
-import scala.collection.JavaConverters._
 import scala.concurrent.Promise
+import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
 import org.apache.spark.{broadcast, SparkException}
