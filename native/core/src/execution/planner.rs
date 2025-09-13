@@ -2828,6 +2828,7 @@ fn literal_to_array_ref(
 
             // Build offsets and collect non-null child arrays
             let mut offsets = Vec::with_capacity(list_literal.list_values.len() + 1);
+            // Offsets starts with 0
             offsets.push(0i32);
             let mut child_arrays: Vec<ArrayRef> = Vec::new();
 
