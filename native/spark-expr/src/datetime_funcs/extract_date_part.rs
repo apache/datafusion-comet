@@ -26,7 +26,7 @@ use std::{any::Any, fmt::Debug};
 
 macro_rules! extract_date_part {
     ($struct_name:ident, $fn_name:expr, $date_part_variant:ident) => {
-        #[derive(Debug)]
+        #[derive(Debug, PartialEq, Eq, Hash)]
         pub struct $struct_name {
             signature: Signature,
             aliases: Vec<String>,
