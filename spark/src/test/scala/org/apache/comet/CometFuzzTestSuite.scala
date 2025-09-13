@@ -192,6 +192,21 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("order by random columns") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+
+    for (_ <- 1 to 10) {
+      // We only do order by primitive, non-variable length types to exercise native shuffle's
+      // RangePartitioning which only supports those types.
+      val shuffledPrimitiveCols = Random.shuffle(df.columns.slice(0, 12).toList)
+      val randomSize = Random.nextInt(shuffledPrimitiveCols.length) + 1
+      val randomColsSubset = shuffledPrimitiveCols.take(randomSize).toArray.mkString(",")
+      val sql = s"SELECT $randomColsSubset FROM t1 ORDER BY $randomColsSubset"
+      checkSparkAnswerAndOperator(sql)
+    }
+  }
+
   test("aggregate group by single column") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
@@ -253,7 +268,19 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     df2.collect()
     if (usingDataSourceExec) {
       val cometShuffles = collectCometShuffleExchanges(df2.queryExecution.executedPlan)
-      assert(1 == cometShuffles.length)
+      val expectedNumCometShuffles = CometConf.COMET_NATIVE_SCAN_IMPL.get() match {
+        case CometConf.SCAN_NATIVE_COMET =>
+          // native_comet does not support reading complex types
+          0
+        case CometConf.SCAN_NATIVE_ICEBERG_COMPAT | CometConf.SCAN_NATIVE_DATAFUSION =>
+          CometConf.COMET_SHUFFLE_MODE.get() match {
+            case "jvm" =>
+              1
+            case "native" =>
+              2
+          }
+      }
+      assert(cometShuffles.length == expectedNumCometShuffles)
     }
   }
 
@@ -380,6 +407,7 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach { scanImpl =>
         super.test(testName + s" ($scanImpl, $shuffleMode shuffle)", testTags: _*) {
           withSQLConf(
+            CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true",
             CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl,
             CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
