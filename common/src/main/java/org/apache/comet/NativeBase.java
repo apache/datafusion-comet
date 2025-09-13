@@ -35,6 +35,7 @@ import org.apache.spark.sql.comet.util.Utils;
 
 import static org.apache.comet.Constants.LOG_CONF_NAME;
 import static org.apache.comet.Constants.LOG_CONF_PATH;
+import static org.apache.comet.Constants.LOG_LEVEL;
 
 /** Base class for JNI bindings. MUST be inherited by all classes that introduce JNI APIs. */
 public abstract class NativeBase {
@@ -153,18 +154,25 @@ public abstract class NativeBase {
 
   private static void initWithLogConf() {
     String logConfPath = System.getProperty(LOG_CONF_PATH(), Utils.getConfPath(LOG_CONF_NAME()));
+    String logLevel = System.getProperty(LOG_LEVEL());
 
     // If both the system property and the environmental variable failed to find a log
     // configuration, then fall back to using the deployed default
     if (logConfPath == null) {
       LOG.info(
           "Couldn't locate log file from either COMET_CONF_DIR or comet.log.file.path. "
-              + "Using default log configuration which emits to stdout");
+              + "Using default log configuration with {} log level which emits to stdout",
+          logLevel == null ? "INFO" : logLevel);
       logConfPath = "";
     } else {
+      // Ignore log level if a log configuration file is specified
+      if (logLevel != null) {
+        LOG.warn("Ignoring log level {} because a log configuration file is specified", logLevel);
+      }
+
       LOG.info("Using {} for native library logging", logConfPath);
     }
-    init(logConfPath);
+    init(logConfPath, logLevel);
   }
 
   private static void cleanupOldTempLibs() {
@@ -283,5 +291,5 @@ public abstract class NativeBase {
    *
    * @param logConfPath location to the native log configuration file
    */
-  static native void init(String logConfPath);
+  static native void init(String logConfPath, String logLevel);
 }
