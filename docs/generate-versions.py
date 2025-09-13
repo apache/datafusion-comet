@@ -65,11 +65,19 @@ def insert_warning_after_asf_header(root: str, warning: str):
                 inserted = True
         file.write_text("".join(new_lines), encoding="utf-8")
 
+
+def get_user_guide_dir(major_minor: str):
+    if major_minor == "0.8" or major_minor == "0.9":
+        return "docs/source/user-guide"
+    else:
+        return "docs/source/user-guide/latest"
+
 def publish_released_version(version: str):
     major_minor = get_major_minor_version(version)
+    dir = get_user_guide_dir(major_minor)
     os.system(f"git clone --depth 1 https://github.com/apache/datafusion-comet.git -b branch-{major_minor} comet-{major_minor}")
     os.system(f"mkdir temp/user-guide/{major_minor}")
-    os.system(f"cp -rf comet-{major_minor}/docs/source/user-guide/* temp/user-guide/{major_minor}")
+    os.system(f"cp -rf comet-{major_minor}/{dir}/* temp/user-guide/{major_minor}")
     # Replace $COMET_VERSION with actual version
     for file_pattern in ["*.md", "*.rst"]:
         replace_in_files(f"temp/user-guide/{major_minor}", file_pattern, "$COMET_VERSION", version)
@@ -96,6 +104,6 @@ This is **out-of-date** documentation. The latest Comet release is version {late
 if __name__ == "__main__":
     print("Generating versioned user guide docs...")
     snapshot_version = get_version_from_pom()
-    latest_released_version = "0.9.1"
-    previous_versions = ["0.8.0"]
+    latest_released_version = "0.10.0"
+    previous_versions = ["0.8.0", "0.9.1"]
     generate_docs(snapshot_version, latest_released_version, previous_versions)
