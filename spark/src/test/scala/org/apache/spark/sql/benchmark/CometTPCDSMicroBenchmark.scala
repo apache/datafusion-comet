@@ -61,7 +61,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
     "agg_low_cardinality",
     "agg_sum_decimals_no_grouping",
     "agg_sum_integers_no_grouping",
-    "agg_stddev",
+    // "agg_stddev",
     "case_when_column_or_null",
     "case_when_scalar",
     "char_type",
@@ -72,7 +72,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
     "join_condition",
     "join_exploding_output",
     "join_inner",
-    "join_left_outer",
+    // "join_left_outer",
     "join_semi",
     "rlike",
     "to_json")
@@ -84,7 +84,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
       benchmarkName: String,
       nameSuffix: String = ""): Unit = {
     queries.foreach { name =>
-      val source = Source.fromFile(s"spark/src/test/resources/tpcds-micro-benchmarks/$name.sql")
+      val source = Source.fromFile(s"src/test/resources/tpcds-micro-benchmarks/$name.sql")
       val queryString = source
         .getLines()
         .filterNot(_.startsWith("--"))
@@ -108,34 +108,18 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
       benchmark.addCase(s"$name$nameSuffix") { _ =>
         cometSpark.sql(queryString).noop()
       }
-      benchmark.addCase(s"$name$nameSuffix: Comet (Scan)") { _ =>
-        withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
-          cometSpark.sql(queryString).noop()
-        }
-      }
-      benchmark.addCase(s"$name$nameSuffix: Comet (Scan, Exec)") { _ =>
+      benchmark.addCase(s"$name$nameSuffix: Comet") { _ =>
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> "auto",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
           CometConf.COMET_SHUFFLE_MODE.key -> "auto",
-          CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true",
-          // enabling COMET_EXPLAIN_NATIVE_ENABLED may add overhead but is useful for debugging
-          CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "false",
-          CometConf.COMET_EXEC_ENABLED.key -> "true") {
-          cometSpark.sql(queryString).noop()
-        }
-      }
-      benchmark.addCase(s"$name$nameSuffix: Comet (Exec)") { _ =>
-        withSQLConf(
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
           CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-          CometConf.COMET_SHUFFLE_MODE.key -> "auto",
           CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true",
           // enabling COMET_EXPLAIN_NATIVE_ENABLED may add overhead but is useful for debugging
-          CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "false",
-          CometConf.COMET_EXEC_ENABLED.key -> "true") {
+          CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "false") {
           cometSpark.sql(queryString).noop()
         }
       }
