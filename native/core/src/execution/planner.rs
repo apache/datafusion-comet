@@ -109,10 +109,10 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
-    RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr, SumDecimal, TimestampTruncExpr,
-    ToJson, UnboundColumn, Variance,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, CountNotNull, Covariance,
+    CreateNamedStruct, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
+    NormalizeNaNAndZero, RLike, RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr,
+    SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -1903,42 +1903,10 @@ impl PhysicalPlanner {
     ) -> Result<AggregateFunctionExpr, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
             AggExprStruct::Count(expr) => {
-                assert!(!expr.children.is_empty());
-                // Using `count_udaf` from Comet is exceptionally slow for some reason, so
-                // as a workaround we translate it to `SUM(IF(expr IS NOT NULL, 1, 0))`
-                // https://github.com/apache/datafusion-comet/issues/744
-
-                let children = expr
-                    .children
-                    .iter()
-                    .map(|child| self.create_expr(child, Arc::clone(&schema)))
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                // create `IS NOT NULL expr` and join them with `AND` if there are multiple
-                let not_null_expr: Arc<dyn PhysicalExpr> = children.iter().skip(1).fold(
-                    Arc::new(IsNotNullExpr::new(Arc::clone(&children[0]))) as Arc<dyn PhysicalExpr>,
-                    |acc, child| {
-                        Arc::new(BinaryExpr::new(
-                            acc,
-                            DataFusionOperator::And,
-                            Arc::new(IsNotNullExpr::new(Arc::clone(child))),
-                        ))
-                    },
-                );
-
-                let child = Arc::new(IfExpr::new(
-                    not_null_expr,
-                    Arc::new(Literal::new(ScalarValue::Int64(Some(1)))),
-                    Arc::new(Literal::new(ScalarValue::Int64(Some(0)))),
-                ));
-
-                AggregateExprBuilder::new(sum_udaf(), vec![child])
-                    .schema(schema)
-                    .alias("count")
-                    .with_ignore_nulls(false)
-                    .with_distinct(false)
-                    .build()
-                    .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
+                assert_eq!(expr.children.len(), 1);
+                let child = self.create_expr(&expr.children[0], Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(CountNotNull::new());
+                Self::create_aggr_func_expr("count", schema, vec![child], func)
             }
             AggExprStruct::Min(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;

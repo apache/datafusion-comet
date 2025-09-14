@@ -90,6 +90,31 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("count with null values") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withParquetTable(
+          Seq((1, null), (2, 42), (null, 43), (4, null), (5, 44)),
+          "count_null_test",
+          dictionaryEnabled) {
+          // Test COUNT on different columns (COUNT should ignore nulls)
+          checkSparkAnswerAndOperator(sql("SELECT COUNT(_1) FROM count_null_test"))
+          checkSparkAnswerAndOperator(sql("SELECT COUNT(_2) FROM count_null_test"))
+
+          // Test with GROUP BY
+          checkSparkAnswerAndOperator(
+            sql("SELECT _1, COUNT(_2) FROM count_null_test GROUP BY _1 ORDER BY _1"))
+
+          // Test combined with other aggregates
+          checkSparkAnswerAndOperator(sql("SELECT COUNT(_1), COUNT(_2) FROM count_null_test"))
+        }
+      }
+    }
+  }
+
   test("lead/lag should return the default value if the offset row does not exist") {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
