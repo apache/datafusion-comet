@@ -1993,7 +1993,6 @@ class CometExecSuite extends CometTestBase {
     Seq("true", "false").foreach(cacheVectorized => {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        CometConf.COMET_EXEC_ENABLED.key -> "false",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
         SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> cacheVectorized) {
         spark
@@ -2004,8 +2003,7 @@ class CometExecSuite extends CometTestBase {
           .createOrReplaceTempView("abc")
         spark.catalog.cacheTable("abc")
         val df = spark.sql("SELECT * FROM abc").groupBy("key").count()
-        checkSparkAnswerAndOperator(df)
-        print(df.queryExecution.executedPlan)
+        checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometSparkToColumnarExec]))
         df.collect() // Without this collect we don't get an aggregation of the metrics.
 
         val metrics = find(df.queryExecution.executedPlan) {
