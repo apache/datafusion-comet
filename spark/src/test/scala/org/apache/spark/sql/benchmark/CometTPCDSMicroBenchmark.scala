@@ -111,12 +111,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
       benchmark.addCase(s"$name$nameSuffix: Comet") { _ =>
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> "auto",
           CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-          CometConf.COMET_SHUFFLE_MODE.key -> "auto",
-          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
           CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true",
           // enabling COMET_EXPLAIN_NATIVE_ENABLED may add overhead but is useful for debugging
           CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "false") {
