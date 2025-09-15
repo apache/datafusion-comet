@@ -171,7 +171,7 @@ By default, Comet emits native-side logs at the `INFO` level to `stderr`.
 
 You can use the `COMET_LOG_LEVEL` environment variable to specify the log level. Supported values are: `OFF`, `ERROR`, `WARN`, `INFO`, `DEBUG`, `TRACE`.
 
-For example, to configure native logs at the `DEBUG` level:
+For example, to configure native logs at the `DEBUG` level on spark executor:
 
 ```
 spark.executorEnv.COMET_LOG_LEVEL=DEBUG
