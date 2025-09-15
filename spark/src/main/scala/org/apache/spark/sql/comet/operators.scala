@@ -238,6 +238,7 @@ abstract class CometNativeExec extends CometExec {
           case (_: CometBroadcastExchangeExec, _) => false
           case (BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _), _) => false
           case (BroadcastQueryStageExec(_, _: ReusedExchangeExec, _), _) => false
+          case (ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) => false
           case _ => true
         }
 
@@ -245,6 +246,7 @@ abstract class CometNativeExec extends CometExec {
           case _: CometBroadcastExchangeExec => true
           case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
           case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => true
+          case ReusedExchangeExec(_, _: CometBroadcastExchangeExec) => true
           case _ => false
         }
 
