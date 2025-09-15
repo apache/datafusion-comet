@@ -1908,8 +1908,7 @@ impl PhysicalPlanner {
                     // fast path for single expression case
                     let child = self.create_expr(&expr.children[0], Arc::clone(&schema))?;
                     // Check if the child is a literal for `COUNT(1)` case
-                    let is_literal = child.as_any().downcast_ref::<DataFusionLiteral>().is_some();
-                    let func = if is_literal {
+                    let func = if child.as_any().is::<DataFusionLiteral>() {
                         // COUNT(1) - count all rows including nulls
                         AggregateUDF::new_from_impl(CountRows::new())
                     } else {
