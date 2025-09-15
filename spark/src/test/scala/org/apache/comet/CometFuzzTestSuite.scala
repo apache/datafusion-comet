@@ -19,21 +19,10 @@
 
 package org.apache.comet
 
-import java.io.File
-import java.text.SimpleDateFormat
-
 import scala.util.Random
 
-import org.scalactic.source.Position
-import org.scalatest.Tag
-
 import org.apache.commons.codec.binary.Hex
-import org.apache.commons.io.FileUtils
-import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
-import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper}
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
