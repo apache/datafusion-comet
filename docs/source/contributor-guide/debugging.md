@@ -167,14 +167,14 @@ Note:
 
 ### Native log configuration
 
-By default, Comet emits native-side logs at the **INFO** level to `stderr`.
+By default, Comet emits native-side logs at the `INFO` level to `stderr`.
 
 You can use the `COMET_LOG_LEVEL` environment variable to specify the log level. Supported values are: `OFF`, `ERROR`, `WARN`, `INFO`, `DEBUG`, `TRACE`.
 
 For example, to configure native logs at the `DEBUG` level:
 
 ```
-spark.executorEnv.COMET_LOG_LEVEL=DEBUG  
+spark.executorEnv.COMET_LOG_LEVEL=DEBUG
 ```
 
 This produces output like the following:
@@ -188,5 +188,5 @@ This produces output like the following:
 ...
 ```
 
-Additionally, you can place a `log4rs.yaml` configuration file inside the Comet configuration directory specified by the `COMET_CONF_DIR` environment variable to enable more advanced logging configurations. This file uses the  [log4rs YAML configuration format](https://docs.rs/log4rs/latest/log4rs/#configuration-via-a-yaml-file).
+Additionally, you can place a `log4rs.yaml` configuration file inside the Comet configuration directory specified by the `COMET_CONF_DIR` environment variable to enable more advanced logging configurations. This file uses the [log4rs YAML configuration format](https://docs.rs/log4rs/latest/log4rs/#configuration-via-a-yaml-file).
 For example, see: [log4rs.yaml](https://github.com/apache/datafusion-comet/blob/main/conf/log4rs.yaml).
