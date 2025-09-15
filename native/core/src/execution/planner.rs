@@ -1907,8 +1907,9 @@ impl PhysicalPlanner {
                 let child = self.create_expr(&expr.children[0], Arc::clone(&schema))?;
 
                 // Check if the child is a literal (for COUNT(*) which is COUNT(1))
-                let is_literal =
-                    matches!(child.as_any().downcast_ref::<DataFusionLiteral>(), Some(_));
+                let is_literal = child.as_any().downcast_ref::<DataFusionLiteral>().is_some();
+
+                println!("is_literal = {is_literal}");
 
                 let func = if is_literal {
                     // COUNT(*) - count all rows including nulls
