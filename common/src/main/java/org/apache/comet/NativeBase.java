@@ -284,4 +284,12 @@ public abstract class NativeBase {
    * @param logConfPath location to the native log configuration file
    */
   static native void init(String logConfPath);
+
+  /**
+   * Check if a specific feature is enabled in the native library.
+   *
+   * @param featureName The name of the feature to check (e.g., "hdfs", "jemalloc", "hdfs-opendal")
+   * @return true if the feature is enabled, false otherwise
+   */
+  public static native boolean isFeatureEnabled(String featureName);
 }
