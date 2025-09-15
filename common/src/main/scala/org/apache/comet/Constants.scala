@@ -20,7 +20,8 @@
 package org.apache.comet
 
 object Constants {
+  val COMET_CONF_DIR_ENV = "COMET_CONF_DIR"
   val LOG_CONF_PATH = "comet.log.file.path"
   val LOG_CONF_NAME = "log4rs.yaml"
-  val LOG_LEVEL = "comet.log.level"
+  val LOG_LEVEL_ENV = "COMET_LOG_LEVEL"
 }

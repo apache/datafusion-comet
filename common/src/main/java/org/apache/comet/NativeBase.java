@@ -35,7 +35,7 @@ import org.apache.spark.sql.comet.util.Utils;
 
 import static org.apache.comet.Constants.LOG_CONF_NAME;
 import static org.apache.comet.Constants.LOG_CONF_PATH;
-import static org.apache.comet.Constants.LOG_LEVEL;
+import static org.apache.comet.Constants.LOG_LEVEL_ENV;
 
 /** Base class for JNI bindings. MUST be inherited by all classes that introduce JNI APIs. */
 public abstract class NativeBase {
@@ -154,7 +154,7 @@ public abstract class NativeBase {
 
   private static void initWithLogConf() {
     String logConfPath = System.getProperty(LOG_CONF_PATH(), Utils.getConfPath(LOG_CONF_NAME()));
-    String logLevel = System.getProperty(LOG_LEVEL());
+    String logLevel = System.getenv(LOG_LEVEL_ENV());
 
     // If both the system property and the environmental variable failed to find a log
     // configuration, then fall back to using the deployed default

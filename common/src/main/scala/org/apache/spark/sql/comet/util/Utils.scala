@@ -32,6 +32,7 @@ import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.arrow.vector.ipc.ArrowStreamWriter
 import org.apache.arrow.vector.types._
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
+import org.apache.comet.Constants.COMET_CONF_DIR_ENV
 import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.comet.execution.arrow.ArrowReaderIterator
@@ -45,7 +46,7 @@ import org.apache.comet.vector.CometVector
 object Utils extends CometTypeShim {
   def getConfPath(confFileName: String): String = {
     sys.env
-      .get("COMET_CONF_DIR")
+      .get(COMET_CONF_DIR_ENV)
       .map { t => new File(s"$t${File.separator}$confFileName") }
       .filter(_.isFile)
       .map(_.getAbsolutePath)
