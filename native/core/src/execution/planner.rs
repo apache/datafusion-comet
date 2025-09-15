@@ -1909,8 +1909,6 @@ impl PhysicalPlanner {
                 // Check if the child is a literal (for COUNT(*) which is COUNT(1))
                 let is_literal = child.as_any().downcast_ref::<DataFusionLiteral>().is_some();
 
-                println!("is_literal = {is_literal}");
-
                 let func = if is_literal {
                     // COUNT(*) - count all rows including nulls
                     AggregateUDF::new_from_impl(CountRows::new())
