@@ -408,12 +408,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
   test("Verify rpad expr support for second arg instead of just literal") {
-    withTable("t1") {
-      val value = "IfIWasARoadIWouldBeBent"
-      sql("create table t1(c1 varchar(100), c2 int) using parquet")
-      sql(s"insert into t1 values('$value', 10)")
-      sql(s"insert into t1 values((${null}, 10))")
-      val res = sql("select rpad(c1,c2) , rpad(c1,5) from t1 order by c1")
+    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("తెలుగు", 2))
+    withParquetTable(data, "t1") {
+      val res = sql("select rpad(_1,_2) , rpad(_1,2) from t1 order by _1")
       checkSparkAnswerAndOperator(res)
     }
   }

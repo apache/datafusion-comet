@@ -120,7 +120,7 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
                         string.parse().unwrap(),
                         length.unwrap() as usize,
                         truncate,
-                    )),
+                    )?),
                     _ => builder.append_null(),
                 }
             }
@@ -140,7 +140,7 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
                         string.parse().unwrap(),
                         length,
                         truncate,
-                    )),
+                    )?),
                     _ => builder.append_null(),
                 }
             }
@@ -149,7 +149,11 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     }
 }
 
-fn add_padding_string(string: String, length: usize, truncate: bool) -> String {
+fn add_padding_string(
+    string: String,
+    length: usize,
+    truncate: bool,
+) -> Result<String, DataFusionError> {
     // It looks Spark's UTF8String is closer to chars rather than graphemes
     // https://stackoverflow.com/a/46290728
     let space_string = " ".repeat(length);
@@ -161,11 +165,17 @@ fn add_padding_string(string: String, length: usize, truncate: bool) -> String {
                 .nth(length)
                 .map(|(i, _)| i)
                 .unwrap_or(string.len());
-            string[..idx].parse().unwrap()
+            match string[..idx].parse() {
+                Ok(string) => Ok(string),
+                Err(err) => Err(DataFusionError::Internal(format!(
+                    "Failed adding padding string {} error {:}",
+                    string, err
+                ))),
+            }
         } else {
-            string
+            Ok(string)
         }
     } else {
-        string + &space_string[char_len..]
+        Ok(string + &space_string[char_len..])
     }
 }
