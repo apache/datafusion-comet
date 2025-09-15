@@ -88,6 +88,15 @@ abstract class CometTestBase
     conf
   }
 
+  protected def isFeatureEnabled(feature: String): Boolean = {
+      try {
+        NativeBase.isFeatureEnabled(feature)
+      } catch {
+        case _: Throwable =>
+          false
+      }
+  }
+
   /**
    * A helper function for comparing Comet DataFrame with Spark result using absolute tolerance.
    */
