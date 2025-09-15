@@ -161,7 +161,7 @@ public abstract class NativeBase {
     if (logConfPath == null) {
       LOG.info(
           "Couldn't locate log file from either COMET_CONF_DIR or comet.log.file.path. "
-              + "Using default log configuration with {} log level which emits to stdout",
+              + "Using default log configuration with {} log level which emits to stderr",
           logLevel == null ? "INFO" : logLevel);
       logConfPath = "";
     } else {
