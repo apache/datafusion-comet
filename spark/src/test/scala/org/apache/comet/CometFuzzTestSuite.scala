@@ -192,12 +192,26 @@ class CometFuzzTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("aggregate group by single column") {
+  test("count(*) group by single column") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
       // cannot run fully natively due to range partitioning and sort
       val sql = s"SELECT $col, count(*) FROM t1 GROUP BY $col ORDER BY $col"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      if (usingDataSourceExec) {
+        assert(1 == collectNativeScans(cometPlan).length)
+      }
+    }
+  }
+
+  test("count(col) group by single column") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    val groupCol = df.columns.head
+    for (col <- df.columns.drop(1)) {
+      // cannot run fully natively due to range partitioning and sort
+      val sql = s"SELECT $groupCol, count($col) FROM t1 GROUP BY $groupCol ORDER BY $groupCol"
       val (_, cometPlan) = checkSparkAnswer(sql)
       if (usingDataSourceExec) {
         assert(1 == collectNativeScans(cometPlan).length)
