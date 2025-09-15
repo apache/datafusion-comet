@@ -125,7 +125,7 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
             _ => false, // Unknown features return false
         };
 
-        Ok(if enabled { 1 } else { 0 })
+        Ok(enabled as u8)
     })
 }
 
