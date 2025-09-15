@@ -109,8 +109,8 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, CountNotNull, Covariance,
-    CreateNamedStruct, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, CountNotNull, CountRows,
+    Covariance, CreateNamedStruct, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
     NormalizeNaNAndZero, RLike, RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr,
     SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
@@ -1905,7 +1905,19 @@ impl PhysicalPlanner {
             AggExprStruct::Count(expr) => {
                 assert_eq!(expr.children.len(), 1);
                 let child = self.create_expr(&expr.children[0], Arc::clone(&schema))?;
-                let func = AggregateUDF::new_from_impl(CountNotNull::new());
+
+                // Check if the child is a literal (for COUNT(*) which is COUNT(1))
+                let is_literal =
+                    matches!(child.as_any().downcast_ref::<DataFusionLiteral>(), Some(_));
+
+                let func = if is_literal {
+                    // COUNT(*) - count all rows including nulls
+                    AggregateUDF::new_from_impl(CountRows::new())
+                } else {
+                    // COUNT(column) - count only non-null values
+                    AggregateUDF::new_from_impl(CountNotNull::new())
+                };
+
                 Self::create_aggr_func_expr("count", schema, vec![child], func)
             }
             AggExprStruct::Min(expr) => {

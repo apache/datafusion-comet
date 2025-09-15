@@ -108,6 +108,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator(
             sql("SELECT _1, COUNT(_2) FROM count_null_test GROUP BY _1 ORDER BY _1"))
 
+          checkSparkAnswerAndOperator(
+            sql("SELECT _1, COUNT(*) FROM count_null_test GROUP BY _1 ORDER BY _1"))
+
           // Test combined with other aggregates
           checkSparkAnswerAndOperator(sql("SELECT COUNT(_1), COUNT(_2) FROM count_null_test"))
         }
