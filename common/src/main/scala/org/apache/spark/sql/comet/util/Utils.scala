@@ -32,7 +32,6 @@ import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.arrow.vector.ipc.ArrowStreamWriter
 import org.apache.arrow.vector.types._
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
-import org.apache.comet.Constants.COMET_CONF_DIR_ENV
 import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.comet.execution.arrow.ArrowReaderIterator
@@ -40,6 +39,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
+import org.apache.comet.Constants.COMET_CONF_DIR_ENV
 import org.apache.comet.shims.CometTypeShim
 import org.apache.comet.vector.CometVector
 
