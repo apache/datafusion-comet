@@ -30,7 +30,7 @@ import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, sum}
 
-import org.apache.comet.{CometConf, NativeBase}
+import org.apache.comet.CometConf
 import org.apache.comet.hadoop.fs.FakeHDFSFileSystem
 
 class ParquetReadFromFakeHadoopFsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
