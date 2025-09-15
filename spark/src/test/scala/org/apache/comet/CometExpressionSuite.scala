@@ -1687,7 +1687,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col timestamp) using parquet")
-          sql(s"insert into $table values (now()), (null)")
+          sql(s"insert into $table values (now()), (timestamp('1900-01-01')), (null)")
           // TODO: weekday(col) https://github.com/apache/datafusion-comet/issues/2330
           checkSparkAnswerAndOperator(
             "SELECT col, year(col), month(col), day(col)," +
