@@ -89,12 +89,12 @@ abstract class CometTestBase
   }
 
   protected def isFeatureEnabled(feature: String): Boolean = {
-      try {
-        NativeBase.isFeatureEnabled(feature)
-      } catch {
-        case _: Throwable =>
-          false
-      }
+    try {
+      NativeBase.isFeatureEnabled(feature)
+    } catch {
+      case _: Throwable =>
+        false
+    }
   }
 
   /**
