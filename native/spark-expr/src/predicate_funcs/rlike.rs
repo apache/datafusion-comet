@@ -48,7 +48,7 @@ pub struct RLike {
 
 impl PartialEq for RLike {
     fn eq(&self, other: &Self) -> bool {
-        self.pattern_str == other.pattern_str
+        *(self.child) == *(other.child) && self.pattern_str == other.pattern_str
     }
 }
 

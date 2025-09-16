@@ -193,20 +193,16 @@ struct CometScalarFunction {
 }
 
 impl PartialEq for CometScalarFunction {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-            && self.signature == other.signature
-            && self.data_type == other.data_type
+    fn eq(&self, _other: &Self) -> bool {
+        unimplemented!("Equality for ScalarFunctionImplementation field not implemented.")
     }
 }
 
 impl Eq for CometScalarFunction {}
 
 impl std::hash::Hash for CometScalarFunction {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
-        self.signature.hash(state);
-        self.data_type.hash(state);
+    fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {
+        unimplemented!("Hash for ScalarFunctionImplementation field not implemented.")
     }
 }
 

@@ -1350,7 +1350,7 @@ mod test {
     #[tokio::test]
     async fn shuffle_repartitioner_memory() {
         let batch = create_batch(900);
-        assert_eq!(8316, batch.get_array_memory_size());
+        assert_eq!(8316, batch.get_array_memory_size()); // Not stable across Arrow versions
 
         let memory_limit = 512 * 1024;
         let num_partitions = 2;
