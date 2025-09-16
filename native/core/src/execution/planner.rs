@@ -2580,10 +2580,6 @@ impl PhysicalPlanner {
             args.to_vec(),
             Arc::new(Field::new(fun_name, data_type, true)),
             Arc::new(ConfigOptions::default()),
-            // TODO: Instead of possibly instantiating multiple default ConfigOptions,
-            // does it make sense to stash one somewhere? Benefits:
-            // 1) if we decide to change some, it will propagate changes
-            // 2) reduced memory consumption
         ));
 
         Ok(scalar_expr)
