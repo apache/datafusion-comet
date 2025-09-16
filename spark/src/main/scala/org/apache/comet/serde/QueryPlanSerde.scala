@@ -19,8 +19,8 @@
 
 package org.apache.comet.serde
 
-import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
@@ -203,7 +203,16 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Second] -> CometSecond,
     classOf[TruncDate] -> CometTruncDate,
     classOf[TruncTimestamp] -> CometTruncTimestamp,
-    classOf[Year] -> CometYear)
+    classOf[Year] -> CometYear,
+    classOf[Month] -> CometMonth,
+    classOf[DayOfMonth] -> CometDayOfMonth,
+    classOf[DayOfWeek] -> CometDayOfWeek,
+    // FIXME: current datafusion version does not support isodow (WeekDay)
+    //  , see: https://github.com/apache/datafusion-comet/issues/2330
+    // classOf[WeekDay] -> CometWeekDay,
+    classOf[DayOfYear] -> CometDayOfYear,
+    classOf[WeekOfYear] -> CometWeekOfYear,
+    classOf[Quarter] -> CometQuarter)
 
   private val conversionExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Cast] -> CometCast)

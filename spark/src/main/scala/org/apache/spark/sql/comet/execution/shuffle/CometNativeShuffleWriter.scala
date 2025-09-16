@@ -22,7 +22,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 import java.nio.{ByteBuffer, ByteOrder}
 import java.nio.file.{Files, Paths}
 
-import scala.collection.JavaConverters.asJavaIterableConverter
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
