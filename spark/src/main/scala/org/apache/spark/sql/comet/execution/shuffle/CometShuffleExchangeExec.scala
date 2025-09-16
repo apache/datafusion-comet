@@ -21,8 +21,8 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import java.util.function.Supplier
 
-import scala.collection.JavaConverters.asScalaIteratorConverter
 import scala.concurrent.Future
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark._
 import org.apache.spark.internal.config
