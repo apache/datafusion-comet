@@ -46,7 +46,7 @@ impl std::hash::Hash for Variance {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.name.hash(state);
         self.signature.hash(state);
-        // StatsType doesn't implement Hash, so we skip it
+        (self.stats_type as u8).hash(state);
         self.null_on_divide_by_zero.hash(state);
     }
 }
