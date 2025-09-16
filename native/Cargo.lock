@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "arrow",
  "assertables",
@@ -1506,6 +1506,7 @@ dependencies = [
  "datafusion-spark",
  "futures",
  "hdfs-sys",
+ "hdrs",
  "hex",
  "itertools 0.14.0",
  "jni",
@@ -1555,7 +1556,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-objectstore-hdfs"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1569,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-proto"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -1577,7 +1578,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-spark-expr"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "arrow",
  "chrono",
