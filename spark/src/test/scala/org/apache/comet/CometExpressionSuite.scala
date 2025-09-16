@@ -407,6 +407,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
+  test("Verify rpad expr support for second arg instead of just literal") {
+    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("తెలుగు", 2))
+    withParquetTable(data, "t1") {
+      val res = sql("select rpad(_1,_2) , rpad(_1,2) from t1 order by _1")
+      checkSparkAnswerAndOperator(res)
+    }
+  }
 
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
