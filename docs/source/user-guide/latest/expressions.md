@@ -91,19 +91,25 @@ incompatible expressions.
 
 ## Date/Time Functions
 
-| Expression     | SQL                          | Spark-Compatible? | Compatibility Notes                                                           |
-| -------------- | ---------------------------- | ----------------- | ----------------------------------------------------------------------------- |
-| DateAdd        | `date_add`                   | Yes               |                                                                               |
-| DateSub        | `date_sub`                   | Yes               |                                                                               |
-| DatePart       | `date_part(field, source)`   | Yes               | Only `year` is supported                                                      |
-| Extract        | `extract(field FROM source)` | Yes               | Only `year` is supported                                                      |
-| FromUnixTime   | `from_unixtime`              | No                | Does not support format, supports only -8334601211038 <= sec <= 8210266876799 |
-| Hour           | `hour`                       | Yes               |                                                                               |
-| Minute         | `minute`                     | Yes               |                                                                               |
-| Second         | `second`                     | Yes               |                                                                               |
-| TruncDate      | `trunc`                      | Yes               |                                                                               |
-| TruncTimestamp | `trunc_date`                 | Yes               |                                                                               |
-| Year           | `year`                       | Yes               |                                                                               |
+| Expression     | SQL                          | Spark-Compatible? | Compatibility Notes                                                                                  |
+| -------------- |------------------------------| ----------------- |------------------------------------------------------------------------------------------------------|
+| DateAdd        | `date_add`                   | Yes               |                                                                                                      |
+| DateSub        | `date_sub`                   | Yes               |                                                                                                      |
+| DatePart       | `date_part(field, source)`   | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`doy`/`quarter`/`hour`/`minute` |
+| Extract        | `extract(field FROM source)` | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`doy`/`quarter`/`hour`/`minute` |
+| FromUnixTime   | `from_unixtime`              | No                | Does not support format, supports only -8334601211038 <= sec <= 8210266876799                        |
+| Hour           | `hour`                       | Yes               |                                                                                                      |
+| Minute         | `minute`                     | Yes               |                                                                                                      |
+| Second         | `second`                     | Yes               |                                                                                                      |
+| TruncDate      | `trunc`                      | Yes               |                                                                                                      |
+| TruncTimestamp | `trunc_date`                 | Yes               |                                                                                                      |
+| Year           | `year`                       | Yes               |                                                                                                      |
+| Month          | `month`                      | Yes               |                                                                                                      |
+| DayOfMonth     | `day`/`dayofmonth`           | Yes               |                                                                                                      |
+| DayOfWeek      | `dayofweek`                  | Yes               |                                                                                                      |
+| DayOfYear      | `dayofyear`                  | Yes               |                                                                                                      |
+| WeekOfYear     | `weekofyear`                 | Yes               |                                                                                                      |
+| Quarter        | `quarter`                    | Yes               |                                                                                                      |
 
 ## Math Expressions
 
