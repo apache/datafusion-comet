@@ -291,7 +291,6 @@ fn prepare_datafusion_session_context(
             &ScalarValue::Float64(Some(1.1)),
         );
 
-    #[allow(deprecated)]
     let runtime = rt_config.build()?;
 
     let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
