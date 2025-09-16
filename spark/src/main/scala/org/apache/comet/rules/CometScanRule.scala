@@ -21,8 +21,9 @@ package org.apache.comet.rules
 
 import java.net.URI
 
-import scala.collection.{mutable, JavaConverters}
+import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
+import scala.jdk.CollectionConverters._
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
@@ -443,7 +444,7 @@ object CometScanRule extends Logging {
       // previously validated
       case _ =>
         try {
-          val objectStoreOptions = JavaConverters.mapAsJavaMap(objectStoreConfigMap)
+          val objectStoreOptions = objectStoreConfigMap.asJava
           Native.validateObjectStoreConfig(filePath, objectStoreOptions)
         } catch {
           case e: CometNativeException =>
