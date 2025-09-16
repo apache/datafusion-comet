@@ -16,9 +16,9 @@
 // under the License.
 
 use arrow::array::builder::{Date32Builder, Decimal128Builder, Int32Builder};
-use arrow::array::{builder::StringBuilder, RecordBatch};
+use arrow::array::{builder::StringBuilder, Array, Int32Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema};
-use comet::execution::shuffle::RangePartitioner;
+use arrow::row::{RowConverter, SortField};
 use comet::execution::shuffle::{
     CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec,
 };
@@ -91,15 +91,27 @@ fn criterion_benchmark(c: &mut Criterion) {
     )])
     .unwrap();
 
-    let (bounds_rows, row_converter) = RangePartitioner::generate_bounds(
-        &Vec::from(batch.columns()),
-        &lex_ordering,
-        16,
-        batch.num_rows(),
-        100,
-        42,
-    )
-    .unwrap();
+    let sort_fields: Vec<SortField> = batch
+        .columns()
+        .iter()
+        .zip(&lex_ordering)
+        .map(|(array, sort_expr)| {
+            SortField::new_with_options(array.data_type().clone(), sort_expr.options)
+        })
+        .collect();
+    let row_converter = RowConverter::new(sort_fields).unwrap();
+
+    // These are hard-coded values based on the benchmark params of 8192 rows per batch, and 16
+    // partitions. If these change, these values need to be recalculated, or bring over the
+    // bounds-finding logic from shuffle_write_test in shuffle_writer.rs.
+    let bounds_ints = vec![
+        512, 1024, 1536, 2048, 2560, 3072, 3584, 4096, 4608, 5120, 5632, 6144, 6656, 7168, 7680,
+    ];
+    let bounds_array: Arc<dyn Array> = Arc::new(Int32Array::from(bounds_ints));
+    let bounds_rows = row_converter
+        .convert_columns(vec![bounds_array].as_slice())
+        .unwrap();
+
     let owned_rows = bounds_rows.iter().map(|row| row.owned()).collect_vec();
 
     for partitioning in [

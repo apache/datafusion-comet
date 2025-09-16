@@ -17,7 +17,6 @@
 
 //! Defines the External shuffle repartition plan.
 
-use crate::execution::shuffle::range_partitioner::RangePartitioner;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use crate::execution::tracing::{with_trace, with_trace_async};
 use arrow::compute::interleave_record_batch;
@@ -555,13 +554,17 @@ impl MultiPartitionShuffleRepartitioner {
                     // Generate partition ids for every row, first by converting the partition
                     // arrays to Rows, and then doing binary search for each Row against the
                     // bounds Rows.
-                    let row_batch = row_converter.convert_columns(arrays.as_slice())?;
+                    {
+                        let row_batch = row_converter.convert_columns(arrays.as_slice())?;
+                        let partition_ids = &mut scratch.partition_ids[..num_rows];
 
-                    RangePartitioner::partition_indices_for_batch(
-                        &row_batch,
-                        bounds.as_slice(),
-                        &mut scratch.partition_ids[..num_rows],
-                    );
+                        row_batch.iter().enumerate().for_each(|(row_idx, row)| {
+                            partition_ids[row_idx] = bounds
+                                .as_slice()
+                                .partition_point(|bound| bound.row() <= row)
+                                as u32
+                        });
+                    }
 
                     // We now have partition ids for every input row, map that to partition starts
                     // and partition indices to eventually right these rows to partition buffers.
@@ -1381,30 +1384,37 @@ mod test {
         )])
         .unwrap();
 
-        let (owned_rows, row_converter) = if num_partitions == 1 {
-            let sort_fields: Vec<SortField> = batch
-                .columns()
-                .iter()
-                .zip(&lex_ordering)
-                .map(|(array, sort_expr)| {
-                    SortField::new_with_options(array.data_type().clone(), sort_expr.options)
-                })
-                .collect();
-            (vec![], RowConverter::new(sort_fields).unwrap())
+        let sort_fields: Vec<SortField> = batch
+            .columns()
+            .iter()
+            .zip(&lex_ordering)
+            .map(|(array, sort_expr)| {
+                SortField::new_with_options(array.data_type().clone(), sort_expr.options)
+            })
+            .collect();
+        let row_converter = RowConverter::new(sort_fields).unwrap();
+
+        let owned_rows = if num_partitions == 1 {
+            vec![]
         } else {
-            let (bounds_rows, row_converter) = RangePartitioner::generate_bounds(
-                &Vec::from(batch.columns()),
-                &lex_ordering,
-                num_partitions,
-                batch_size,
-                100,
-                42,
-            )
-            .unwrap();
-            (
-                bounds_rows.iter().map(|row| row.owned()).collect_vec(),
-                row_converter,
-            )
+            // Determine range boundaries based on create_batch implementation. We just divide the
+            // domain of values in the batch equally to find partition bounds.
+            let bounds_strings = {
+                let mut boundaries = Vec::with_capacity(num_partitions - 1);
+                let step = batch_size as f64 / num_partitions as f64;
+
+                for i in 1..(num_partitions) {
+                    boundaries.push(Some((step * i as f64).round().to_string()));
+                }
+                boundaries
+            };
+            let bounds_array: Arc<dyn Array> = Arc::new(StringArray::from(bounds_strings));
+            let bounds_rows = row_converter
+                .convert_columns(vec![bounds_array].as_slice())
+                .unwrap();
+
+            let owned_rows_vec = bounds_rows.iter().map(|row| row.owned()).collect_vec();
+            owned_rows_vec
         };
 
         for partitioning in [
