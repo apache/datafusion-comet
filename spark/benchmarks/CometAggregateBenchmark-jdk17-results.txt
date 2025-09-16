@@ -1,0 +1,104 @@
+================================================================================================
+Grouped Aggregate (single group key + single aggregate COUNT)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.16+8-Ubuntu-0ubuntu122.04.1 on Linux 6.8.0-79-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+Grouped HashAgg Exec: single group key (cardinality 100), single aggregate COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                 239            248          15         43.9          22.8       1.0X
+SQL Parquet - Comet (COUNT)                                                                 191            195           3         54.9          18.2       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.16+8-Ubuntu-0ubuntu122.04.1 on Linux 6.8.0-79-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+Grouped HashAgg Exec: single group key (cardinality 1024), single aggregate COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                  239            248          15         43.9          22.8       1.0X
+SQL Parquet - Comet (COUNT)                                                                  198            202           4         52.8          18.9       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.16+8-Ubuntu-0ubuntu122.04.1 on Linux 6.8.0-79-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+Grouped HashAgg Exec: single group key (cardinality 1048576), single aggregate COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                    2471           2472           1          4.2         235.7       1.0X
+SQL Parquet - Comet (COUNT)                                                                    1043           1044           2         10.1          99.4       2.4X
+
+
+================================================================================================
+Grouped Aggregate (multiple group keys + single aggregate COUNT)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.16+8-Ubuntu-0ubuntu122.04.1 on Linux 6.8.0-79-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+Grouped HashAgg Exec: multiple group keys (cardinality 100), single aggregate COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                    516            532          25         20.3          49.2       1.0X
+SQL Parquet - Comet (COUNT)                                                                    263            269           5         39.9          25.0       2.0X
+
+OpenJDK 64-Bit Server VM 17.0.16+8-Ubuntu-0ubuntu122.04.1 on Linux 6.8.0-79-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+Grouped HashAgg Exec: multiple group keys (cardinality 1024), single aggregate COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                    2811           2865          76          3.7         268.0       1.0X
+SQL Parquet - Comet (COUNT)                                                                    1228           1236          11          8.5         117.1       2.3X
+
+OpenJDK 64-Bit Server VM 17.0.16+8-Ubuntu-0ubuntu122.04.1 on Linux 6.8.0-79-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+Grouped HashAgg Exec: multiple group keys (cardinality 1048576), single aggregate COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                       5837           5845          11          1.8         556.7       1.0X
+SQL Parquet - Comet (COUNT)                                                                       4615           4727         158          2.3         440.2       1.3X
+
+
+================================================================================================
+Grouped Aggregate (single group key + multiple aggregates COUNT)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.16+8-Ubuntu-0ubuntu122.04.1 on Linux 6.8.0-79-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+Grouped HashAgg Exec: single group key (cardinality 100), multiple aggregates COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                    307            320          27         34.2          29.3       1.0X
+SQL Parquet - Comet (COUNT)                                                                    225            233           6         46.5          21.5       1.4X
+
+OpenJDK 64-Bit Server VM 17.0.16+8-Ubuntu-0ubuntu122.04.1 on Linux 6.8.0-79-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+Grouped HashAgg Exec: single group key (cardinality 1024), multiple aggregates COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                     321            335          18         32.7          30.6       1.0X
+SQL Parquet - Comet (COUNT)                                                                     240            253          10         43.7          22.9       1.3X
+
+OpenJDK 64-Bit Server VM 17.0.16+8-Ubuntu-0ubuntu122.04.1 on Linux 6.8.0-79-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+Grouped HashAgg Exec: single group key (cardinality 1048576), multiple aggregates COUNT:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                       2898           2926          40          3.6         276.4       1.0X
+SQL Parquet - Comet (COUNT)                                                                       1440           1445           8          7.3         137.3       2.0X
+
+
+================================================================================================
+Grouped Aggregate (single group key + single aggregate COUNT on decimal)
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.16+8-Ubuntu-0ubuntu122.04.1 on Linux 6.8.0-79-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+Grouped HashAgg Exec: single group key (cardinality 100), single aggregate COUNT on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                            295            309          25         35.5          28.2       1.0X
+SQL Parquet - Comet (COUNT)                                                                            176            184           6         59.4          16.8       1.7X
+
+OpenJDK 64-Bit Server VM 17.0.16+8-Ubuntu-0ubuntu122.04.1 on Linux 6.8.0-79-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+Grouped HashAgg Exec: single group key (cardinality 1024), single aggregate COUNT on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                             308            311           4         34.0          29.4       1.0X
+SQL Parquet - Comet (COUNT)                                                                             191            196           4         55.0          18.2       1.6X
+
+OpenJDK 64-Bit Server VM 17.0.16+8-Ubuntu-0ubuntu122.04.1 on Linux 6.8.0-79-generic
+AMD Ryzen 9 7950X3D 16-Core Processor
+Grouped HashAgg Exec: single group key (cardinality 1048576), single aggregate COUNT on decimal:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark (COUNT)                                                                               2473           2492          27          4.2         235.9       1.0X
+SQL Parquet - Comet (COUNT)                                                                                989           1001          17         10.6          94.3       2.5X
+
+
