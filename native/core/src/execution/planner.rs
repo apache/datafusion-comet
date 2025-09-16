@@ -629,10 +629,6 @@ impl PhysicalPlanner {
                     args,
                     field_ref,
                     Arc::new(ConfigOptions::default()),
-                    // TODO: Instead of possibly instantiating multiple default ConfigOptions,
-                    // does it make sense to stash one somewhere? Benefits:
-                    // 1) if we decide to change some, it will propagate changes
-                    // 2) reduced memory consumption
                 );
 
                 Ok(Arc::new(expr))
@@ -650,10 +646,6 @@ impl PhysicalPlanner {
                     args,
                     field_ref,
                     Arc::new(ConfigOptions::default()),
-                    // TODO: Instead of possibly instantiating multiple default ConfigOptions,
-                    // does it make sense to stash one somewhere? Benefits:
-                    // 1) if we decide to change some, it will propagate changes
-                    // 2) reduced memory consumption
                 );
 
                 Ok(Arc::new(expr))
@@ -671,10 +663,6 @@ impl PhysicalPlanner {
                     args,
                     field_ref,
                     Arc::new(ConfigOptions::default()),
-                    // TODO: Instead of possibly instantiating multiple default ConfigOptions,
-                    // does it make sense to stash one somewhere? Benefits:
-                    // 1) if we decide to change some, it will propagate changes
-                    // 2) reduced memory consumption
                 );
 
                 Ok(Arc::new(expr))
@@ -903,10 +891,6 @@ impl PhysicalPlanner {
                     args,
                     field_ref,
                     Arc::new(ConfigOptions::default()),
-                    // TODO: Instead of possibly instantiating multiple default ConfigOptions,
-                    // does it make sense to stash one somewhere? Benefits:
-                    // 1) if we decide to change some, it will propagate changes
-                    // 2) reduced memory consumption
                 );
                 Ok(Arc::new(expr))
             }
@@ -1127,10 +1111,6 @@ impl PhysicalPlanner {
                     vec![left, right],
                     Arc::new(Field::new(func_name, data_type, true)),
                     Arc::new(ConfigOptions::default()),
-                    // TODO: Instead of possibly instantiating multiple default ConfigOptions,
-                    // does it make sense to stash one somewhere? Benefits:
-                    // 1) if we decide to change some, it will propagate changes
-                    // 2) reduced memory consumption
                 )))
             }
             _ => {
@@ -1157,10 +1137,6 @@ impl PhysicalPlanner {
                         vec![left, right],
                         Arc::new(Field::new(op_str, data_type, true)),
                         Arc::new(ConfigOptions::default()),
-                        // TODO: Instead of possibly instantiating multiple default ConfigOptions,
-                        // does it make sense to stash one somewhere? Benefits:
-                        // 1) if we decide to change some, it will propagate changes
-                        // 2) reduced memory consumption
                     )))
                 } else {
                     Ok(Arc::new(BinaryExpr::new(left, op, right)))

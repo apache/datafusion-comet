@@ -56,7 +56,9 @@ impl Eq for RLike {}
 
 impl Hash for RLike {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write(self.pattern_str.as_bytes());
+        self.child.hash(state);
+        self.pattern_str.hash(state);
+        self.pattern.as_str().hash(state);
     }
 }
 
