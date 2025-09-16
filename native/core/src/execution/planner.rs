@@ -30,6 +30,7 @@ use crate::{
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
+use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
@@ -1904,35 +1905,13 @@ impl PhysicalPlanner {
         match spark_expr.expr_struct.as_ref().unwrap() {
             AggExprStruct::Count(expr) => {
                 assert!(!expr.children.is_empty());
-                // Using `count_udaf` from Comet is exceptionally slow for some reason, so
-                // as a workaround we translate it to `SUM(IF(expr IS NOT NULL, 1, 0))`
-                // https://github.com/apache/datafusion-comet/issues/744
-
                 let children = expr
                     .children
                     .iter()
                     .map(|child| self.create_expr(child, Arc::clone(&schema)))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                // create `IS NOT NULL expr` and join them with `AND` if there are multiple
-                let not_null_expr: Arc<dyn PhysicalExpr> = children.iter().skip(1).fold(
-                    Arc::new(IsNotNullExpr::new(Arc::clone(&children[0]))) as Arc<dyn PhysicalExpr>,
-                    |acc, child| {
-                        Arc::new(BinaryExpr::new(
-                            acc,
-                            DataFusionOperator::And,
-                            Arc::new(IsNotNullExpr::new(Arc::clone(child))),
-                        ))
-                    },
-                );
-
-                let child = Arc::new(IfExpr::new(
-                    not_null_expr,
-                    Arc::new(Literal::new(ScalarValue::Int64(Some(1)))),
-                    Arc::new(Literal::new(ScalarValue::Int64(Some(0)))),
-                ));
-
-                AggregateExprBuilder::new(sum_udaf(), vec![child])
+                AggregateExprBuilder::new(count_udaf(), children)
                     .schema(schema)
                     .alias("count")
                     .with_ignore_nulls(false)
