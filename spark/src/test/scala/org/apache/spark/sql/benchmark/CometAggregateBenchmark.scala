@@ -194,7 +194,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val total = 1024 * 1024 * 10
     val combinations = List(100, 1024, 1024 * 1024) // number of distinct groups
-    val aggregateFunctions = List( /*"SUM", "MIN", "MAX",*/ "COUNT")
+    val aggregateFunctions = List("SUM", "MIN", "MAX", "COUNT")
 
     aggregateFunctions.foreach { aggFunc =>
       runBenchmarkWithTable(
