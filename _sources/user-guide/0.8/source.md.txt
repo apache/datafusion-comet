@@ -17,7 +17,7 @@
   under the License.
 -->
 ```{warning}
-This is **out-of-date** documentation. The latest Comet release is version 0.9.1.
+This is **out-of-date** documentation. The latest Comet release is version 0.10.0.
 ```
 
 # Building Comet From Source

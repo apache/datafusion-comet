@@ -1,0 +1,1593 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<!DOCTYPE html>
+
+<html lang="en" data-content_root="../../">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Supported Spark Expressions &#8212; Apache DataFusion Comet  documentation</title>
+    
+    <link href="../../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
+  
+    
+    <link rel="stylesheet"
+      href="../../_static/vendor/fontawesome/5.13.0/css/all.min.css">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin
+      href="../../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
+  
+    
+      
+  
+    
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
+    <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=c6d785ac" />
+    
+    <link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+  
+    <script src="../../_static/documentation_options.js?v=8a448e45"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Comet Configuration Settings" href="configs.html" />
+    <link rel="prev" title="Supported Spark Operators" href="operators.html" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="docsearch:language" content="en">
+    
+
+    <!-- Google Analytics -->
+    
+  </head>
+  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+    
+    <div class="container-fluid" id="banner"></div>
+
+    
+
+
+    <div class="container-xl">
+      <div class="row">
+          
+            
+            <!-- Only show if we have sidebars configured, else just a small margin  -->
+            <div class="col-12 col-md-3 bd-sidebar">
+              <div class="sidebar-start-items"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<form class="bd-search d-flex align-items-center" action="../../search.html" method="get">
+  <i class="icon fas fa-search"></i>
+  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
+</form>
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+    <p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Overview:
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../overview.html">
+   Comet Overview
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../gluten_comparison.html">
+   Comparison with Gluten
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  User Guides:
+ </span>
+</p>
+<ul class="current nav bd-sidenav">
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="../latest/index.html">
+   Comet 0.11.0-SNAPSHOT
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" type="checkbox"/>
+  <label for="toctree-checkbox-1">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../latest/kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1 current active has-children">
+  <a class="reference internal" href="index.html">
+   Comet 0.10.x
+  </a>
+  <input checked="" class="toctree-checkbox" id="toctree-checkbox-2" name="toctree-checkbox-2" type="checkbox"/>
+  <label for="toctree-checkbox-2">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul class="current">
+   <li class="toctree-l2">
+    <a class="reference internal" href="installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2 current active">
+    <a class="current reference internal" href="#">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="../0.9/index.html">
+   Comet 0.9.x
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-3" name="toctree-checkbox-3" type="checkbox"/>
+  <label for="toctree-checkbox-3">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.9/kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+ <li class="toctree-l1 has-children">
+  <a class="reference internal" href="../0.8/index.html">
+   Comet 0.8.x
+  </a>
+  <input class="toctree-checkbox" id="toctree-checkbox-4" name="toctree-checkbox-4" type="checkbox"/>
+  <label for="toctree-checkbox-4">
+   <i class="fas fa-chevron-down">
+   </i>
+  </label>
+  <ul>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/installation.html">
+     Installing Comet
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/source.html">
+     Building From Source
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/datasources.html">
+     Supported Data Sources
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/datatypes.html">
+     Supported Data Types
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/operators.html">
+     Supported Operators
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/expressions.html">
+     Supported Expressions
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/configs.html">
+     Configuration Settings
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/compatibility.html">
+     Compatibility Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/tuning.html">
+     Tuning Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/metrics.html">
+     Metrics Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/iceberg.html">
+     Iceberg Guide
+    </a>
+   </li>
+   <li class="toctree-l2">
+    <a class="reference internal" href="../0.8/kubernetes.html">
+     Kubernetes Guide
+    </a>
+   </li>
+  </ul>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  Contributor Guide
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/contributing.html">
+   Getting Started
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/plugin_overview.html">
+   Comet Plugin Architecture
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/development.html">
+   Development Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/debugging.html">
+   Debugging Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/benchmarking.html">
+   Benchmarking Guide
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/adding_a_new_expression.html">
+   Adding a New Expression
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/tracing.html">
+   Tracing
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/profiling_native_code.html">
+   Profiling Native Code
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/spark-sql-tests.html">
+   Spark SQL Tests
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference internal" href="../../contributor-guide/roadmap.html">
+   Roadmap
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://github.com/apache/datafusion-comet">
+   Github and Issue Tracker
+  </a>
+ </li>
+</ul>
+<p aria-level="2" class="caption" role="heading">
+ <span class="caption-text">
+  ASF Links
+ </span>
+</p>
+<ul class="nav bd-sidenav">
+ <li class="toctree-l1">
+  <a class="reference external" href="https://apache.org">
+   Apache Software Foundation
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/licenses/">
+   License
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/sponsorship.html">
+   Donate
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/thanks.html">
+   Thanks
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/security/">
+   Security
+  </a>
+ </li>
+ <li class="toctree-l1">
+  <a class="reference external" href="https://www.apache.org/foundation/policies/conduct.html">
+   Code of conduct
+  </a>
+ </li>
+</ul>
+
+    
+  </div>
+
+  <a class="navbar-brand" href="../../index.html">
+    <img src="../../_static/images/DataFusionComet-Logo-Light.png" class="logo" alt="logo">
+  </a>
+</nav>
+
+              </div>
+              <div class="sidebar-end-items">
+              </div>
+            </div>
+            
+          
+
+          
+          <div class="d-none d-xl-block col-xl-2 bd-toc">
+            
+              
+              <div class="toc-item">
+                
+<div class="tocsection onthispage pt-5 pb-3">
+    <i class="fas fa-list"></i> On this page
+</div>
+
+<nav id="bd-toc-nav">
+    <ul class="visible nav section-nav flex-column">
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#conditional-expressions">
+   Conditional Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#predicate-expressions">
+   Predicate Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#string-functions">
+   String Functions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#date-time-functions">
+   Date/Time Functions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#math-expressions">
+   Math Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#hashing-functions">
+   Hashing Functions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#bitwise-expressions">
+   Bitwise Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#aggregate-expressions">
+   Aggregate Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#array-expressions">
+   Array Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#map-expressions">
+   Map Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#struct-expressions">
+   Struct Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#conversion-expressions">
+   Conversion Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#other">
+   Other
+  </a>
+ </li>
+</ul>
+
+</nav>
+              </div>
+              
+              <div class="toc-item">
+                
+
+<div class="tocsection editthispage">
+    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/user-guide/0.10/expressions.md">
+        <i class="fas fa-pencil-alt"></i> Edit this page
+    </a>
+</div>
+
+              </div>
+              
+            
+          </div>
+          
+
+          
+          
+            
+          
+          <main class="col-12 col-md-9 col-xl-7 py-md-5 pl-md-5 pr-md-4 bd-content" role="main">
+              
+              <div>
+                
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="supported-spark-expressions">
+<h1>Supported Spark Expressions<a class="headerlink" href="#supported-spark-expressions" title="Link to this heading">¶</a></h1>
+<p>Comet supports the following Spark expressions. Expressions that are marked as Spark-compatible will either run
+natively in Comet and provide the same results as Spark, or will fall back to Spark for cases that would not
+be compatible.</p>
+<p>All expressions are enabled by default, but can be disabled by setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.enabled=false</span></code>, where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the expression name as specified in
+the following tables, such as <code class="docutils literal notranslate"><span class="pre">Length</span></code>, or <code class="docutils literal notranslate"><span class="pre">StartsWith</span></code>.</p>
+<p>Expressions that are not Spark-compatible will fall back to Spark by default and can be enabled by setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code>.</p>
+<p>It is also possible to specify <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.allowIncompatible=true</span></code> to enable all
+incompatible expressions.</p>
+<section id="conditional-expressions">
+<h2>Conditional Expressions<a class="headerlink" href="#conditional-expressions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>SQL</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>CaseWhen</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">CASE</span> <span class="pre">WHEN</span> <span class="pre">expr</span> <span class="pre">THEN</span> <span class="pre">expr</span> <span class="pre">ELSE</span> <span class="pre">expr</span> <span class="pre">END</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>If</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">IF(predicate_expr,</span> <span class="pre">true_expr,</span> <span class="pre">false_expr)</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="predicate-expressions">
+<h2>Predicate Expressions<a class="headerlink" href="#predicate-expressions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>SQL</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>And</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">AND</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>EqualTo</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">=</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>EqualNullSafe</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&lt;=&gt;</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>GreaterThan</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&gt;</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>GreaterThanOrEqual</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&gt;=</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>LessThan</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&lt;</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>LessThanOrEqual</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&lt;=</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>In</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">IN</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>IsNotNull</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>IsNull</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NULL</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>InSet</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">IN</span> <span class="pre">(...)</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>Not</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">NOT</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>Or</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">OR</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="string-functions">
+<h2>String Functions<a class="headerlink" href="#string-functions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+<th class="head"><p>Compatibility Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Ascii</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>BitLength</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Chr</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>ConcatWs</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Contains</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>EndsWith</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>InitCap</p></td>
+<td><p>No</p></td>
+<td><p>Requires <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.initCap.enabled=true</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>Length</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Like</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Lower</p></td>
+<td><p>No</p></td>
+<td><p>Results can vary depending on locale and character set. Requires <code class="docutils literal notranslate"><span class="pre">spark.comet.caseConversion.enabled=true</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>OctetLength</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Reverse</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>RLike</p></td>
+<td><p>No</p></td>
+<td><p>Uses Rust regexp engine, which has different behavior to Java regexp engine</p></td>
+</tr>
+<tr class="row-odd"><td><p>StartsWith</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>StringInstr</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>StringRepeat</p></td>
+<td><p>Yes</p></td>
+<td><p>Negative argument for number of times to repeat causes exception</p></td>
+</tr>
+<tr class="row-even"><td><p>StringReplace</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>StringRPad</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>StringSpace</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>StringTranslate</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>StringTrim</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>StringTrimBoth</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>StringTrimLeft</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>StringTrimRight</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Substring</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Upper</p></td>
+<td><p>No</p></td>
+<td><p>Results can vary depending on locale and character set. Requires <code class="docutils literal notranslate"><span class="pre">spark.comet.caseConversion.enabled=true</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="date-time-functions">
+<h2>Date/Time Functions<a class="headerlink" href="#date-time-functions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>SQL</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+<th class="head"><p>Compatibility Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>DateAdd</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">date_add</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>DateSub</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">date_sub</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>DatePart</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">date_part(field,</span> <span class="pre">source)</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Only <code class="docutils literal notranslate"><span class="pre">year</span></code> is supported</p></td>
+</tr>
+<tr class="row-odd"><td><p>Extract</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">extract(field</span> <span class="pre">FROM</span> <span class="pre">source)</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Only <code class="docutils literal notranslate"><span class="pre">year</span></code> is supported</p></td>
+</tr>
+<tr class="row-even"><td><p>FromUnixTime</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">from_unixtime</span></code></p></td>
+<td><p>No</p></td>
+<td><p>Does not support format, supports only -8334601211038 &lt;= sec &lt;= 8210266876799</p></td>
+</tr>
+<tr class="row-odd"><td><p>Hour</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">hour</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Minute</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">minute</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Second</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">second</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>TruncDate</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">trunc</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>TruncTimestamp</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">trunc_date</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Year</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">year</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="math-expressions">
+<h2>Math Expressions<a class="headerlink" href="#math-expressions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>SQL</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+<th class="head"><p>Compatibility Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Acos</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">acos</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Add</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">+</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>ANSI mode is not supported.</p></td>
+</tr>
+<tr class="row-even"><td><p>Asin</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">asin</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Atan</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">atan</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Atan2</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">atan2</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>BRound</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">bround</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>ANSI mode is not supported.</p></td>
+</tr>
+<tr class="row-even"><td><p>Ceil</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ceil</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Cos</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">cos</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Divide</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>ANSI mode is not supported.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Exp</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">exp</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Expm1</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">expm1</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Floor</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">floor</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Hex</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">hex</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>IntegralDivide</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">div</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>ANSI mode is not supported.</p></td>
+</tr>
+<tr class="row-even"><td><p>IsNaN</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">isnan</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Log</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">log</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Log2</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">log2</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Log10</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">log10</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Multiply</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">*</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>ANSI mode is not supported.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Pow</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">power</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Rand</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rand</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Randn</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">randn</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Remainder</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">%</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>ANSI mode is not supported.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Round</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">round</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>ANSI mode is not supported.</p></td>
+</tr>
+<tr class="row-even"><td><p>Signum</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">signum</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Sin</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sin</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Sqrt</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sqrt</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Subtract</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>ANSI mode is not supported.</p></td>
+</tr>
+<tr class="row-even"><td><p>Tan</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tan</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>TryAdd</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">try_add</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Only integer inputs are supported</p></td>
+</tr>
+<tr class="row-even"><td><p>TryDivide</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">try_div</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Only integer inputs are supported</p></td>
+</tr>
+<tr class="row-odd"><td><p>TryMultiply</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">try_mul</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Only integer inputs are supported</p></td>
+</tr>
+<tr class="row-even"><td><p>TrySubtract</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">try_sub</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Only integer inputs are supported</p></td>
+</tr>
+<tr class="row-odd"><td><p>UnaryMinus</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Unhex</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">unhex</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="hashing-functions">
+<h2>Hashing Functions<a class="headerlink" href="#hashing-functions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Md5</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>Murmur3Hash</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>Sha2</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>XxHash64</p></td>
+<td><p>Yes</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="bitwise-expressions">
+<h2>Bitwise Expressions<a class="headerlink" href="#bitwise-expressions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>SQL</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>BitwiseAnd</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&amp;</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>BitwiseCount</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>BitwiseGet</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>BitwiseOr</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">|</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>BitwiseNot</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">~</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>BitwiseXor</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">^</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>ShiftLeft</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&lt;&lt;</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>ShiftRight</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&gt;&gt;</span></code></p></td>
+<td><p>Yes</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="aggregate-expressions">
+<h2>Aggregate Expressions<a class="headerlink" href="#aggregate-expressions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>SQL</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+<th class="head"><p>Compatibility Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Average</p></td>
+<td><p></p></td>
+<td><p>Yes, except for ANSI mode</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>BitAndAgg</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>BitOrAgg</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>BitXorAgg</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>BoolAnd</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">bool_and</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>BoolOr</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">bool_or</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Corr</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Count</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>CovPopulation</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>CovSample</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>First</p></td>
+<td><p></p></td>
+<td><p>No</p></td>
+<td><p>This function is not deterministic. Results may not match Spark.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Last</p></td>
+<td><p></p></td>
+<td><p>No</p></td>
+<td><p>This function is not deterministic. Results may not match Spark.</p></td>
+</tr>
+<tr class="row-even"><td><p>Max</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Min</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>StddevPop</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>StddevSamp</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Sum</p></td>
+<td><p></p></td>
+<td><p>Yes, except for ANSI mode</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>VariancePop</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>VarianceSamp</p></td>
+<td><p></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="array-expressions">
+<h2>Array Expressions<a class="headerlink" href="#array-expressions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+<th class="head"><p>Compatibility Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>ArrayAppend</p></td>
+<td><p>No</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>ArrayCompact</p></td>
+<td><p>No</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>ArrayContains</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>ArrayDistinct</p></td>
+<td><p>No</p></td>
+<td><p>Behaves differently than spark. Comet first sorts then removes duplicates while Spark preserves the original order.</p></td>
+</tr>
+<tr class="row-even"><td><p>ArrayExcept</p></td>
+<td><p>No</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>ArrayInsert</p></td>
+<td><p>No</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>ArrayIntersect</p></td>
+<td><p>No</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>ArrayJoin</p></td>
+<td><p>No</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>ArrayMax</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>ArrayMin</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>ArrayRemove</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>ArrayRepeat</p></td>
+<td><p>No</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>ArrayUnion</p></td>
+<td><p>No</p></td>
+<td><p>Behaves differently than spark. Comet sorts the input arrays before performing the union, while Spark preserves the order of the first array and appends unique elements from the second.</p></td>
+</tr>
+<tr class="row-odd"><td><p>ArraysOverlap</p></td>
+<td><p>No</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>CreateArray</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>ElementAt</p></td>
+<td><p>Yes</p></td>
+<td><p>Input must be an array. Map inputs are not supported.</p></td>
+</tr>
+<tr class="row-even"><td><p>Flatten</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>GetArrayItem</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="map-expressions">
+<h2>Map Expressions<a class="headerlink" href="#map-expressions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>GetMapValue</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>MapKeys</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>MapEntries</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>MapValues</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>MapFromArrays</p></td>
+<td><p>Yes</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="struct-expressions">
+<h2>Struct Expressions<a class="headerlink" href="#struct-expressions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>CreateNamedStruct</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>GetArrayStructFields</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>GetStructField</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-odd"><td><p>StructsToJson</p></td>
+<td><p>Yes</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="conversion-expressions">
+<h2>Conversion Expressions<a class="headerlink" href="#conversion-expressions" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Spark-Compatible</p></th>
+<th class="head"><p>Compatibility Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Cast</p></td>
+<td><p>Depends on specific cast</p></td>
+<td><p>See the <a class="reference internal" href="compatibility.html"><span class="std std-doc">Comet Compatibility Guide</span></a> for list of supported cast expressions and known issues</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="other">
+<h2>Other<a class="headerlink" href="#other" title="Link to this heading">¶</a></h2>
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Expression</p></th>
+<th class="head"><p>Spark-Compatible?</p></th>
+<th class="head"><p>Compatibility Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Alias</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>AttributeRefernce</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>BloomFilterMightContain</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Coalesce</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>CheckOverflow</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>KnownFloatingPointNormalized</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>Literal</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>MakeDecimal</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>MonotonicallyIncreasingID</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>NormalizeNaNAndZero</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>PromotePrecision</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>RegExpReplace</p></td>
+<td><p>No</p></td>
+<td><p>Uses Rust regexp engine, which has different behavior to Java regexp engine</p></td>
+</tr>
+<tr class="row-even"><td><p>ScalarSubquery</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>SparkPartitionID</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>ToPrettyString</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>UnscaledValue</p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+
+
+              </div>
+              
+              
+              <!-- Previous / next buttons -->
+<div class='prev-next-area'>
+    <a class='left-prev' id="prev-link" href="operators.html" title="previous page">
+        <i class="fas fa-angle-left"></i>
+        <div class="prev-next-info">
+            <p class="prev-next-subtitle">previous</p>
+            <p class="prev-next-title">Supported Spark Operators</p>
+        </div>
+    </a>
+    <a class='right-next' id="next-link" href="configs.html" title="next page">
+    <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Comet Configuration Settings</p>
+    </div>
+    <i class="fas fa-angle-right"></i>
+    </a>
+</div>
+              
+          </main>
+          
+
+      </div>
+    </div>
+  
+    <script src="../../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
+  
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p class="copyright">
+    &copy; Copyright 2023-2024, Apache Software Foundation.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p class="sphinx-version">
+Created using <a href="http://sphinx-doc.org/">Sphinx</a> 8.1.3.<br>
+</p>
+    </div>
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
