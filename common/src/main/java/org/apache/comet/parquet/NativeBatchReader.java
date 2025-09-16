@@ -433,7 +433,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private ParquetColumn getParquetColumn(MessageType schema, StructType sparkSchema) {
     // We use a different config from the config that is passed in.
     // This follows the setting  used in Spark's SpecificParquetRecordReaderBase
-    Configuration config = new Configuration();
+    Configuration config = new Configuration(conf);
     config.setBoolean(SQLConf.PARQUET_BINARY_AS_STRING().key(), false);
     config.setBoolean(SQLConf.PARQUET_INT96_AS_TIMESTAMP().key(), false);
     config.setBoolean(SQLConf.CASE_SENSITIVE().key(), false);
