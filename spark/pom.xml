@@ -238,6 +238,7 @@ under the License.
                   <!-- Relocate Protobuf since Spark uses 2.5.0 while Comet uses 3.x -->
                   <include>com.google.protobuf:protobuf-java</include>
                   <include>com.google.guava:guava</include>
+                  <include>org.scala-lang.modules:scala-collection-compat_${scala.binary.version}</include>
                 </includes>
               </artifactSet>
               <filters>
