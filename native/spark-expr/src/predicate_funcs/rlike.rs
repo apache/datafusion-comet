@@ -58,7 +58,6 @@ impl Hash for RLike {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.child.hash(state);
         self.pattern_str.hash(state);
-        self.pattern.as_str().hash(state);
     }
 }
 
