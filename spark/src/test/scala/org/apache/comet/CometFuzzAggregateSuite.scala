@@ -26,6 +26,8 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
       val sql = s"SELECT count(distinct $col) FROM t1"
+      // Comet does not support count distinct yet
+      // https://github.com/apache/datafusion-comet/issues/2292
       val (_, cometPlan) = checkSparkAnswer(sql)
       if (usingDataSourceExec) {
         assert(1 == collectNativeScans(cometPlan).length)
