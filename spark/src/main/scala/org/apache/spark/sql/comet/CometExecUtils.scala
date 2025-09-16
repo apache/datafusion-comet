@@ -48,14 +48,14 @@ object CometExecUtils {
    * partition. The limit operation is performed on the native side.
    */
   def getNativeLimitRDD(
-      child: SparkPlan,
-      childPlan: RDD[ColumnarBatch],
+      childPlan: SparkPlan,
+      child: RDD[ColumnarBatch],
       outputAttribute: Seq[Attribute],
       limit: Int,
       offset: Int = 0): RDD[ColumnarBatch] = {
-    val numParts = childPlan.getNumPartitions
-    childPlan.mapPartitionsWithIndexInternal { case (idx, iter) =>
-      val limitOp = CometExecUtils.getLimitNativePlan(child, outputAttribute, limit, offset).get
+    val numParts = child.getNumPartitions
+    child.mapPartitionsWithIndexInternal { case (idx, iter) =>
+      val limitOp = CometExecUtils.getLimitNativePlan(childPlan, outputAttribute, limit, offset).get
       CometExec.getCometIterator(Seq(iter), outputAttribute.length, limitOp, numParts, idx)
     }
   }
