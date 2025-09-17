@@ -98,38 +98,40 @@ $SPARK_HOME/bin/spark-shell \
 
 ### Verify Comet enabled for Spark SQL query
 
-Create a test Parquet source
+Create a test Parquet source. Note that Comet will not accelerate writing the Parquet file.
 
-```scala
+```
 scala> (0 until 10).toDF("a").write.mode("overwrite").parquet("/tmp/test")
-```
 
-Query the data from the test source and check:
+WARN CometExecRule: Comet cannot accelerate some parts of this plan (set spark.comet.explain.enabled=false to disable this logging):
+Execute InsertIntoHadoopFsRelationCommand [COMET: Execute InsertIntoHadoopFsRelationCommand is not supported]
++-  WriteFiles [COMET: WriteFiles is not supported]
++-  LocalTableScan [COMET: LocalTableScan is not supported]
 
-- INFO message shows the native Comet library has been initialized.
-- The query plan reflects Comet operators being used for this query instead of Spark ones
-
-```scala
 scala> spark.read.parquet("/tmp/test").createOrReplaceTempView("t1")
-scala> spark.sql("select * from t1 where a > 5").explain
-INFO src/lib.rs: Comet native library initialized
-== Physical Plan ==
-        *(1) ColumnarToRow
-        +- CometFilter [a#14], (isnotnull(a#14) AND (a#14 > 5))
-          +- CometScan parquet [a#14] Batched: true, DataFilters: [isnotnull(a#14), (a#14 > 5)],
-             Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [],
-             PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
+
+WARN CometExecRule: Comet fully accelerated this plan (set spark.comet.explain.enabled=false to disable this logging):
+Execute CreateViewCommand
+  +- CreateViewCommand
+  +- LogicalRelation
+
+Comet accelerated 0% of eligible operators (sparkOperators=3, cometOperators=0, transitions=0, wrappers=0).
 ```
 
-With the configuration `spark.comet.explainFallback.enabled=true`, Comet will log any reasons that prevent a plan from
-being executed natively.
+Executing a simple SELECT query should be fully accelerated by Comet:
 
-```scala
-scala> Seq(1,2,3,4).toDF("a").write.parquet("/tmp/test.parquet")
-WARN CometSparkSessionExtensions$CometExecRule: Comet cannot execute some parts of this plan natively because:
-  - LocalTableScan is not supported
-  - WriteFiles is not supported
-  - Execute InsertIntoHadoopFsRelationCommand is not supported
+```
+scala> spark.sql("select * from t1 where a > 5").explain
+
+WARN CometExecRule: Comet fully accelerated this plan (set spark.comet.explain.enabled=false to disable this logging):
+CometFilter
++- CometScanWrapper
+
+Comet accelerated 100% of eligible operators (sparkOperators=0, cometOperators=2, transitions=0, wrappers=0).
+== Physical Plan ==
+  *(1) CometColumnarToRow
+  +- CometFilter [a#7], (isnotnull(a#7) AND (a#7 > 5))
++- CometScan [native_iceberg_compat] parquet [a#7] Batched: true, DataFilters: [isnotnull(a#7), (a#7 > 5)], Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [], PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
 ```
 
 ## Additional Configuration

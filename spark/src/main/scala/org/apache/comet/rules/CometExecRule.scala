@@ -644,13 +644,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         val info = new ExtendedExplainInfo()
         val fallbackReasons = info.extensionInfo(newPlan)
         if (fallbackReasons.nonEmpty) {
-          logInfo(
+          logWarning(
             "Comet cannot accelerate some parts of this plan " +
               s"(set ${CometConf.COMET_EXPLAIN_ENABLED.key}=false " +
               "to disable this logging):\n" +
               s"${info.generateVerboseExtendedInfo(newPlan)}")
         } else if (CometConf.COMET_EXPLAIN_ENABLED.get()) {
-          logInfo(
+          logWarning(
             "Comet fully accelerated this plan " +
               s"(set ${CometConf.COMET_EXPLAIN_ENABLED.key}=false " +
               "to disable this logging):\n" +
@@ -662,7 +662,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         val info = new ExtendedExplainInfo()
         val fallbackReasons = info.extensionInfo(newPlan)
         if (fallbackReasons.nonEmpty) {
-          logInfo(
+          logWarning(
             "Comet cannot accelerate some parts of this plan " +
               s"(set ${CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key}=false " +
               "to disable this logging):\n" +
