@@ -38,7 +38,7 @@ use datafusion::physical_expr::expressions::StatsType;
 /// we have our own implementation is that DataFusion has UInt64 for state_field `count`,
 /// while Spark has Double for count. Also we have added `null_on_divide_by_zero`
 /// to be consistent with Spark's implementation.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Correlation {
     name: String,
     signature: Signature,

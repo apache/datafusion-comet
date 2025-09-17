@@ -30,6 +30,7 @@ use crate::{
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
+use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
@@ -39,6 +40,7 @@ use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
+    config::ConfigOptions,
     execution::FunctionRegistry,
     functions_aggregate::first_last::{FirstValue, LastValue},
     logical_expr::Operator as DataFusionOperator,
@@ -623,8 +625,13 @@ impl PhysicalPlanner {
                 let args = vec![child];
                 let comet_hour = Arc::new(ScalarUDF::new_from_impl(SparkHour::new(timezone)));
                 let field_ref = Arc::new(Field::new("hour", DataType::Int32, true));
-                let expr: ScalarFunctionExpr =
-                    ScalarFunctionExpr::new("hour", comet_hour, args, field_ref);
+                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
+                    "hour",
+                    comet_hour,
+                    args,
+                    field_ref,
+                    Arc::new(ConfigOptions::default()),
+                );
 
                 Ok(Arc::new(expr))
             }
@@ -635,8 +642,13 @@ impl PhysicalPlanner {
                 let args = vec![child];
                 let comet_minute = Arc::new(ScalarUDF::new_from_impl(SparkMinute::new(timezone)));
                 let field_ref = Arc::new(Field::new("minute", DataType::Int32, true));
-                let expr: ScalarFunctionExpr =
-                    ScalarFunctionExpr::new("minute", comet_minute, args, field_ref);
+                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
+                    "minute",
+                    comet_minute,
+                    args,
+                    field_ref,
+                    Arc::new(ConfigOptions::default()),
+                );
 
                 Ok(Arc::new(expr))
             }
@@ -647,8 +659,13 @@ impl PhysicalPlanner {
                 let args = vec![child];
                 let comet_second = Arc::new(ScalarUDF::new_from_impl(SparkSecond::new(timezone)));
                 let field_ref = Arc::new(Field::new("second", DataType::Int32, true));
-                let expr: ScalarFunctionExpr =
-                    ScalarFunctionExpr::new("second", comet_second, args, field_ref);
+                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
+                    "second",
+                    comet_second,
+                    args,
+                    field_ref,
+                    Arc::new(ConfigOptions::default()),
+                );
 
                 Ok(Arc::new(expr))
             }
@@ -870,8 +887,13 @@ impl PhysicalPlanner {
                     ScalarUDF::new_from_impl(BloomFilterMightContain::try_new(bloom_filter_expr)?);
 
                 let field_ref = Arc::new(Field::new("might_contain", DataType::Boolean, true));
-                let expr: ScalarFunctionExpr =
-                    ScalarFunctionExpr::new("might_contain", Arc::new(udf), args, field_ref);
+                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
+                    "might_contain",
+                    Arc::new(udf),
+                    args,
+                    field_ref,
+                    Arc::new(ConfigOptions::default()),
+                );
                 Ok(Arc::new(expr))
             }
             ExprStruct::CreateNamedStruct(expr) => {
@@ -1090,6 +1112,7 @@ impl PhysicalPlanner {
                     fun_expr,
                     vec![left, right],
                     Arc::new(Field::new(func_name, data_type, true)),
+                    Arc::new(ConfigOptions::default()),
                 )))
             }
             _ => {
@@ -1115,6 +1138,7 @@ impl PhysicalPlanner {
                         fun_expr,
                         vec![left, right],
                         Arc::new(Field::new(op_str, data_type, true)),
+                        Arc::new(ConfigOptions::default()),
                     )))
                 } else {
                     Ok(Arc::new(BinaryExpr::new(left, op, right)))
@@ -1905,35 +1929,13 @@ impl PhysicalPlanner {
         match spark_expr.expr_struct.as_ref().unwrap() {
             AggExprStruct::Count(expr) => {
                 assert!(!expr.children.is_empty());
-                // Using `count_udaf` from Comet is exceptionally slow for some reason, so
-                // as a workaround we translate it to `SUM(IF(expr IS NOT NULL, 1, 0))`
-                // https://github.com/apache/datafusion-comet/issues/744
-
                 let children = expr
                     .children
                     .iter()
                     .map(|child| self.create_expr(child, Arc::clone(&schema)))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                // create `IS NOT NULL expr` and join them with `AND` if there are multiple
-                let not_null_expr: Arc<dyn PhysicalExpr> = children.iter().skip(1).fold(
-                    Arc::new(IsNotNullExpr::new(Arc::clone(&children[0]))) as Arc<dyn PhysicalExpr>,
-                    |acc, child| {
-                        Arc::new(BinaryExpr::new(
-                            acc,
-                            DataFusionOperator::And,
-                            Arc::new(IsNotNullExpr::new(Arc::clone(child))),
-                        ))
-                    },
-                );
-
-                let child = Arc::new(IfExpr::new(
-                    not_null_expr,
-                    Arc::new(Literal::new(ScalarValue::Int64(Some(1)))),
-                    Arc::new(Literal::new(ScalarValue::Int64(Some(0)))),
-                ));
-
-                AggregateExprBuilder::new(sum_udaf(), vec![child])
+                AggregateExprBuilder::new(count_udaf(), children)
                     .schema(schema)
                     .alias("count")
                     .with_ignore_nulls(false)
@@ -2376,6 +2378,8 @@ impl PhysicalPlanner {
             window_frame.into(),
             input_schema.as_ref(),
             false, // TODO: Ignore nulls
+            false, // TODO: Spark does not support DISTINCT ... OVER
+            None,
         )
         .map_err(|e| ExecutionError::DataFusionError(e.to_string()))
     }
@@ -2599,6 +2603,7 @@ impl PhysicalPlanner {
             fun_expr,
             args.to_vec(),
             Arc::new(Field::new(fun_name, data_type, true)),
+            Arc::new(ConfigOptions::default()),
         ));
 
         Ok(scalar_expr)
