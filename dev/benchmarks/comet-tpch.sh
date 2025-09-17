@@ -43,6 +43,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.comet.exec.replaceSortMergeJoin=true \
     --conf spark.comet.expression.allowIncompatible=true \
     --conf spark.comet.scan.impl=native_datafusion \
+    --conf spark.comet.explainFallback.enabled=true \
     tpcbench.py \
     --name comet \
     --benchmark tpch \
