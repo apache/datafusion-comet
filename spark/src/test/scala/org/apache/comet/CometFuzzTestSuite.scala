@@ -138,9 +138,9 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     df.createOrReplaceTempView("t1")
 
     for (_ <- 1 to 10) {
-      // We only do order by primitive, non-variable length types to exercise native shuffle's
+      // We only do order by permutations of primitive types to exercise native shuffle's
       // RangePartitioning which only supports those types.
-      val shuffledPrimitiveCols = Random.shuffle(df.columns.slice(0, 12).toList)
+      val shuffledPrimitiveCols = Random.shuffle(df.columns.slice(0, 14).toList)
       val randomSize = Random.nextInt(shuffledPrimitiveCols.length) + 1
       val randomColsSubset = shuffledPrimitiveCols.take(randomSize).toArray.mkString(",")
       val sql = s"SELECT $randomColsSubset FROM t1 ORDER BY $randomColsSubset"
