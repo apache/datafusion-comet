@@ -572,6 +572,18 @@ under the License.
   <a class="reference internal nav-link" href="#verbose-debug">
    Verbose debug
   </a>
+  <ul class="nav section-nav flex-column">
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#exception-details">
+     Exception details
+    </a>
+   </li>
+   <li class="toc-h3 nav-item toc-entry">
+    <a class="reference internal nav-link" href="#native-log-configuration">
+     Native log configuration
+    </a>
+   </li>
+  </ul>
  </li>
 </ul>
 
@@ -695,6 +707,8 @@ Eventually it will be cleaned up when you reboot possibly after a software updat
 </section>
 <section id="verbose-debug">
 <h2>Verbose debug<a class="headerlink" href="#verbose-debug" title="Link to this heading">¶</a></h2>
+<section id="exception-details">
+<h3>Exception details<a class="headerlink" href="#exception-details" title="Link to this heading">¶</a></h3>
 <p>By default, Comet outputs the exception details specific for Comet.</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;my_failing_query&quot;</span><span class="p">).</span><span class="n">show</span><span class="p">(</span><span class="kc">false</span><span class="p">)</span>
 
@@ -746,6 +760,27 @@ To enable this option with Comet it is needed to include <code class="docutils l
 <li><p>The backtrace coverage in DataFusion is still improving. So there is a chance the error still not covered, if so feel free to file a <a class="reference external" href="https://github.com/apache/arrow-datafusion/issues">ticket</a></p></li>
 <li><p>The backtrace evaluation comes with performance cost and intended mostly for debugging purposes</p></li>
 </ul>
+</section>
+<section id="native-log-configuration">
+<h3>Native log configuration<a class="headerlink" href="#native-log-configuration" title="Link to this heading">¶</a></h3>
+<p>By default, Comet emits native-side logs at the <code class="docutils literal notranslate"><span class="pre">INFO</span></code> level to <code class="docutils literal notranslate"><span class="pre">stderr</span></code>.</p>
+<p>You can use the <code class="docutils literal notranslate"><span class="pre">COMET_LOG_LEVEL</span></code> environment variable to specify the log level. Supported values are: <code class="docutils literal notranslate"><span class="pre">OFF</span></code>, <code class="docutils literal notranslate"><span class="pre">ERROR</span></code>, <code class="docutils literal notranslate"><span class="pre">WARN</span></code>, <code class="docutils literal notranslate"><span class="pre">INFO</span></code>, <code class="docutils literal notranslate"><span class="pre">DEBUG</span></code>, <code class="docutils literal notranslate"><span class="pre">TRACE</span></code>.</p>
+<p>For example, to configure native logs at the <code class="docutils literal notranslate"><span class="pre">DEBUG</span></code> level on spark executor:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">executorEnv</span><span class="o">.</span><span class="n">COMET_LOG_LEVEL</span><span class="o">=</span><span class="n">DEBUG</span>
+</pre></div>
+</div>
+<p>This produces output like the following:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="mi">25</span><span class="o">/</span><span class="mi">09</span><span class="o">/</span><span class="mi">15</span> <span class="mi">20</span><span class="p">:</span><span class="mi">17</span><span class="p">:</span><span class="mi">42</span> <span class="n">INFO</span> <span class="n">core</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">lib</span><span class="o">.</span><span class="n">rs</span><span class="p">:</span> <span class="n">Comet</span> <span class="n">native</span> <span class="n">library</span> <span class="n">version</span> <span class="mf">0.11.0</span> <span class="n">initialized</span>
+<span class="mi">25</span><span class="o">/</span><span class="mi">09</span><span class="o">/</span><span class="mi">15</span> <span class="mi">20</span><span class="p">:</span><span class="mi">17</span><span class="p">:</span><span class="mi">44</span> <span class="n">DEBUG</span> <span class="o">/</span><span class="n">xxx</span><span class="o">/.</span><span class="n">cargo</span><span class="o">/</span><span class="n">registry</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">index</span><span class="o">.</span><span class="n">crates</span><span class="o">.</span><span class="n">io</span><span class="o">-</span><span class="mi">1949</span><span class="n">cf8c6b5b557f</span><span class="o">/</span><span class="n">datafusion</span><span class="o">-</span><span class="n">execution</span><span class="o">-</span><span class="mf">49.0.2</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">disk_manager</span><span class="o">.</span><span class="n">rs</span><span class="p">:</span> <span class="n">Created</span> <span class="n">local</span> <span class="n">dirs</span> <span class="p">[</span><span class="n">TempDir</span> <span class="p">{</span> <span class="n">path</span><span class="p">:</span> <span class="s2">&quot;/private/var/folders/4p/9gtjq1s10fd6frkv9kzy0y740000gn/T/blockmgr-ba524f95-a792-4d79-b49c-276ba324941e/datafusion-qrpApx&quot;</span> <span class="p">}]</span> <span class="k">as</span> <span class="n">DataFusion</span> <span class="n">working</span> <span class="n">directory</span>
+<span class="mi">25</span><span class="o">/</span><span class="mi">09</span><span class="o">/</span><span class="mi">15</span> <span class="mi">20</span><span class="p">:</span><span class="mi">17</span><span class="p">:</span><span class="mi">44</span> <span class="n">DEBUG</span> <span class="o">/</span><span class="n">xxx</span><span class="o">/.</span><span class="n">cargo</span><span class="o">/</span><span class="n">registry</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">index</span><span class="o">.</span><span class="n">crates</span><span class="o">.</span><span class="n">io</span><span class="o">-</span><span class="mi">1949</span><span class="n">cf8c6b5b557f</span><span class="o">/</span><span class="n">datafusion</span><span class="o">-</span><span class="n">functions</span><span class="o">-</span><span class="n">nested</span><span class="o">-</span><span class="mf">49.0.2</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">lib</span><span class="o">.</span><span class="n">rs</span><span class="p">:</span> <span class="n">Overwrite</span> <span class="n">existing</span> <span class="n">UDF</span><span class="p">:</span> <span class="n">array_to_string</span>
+<span class="mi">25</span><span class="o">/</span><span class="mi">09</span><span class="o">/</span><span class="mi">15</span> <span class="mi">20</span><span class="p">:</span><span class="mi">17</span><span class="p">:</span><span class="mi">44</span> <span class="n">DEBUG</span> <span class="o">/</span><span class="n">xxx</span><span class="o">/.</span><span class="n">cargo</span><span class="o">/</span><span class="n">registry</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">index</span><span class="o">.</span><span class="n">crates</span><span class="o">.</span><span class="n">io</span><span class="o">-</span><span class="mi">1949</span><span class="n">cf8c6b5b557f</span><span class="o">/</span><span class="n">datafusion</span><span class="o">-</span><span class="n">functions</span><span class="o">-</span><span class="n">nested</span><span class="o">-</span><span class="mf">49.0.2</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">lib</span><span class="o">.</span><span class="n">rs</span><span class="p">:</span> <span class="n">Overwrite</span> <span class="n">existing</span> <span class="n">UDF</span><span class="p">:</span> <span class="n">string_to_array</span>
+<span class="mi">25</span><span class="o">/</span><span class="mi">09</span><span class="o">/</span><span class="mi">15</span> <span class="mi">20</span><span class="p">:</span><span class="mi">17</span><span class="p">:</span><span class="mi">44</span> <span class="n">DEBUG</span> <span class="o">/</span><span class="n">xxx</span><span class="o">/.</span><span class="n">cargo</span><span class="o">/</span><span class="n">registry</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">index</span><span class="o">.</span><span class="n">crates</span><span class="o">.</span><span class="n">io</span><span class="o">-</span><span class="mi">1949</span><span class="n">cf8c6b5b557f</span><span class="o">/</span><span class="n">datafusion</span><span class="o">-</span><span class="n">functions</span><span class="o">-</span><span class="n">nested</span><span class="o">-</span><span class="mf">49.0.2</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="n">lib</span><span class="o">.</span><span class="n">rs</span><span class="p">:</span> <span class="n">Overwrite</span> <span class="n">existing</span> <span class="n">UDF</span><span class="p">:</span> <span class="nb">range</span>
+<span class="o">...</span>
+</pre></div>
+</div>
+<p>Additionally, you can place a <code class="docutils literal notranslate"><span class="pre">log4rs.yaml</span></code> configuration file inside the Comet configuration directory specified by the <code class="docutils literal notranslate"><span class="pre">COMET_CONF_DIR</span></code> environment variable to enable more advanced logging configurations. This file uses the <a class="reference external" href="https://docs.rs/log4rs/latest/log4rs/#configuration-via-a-yaml-file">log4rs YAML configuration format</a>.
+For example, see: <a class="reference external" href="https://github.com/apache/datafusion-comet/blob/main/conf/log4rs.yaml">log4rs.yaml</a>.</p>
+</section>
 </section>
 </section>
 
