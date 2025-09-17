@@ -649,7 +649,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
               s"(set ${CometConf.COMET_EXPLAIN_ENABLED.key}=false " +
               "to disable this logging):\n" +
               s"${info.generateVerboseExtendedInfo(newPlan)}")
-        } else if (CometConf.COMET_EXPLAIN_ENABLED.get()) {
+        } else {
           logWarning(
             "Comet fully accelerated this plan " +
               s"(set ${CometConf.COMET_EXPLAIN_ENABLED.key}=false " +
