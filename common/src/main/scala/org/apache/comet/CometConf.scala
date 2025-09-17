@@ -505,7 +505,6 @@ object CometConf extends ShimCometConf {
         "When this setting is enabled, Comet will provide logging explaining the reason(s) " +
           "why a query stage cannot be executed natively. Set this to false to " +
           "reduce the amount of logging.")
-      .internal()
       .booleanConf
       .createWithDefault(false)
 
