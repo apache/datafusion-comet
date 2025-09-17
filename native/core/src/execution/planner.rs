@@ -484,7 +484,7 @@ impl PhysicalPlanner {
                                     )))
                                 }
                             }
-                        },
+                        }
                         Value::ListVal(values) => {
                             if let DataType::List(f) = data_type {
                                 match f.data_type() {
@@ -597,11 +597,10 @@ impl PhysicalPlanner {
                                         )))
                                     }
                                 }
-
                             } else {
                                 return Err(GeneralError(format!(
                                     "Expected DataType::List but got {data_type:?}"
-                                )))
+                                )));
                             }
                         }
                     }
@@ -1510,8 +1509,14 @@ impl PhysicalPlanner {
                 assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
-                let partitioning = self
-                    .create_partitioning(writer.partitioning.as_ref().unwrap(), child.schema())?;
+                // We wrap native shuffle in a CopyExec. This existed previously, but for
+                // RangePartitioning at least we want to ensure that dictionaries are unpacked.
+                let wrapped_child = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
+
+                let partitioning = self.create_partitioning(
+                    writer.partitioning.as_ref().unwrap(),
+                    wrapped_child.schema(),
+                )?;
 
                 let codec = match writer.codec.try_into() {
                     Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
@@ -1527,7 +1532,7 @@ impl PhysicalPlanner {
                 }?;
 
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
+                    wrapped_child,
                     partitioning,
                     codec,
                     writer.output_data_file.clone(),

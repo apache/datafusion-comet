@@ -781,8 +781,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
     def supportedRangePartitioningDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-          _: FloatType | _: DoubleType | _: TimestampType | _: TimestampNTZType | _: DecimalType |
-          _: DateType =>
+          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
+          _: TimestampNTZType | _: DecimalType | _: DateType =>
         true
       case _ =>
         false
