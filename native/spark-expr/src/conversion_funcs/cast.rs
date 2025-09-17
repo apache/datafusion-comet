@@ -63,7 +63,6 @@ use std::{
 };
 
 use base64::prelude::*;
-use datafusion_comet_proto::spark_expression;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -167,18 +166,6 @@ pub enum BinaryOutputStyle {
     Base64,
     Hex,
     HexDiscrete,
-}
-
-fn from_protobuf_binary_output_style(
-    value: i32,
-) -> Result<BinaryOutputStyle, prost::UnknownEnumValue> {
-    match spark_expression::BinaryOutputStyle::try_from(value)? {
-        spark_expression::BinaryOutputStyle::Utf8 => Ok(BinaryOutputStyle::Utf8),
-        spark_expression::BinaryOutputStyle::Basic => Ok(BinaryOutputStyle::Basic),
-        spark_expression::BinaryOutputStyle::Base64 => Ok(BinaryOutputStyle::Base64),
-        spark_expression::BinaryOutputStyle::Hex => Ok(BinaryOutputStyle::Hex),
-        spark_expression::BinaryOutputStyle::HexDiscrete => Ok(BinaryOutputStyle::HexDiscrete),
-    }
 }
 
 /// Determine if Comet supports a cast, taking options such as EvalMode and Timezone into account.
@@ -839,7 +826,7 @@ pub struct SparkCastOptions {
     /// String to use to represent null values
     pub null_string: String,
     /// SparkSQL's binaryOutputStyle
-    pub binary_output_style: Option<i32>,
+    pub binary_output_style: Option<BinaryOutputStyle>,
 }
 
 impl SparkCastOptions {
@@ -1083,10 +1070,7 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
 
     fn binary_formatter(value: &[u8], spark_cast_options: &SparkCastOptions) -> String {
         match spark_cast_options.binary_output_style {
-            Some(s) => {
-                let binary_output_style = from_protobuf_binary_output_style(s);
-                spark_binary_formatter(value, binary_output_style.unwrap())
-            }
+            Some(s) => spark_binary_formatter(value, s),
             None => cast_binary_formatter(value),
         }
     }

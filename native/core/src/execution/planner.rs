@@ -110,10 +110,10 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
-    RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr, SumDecimal, TimestampTruncExpr,
-    ToJson, UnboundColumn, Variance,
+    ArrayInsert, Avg, AvgDecimal, BinaryOutputStyle, Cast, CheckOverflow, Correlation, Covariance,
+    CreateNamedStruct, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
+    NormalizeNaNAndZero, RLike, RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr,
+    SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -897,7 +897,8 @@ impl PhysicalPlanner {
                     SparkCastOptions::new(EvalMode::Try, &expr.timezone, true);
                 let null_string = "NULL";
                 spark_cast_options.null_string = null_string.to_string();
-                spark_cast_options.binary_output_style = Some(expr.binary_output_style);
+                spark_cast_options.binary_output_style =
+                    from_protobuf_binary_output_style(expr.binary_output_style).ok();
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let cast = Arc::new(Cast::new(
                     Arc::clone(&child),
@@ -2774,6 +2775,18 @@ fn create_case_expr(
             when_then_pairs,
             else_expr.clone(),
         )?))
+    }
+}
+
+fn from_protobuf_binary_output_style(
+    value: i32,
+) -> Result<BinaryOutputStyle, prost::UnknownEnumValue> {
+    match spark_expression::BinaryOutputStyle::try_from(value)? {
+        spark_expression::BinaryOutputStyle::Utf8 => Ok(BinaryOutputStyle::Utf8),
+        spark_expression::BinaryOutputStyle::Basic => Ok(BinaryOutputStyle::Basic),
+        spark_expression::BinaryOutputStyle::Base64 => Ok(BinaryOutputStyle::Base64),
+        spark_expression::BinaryOutputStyle::Hex => Ok(BinaryOutputStyle::Hex),
+        spark_expression::BinaryOutputStyle::HexDiscrete => Ok(BinaryOutputStyle::HexDiscrete),
     }
 }
 
