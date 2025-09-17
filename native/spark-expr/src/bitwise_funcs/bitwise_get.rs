@@ -22,7 +22,7 @@ use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDFImpl, Signature, Vol
 use std::any::Any;
 use std::sync::Arc;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkBitwiseGet {
     signature: Signature,
     aliases: Vec<String>,
