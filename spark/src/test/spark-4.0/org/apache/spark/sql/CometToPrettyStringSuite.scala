@@ -19,11 +19,9 @@
 
 package org.apache.spark.sql
 
-import org.apache.comet.CometConf
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.Compatible
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
-import org.apache.commons.io.FileUtils
+
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Alias, ToPrettyString}
@@ -33,48 +31,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.BinaryOutputStyle
 import org.apache.spark.sql.types.DataTypes
 
-import java.io.File
-import java.text.SimpleDateFormat
-import scala.util.Random
-
-class CometToPrettyStringSuite extends CometTestBase {
-
-  private var filename: String = null
-
-  /**
-   * We use Asia/Kathmandu because it has a non-zero number of minutes as the offset, so is an
-   * interesting edge case. Also, this timezone tends to be different from the default system
-   * timezone.
-   *
-   * Represents UTC+5:45
-   */
-  private val defaultTimezone = "Asia/Kathmandu"
-
-  override def beforeAll(): Unit = {
-    super.beforeAll()
-    val tempDir = System.getProperty("java.io.tmpdir")
-    filename = s"$tempDir/CometToPrettyStringSuite_${System.currentTimeMillis()}.parquet"
-    val random = new Random(42)
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "false",
-      SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
-      val options =
-        DataGenOptions(
-          generateArray = true,
-          generateStruct = true,
-          generateMap = true,
-          generateNegativeZero = false,
-          // override base date due to known issues with experimental scans
-          baseDate =
-            new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime)
-      ParquetGenerator.makeParquetFile(random, spark, filename, 1000, options)
-    }
-  }
-
-  protected override def afterAll(): Unit = {
-    super.afterAll()
-    FileUtils.deleteDirectory(new File(filename))
-  }
+class CometToPrettyStringSuite extends CometFuzzTestBase {
 
   test("ToPrettyString") {
     val style = List(
