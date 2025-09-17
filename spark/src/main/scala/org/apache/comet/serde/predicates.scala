@@ -19,14 +19,110 @@
 
 package org.apache.comet.serde
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, LessThan, LessThanOrEqual, Literal, Not}
+import org.apache.spark.sql.catalyst.expressions.{And, Attribute, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, LessThan, LessThanOrEqual, Literal, Not, Or}
 import org.apache.spark.sql.types.BooleanType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde._
+
+object CometNot extends CometExpressionSerde[Not] {
+  override def convert(
+      expr: Not,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+
+    expr.child match {
+      case expr: EqualTo =>
+        createBinaryExpr(
+          expr,
+          expr.left,
+          expr.right,
+          inputs,
+          binding,
+          (builder, binaryExpr) => builder.setNeq(binaryExpr))
+      case expr: EqualNullSafe =>
+        createBinaryExpr(
+          expr,
+          expr.left,
+          expr.right,
+          inputs,
+          binding,
+          (builder, binaryExpr) => builder.setNeqNullSafe(binaryExpr))
+      case expr: In =>
+        ComparisonUtils.in(expr, expr.value, expr.list, inputs, binding, negate = true)
+      case _ =>
+        createUnaryExpr(
+          expr,
+          expr.child,
+          inputs,
+          binding,
+          (builder, unaryExpr) => builder.setNot(unaryExpr))
+    }
+  }
+}
+
+object CometAnd extends CometExpressionSerde[And] {
+  override def convert(
+      expr: And,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createBinaryExpr(
+      expr,
+      expr.left,
+      expr.right,
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setAnd(binaryExpr))
+  }
+}
+
+object CometOr extends CometExpressionSerde[Or] {
+  override def convert(
+      expr: Or,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createBinaryExpr(
+      expr,
+      expr.left,
+      expr.right,
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setOr(binaryExpr))
+  }
+}
+
+object CometEqualTo extends CometExpressionSerde[EqualTo] {
+  override def convert(
+      expr: EqualTo,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createBinaryExpr(
+      expr,
+      expr.left,
+      expr.right,
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setEq(binaryExpr))
+  }
+}
+
+object CometEqualNullSafe extends CometExpressionSerde[EqualNullSafe] {
+  override def convert(
+      expr: EqualNullSafe,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createBinaryExpr(
+      expr,
+      expr.left,
+      expr.right,
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setEqNullSafe(binaryExpr))
+  }
+}
 
 object CometGreaterThan extends CometExpressionSerde[GreaterThan] {
   override def convert(
@@ -134,16 +230,6 @@ object CometIn extends CometExpressionSerde[In] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     ComparisonUtils.in(expr, expr.value, expr.list, inputs, binding, negate = false)
-  }
-}
-
-object CometNotIn extends CometExpressionSerde[Not] {
-  override def convert(
-      expr: Not,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val inExpr = expr.child.asInstanceOf[In]
-    ComparisonUtils.in(expr, inExpr.value, inExpr.list, inputs, binding, negate = true)
   }
 }
 

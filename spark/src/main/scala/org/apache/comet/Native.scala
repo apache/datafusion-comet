@@ -54,6 +54,7 @@ class Native extends NativeBase {
       id: Long,
       iterators: Array[CometBatchIterator],
       plan: Array[Byte],
+      configMapProto: Array[Byte],
       partitionCount: Int,
       metrics: CometMetricNode,
       metricsUpdateInterval: Long,

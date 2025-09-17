@@ -147,4 +147,4 @@ accessing Arrow data structures from multiple languages.
 
 The following diagram shows an example of the end-to-end flow for a query stage.
 
-![Diagram of Comet Data Flow](../../_static/images/comet-dataflow.svg)
+![Diagram of Comet Data Flow](/_static/images/comet-dataflow.svg)

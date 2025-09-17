@@ -25,7 +25,8 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.catalyst.expressions.Cast
 
-import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incompatible}
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
+import org.apache.comet.serde.{Compatible, Incompatible}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -34,13 +35,15 @@ import org.apache.comet.expressions.{CometCast, CometEvalMode, Compatible, Incom
  */
 object GenerateDocs {
 
+  private def userGuideLocation = "docs/source/user-guide/latest/"
+
   def main(args: Array[String]): Unit = {
     generateConfigReference()
     generateCompatibilityGuide()
   }
 
   private def generateConfigReference(): Unit = {
-    val filename = "docs/source/user-guide/configs.md"
+    val filename = s"$userGuideLocation/configs.md"
     val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))
     for (line <- lines) {
@@ -63,7 +66,7 @@ object GenerateDocs {
   }
 
   private def generateCompatibilityGuide(): Unit = {
-    val filename = "docs/source/user-guide/compatibility.md"
+    val filename = s"$userGuideLocation/compatibility.md"
     val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))
     for (line <- lines) {

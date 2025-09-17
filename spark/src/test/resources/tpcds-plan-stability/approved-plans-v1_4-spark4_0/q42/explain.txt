@@ -1,27 +1,26 @@
 == Physical Plan ==
-TakeOrderedAndProject (20)
-+- * HashAggregate (19)
-   +- * CometColumnarToRow (18)
-      +- CometColumnarExchange (17)
-         +- * HashAggregate (16)
-            +- * CometColumnarToRow (15)
-               +- CometProject (14)
-                  +- CometBroadcastHashJoin (13)
-                     :- CometProject (8)
-                     :  +- CometBroadcastHashJoin (7)
-                     :     :- CometProject (3)
-                     :     :  +- CometFilter (2)
-                     :     :     +- CometScan [native_comet] parquet spark_catalog.default.date_dim (1)
-                     :     +- CometBroadcastExchange (6)
-                     :        +- CometFilter (5)
-                     :           +- CometScan [native_comet] parquet spark_catalog.default.store_sales (4)
-                     +- CometBroadcastExchange (12)
-                        +- CometProject (11)
-                           +- CometFilter (10)
-                              +- CometScan [native_comet] parquet spark_catalog.default.item (9)
+TakeOrderedAndProject (19)
++- * HashAggregate (18)
+   +- * CometColumnarToRow (17)
+      +- CometExchange (16)
+         +- CometHashAggregate (15)
+            +- CometProject (14)
+               +- CometBroadcastHashJoin (13)
+                  :- CometProject (8)
+                  :  +- CometBroadcastHashJoin (7)
+                  :     :- CometProject (3)
+                  :     :  +- CometFilter (2)
+                  :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (1)
+                  :     +- CometBroadcastExchange (6)
+                  :        +- CometFilter (5)
+                  :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (4)
+                  +- CometBroadcastExchange (12)
+                     +- CometProject (11)
+                        +- CometFilter (10)
+                           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item (9)
 
 
-(1) CometScan [native_comet] parquet spark_catalog.default.date_dim
+(1) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#1, d_year#2, d_moy#3]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -36,7 +35,7 @@ Condition : ((((isnotnull(d_moy#3) AND isnotnull(d_year#2)) AND (d_moy#3 = 11)) 
 Input [3]: [d_date_sk#1, d_year#2, d_moy#3]
 Arguments: [d_date_sk#1, d_year#2], [d_date_sk#1, d_year#2]
 
-(4) CometScan [native_comet] parquet spark_catalog.default.store_sales
+(4) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
 Output [3]: [ss_item_sk#4, ss_ext_sales_price#5, ss_sold_date_sk#6]
 Batched: true
 Location: InMemoryFileIndex []
@@ -61,7 +60,7 @@ Arguments: [d_date_sk#1], [ss_sold_date_sk#6], Inner, BuildRight
 Input [5]: [d_date_sk#1, d_year#2, ss_item_sk#4, ss_ext_sales_price#5, ss_sold_date_sk#6]
 Arguments: [d_year#2, ss_item_sk#4, ss_ext_sales_price#5], [d_year#2, ss_item_sk#4, ss_ext_sales_price#5]
 
-(9) CometScan [native_comet] parquet spark_catalog.default.item
+(9) CometScan [native_iceberg_compat] parquet spark_catalog.default.item
 Output [4]: [i_item_sk#7, i_category_id#8, i_category#9, i_manager_id#10]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/item]
@@ -89,31 +88,26 @@ Arguments: [ss_item_sk#4], [i_item_sk#7], Inner, BuildRight
 Input [6]: [d_year#2, ss_item_sk#4, ss_ext_sales_price#5, i_item_sk#7, i_category_id#8, i_category#11]
 Arguments: [d_year#2, ss_ext_sales_price#5, i_category_id#8, i_category#11], [d_year#2, ss_ext_sales_price#5, i_category_id#8, i_category#11]
 
-(15) CometColumnarToRow [codegen id : 1]
-Input [4]: [d_year#2, ss_ext_sales_price#5, i_category_id#8, i_category#11]
-
-(16) HashAggregate [codegen id : 1]
+(15) CometHashAggregate
 Input [4]: [d_year#2, ss_ext_sales_price#5, i_category_id#8, i_category#11]
 Keys [3]: [d_year#2, i_category_id#8, i_category#11]
 Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#5))]
-Aggregate Attributes [1]: [sum#12]
-Results [4]: [d_year#2, i_category_id#8, i_category#11, sum#13]
 
-(17) CometColumnarExchange
-Input [4]: [d_year#2, i_category_id#8, i_category#11, sum#13]
-Arguments: hashpartitioning(d_year#2, i_category_id#8, i_category#11, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=1]
+(16) CometExchange
+Input [4]: [d_year#2, i_category_id#8, i_category#11, sum#12]
+Arguments: hashpartitioning(d_year#2, i_category_id#8, i_category#11, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(18) CometColumnarToRow [codegen id : 2]
-Input [4]: [d_year#2, i_category_id#8, i_category#11, sum#13]
+(17) CometColumnarToRow [codegen id : 1]
+Input [4]: [d_year#2, i_category_id#8, i_category#11, sum#12]
 
-(19) HashAggregate [codegen id : 2]
-Input [4]: [d_year#2, i_category_id#8, i_category#11, sum#13]
+(18) HashAggregate [codegen id : 1]
+Input [4]: [d_year#2, i_category_id#8, i_category#11, sum#12]
 Keys [3]: [d_year#2, i_category_id#8, i_category#11]
 Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#5))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_ext_sales_price#5))#14]
-Results [4]: [d_year#2, i_category_id#8, i_category#11, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#5))#14,17,2) AS sum(ss_ext_sales_price)#15]
+Aggregate Attributes [1]: [sum(UnscaledValue(ss_ext_sales_price#5))#13]
+Results [4]: [d_year#2, i_category_id#8, i_category#11, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#5))#13,17,2) AS sum(ss_ext_sales_price)#14]
 
-(20) TakeOrderedAndProject
-Input [4]: [d_year#2, i_category_id#8, i_category#11, sum(ss_ext_sales_price)#15]
-Arguments: 100, [sum(ss_ext_sales_price)#15 DESC NULLS LAST, d_year#2 ASC NULLS FIRST, i_category_id#8 ASC NULLS FIRST, i_category#11 ASC NULLS FIRST], [d_year#2, i_category_id#8, i_category#11, sum(ss_ext_sales_price)#15]
+(19) TakeOrderedAndProject
+Input [4]: [d_year#2, i_category_id#8, i_category#11, sum(ss_ext_sales_price)#14]
+Arguments: 100, [sum(ss_ext_sales_price)#14 DESC NULLS LAST, d_year#2 ASC NULLS FIRST, i_category_id#8 ASC NULLS FIRST, i_category#11 ASC NULLS FIRST], [d_year#2, i_category_id#8, i_category#11, sum(ss_ext_sales_price)#14]
 

@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index 68e2c422a24..fb9c2e88fac 100644
+index 68e2c422a24..d971894ffe6 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
@@ -7,7 +7,7 @@ index 68e2c422a24..fb9c2e88fac 100644
      <ivy.version>2.5.1</ivy.version>
      <oro.version>2.0.8</oro.version>
 +    <spark.version.short>3.5</spark.version.short>
-+    <comet.version>0.10.0-SNAPSHOT</comet.version>
++    <comet.version>0.11.0-SNAPSHOT</comet.version>
      <!--
      If you changes codahale.metrics.version, you also need to change
      the link to metrics.dropwizard.io in docs/monitoring.md.
@@ -866,7 +866,7 @@ index c26757c9cff..d55775f09d7 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index 793a0da6a86..6ccb9d62582 100644
+index 793a0da6a86..e48e74091cb 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1521,7 +1521,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -878,6 +878,19 @@ index 793a0da6a86..6ccb9d62582 100644
 +    IgnoreComet("TODO: native CometSort does not update peak execution memory")) {
      AccumulatorSuite.verifyPeakExecutionMemorySet(sparkContext, "external sort") {
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
+     }
+@@ -4497,7 +4498,11 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+           val msg = intercept[SparkException] {
+             sql(query).collect()
+           }.getMessage
+-          assert(msg.contains(query))
++          if (!isCometEnabled) {
++            // Comet's error message does not include the original SQL query
++            // https://github.com/apache/datafusion-comet/issues/2215
++            assert(msg.contains(query))
++          }
+         }
+       }
      }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 index fa1a64460fc..1d2e215d6a3 100644
@@ -2770,10 +2783,10 @@ index e937173a590..ca06132102d 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index ed2e309fa07..a1fb4abe681 100644
+index ed2e309fa07..a5ea58146ad 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-@@ -74,6 +74,32 @@ trait SharedSparkSessionBase
+@@ -74,6 +74,31 @@ trait SharedSparkSessionBase
        // this rule may potentially block testing of other optimization rules such as
        // ConstantPropagation etc.
        .set(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, ConvertToLocalRelation.ruleName)
@@ -2800,7 +2813,6 @@ index ed2e309fa07..a1fb4abe681 100644
 +      if (enableCometAnsiMode) {
 +        conf
 +          .set("spark.sql.ansi.enabled", "true")
-+          .set("spark.comet.ansi.enabled", "true")
 +      }
 +    }
      conf.set(
@@ -2935,10 +2947,10 @@ index 6160c3e5f6c..0956d7d9edc 100644
  
    test("SPARK-4963 DataFrame sample on mutable row return wrong result") {
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-index 1d646f40b3e..7f2cdb8f061 100644
+index 1d646f40b3e..5babe505301 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-@@ -53,25 +53,55 @@ object TestHive
+@@ -53,25 +53,54 @@ object TestHive
      new SparkContext(
        System.getProperty("spark.sql.test.master", "local[1]"),
        "TestSQLContext",
@@ -3002,7 +3014,6 @@ index 1d646f40b3e..7f2cdb8f061 100644
 +          if (a != null && a.toBoolean) {
 +            conf
 +              .set("spark.sql.ansi.enabled", "true")
-+              .set("spark.comet.ansi.enabled", "true")
 +          }
 +        }
  

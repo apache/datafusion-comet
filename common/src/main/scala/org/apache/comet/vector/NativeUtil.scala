@@ -96,6 +96,30 @@ class NativeUtil {
 
     (0 until batch.numCols()).foreach { index =>
       batch.column(index) match {
+        case selectionVector: CometSelectionVector =>
+          // For CometSelectionVector, export only the values vector
+          val valuesVector = selectionVector.getValues
+          val valueVector = valuesVector.getValueVector
+
+          // Use the selection vector's logical row count
+          numRows += selectionVector.numValues()
+
+          val provider = if (valueVector.getField.getDictionary != null) {
+            valuesVector.getDictionaryProvider
+          } else {
+            null
+          }
+
+          // The array and schema structures are allocated by native side.
+          // Don't need to deallocate them here.
+          val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
+          val arrowArray = ArrowArray.wrap(arrayAddrs(index))
+          Data.exportVector(
+            allocator,
+            getFieldVector(valueVector, "export"),
+            provider,
+            arrowArray,
+            arrowSchema)
         case a: CometVector =>
           val valueVector = a.getValueVector
 
@@ -133,7 +157,38 @@ class NativeUtil {
     // the Arrow arrays. For example, Iceberg column reader will skip deleted rows internally in
     // its `CometVector` implementation. The `ColumnarBatch` returned by the reader will report
     // logical number of rows which is less than actual number of rows due to row deletion.
+    // Similarly, CometSelectionVector represents a different number of logical rows than the
+    // underlying vector.
     numRows.headOption.getOrElse(batch.numRows())
+  }
+
+  /**
+   * Exports a single CometVector to native side.
+   *
+   * @param vector
+   *   The CometVector to export
+   * @param arrayAddr
+   *   The address of the ArrowArray structure
+   * @param schemaAddr
+   *   The address of the ArrowSchema structure
+   */
+  def exportSingleVector(vector: CometVector, arrayAddr: Long, schemaAddr: Long): Unit = {
+    val valueVector = vector.getValueVector
+
+    val provider = if (valueVector.getField.getDictionary != null) {
+      vector.getDictionaryProvider
+    } else {
+      null
+    }
+
+    val arrowSchema = ArrowSchema.wrap(schemaAddr)
+    val arrowArray = ArrowArray.wrap(arrayAddr)
+    Data.exportVector(
+      allocator,
+      getFieldVector(valueVector, "export"),
+      provider,
+      arrowArray,
+      arrowSchema)
   }
 
   /**

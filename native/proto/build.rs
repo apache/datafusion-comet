@@ -33,6 +33,7 @@ fn main() -> Result<()> {
             "src/proto/metric.proto",
             "src/proto/partitioning.proto",
             "src/proto/operator.proto",
+            "src/proto/config.proto",
         ],
         &["src/proto"],
     )?;

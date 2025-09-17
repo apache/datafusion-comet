@@ -56,7 +56,7 @@ wishing to implement UDFs in C++, Gluten would likely be a better choice.
 If users are just interested in speeding up their existing Spark jobs and do not need to implement UDFs in native 
 code, then we suggest benchmarking with both solutions and choosing the fastest one for your use case.
 
-![github-stars-datafusion-velox.png](../_static/images/github-stars-datafusion-velox.png)
+![github-stars-datafusion-velox.png](/_static/images/github-stars-datafusion-velox.png)
 
 ## Compatibility
 
@@ -64,7 +64,7 @@ Comet relies on the full Spark SQL test suite (consisting of more than 24,000 te
 integration tests to ensure compatibility with Spark. Features that are known to have compatibility differences with
 Spark are disabled by default, but users can opt in. See the [Comet Compatibility Guide] for more information.
 
-[Comet Compatibility Guide]: compatibility.md
+[Comet Compatibility Guide]: user-guide/latest/compatibility.md
 
 Gluten also aims to provide compatibility with Spark, and includes a subset of the Spark SQL tests in its own test
 suite. See the [Gluten Compatibility Guide] for more information.
@@ -84,7 +84,7 @@ real-world queries, especially for ETL use cases. For example, there are no comp
 manipulation, regular expressions, or other advanced expressions. We recommend running your own benchmarks based
 on your existing Spark jobs. 
 
-![tpch_allqueries_comet_gluten.png](../_static/images//benchmark-results/0.9.0/tpch_spark_comet_gluten.png)
+![tpch_allqueries_comet_gluten.png](/_static/images//benchmark-results/0.9.0/tpch_spark_comet_gluten.png)
 
 The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks).
 

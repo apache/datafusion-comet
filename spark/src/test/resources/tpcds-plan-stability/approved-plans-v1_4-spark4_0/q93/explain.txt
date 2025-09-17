@@ -1,30 +1,29 @@
 == Physical Plan ==
-TakeOrderedAndProject (23)
-+- * HashAggregate (22)
-   +- * CometColumnarToRow (21)
-      +- CometColumnarExchange (20)
-         +- * HashAggregate (19)
-            +- * CometColumnarToRow (18)
-               +- CometProject (17)
-                  +- CometBroadcastHashJoin (16)
-                     :- CometProject (11)
-                     :  +- CometSortMergeJoin (10)
-                     :     :- CometSort (4)
-                     :     :  +- CometExchange (3)
-                     :     :     +- CometProject (2)
-                     :     :        +- CometScan [native_comet] parquet spark_catalog.default.store_sales (1)
-                     :     +- CometSort (9)
-                     :        +- CometExchange (8)
-                     :           +- CometProject (7)
-                     :              +- CometFilter (6)
-                     :                 +- CometScan [native_comet] parquet spark_catalog.default.store_returns (5)
-                     +- CometBroadcastExchange (15)
-                        +- CometProject (14)
-                           +- CometFilter (13)
-                              +- CometScan [native_comet] parquet spark_catalog.default.reason (12)
+* CometColumnarToRow (22)
++- CometTakeOrderedAndProject (21)
+   +- CometHashAggregate (20)
+      +- CometExchange (19)
+         +- CometHashAggregate (18)
+            +- CometProject (17)
+               +- CometBroadcastHashJoin (16)
+                  :- CometProject (11)
+                  :  +- CometSortMergeJoin (10)
+                  :     :- CometSort (4)
+                  :     :  +- CometExchange (3)
+                  :     :     +- CometProject (2)
+                  :     :        +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (1)
+                  :     +- CometSort (9)
+                  :        +- CometExchange (8)
+                  :           +- CometProject (7)
+                  :              +- CometFilter (6)
+                  :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns (5)
+                  +- CometBroadcastExchange (15)
+                     +- CometProject (14)
+                        +- CometFilter (13)
+                           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.reason (12)
 
 
-(1) CometScan [native_comet] parquet spark_catalog.default.store_sales
+(1) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
 Output [6]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5, ss_sold_date_sk#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
@@ -42,7 +41,7 @@ Arguments: hashpartitioning(ss_item_sk#1, ss_ticket_number#3, 5), ENSURE_REQUIRE
 Input [5]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5]
 Arguments: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5], [ss_item_sk#1 ASC NULLS FIRST, ss_ticket_number#3 ASC NULLS FIRST]
 
-(5) CometScan [native_comet] parquet spark_catalog.default.store_returns
+(5) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns
 Output [5]: [sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10, sr_returned_date_sk#11]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_returns]
@@ -74,7 +73,7 @@ Arguments: [ss_item_sk#1, ss_ticket_number#3], [sr_item_sk#7, sr_ticket_number#9
 Input [9]: [ss_item_sk#1, ss_customer_sk#2, ss_ticket_number#3, ss_quantity#4, ss_sales_price#5, sr_item_sk#7, sr_reason_sk#8, sr_ticket_number#9, sr_return_quantity#10]
 Arguments: [ss_customer_sk#2, ss_quantity#4, ss_sales_price#5, sr_reason_sk#8, sr_return_quantity#10], [ss_customer_sk#2, ss_quantity#4, ss_sales_price#5, sr_reason_sk#8, sr_return_quantity#10]
 
-(12) CometScan [native_comet] parquet spark_catalog.default.reason
+(12) CometScan [native_iceberg_compat] parquet spark_catalog.default.reason
 Output [2]: [r_reason_sk#12, r_reason_desc#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/reason]
@@ -102,31 +101,24 @@ Arguments: [sr_reason_sk#8], [r_reason_sk#12], Inner, BuildRight
 Input [6]: [ss_customer_sk#2, ss_quantity#4, ss_sales_price#5, sr_reason_sk#8, sr_return_quantity#10, r_reason_sk#12]
 Arguments: [ss_customer_sk#2, act_sales#14], [ss_customer_sk#2, CASE WHEN isnotnull(sr_return_quantity#10) THEN (cast((ss_quantity#4 - sr_return_quantity#10) as decimal(10,0)) * ss_sales_price#5) ELSE (cast(ss_quantity#4 as decimal(10,0)) * ss_sales_price#5) END AS act_sales#14]
 
-(18) CometColumnarToRow [codegen id : 1]
-Input [2]: [ss_customer_sk#2, act_sales#14]
-
-(19) HashAggregate [codegen id : 1]
+(18) CometHashAggregate
 Input [2]: [ss_customer_sk#2, act_sales#14]
 Keys [1]: [ss_customer_sk#2]
 Functions [1]: [partial_sum(act_sales#14)]
-Aggregate Attributes [2]: [sum#15, isEmpty#16]
-Results [3]: [ss_customer_sk#2, sum#17, isEmpty#18]
 
-(20) CometColumnarExchange
-Input [3]: [ss_customer_sk#2, sum#17, isEmpty#18]
-Arguments: hashpartitioning(ss_customer_sk#2, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
+(19) CometExchange
+Input [3]: [ss_customer_sk#2, sum#15, isEmpty#16]
+Arguments: hashpartitioning(ss_customer_sk#2, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
 
-(21) CometColumnarToRow [codegen id : 2]
-Input [3]: [ss_customer_sk#2, sum#17, isEmpty#18]
-
-(22) HashAggregate [codegen id : 2]
-Input [3]: [ss_customer_sk#2, sum#17, isEmpty#18]
+(20) CometHashAggregate
+Input [3]: [ss_customer_sk#2, sum#15, isEmpty#16]
 Keys [1]: [ss_customer_sk#2]
 Functions [1]: [sum(act_sales#14)]
-Aggregate Attributes [1]: [sum(act_sales#14)#19]
-Results [2]: [ss_customer_sk#2, sum(act_sales#14)#19 AS sumsales#20]
 
-(23) TakeOrderedAndProject
-Input [2]: [ss_customer_sk#2, sumsales#20]
-Arguments: 100, [sumsales#20 ASC NULLS FIRST, ss_customer_sk#2 ASC NULLS FIRST], [ss_customer_sk#2, sumsales#20]
+(21) CometTakeOrderedAndProject
+Input [2]: [ss_customer_sk#2, sumsales#17]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[sumsales#17 ASC NULLS FIRST,ss_customer_sk#2 ASC NULLS FIRST], output=[ss_customer_sk#2,sumsales#17]), [ss_customer_sk#2, sumsales#17], 100, 0, [sumsales#17 ASC NULLS FIRST, ss_customer_sk#2 ASC NULLS FIRST], [ss_customer_sk#2, sumsales#17]
+
+(22) CometColumnarToRow [codegen id : 1]
+Input [2]: [ss_customer_sk#2, sumsales#17]
 

@@ -34,7 +34,7 @@ object CometXxHash64 extends CometExpressionSerde[XxHash64] {
       return None
     }
     val exprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
-    val seedBuilder = ExprOuterClass.Literal
+    val seedBuilder = LiteralOuterClass.Literal
       .newBuilder()
       .setDatatype(serializeDataType(LongType).get)
       .setLongVal(expr.seed)
@@ -53,7 +53,7 @@ object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] {
       return None
     }
     val exprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
-    val seedBuilder = ExprOuterClass.Literal
+    val seedBuilder = LiteralOuterClass.Literal
       .newBuilder()
       .setDatatype(serializeDataType(IntegerType).get)
       .setIntVal(expr.seed)
@@ -75,7 +75,7 @@ object CometSha2 extends CometExpressionSerde[Sha2] {
     // It's possible for spark to dynamically compute the number of bits from input
     // expression, however DataFusion does not support that yet.
     if (!expr.right.foldable) {
-      withInfo(expr, "For Sha2, non-foldable right argument is not supported")
+      withInfo(expr, "For Sha2, non literal numBits is not supported")
       return None
     }
 

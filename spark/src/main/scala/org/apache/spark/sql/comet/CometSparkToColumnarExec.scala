@@ -33,7 +33,7 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.DataTypeSupport
+import org.apache.comet.{CometConf, DataTypeSupport}
 
 case class CometSparkToColumnarExec(child: SparkPlan)
     extends RowToColumnarTransition
@@ -94,7 +94,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     val numInputRows = longMetric("numInputRows")
     val numOutputBatches = longMetric("numOutputBatches")
     val conversionTime = longMetric("conversionTime")
-    val maxRecordsPerBatch = conf.arrowMaxRecordsPerBatch
+    val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
     val timeZoneId = conf.sessionLocalTimeZone
     val schema = child.schema
 

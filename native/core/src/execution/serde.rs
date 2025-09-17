@@ -22,7 +22,7 @@ use crate::errors::ExpressionError;
 use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
 use arrow::datatypes::{Field, Fields};
 use datafusion_comet_proto::{
-    spark_expression,
+    spark_config, spark_expression,
     spark_expression::data_type::{
         data_type_info::DatatypeStruct,
         DataTypeId,
@@ -69,6 +69,14 @@ pub fn deserialize_expr(buf: &[u8]) -> Result<spark_expression::Expr, Expression
 /// Deserialize bytes to protobuf type of operator
 pub fn deserialize_op(buf: &[u8]) -> Result<spark_operator::Operator, ExecutionError> {
     match spark_operator::Operator::decode(&mut Cursor::new(buf)) {
+        Ok(e) => Ok(e),
+        Err(err) => Err(ExecutionError::from(err)),
+    }
+}
+
+/// Deserialize bytes to protobuf type of data type
+pub fn deserialize_config(buf: &[u8]) -> Result<spark_config::ConfigMap, ExecutionError> {
+    match spark_config::ConfigMap::decode(&mut Cursor::new(buf)) {
         Ok(e) => Ok(e),
         Err(err) => Err(ExecutionError::from(err)),
     }
