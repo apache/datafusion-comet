@@ -90,9 +90,10 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.executor.extraClassPath=$COMET_JAR \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.comet.explainFallback.enabled=true \
+    --conf spark.sql.extendedExplainProviders=org.apache.comet.ExtendedExplainInfo \
+    --conf spark.comet.explain.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=16g
+    --conf spark.memory.offHeap.size=2g
 ```
 
 ### Verify Comet enabled for Spark SQL query

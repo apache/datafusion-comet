@@ -638,13 +638,32 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       var newPlan = transform(normalizedPlan)
 
-      // if the plan cannot be run fully natively then explain why (when appropriate
-      // config is enabled)
-      if (CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get()) {
+      if (CometConf.COMET_EXPLAIN_ENABLED.get()) {
+        // COMET_EXPLAIN_ENABLED shows an explain plan regardless of
+        // whether there were any fallback reasons or not
         val info = new ExtendedExplainInfo()
-        if (info.extensionInfo(newPlan).nonEmpty) {
-          logWarning(
-            "Comet cannot execute some parts of this plan natively " +
+        val fallbackReasons = info.extensionInfo(newPlan)
+        if (fallbackReasons.nonEmpty) {
+          logInfo(
+            "Comet cannot accelerate some parts of this plan " +
+              s"(set ${CometConf.COMET_EXPLAIN_ENABLED.key}=false " +
+              "to disable this logging):\n" +
+              s"${info.generateVerboseExtendedInfo(newPlan)}")
+        } else if (CometConf.COMET_EXPLAIN_ENABLED.get()) {
+          logInfo(
+            "Comet fully accelerated this plan " +
+              s"(set ${CometConf.COMET_EXPLAIN_ENABLED.key}=false " +
+              "to disable this logging):\n" +
+              s"${info.generateVerboseExtendedInfo(newPlan)}")
+        }
+      } else if (CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get()) {
+        // COMET_EXPLAIN_FALLBACK_ENABLED only shows an explain plan if
+        // there were fallback reasons
+        val info = new ExtendedExplainInfo()
+        val fallbackReasons = info.extensionInfo(newPlan)
+        if (fallbackReasons.nonEmpty) {
+          logInfo(
+            "Comet cannot accelerate some parts of this plan " +
               s"(set ${CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key}=false " +
               "to disable this logging):\n" +
               s"${info.generateVerboseExtendedInfo(newPlan)}")

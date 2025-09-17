@@ -457,11 +457,21 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPLAIN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.enabled")
+      .doc(
+        "When this setting is enabled, Comet will log an explain plan as part of the query " +
+          "planning process for each query stage.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXPLAIN_VERBOSE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explain.verbose.enabled")
       .doc(
-        "When this setting is enabled, Comet will provide a verbose tree representation of " +
-          "the extended information.")
+        "When this setting is enabled, Comet's extended explain output will provide the full " +
+          "query plan annotated with fallback reasons as well as a summary of how much of " +
+          "the plan was accelerated by Comet. When this setting is disabled, a list of fallback " +
+          "reasons will be provided instead.")
       .booleanConf
       .createWithDefault(false)
 
@@ -495,6 +505,7 @@ object CometConf extends ShimCometConf {
         "When this setting is enabled, Comet will provide logging explaining the reason(s) " +
           "why a query stage cannot be executed natively. Set this to false to " +
           "reduce the amount of logging.")
+      .internal()
       .booleanConf
       .createWithDefault(false)
 
