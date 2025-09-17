@@ -48,7 +48,7 @@ mod string_funcs;
 mod datetime_funcs;
 pub use agg_funcs::*;
 
-pub use cast::{spark_cast, BinaryOutputStyle, Cast, SparkCastOptions};
+pub use cast::{spark_cast, Cast, SparkCastOptions};
 
 mod bloom_filter;
 pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain};
@@ -96,6 +96,15 @@ pub enum EvalMode {
     /// Same as Ansi mode, except that it converts errors to NULL values without
     /// failing the entire query.
     Try,
+}
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub enum BinaryOutputStyle {
+    Utf8,
+    Basic,
+    Base64,
+    Hex,
+    HexDiscrete,
 }
 
 pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {

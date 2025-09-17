@@ -61,8 +61,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_modulo_expr, create_negate_expr, BloomFilterAgg,
-    BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
+    create_comet_physical_fun, create_modulo_expr, create_negate_expr, BinaryOutputStyle,
+    BloomFilterAgg, BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -110,10 +110,10 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, BinaryOutputStyle, Cast, CheckOverflow, Correlation, Covariance,
-    CreateNamedStruct, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
-    NormalizeNaNAndZero, RLike, RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr,
-    SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
+    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
+    RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr, SumDecimal, TimestampTruncExpr,
+    ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;

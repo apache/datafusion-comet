@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::timezone;
 use crate::utils::array_with_timezone;
+use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
 use arrow::array::{DictionaryArray, GenericByteArray, StringArray, StructArray};
@@ -157,15 +157,6 @@ impl Hash for Cast {
         self.data_type.hash(state);
         self.cast_options.hash(state);
     }
-}
-
-#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
-pub enum BinaryOutputStyle {
-    Utf8,
-    Basic,
-    Base64,
-    Hex,
-    HexDiscrete,
 }
 
 /// Determine if Comet supports a cast, taking options such as EvalMode and Timezone into account.
