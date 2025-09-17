@@ -118,6 +118,12 @@ class CometExecSuite extends CometTestBase {
           val (_, cometPlan) = checkSparkAnswer(df)
           val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
           assert(infos.contains("Dynamic Partition Pruning is not supported"))
+
+          withSQLConf(CometConf.COMET_EXPLAIN_VERBOSE_ENABLED.key -> "true") {
+            val extendedExplain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+            // scalastyle:off
+            println(extendedExplain)
+          }
         }
       }
     }

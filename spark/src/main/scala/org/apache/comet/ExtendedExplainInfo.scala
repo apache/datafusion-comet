@@ -23,7 +23,8 @@ import scala.collection.mutable
 
 import org.apache.spark.sql.ExtendedExplainGenerator
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
-import org.apache.spark.sql.execution.{InputAdapter, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
 
 import org.apache.comet.CometExplainInfo.getActualPlan
@@ -81,9 +82,14 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
   // generates the extended info in a verbose manner, printing each node along with the
   // extended information in a tree display
   def generateVerboseExtendedInfo(plan: SparkPlan): String = {
+    val planStats = new PlanStats()
     val outString = new StringBuilder()
-    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString)
-    outString.toString()
+    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
+    val eligible = planStats.sparkOperators + planStats.cometOperators
+    val converted =
+      if (eligible == 0) 0.0 else planStats.cometOperators.toDouble / eligible * 100.0
+    val summary = s"Comet accelerated ${converted.toInt}% of eligible operators ($planStats)."
+    s"${outString.toString()}\n\n$summary."
   }
 
   // Simplified generateTreeString from Spark TreeNode. Appends explain info to the node if any
@@ -92,7 +98,27 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       depth: Int,
       lastChildren: Seq[Boolean],
       indent: Int,
-      outString: StringBuilder): Unit = {
+      outString: StringBuilder,
+      planStats: PlanStats): Unit = {
+
+    // scalastyle:off
+    node match {
+      case _: AdaptiveSparkPlanExec | _: InputAdapter | _: QueryStageExec |
+          _: WholeStageCodegenExec =>
+        println(s"ZZZ WRAPPER: ${node.nodeName}")
+        planStats.wrappers += 1
+      case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
+          _: CometSparkToColumnarExec =>
+        println(s"ZZZ TRANSITION: ${node.nodeName}")
+        planStats.transitions += 1
+      case _: CometPlan =>
+        println(s"ZZZ COMET: ${node.nodeName}")
+        planStats.cometOperators += 1
+      case _ =>
+        println(s"ZZZ SPARK: ${node.nodeName}")
+        planStats.sparkOperators += 1
+    }
+
     outString.append("   " * indent)
     if (depth > 0) {
       lastChildren.init.foreach { isLast =>
@@ -119,7 +145,8 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
             depth + 2,
             lastChildren :+ node.children.isEmpty :+ false,
             indent,
-            outString)
+            outString,
+            planStats)
         case _ =>
       }
       generateTreeString(
@@ -127,7 +154,8 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
         depth + 2,
         lastChildren :+ node.children.isEmpty :+ true,
         indent,
-        outString)
+        outString,
+        planStats)
     }
     if (node.children.nonEmpty) {
       node.children.init.foreach {
@@ -137,15 +165,34 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
             depth + 1,
             lastChildren :+ false,
             indent,
-            outString)
+            outString,
+            planStats)
         case _ =>
       }
       node.children.last match {
         case c @ (_: TreeNode[_]) =>
-          generateTreeString(getActualPlan(c), depth + 1, lastChildren :+ true, indent, outString)
+          generateTreeString(
+            getActualPlan(c),
+            depth + 1,
+            lastChildren :+ true,
+            indent,
+            outString,
+            planStats)
         case _ =>
       }
     }
+  }
+}
+
+class PlanStats {
+  var sparkOperators: Int = 0
+  var cometOperators: Int = 0
+  var wrappers: Int = 0
+  var transitions: Int = 0
+
+  override def toString: String = {
+    s"sparkOperators=$sparkOperators, cometOperators=$cometOperators, " +
+      s"transitions=$transitions, wrappers=$wrappers"
   }
 }
 
