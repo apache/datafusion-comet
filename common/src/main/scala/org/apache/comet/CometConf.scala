@@ -457,14 +457,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_EXPLAIN_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.explain.enabled")
-      .doc(
-        "When this setting is enabled, Comet will log an explain plan as part of the query " +
-          "planning process for each query stage.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_EXPLAIN_VERBOSE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explain.verbose.enabled")
       .doc(

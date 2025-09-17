@@ -115,14 +115,6 @@ Create a view from the Parquet file. Again, Comet will not accelerate this part.
 
 ```
 scala> spark.read.parquet("/tmp/test").createOrReplaceTempView("t1")
-
-WARN CometExecRule: Comet cannot accelerate some parts of this plan (set spark.comet.explain.enabled=false to disable this logging):
-Execute CreateViewCommand
-   +- CreateViewCommand
-         +- LogicalRelation
-
-Comet accelerated 0% of eligible operators (sparkOperators=3, cometOperators=0, transitions=0, wrappers=0).
-
 ```
 
 Executing a simple SELECT query should be fully accelerated by Comet:
