@@ -39,13 +39,14 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
 
+import org.apache.comet.Constants.COMET_CONF_DIR_ENV
 import org.apache.comet.shims.CometTypeShim
 import org.apache.comet.vector.CometVector
 
 object Utils extends CometTypeShim {
   def getConfPath(confFileName: String): String = {
     sys.env
-      .get("COMET_CONF_DIR")
+      .get(COMET_CONF_DIR_ENV)
       .map { t => new File(s"$t${File.separator}$confFileName") }
       .filter(_.isFile)
       .map(_.getAbsolutePath)
