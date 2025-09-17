@@ -26,8 +26,7 @@ import java.sql.{Date, Timestamp}
 import java.time.{Duration, Instant, LocalDate, Period}
 import java.util.Locale
 
-import scala.collection.JavaConverters._
-import scala.collection.JavaConverters.asScalaBufferConverter
+import scala.jdk.CollectionConverters._
 
 import org.apache.parquet.column.statistics.{Statistics => ParquetStatistics}
 import org.apache.parquet.filter2.predicate._

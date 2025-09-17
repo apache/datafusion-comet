@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex._

@@ -33,7 +33,6 @@ import javax.annotation.Nullable;
 
 import scala.Option;
 import scala.Product2;
-import scala.collection.JavaConverters;
 import scala.reflect.ClassTag;
 import scala.reflect.ClassTag$;
 
@@ -80,6 +79,8 @@ import com.google.common.io.Closeables;
 
 import org.apache.comet.CometConf;
 import org.apache.comet.Native;
+
+import static scala.jdk.javaapi.CollectionConverters.*;
 
 /**
  * This is based on Spark {@link UnsafeShuffleWriter}, as a writer to write shuffling rows into
@@ -201,7 +202,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   /** This convenience method should only be called in test code. */
   @VisibleForTesting
   public void write(Iterator<Product2<K, V>> records) throws IOException {
-    write(JavaConverters.asScalaIteratorConverter(records).asScala());
+    write(asScala(records));
   }
 
   @Override

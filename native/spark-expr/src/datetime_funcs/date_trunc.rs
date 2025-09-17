@@ -24,7 +24,7 @@ use std::any::Any;
 
 use crate::kernels::temporal::{date_trunc_array_fmt_dyn, date_trunc_dyn};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkDateTrunc {
     signature: Signature,
     aliases: Vec<String>,

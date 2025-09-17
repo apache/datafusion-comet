@@ -27,7 +27,7 @@ FEATURES_ARG := $(shell ! [ -z $(COMET_FEATURES) ] && echo '--features=$(COMET_F
 all: core jvm
 
 core:
-	cd native && cargo build
+	cd native && cargo build $(FEATURES_ARG)
 test-rust:
 	# We need to compile CometException so that the cargo test can pass
 	./mvnw compile -pl common -DskipTests $(PROFILES)

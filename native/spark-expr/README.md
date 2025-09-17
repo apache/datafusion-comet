@@ -20,4 +20,19 @@ under the License.
 # datafusion-comet-spark-expr: Spark-compatible Expressions
 
 This crate provides Apache Spark-compatible expressions for use with DataFusion and is maintained as part of the 
-[Apache DataFusion Comet](https://github.com/apache/datafusion-comet/) subproject.
+[Apache DataFusion Comet] subproject.
+
+[Apache DataFusion Comet]: https://github.com/apache/datafusion-comet/
+
+# Deprecation Notice
+
+The expressions in this crate are being migrated to the [datafusion-spark] crate, which is part of the core DataFusion
+project.
+
+The DataFusion Comet project will stop publishing new versions of the `datafusion-comet-spark-expr` crate in the future.
+
+There is a GitHub issue (https://github.com/apache/datafusion-comet/issues/2084) to track the work of migrating
+functionality from this crate to `datafusion-spark`.
+
+[datafusion-spark]: https://docs.rs/datafusion-spark/50.0.0/datafusion_spark/
+
