@@ -276,7 +276,7 @@ object CometBroadcastExchangeExec {
  */
 class CometBatchRDD(
     sc: SparkContext,
-    numPartitions: Int,
+    @volatile var numPartitions: Int,
     value: broadcast.Broadcast[Array[ChunkedByteBuffer]])
     extends RDD[ColumnarBatch](sc, Nil) {
 
@@ -289,6 +289,12 @@ class CometBatchRDD(
     partition.value.value.toIterator
       .flatMap(Utils.decodeBatches(_, this.getClass.getSimpleName))
   }
+
+  def withNumPartitions(numPartitions: Int): CometBatchRDD = {
+    this.numPartitions = numPartitions
+    this
+  }
+
 }
 
 class CometBatchPartition(

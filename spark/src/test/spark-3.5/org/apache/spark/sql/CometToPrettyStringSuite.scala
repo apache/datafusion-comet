@@ -19,6 +19,7 @@
 
 package org.apache.spark.sql
 
+import org.apache.comet.CometFuzzTestBase
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.Compatible
 

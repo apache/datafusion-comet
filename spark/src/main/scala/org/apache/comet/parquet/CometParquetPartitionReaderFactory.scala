@@ -19,8 +19,8 @@
 
 package org.apache.comet.parquet
 
-import scala.collection.JavaConverters
 import scala.collection.mutable
+import scala.jdk.CollectionConverters._
 
 import org.apache.parquet.filter2.predicate.{FilterApi, FilterPredicate}
 import org.apache.parquet.hadoop.ParquetInputFormat
@@ -139,7 +139,7 @@ case class CometParquetPartitionReaderFactory(
         datetimeRebaseSpec.mode == CORRECTED,
         partitionSchema,
         file.partitionValues,
-        JavaConverters.mapAsJavaMap(metrics))
+        metrics.asJava)
       val taskContext = Option(TaskContext.get)
       taskContext.foreach(_.addTaskCompletionListener[Unit](_ => cometReader.close()))
       return cometReader

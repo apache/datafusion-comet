@@ -42,6 +42,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.exec.replaceSortMergeJoin=true \
     --conf spark.comet.expression.allowIncompatible=true \
+    --conf spark.comet.scan.impl=native_datafusion \
     tpcbench.py \
     --name comet \
     --benchmark tpch \

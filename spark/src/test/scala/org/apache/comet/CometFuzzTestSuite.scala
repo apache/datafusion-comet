@@ -21,15 +21,8 @@ package org.apache.comet
 
 import scala.util.Random
 
-import org.scalactic.source.Position
-import org.scalatest.Tag
-
 import org.apache.commons.codec.binary.Hex
-import org.apache.spark.sql.CometFuzzTestBase
-import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
-import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper}
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
@@ -37,7 +30,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
-class CometFuzzTestSuite extends CometFuzzTestBase with AdaptiveSparkPlanHelper {
+class CometFuzzTestSuite extends CometFuzzTestBase {
 
   test("select *") {
     val df = spark.read.parquet(filename)
@@ -128,18 +121,6 @@ class CometFuzzTestSuite extends CometFuzzTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
-  test("count distinct") {
-    val df = spark.read.parquet(filename)
-    df.createOrReplaceTempView("t1")
-    for (col <- df.columns) {
-      val sql = s"SELECT count(distinct $col) FROM t1"
-      val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
-        assert(1 == collectNativeScans(cometPlan).length)
-      }
-    }
-  }
-
   test("order by multiple columns") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
@@ -149,32 +130,6 @@ class CometFuzzTestSuite extends CometFuzzTestBase with AdaptiveSparkPlanHelper 
     val (_, cometPlan) = checkSparkAnswer(sql)
     if (usingDataSourceExec) {
       assert(1 == collectNativeScans(cometPlan).length)
-    }
-  }
-
-  test("aggregate group by single column") {
-    val df = spark.read.parquet(filename)
-    df.createOrReplaceTempView("t1")
-    for (col <- df.columns) {
-      // cannot run fully natively due to range partitioning and sort
-      val sql = s"SELECT $col, count(*) FROM t1 GROUP BY $col ORDER BY $col"
-      val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
-        assert(1 == collectNativeScans(cometPlan).length)
-      }
-    }
-  }
-
-  test("min/max aggregate") {
-    val df = spark.read.parquet(filename)
-    df.createOrReplaceTempView("t1")
-    for (col <- df.columns) {
-      // cannot run fully native due to HashAggregate
-      val sql = s"SELECT min($col), max($col) FROM t1"
-      val (_, cometPlan) = checkSparkAnswer(sql)
-      if (usingDataSourceExec) {
-        assert(1 == collectNativeScans(cometPlan).length)
-      }
     }
   }
 
@@ -328,38 +283,6 @@ class CometFuzzTestSuite extends CometFuzzTestBase with AdaptiveSparkPlanHelper 
           }
         }
       }
-    }
-  }
-
-  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
-      pos: Position): Unit = {
-    Seq("native", "jvm").foreach { shuffleMode =>
-      Seq(
-        CometConf.SCAN_NATIVE_COMET,
-        CometConf.SCAN_NATIVE_DATAFUSION,
-        CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach { scanImpl =>
-        super.test(testName + s" ($scanImpl, $shuffleMode shuffle)", testTags: _*) {
-          withSQLConf(
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl,
-            CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
-            CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
-            testFun
-          }
-        }
-      }
-    }
-  }
-
-  private def collectNativeScans(plan: SparkPlan): Seq[SparkPlan] = {
-    collect(plan) {
-      case scan: CometScanExec => scan
-      case scan: CometNativeScanExec => scan
-    }
-  }
-
-  private def collectCometShuffleExchanges(plan: SparkPlan): Seq[SparkPlan] = {
-    collect(plan) { case exchange: CometShuffleExchangeExec =>
-      exchange
     }
   }
 

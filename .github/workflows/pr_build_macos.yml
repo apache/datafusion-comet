@@ -67,6 +67,7 @@ jobs:
           - name: "fuzz"
             value: |
               org.apache.comet.CometFuzzTestSuite
+              org.apache.comet.CometFuzzAggregateSuite
               org.apache.comet.DataGeneratorSuite
           - name: "shuffle"
             value: |
