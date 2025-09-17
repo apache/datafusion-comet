@@ -26,6 +26,7 @@ import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 import org.apache.comet.CometExplainInfo.getActualPlan
 
@@ -89,7 +90,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     val converted =
       if (eligible == 0) 0.0 else planStats.cometOperators.toDouble / eligible * 100.0
     val summary = s"Comet accelerated ${converted.toInt}% of eligible operators ($planStats)."
-    s"${outString.toString()}\n\n$summary."
+    s"${outString.toString()}\n$summary"
   }
 
   // Simplified generateTreeString from Spark TreeNode. Appends explain info to the node if any
@@ -101,10 +102,11 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       outString: StringBuilder,
       planStats: PlanStats): Unit = {
 
+    // TODO remove debug logging
     // scalastyle:off
     node match {
       case _: AdaptiveSparkPlanExec | _: InputAdapter | _: QueryStageExec |
-          _: WholeStageCodegenExec =>
+          _: WholeStageCodegenExec | _: ReusedExchangeExec =>
         println(s"ZZZ WRAPPER: ${node.nodeName}")
         planStats.wrappers += 1
       case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
