@@ -1087,7 +1087,7 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
                 let binary_output_style = from_protobuf_binary_output_style(s);
                 spark_binary_formatter(value, binary_output_style.unwrap())
             }
-            None => df_binary_formatter(value),
+            None => cast_binary_formatter(value),
         }
     }
 
@@ -1136,7 +1136,7 @@ fn spark_binary_formatter(value: &[u8], binary_output_style: BinaryOutputStyle) 
     }
 }
 
-fn df_binary_formatter(value: &[u8]) -> String {
+fn cast_binary_formatter(value: &[u8]) -> String {
     match String::from_utf8(value.to_vec()) {
         Ok(value) => value,
         Err(_) => unsafe { String::from_utf8_unchecked(value.to_vec()) },
