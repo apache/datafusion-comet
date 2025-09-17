@@ -102,22 +102,16 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       outString: StringBuilder,
       planStats: PlanStats): Unit = {
 
-    // TODO remove debug logging
-    // scalastyle:off
     node match {
       case _: AdaptiveSparkPlanExec | _: InputAdapter | _: QueryStageExec |
           _: WholeStageCodegenExec | _: ReusedExchangeExec | _: AQEShuffleReadExec =>
-        println(s"ZZZ WRAPPER: ${node.nodeName}")
         planStats.wrappers += 1
       case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
           _: CometSparkToColumnarExec =>
-        println(s"ZZZ TRANSITION: ${node.nodeName}")
         planStats.transitions += 1
       case _: CometPlan =>
-        println(s"ZZZ COMET: ${node.nodeName}")
         planStats.cometOperators += 1
       case _ =>
-        println(s"ZZZ SPARK: ${node.nodeName}")
         planStats.sparkOperators += 1
     }
 
