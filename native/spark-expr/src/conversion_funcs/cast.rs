@@ -286,11 +286,7 @@ fn can_cast_to_string(from_type: &DataType, options: &SparkCastOptions) -> bool 
             // scientific notation where Comet does not
             true
         }
-        Binary => {
-            // https://github.com/apache/datafusion-comet/issues/377
-            // Only works for binary data representing valid UTF-8 strings
-            options.allow_incompat
-        }
+        Binary => true,
         Struct(fields) => fields
             .iter()
             .all(|f| can_cast_to_string(f.data_type(), options)),

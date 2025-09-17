@@ -828,7 +828,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // CAST from BinaryType
 
   test("cast BinaryType to StringType") {
-    // https://github.com/apache/datafusion-comet/issues/377
     castTest(generateBinary(), DataTypes.StringType)
   }
 
