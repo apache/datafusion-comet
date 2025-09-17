@@ -692,6 +692,8 @@ case class CometHashAggregateExec(
     override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec
     with PartitioningPreservingUnaryExecNode {
+  override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(resultExpressions)
+
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
 
