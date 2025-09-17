@@ -25,7 +25,7 @@ import org.apache.spark.sql.ExtendedExplainGenerator
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 import org.apache.comet.CometExplainInfo.getActualPlan
@@ -106,7 +106,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     // scalastyle:off
     node match {
       case _: AdaptiveSparkPlanExec | _: InputAdapter | _: QueryStageExec |
-          _: WholeStageCodegenExec | _: ReusedExchangeExec =>
+          _: WholeStageCodegenExec | _: ReusedExchangeExec | _: AQEShuffleReadExec =>
         println(s"ZZZ WRAPPER: ${node.nodeName}")
         planStats.wrappers += 1
       case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
