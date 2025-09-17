@@ -116,11 +116,7 @@ class CometExecSuite extends CometTestBase {
             spark.sql(
               "select * from dpp_fact join dpp_dim on fact_date = dim_date where dim_id > 7")
           val (_, cometPlan) = checkSparkAnswer(df)
-          val t1 = System.currentTimeMillis()
           val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
-          val t2 = System.currentTimeMillis()
-          // scalastyle:off
-          println(s"Took ${t2-t1} ms to generate: $infos")
           assert(infos.contains("Dynamic Partition Pruning is not supported"))
         }
       }
