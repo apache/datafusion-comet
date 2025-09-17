@@ -463,7 +463,7 @@ object CometConf extends ShimCometConf {
         "When this setting is enabled, Comet will provide a verbose tree representation of " +
           "the extended information.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_EXPLAIN_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explain.native.enabled")
