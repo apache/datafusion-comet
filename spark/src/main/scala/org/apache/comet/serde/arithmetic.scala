@@ -206,7 +206,7 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       if (expr.right.dataType.isInstanceOf[DecimalType]) expr.right
       else Cast(expr.right, DecimalType(19, 0))
 
-    val rightExpr = nullIfWhenPrimitive(expr.right)
+    val rightExpr = nullIfWhenPrimitive(right)
 
     val dataType = (left.dataType, right.dataType) match {
       case (l: DecimalType, r: DecimalType) =>
