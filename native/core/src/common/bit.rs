@@ -671,7 +671,7 @@ impl BitReader {
             }
         }
 
-        debug_assert!((offset + i).is_multiple_of(8) || num_bits_to_read - i < 8);
+        debug_assert!(!(offset + i).is_multiple_of(8) || num_bits_to_read - i < 8);
 
         // Now copy the remaining bits if there's any.
         while i < num_bits_to_read {
