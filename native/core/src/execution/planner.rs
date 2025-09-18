@@ -1000,7 +1000,9 @@ impl PhysicalPlanner {
             }
             _ => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
-                if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode) && (data_type.is_numeric())
+                if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode)
+                    && (data_type.is_integer()
+                        || (data_type.is_floating() && op == DataFusionOperator::Divide))
                 {
                     let op_str = match op {
                         DataFusionOperator::Plus => "checked_add",
@@ -1008,7 +1010,7 @@ impl PhysicalPlanner {
                         DataFusionOperator::Multiply => "checked_mul",
                         DataFusionOperator::Divide => "checked_div",
                         _ => {
-                            todo!("Operator yet to be implemented!");
+                            todo!("ANSI mode for Operator yet to be implemented!");
                         }
                     };
                     let fun_expr = create_comet_physical_fun_with_eval_mode(
