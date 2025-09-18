@@ -640,24 +640,32 @@ management may throttle CPU cores.</p>
 <section id="data-generation">
 <h2>Data Generation<a class="headerlink" href="#data-generation" title="Link to this heading">¶</a></h2>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>cargo<span class="w"> </span>install<span class="w"> </span>tpchgen-cli
+mkdir<span class="w"> </span>benchmark_data
+<span class="nb">cd</span><span class="w"> </span>benchmark_data
 tpchgen-cli<span class="w"> </span>-s<span class="w"> </span><span class="m">100</span><span class="w"> </span>--format<span class="o">=</span>parquet
+<span class="nb">export</span><span class="w"> </span><span class="nv">$BENCH_DATA</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>
+</pre></div>
+</div>
+<p>Create a temp folder for spark events emitted during benchmarking</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>mkdir<span class="w"> </span>/tmp/spark-events
 </pre></div>
 </div>
 </section>
 <section id="clone-the-datafusion-benchmarks-repository">
 <h2>Clone the DataFusion Benchmarks Repository<a class="headerlink" href="#clone-the-datafusion-benchmarks-repository" title="Link to this heading">¶</a></h2>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/apache/datafusion-benchmarks.git
+<span class="nb">cd</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">DF_BENCH</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>
 </pre></div>
 </div>
 </section>
 <section id="install-spark">
 <h2>Install Spark<a class="headerlink" href="#install-spark" title="Link to this heading">¶</a></h2>
-<p>Install Spark</p>
+<p>Install Apache Spark. This example refers to 3.5.4 version.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>wget<span class="w"> </span>https://archive.apache.org/dist/spark/spark-3.5.4/spark-3.5.4-bin-hadoop3.tgz
 tar<span class="w"> </span>xzf<span class="w"> </span>spark-3.5.4-bin-hadoop3.tgz
 sudo<span class="w"> </span>mv<span class="w"> </span>spark-3.5.4-bin-hadoop3<span class="w"> </span>/opt
 <span class="nb">export</span><span class="w"> </span><span class="nv">SPARK_HOME</span><span class="o">=</span>/opt/spark-3.5.4-bin-hadoop3/
-mkdir<span class="w"> </span>/tmp/spark-events
 </pre></div>
 </div>
 <p>Start Spark in standalone mode:</p>
@@ -697,10 +705,10 @@ In order to start local Apache Spark cluster on <code class="docutils literal no
 <span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>16g<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.eventLog.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>/path/to/datafusion-benchmarks/runners/datafusion-comet/tpcbench.py<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span><span class="nv">$DF_BENCH</span>/runners/datafusion-comet/tpcbench.py<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--benchmark<span class="w"> </span>tpch<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--data<span class="w"> </span>/Users/rusty/Data/tpch/sf100<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--queries<span class="w"> </span>/path/to/datafusion-benchmarks/tpch/queries<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--data<span class="w"> </span><span class="nv">$BENCH_DATA</span>/tpch-data/<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--queries<span class="w"> </span><span class="nv">$DF_BENCH</span>/tpch/queries<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--output<span class="w"> </span>.<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--iterations<span class="w"> </span><span class="m">1</span>
 </pre></div>
@@ -712,7 +720,7 @@ In order to start local Apache Spark cluster on <code class="docutils literal no
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>release<span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span>mimalloc
 </pre></div>
 </div>
-<p>Set <code class="docutils literal notranslate"><span class="pre">COMET_JAR</span></code> to point to the location of the Comet jar file.</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">COMET_JAR</span></code> to point to the location of the Comet jar file. Example for Comet 0.8</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>/spark/target/comet-spark-spark3.5_2.12-0.8.0-SNAPSHOT.jar
 </pre></div>
 </div>
@@ -738,10 +746,10 @@ In order to start local Apache Spark cluster on <code class="docutils literal no
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.shuffle.fallbackToColumnar<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.replaceSortMergeJoin<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.expression.allowIncompatible<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>/path/to/datafusion-benchmarks/runners/datafusion-comet/tpcbench.py<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span><span class="nv">$DF_BENCH</span>/runners/datafusion-comet/tpcbench.py<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--benchmark<span class="w"> </span>tpch<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--data<span class="w"> </span>/path/to/tpch-data/<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--queries<span class="w"> </span>/path/to/datafusion-benchmarks//tpch/queries<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--data<span class="w"> </span><span class="nv">$BENCH_DATA</span>/tpch-data/<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--queries<span class="w"> </span><span class="nv">$DF_BENCH</span>/tpch/queries<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--output<span class="w"> </span>.<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--iterations<span class="w"> </span><span class="m">1</span>
 </pre></div>
