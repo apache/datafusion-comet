@@ -47,9 +47,9 @@ Note that we do not test the full matrix of supported Java and Scala versions in
 Experimental support is provided for the following versions of Apache Spark and is intended for development/testing
 use only and should not be used in production yet.
 
-| Spark Version  | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
-| -------------- | ------------ | ------------- | ----------------- |-----------------------|
-| 4.0.0 | 17           | 2.13          | Yes               | Yes                   |
+| Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
+|---------------| ------------ | ------------- | ----------------- |-----------------------|
+| 4.0.1         | 17           | 2.13          | Yes               | Yes                   |
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
 Cloud Service Providers.
