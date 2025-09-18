@@ -1007,7 +1007,6 @@ impl PhysicalPlanner {
                         DataFusionOperator::Minus => "checked_sub",
                         DataFusionOperator::Multiply => "checked_mul",
                         DataFusionOperator::Divide => "checked_div",
-                        DataFusionOperator::IntegerDivide => "checked_div",
                         _ => {
                             todo!("Operator yet to be implemented!");
                         }
