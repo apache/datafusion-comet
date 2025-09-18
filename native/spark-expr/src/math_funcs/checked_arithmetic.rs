@@ -49,7 +49,7 @@ where
                         Err(_e) => {
                             if is_ansi_mode {
                                 return Err(SparkError::ArithmeticOverflow {
-                                    from_type: String::from("Integer/Float"),
+                                    from_type: String::from("integer"),
                                 }
                                 .into());
                             } else {
@@ -70,7 +70,7 @@ where
                         Err(_e) => {
                             if is_ansi_mode {
                                 return Err(SparkError::ArithmeticOverflow {
-                                    from_type: String::from("Integer/Float"),
+                                    from_type: String::from("integer"),
                                 }
                                 .into());
                             } else {
@@ -91,7 +91,7 @@ where
                         Err(_e) => {
                             if is_ansi_mode {
                                 return Err(SparkError::ArithmeticOverflow {
-                                    from_type: String::from("Integer/Float"),
+                                    from_type: String::from("integer"),
                                 }
                                 .into());
                             } else {
@@ -115,7 +115,7 @@ where
                                     Err(divide_by_zero_error().into())
                                 } else {
                                     return Err(SparkError::ArithmeticOverflow {
-                                        from_type: String::from("Integer/Float"),
+                                        from_type: String::from("integer"),
                                     }
                                     .into());
                                 };
@@ -227,19 +227,20 @@ fn checked_arithmetic_internal(
             op,
             is_ansi_mode,
         ),
-        DataType::Float16 => try_arithmetic_kernel::<Float16Type>(
+        // Spark always casts division operands to floats
+        DataType::Float16 if (op == "checked_div") => try_arithmetic_kernel::<Float16Type>(
             left_arr.as_primitive::<Float16Type>(),
             right_arr.as_primitive::<Float16Type>(),
             op,
             is_ansi_mode,
         ),
-        DataType::Float32 => try_arithmetic_kernel::<Float32Type>(
+        DataType::Float32 if (op == "checked_div") => try_arithmetic_kernel::<Float32Type>(
             left_arr.as_primitive::<Float32Type>(),
             right_arr.as_primitive::<Float32Type>(),
             op,
             is_ansi_mode,
         ),
-        DataType::Float64 => try_arithmetic_kernel::<Float64Type>(
+        DataType::Float64 if (op == "checked_div") => try_arithmetic_kernel::<Float64Type>(
             left_arr.as_primitive::<Float64Type>(),
             right_arr.as_primitive::<Float64Type>(),
             op,

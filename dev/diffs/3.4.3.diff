@@ -194,13 +194,14 @@ index 41fd4de2a09..44cd244d3b0 100644
  --CONFIG_DIM1 spark.sql.codegen.wholeStage=true
  --CONFIG_DIM1 spark.sql.codegen.wholeStage=false,spark.sql.codegen.factoryMode=CODEGEN_ONLY
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
-index 3a409eea348..b0a1fa5c20a 100644
+index 3a409eea348..38fed024c98 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
 +++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
-@@ -69,6 +69,7 @@ SELECT '' AS one, i.* FROM INT4_TBL i WHERE (i.f1 % smallint('2')) = smallint('1
+@@ -69,6 +69,8 @@ SELECT '' AS one, i.* FROM INT4_TBL i WHERE (i.f1 % smallint('2')) = smallint('1
  -- any evens
  SELECT '' AS three, i.* FROM INT4_TBL i WHERE (i.f1 % int('2')) = smallint('0');
  
++-- https://github.com/apache/datafusion-comet/issues/2215
 +--SET spark.comet.exec.enabled=false
  -- [SPARK-28024] Incorrect value when out of range
  SELECT '' AS five, i.f1, i.f1 * smallint('2') AS x FROM INT4_TBL i;

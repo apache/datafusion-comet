@@ -87,10 +87,6 @@ trait MathBase {
 
 object CometAdd extends CometExpressionSerde[Add] with MathBase {
 
-  override def getSupportLevel(expr: Add): SupportLevel = {
-    Compatible(None)
-  }
-
   override def convert(
       expr: Add,
       inputs: Seq[Attribute],
@@ -112,10 +108,6 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
 }
 
 object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
-
-  override def getSupportLevel(expr: Subtract): SupportLevel = {
-    Compatible(None)
-  }
 
   override def convert(
       expr: Subtract,
@@ -139,10 +131,6 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
 
 object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 
-  override def getSupportLevel(expr: Multiply): SupportLevel = {
-    Compatible(None)
-  }
-
   override def convert(
       expr: Multiply,
       inputs: Seq[Attribute],
@@ -164,10 +152,6 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 }
 
 object CometDivide extends CometExpressionSerde[Divide] with MathBase {
-
-  override def getSupportLevel(expr: Divide): SupportLevel = {
-    Compatible(None)
-  }
 
   override def convert(
       expr: Divide,
@@ -197,7 +181,11 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with MathBase {
 
   override def getSupportLevel(expr: IntegralDivide): SupportLevel = {
-    Compatible(None)
+    if (expr.evalMode == EvalMode.ANSI) {
+      Incompatible(Some("ANSI mode is not supported"))
+    } else {
+      Compatible(None)
+    }
   }
 
   override def convert(
@@ -218,7 +206,7 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       if (expr.right.dataType.isInstanceOf[DecimalType]) expr.right
       else Cast(expr.right, DecimalType(19, 0))
 
-    val rightExpr = nullIfWhenPrimitive(right)
+    val rightExpr = nullIfWhenPrimitive(expr.right)
 
     val dataType = (left.dataType, right.dataType) match {
       case (l: DecimalType, r: DecimalType) =>

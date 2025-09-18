@@ -286,6 +286,8 @@ impl PhysicalPlanner {
                 )
             }
             ExprStruct::IntegralDivide(expr) => {
+                // TODO respect eval mode
+                // https://github.com/apache/datafusion-comet/issues/533
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr_with_options(
                     expr.left.as_ref().unwrap(),
@@ -998,14 +1000,14 @@ impl PhysicalPlanner {
             }
             _ => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
-                if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode)
-                    && (data_type.is_floating() || data_type.is_integer())
+                if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode) && (data_type.is_numeric())
                 {
                     let op_str = match op {
                         DataFusionOperator::Plus => "checked_add",
                         DataFusionOperator::Minus => "checked_sub",
                         DataFusionOperator::Multiply => "checked_mul",
                         DataFusionOperator::Divide => "checked_div",
+                        DataFusionOperator::IntegerDivide => "checked_div",
                         _ => {
                             todo!("Operator yet to be implemented!");
                         }

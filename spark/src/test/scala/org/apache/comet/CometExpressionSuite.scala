@@ -47,7 +47,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
   val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
-    """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] Integer/Float overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error."""
+    """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error."""
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
@@ -401,7 +401,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val data = Seq((Integer.MAX_VALUE, 1), (Integer.MIN_VALUE, -1))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
-        spark.table("tbl").printSchema()
         val res = spark.sql("""
              |SELECT
              |  _1 + _2
@@ -457,7 +456,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("ANSI support for divide") {
+  test("ANSI support for divide (division by zero)") {
+//    TODO : Support ANSI mode in Integral divide
     val data = Seq((Integer.MIN_VALUE, 0))
 <<<<<<< HEAD
     withSQLConf(
