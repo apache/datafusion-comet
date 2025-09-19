@@ -19,19 +19,17 @@
 
 package org.apache.comet.exec
 
-import scala.concurrent.duration.DurationInt
-
-import org.scalactic.source.Position
-import org.scalatest.Tag
-
+import org.apache.comet.CometConf
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkEnv
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.scalactic.source.Position
+import org.scalatest.Tag
 
-import org.apache.comet.CometConf
+import scala.concurrent.duration.DurationInt
 
 class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -251,15 +249,38 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   // This duplicates behavior seen in a much more complicated Spark SQL test
   // "SPARK-44647: test join key is the second cluster key"
   test("range partitioning with duplicate column references") {
-    withParquetTable((0 until 100).map(i => (i % 10, (i % 5).toByte, i % 3)), "tbl") {
+    // Test with wider schema and non-adjacent duplicate columns
+    withParquetTable(
+      (0 until 100).map(i => (i % 10, (i % 5).toByte, i % 3, i % 7, (i % 4).toShort, i.toString)),
+      "tbl") {
 
       val df = sql("SELECT * FROM tbl")
 
-      // This is the problematic case: duplicate references to the same column
-      // Both _1 references should get different BoundReference indices
-      val rangePartitioned = df.repartitionByRange(3, df.col("_1"), df.col("_1"), df.col("_2"))
+      // Test case 1: Adjacent duplicates (original case)
+      val rangePartitioned1 = df.repartitionByRange(3, df.col("_1"), df.col("_1"), df.col("_2"))
+      checkShuffleAnswer(rangePartitioned1, 1)
 
-      checkShuffleAnswer(rangePartitioned, 1)
+      // Test case 2: Non-adjacent duplicates in wider schema
+      // Duplicate _1 at positions 0 and 3, with different columns in between
+      val rangePartitioned2 =
+        df.repartitionByRange(4, df.col("_1"), df.col("_3"), df.col("_5"), df.col("_1"))
+      checkShuffleAnswer(rangePartitioned2, 1)
+
+      // Test case 3: Multiple duplicate pairs
+      // _1 duplicated at positions 0,2 and _4 duplicated at positions 1,3
+      val rangePartitioned3 =
+        df.repartitionByRange(4, df.col("_1"), df.col("_4"), df.col("_1"), df.col("_4"))
+      checkShuffleAnswer(rangePartitioned3, 1)
+
+      // Test case 4: Triple duplicates with gaps
+      val rangePartitioned4 = df.repartitionByRange(
+        5,
+        df.col("_1"),
+        df.col("_2"),
+        df.col("_1"),
+        df.col("_3"),
+        df.col("_1"))
+      checkShuffleAnswer(rangePartitioned4, 1)
     }
   }
 
