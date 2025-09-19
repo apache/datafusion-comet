@@ -23,6 +23,7 @@ use arrow::array::{
     Decimal128Builder, DictionaryArray, GenericByteArray, StringArray, StructArray,
 };
 use arrow::compute::can_cast_types;
+use arrow::datatypes::DataType::Utf8;
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, DataType, GenericBinaryType, Schema,
 };
@@ -63,7 +64,6 @@ use std::{
     num::Wrapping,
     sync::Arc,
 };
-use arrow::datatypes::DataType::Utf8;
 
 use base64::prelude::*;
 
@@ -1254,8 +1254,9 @@ fn cast_array_to_string(
         } else {
             str.clear();
             let value_ref = array.value(row_index);
-            let native_cast_result= cast_array(value_ref, &Utf8, &spark_cast_options).unwrap();
-            let string_array = native_cast_result.as_any()
+            let native_cast_result = cast_array(value_ref, &Utf8, &spark_cast_options).unwrap();
+            let string_array = native_cast_result
+                .as_any()
                 .downcast_ref::<StringArray>()
                 .unwrap();
             let mut any_fields_written = false;
@@ -1270,7 +1271,6 @@ fn cast_array_to_string(
             str.push_str("]");
             builder.append_value(&str);
         }
-
     }
     Ok(Arc::new(builder.finish()))
 }
@@ -2966,24 +2966,22 @@ mod tests {
 
     #[test]
     fn test_cast_string_array_to_string() {
-        use arrow::buffer::OffsetBuffer;
         use arrow::array::ListArray;
-        let values_array = StringArray::from(vec![
-            Some("a"), Some("b"), Some("c"),
-            Some("a"), None,
-            None
-        ]);
+        use arrow::buffer::OffsetBuffer;
+        let values_array =
+            StringArray::from(vec![Some("a"), Some("b"), Some("c"), Some("a"), None, None]);
         let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 3, 5, 6, 6].into());
         let item_field = Arc::new(Field::new("item", DataType::Utf8, true));
         let list_array = Arc::new(ListArray::new(
             item_field,
             offsets_buffer,
             Arc::new(values_array),
-            None
+            None,
         ));
         let string_array = cast_array_to_string(
             &list_array,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false))
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
         .unwrap();
         let string_array = string_array.as_string::<i32>();
         assert_eq!(r#"[a, b, c]"#, string_array.value(0));
@@ -2994,30 +2992,26 @@ mod tests {
 
     #[test]
     fn test_cast_i32_array_to_string() {
-        use arrow::buffer::OffsetBuffer;
         use arrow::array::ListArray;
-        let values_array = Int32Array::from(vec![
-            Some(1), Some(2), Some(3),
-            Some(1), None,
-            None
-        ]);
+        use arrow::buffer::OffsetBuffer;
+        let values_array = Int32Array::from(vec![Some(1), Some(2), Some(3), Some(1), None, None]);
         let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 3, 5, 6, 6].into());
         let item_field = Arc::new(Field::new("item", DataType::Int32, true));
         let list_array = Arc::new(ListArray::new(
             item_field,
             offsets_buffer,
             Arc::new(values_array),
-            None
+            None,
         ));
         let string_array = cast_array_to_string(
             &list_array,
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false))
-            .unwrap();
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
         let string_array = string_array.as_string::<i32>();
         assert_eq!(r#"[1, 2, 3]"#, string_array.value(0));
         assert_eq!(r#"[1, NULL]"#, string_array.value(1));
         assert_eq!(r#"[NULL]"#, string_array.value(2));
         assert_eq!(r#"[]"#, string_array.value(3));
     }
-
 }
