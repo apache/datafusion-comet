@@ -33,7 +33,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Literal}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec, CometWindowExec}
-import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
@@ -45,9 +45,6 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
-
-  val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
-    """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error."""
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
@@ -397,100 +394,24 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("ANSI support for add") {
-    val data = Seq((Integer.MAX_VALUE, 1), (Integer.MIN_VALUE, -1))
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
-      withParquetTable(data, "tbl") {
+  test("test coalesce lazy eval") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      val data = Seq((9999999999999L, 0))
+      withParquetTable(data, "t1") {
         val res = spark.sql("""
-             |SELECT
-             |  _1 + _2
-             |  from tbl
-             |  """.stripMargin)
-
-        checkSparkMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
-      }
-    }
-  }
-
-  test("ANSI support for subtract") {
-    val data = Seq((Integer.MIN_VALUE, 1))
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
-      withParquetTable(data, "tbl") {
-        val res = spark.sql("""
-                              |SELECT
-                              |  _1 - _2
-                              |  from tbl
-                              |  """.stripMargin)
-        checkSparkMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
-      }
-    }
-  }
-
-  test("ANSI support for multiply") {
-    val data = Seq((Integer.MAX_VALUE, 10))
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
-      withParquetTable(data, "tbl") {
-        val res = spark.sql("""
-                              |SELECT
-                              |  _1 * _2
-                              |  from tbl
-                              |  """.stripMargin)
-
-        checkSparkMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
-      }
-    }
-  }
-
-  test("ANSI support for divide (division by zero)") {
-//    TODO : Support ANSI mode in Integral divide
-    val data = Seq((Integer.MIN_VALUE, 0))
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
-      withParquetTable(data, "tbl") {
-        val res = spark.sql("""
-                              |SELECT
-                              |  _1 / _2
-                              |  from tbl
-                              |  """.stripMargin)
-
-        checkSparkMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            val cometErrorPattern =
-              """org.apache.comet.CometNativeException: [DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
-            assert(cometExc.getMessage.contains(cometErrorPattern))
-            assert(sparkExc.getMessage.contains("Division by zero"))
-          case _ => fail("Exception should be thrown")
-        }
-      }
-    }
-  }
-
-  test("Verify coalesce performs lazy evaluation") {
-    val data = Seq((Integer.MAX_VALUE, 9999999999999L))
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
-      withParquetTable(data, "tbl") {
-        val res = spark.sql("""
-                              |SELECT
-                              |  coalesce(_1, CAST(_2 AS TINYINT))
-                              |  from tbl
-                              |  """.stripMargin)
-
+            |SELECT coalesce(_1, CAST(_1 AS TINYINT)) from t1;
+            |  """.stripMargin)
         checkSparkAnswerAndOperator(res)
       }
+    }
+  }
+  test("Verify rpad expr support for second arg instead of just literal") {
+    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("తెలుగు", 2))
+    withParquetTable(data, "t1") {
+      val res = sql("select rpad(_1,_2) , rpad(_1,2) from t1 order by _1")
+      checkSparkAnswerAndOperator(res)
     }
   }
 
@@ -1387,6 +1308,40 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("disable expression using dynamic config") {
+    def countSparkProjectExec(plan: SparkPlan) = {
+      plan.collect { case _: ProjectExec =>
+        true
+      }.length
+    }
+    withParquetTable(Seq(0, 1, 2).map(n => (n, n)), "tbl") {
+      val sql = "select _1+_2 from tbl"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      assert(0 == countSparkProjectExec(cometPlan))
+      withSQLConf(CometConf.getExprEnabledConfigKey("Add") -> "false") {
+        val (_, cometPlan) = checkSparkAnswer(sql)
+        assert(1 == countSparkProjectExec(cometPlan))
+      }
+    }
+  }
+
+  test("enable incompat expression using dynamic config") {
+    def countSparkProjectExec(plan: SparkPlan) = {
+      plan.collect { case _: ProjectExec =>
+        true
+      }.length
+    }
+    withParquetTable(Seq(0, 1, 2).map(n => (n.toString, n.toString)), "tbl") {
+      val sql = "select initcap(_1) from tbl"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      assert(1 == countSparkProjectExec(cometPlan))
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true") {
+        val (_, cometPlan) = checkSparkAnswer(sql)
+        assert(0 == countSparkProjectExec(cometPlan))
+      }
+    }
+  }
+
   test("signum") {
     testDoubleScalarExpr("signum")
   }
@@ -1767,14 +1722,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("Year") {
+  test("DatePart functions: Year/Month/DayOfMonth/DayOfWeek/DayOfYear/WeekOfYear/Quarter") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col timestamp) using parquet")
-          sql(s"insert into $table values (now()), (null)")
-          checkSparkAnswerAndOperator(s"SELECT year(col) FROM $table")
+          sql(s"insert into $table values (now()), (timestamp('1900-01-01')), (null)")
+          checkSparkAnswerAndOperator(
+            "SELECT col, year(col), month(col), day(col), weekday(col), " +
+              s" dayofweek(col), dayofyear(col), weekofyear(col), quarter(col) FROM $table")
         }
       }
     }
@@ -3036,6 +2993,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             Row(null) :: Row(null) :: Row(null) :: Nil)
         }
       }
+    }
+  }
+
+  test("test length function") {
+    withTable("t1") {
+      sql(
+        "create table t1 using parquet as select cast(id as string) as c1, cast(id as binary) as c2 from range(10)")
+      // FIXME: Change checkSparkAnswer to checkSparkAnswerAndOperator after resolving
+      //  https://github.com/apache/datafusion-comet/issues/2348
+      checkSparkAnswer("select length(c1), length(c2) AS x FROM t1 ORDER BY c1")
     }
   }
 
