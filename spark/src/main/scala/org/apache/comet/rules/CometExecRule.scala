@@ -137,11 +137,23 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    */
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
-    def operator2Proto(op: SparkPlan): Option[Operator] = {
-      if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
-        QueryPlanSerde.operator2Proto(
-          op,
-          op.children.map(_.asInstanceOf[CometNativeExec].nativeOp): _*)
+    def operator2Proto[T <: SparkPlan](plan: T): Option[(T, Operator)] = {
+      val newChildren = plan.children.map {
+        case p: CometNativeExec => p
+        case op =>
+          val cometOp = CometSparkToColumnarExec(op)
+          QueryPlanSerde
+            .operator2Proto(cometOp)
+            .map(CometScanWrapper(_, cometOp))
+            .getOrElse(op)
+      }
+      val newPlan = plan.withNewChildren(newChildren).asInstanceOf[T]
+      if (newPlan.children.forall(_.isInstanceOf[CometNativeExec])) {
+        QueryPlanSerde
+          .operator2Proto(
+            newPlan,
+            newPlan.children.map(_.asInstanceOf[CometNativeExec].nativeOp): _*)
+          .map(op => (newPlan, op))
       } else {
         None
       }
@@ -150,8 +162,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     /**
      * Convert operator to proto and then apply a transformation to wrap the proto in a new plan.
      */
-    def newPlanWithProto(op: SparkPlan, fun: Operator => SparkPlan): SparkPlan = {
-      operator2Proto(op).map(fun).getOrElse(op)
+    def newPlanWithProto[T <: SparkPlan](op: T)(fun: (T, Operator) => SparkPlan): SparkPlan = {
+      operator2Proto(op).map(p => fun(p._1, p._2)).getOrElse(op)
     }
 
     def convertNode(op: SparkPlan): SparkPlan = op match {
@@ -171,34 +183,58 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         CometScanWrapper(nativeOp.get, cometOp)
 
       case op: ProjectExec =>
-        newPlanWithProto(
-          op,
-          CometProjectExec(_, op, op.output, op.projectList, op.child, SerializedPlan(None)))
-
+        newPlanWithProto(op) { case (newPlan, operator) =>
+          CometProjectExec(
+            operator,
+            newPlan,
+            newPlan.output,
+            newPlan.projectList,
+            newPlan.child,
+            SerializedPlan(None))
+        }
       case op: FilterExec =>
-        newPlanWithProto(
-          op,
-          CometFilterExec(_, op, op.output, op.condition, op.child, SerializedPlan(None)))
+        newPlanWithProto(op) { case (newPlan, operator) =>
+          CometFilterExec(
+            operator,
+            newPlan,
+            newPlan.output,
+            newPlan.condition,
+            newPlan.child,
+            SerializedPlan(None))
+        }
 
       case op: SortExec =>
-        newPlanWithProto(
-          op,
+        newPlanWithProto(op) { case (newPlan, operator) =>
           CometSortExec(
-            _,
-            op,
-            op.output,
-            op.outputOrdering,
-            op.sortOrder,
-            op.child,
-            SerializedPlan(None)))
+            operator,
+            newPlan,
+            newPlan.output,
+            newPlan.outputOrdering,
+            newPlan.sortOrder,
+            newPlan.child,
+            SerializedPlan(None))
+        }
 
       case op: LocalLimitExec =>
-        newPlanWithProto(op, CometLocalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
+        newPlanWithProto(op) { case (newPlan, operator) =>
+          CometLocalLimitExec(
+            operator,
+            newPlan,
+            newPlan.limit,
+            newPlan.child,
+            SerializedPlan(None))
+        }
 
       case op: GlobalLimitExec =>
-        newPlanWithProto(
-          op,
-          CometGlobalLimitExec(_, op, op.limit, op.offset, op.child, SerializedPlan(None)))
+        newPlanWithProto(op) { case (newPlan, operator) =>
+          CometGlobalLimitExec(
+            operator,
+            newPlan,
+            newPlan.limit,
+            newPlan.offset,
+            newPlan.child,
+            SerializedPlan(None))
+        }
 
       case op: CollectLimitExec =>
         val fallbackReasons = new ListBuffer[String]()
@@ -227,9 +263,15 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
       case op: ExpandExec =>
-        newPlanWithProto(
-          op,
-          CometExpandExec(_, op, op.output, op.projections, op.child, SerializedPlan(None)))
+        newPlanWithProto(op) { case (newPlan, operator) =>
+          CometExpandExec(
+            operator,
+            newPlan,
+            newPlan.output,
+            newPlan.projections,
+            newPlan.child,
+            SerializedPlan(None))
+        }
 
       // When Comet shuffle is disabled, we don't want to transform the HashAggregate
       // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
@@ -248,46 +290,44 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         if (multiMode || sparkFinalMode) {
           op
         } else {
-          newPlanWithProto(
-            op,
-            nativeOp => {
-              // The aggExprs could be empty. For example, if the aggregate functions only have
-              // distinct aggregate functions or only have group by, the aggExprs is empty and
-              // modes is empty too. If aggExprs is not empty, we need to verify all the
-              // aggregates have the same mode.
-              assert(modes.length == 1 || modes.isEmpty)
-              CometHashAggregateExec(
-                nativeOp,
-                op,
-                op.output,
-                op.groupingExpressions,
-                op.aggregateExpressions,
-                op.resultExpressions,
-                op.child.output,
-                modes.headOption,
-                op.child,
-                SerializedPlan(None))
-            })
+          newPlanWithProto(op) { case (newPlan, operator) =>
+            // The aggExprs could be empty. For example, if the aggregate functions only have
+            // distinct aggregate functions or only have group by, the aggExprs is empty and
+            // modes is empty too. If aggExprs is not empty, we need to verify all the
+            // aggregates have the same mode.
+            assert(modes.length == 1 || modes.isEmpty)
+            CometHashAggregateExec(
+              operator,
+              newPlan,
+              newPlan.output,
+              newPlan.groupingExpressions,
+              newPlan.aggregateExpressions,
+              newPlan.resultExpressions,
+              newPlan.child.output,
+              modes.headOption,
+              newPlan.child,
+              SerializedPlan(None))
+          }
         }
 
       case op: ShuffledHashJoinExec
           if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) &&
             op.children.forall(isCometNative) =>
-        newPlanWithProto(
-          op,
+        newPlanWithProto(op) { case (newPlan, operator) =>
           CometHashJoinExec(
-            _,
-            op,
-            op.output,
-            op.outputOrdering,
-            op.leftKeys,
-            op.rightKeys,
-            op.joinType,
-            op.condition,
-            op.buildSide,
-            op.left,
-            op.right,
-            SerializedPlan(None)))
+            operator,
+            newPlan,
+            newPlan.output,
+            newPlan.outputOrdering,
+            newPlan.leftKeys,
+            newPlan.rightKeys,
+            newPlan.joinType,
+            newPlan.condition,
+            newPlan.buildSide,
+            newPlan.left,
+            newPlan.right,
+            SerializedPlan(None))
+        }
 
       case op: ShuffledHashJoinExec if !CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) =>
         withInfo(op, "ShuffleHashJoin is not enabled")
@@ -298,39 +338,39 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case op: BroadcastHashJoinExec
           if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) &&
             op.children.forall(isCometNative) =>
-        newPlanWithProto(
-          op,
+        newPlanWithProto(op) { case (newPlan, operator) =>
           CometBroadcastHashJoinExec(
-            _,
-            op,
-            op.output,
-            op.outputOrdering,
-            op.leftKeys,
-            op.rightKeys,
-            op.joinType,
-            op.condition,
-            op.buildSide,
-            op.left,
-            op.right,
-            SerializedPlan(None)))
+            operator,
+            newPlan,
+            newPlan.output,
+            newPlan.outputOrdering,
+            newPlan.leftKeys,
+            newPlan.rightKeys,
+            newPlan.joinType,
+            newPlan.condition,
+            newPlan.buildSide,
+            newPlan.left,
+            newPlan.right,
+            SerializedPlan(None))
+        }
 
       case op: SortMergeJoinExec
           if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
             op.children.forall(isCometNative) =>
-        newPlanWithProto(
-          op,
+        newPlanWithProto(op) { case (newPlan, operator) =>
           CometSortMergeJoinExec(
-            _,
-            op,
-            op.output,
-            op.outputOrdering,
-            op.leftKeys,
-            op.rightKeys,
-            op.joinType,
-            op.condition,
-            op.left,
-            op.right,
-            SerializedPlan(None)))
+            operator,
+            newPlan,
+            newPlan.output,
+            newPlan.outputOrdering,
+            newPlan.leftKeys,
+            newPlan.rightKeys,
+            newPlan.joinType,
+            newPlan.condition,
+            newPlan.left,
+            newPlan.right,
+            SerializedPlan(None))
+        }
 
       case op: SortMergeJoinExec
           if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
@@ -391,26 +431,25 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         withInfo(s, Seq(info1, info2).flatten.mkString(","))
 
       case w: WindowExec =>
-        newPlanWithProto(
-          w,
+        newPlanWithProto(w) { case (newPlan, operator) =>
           CometWindowExec(
-            _,
-            w,
-            w.output,
-            w.windowExpression,
-            w.partitionSpec,
-            w.orderSpec,
-            w.child,
-            SerializedPlan(None)))
+            operator,
+            newPlan,
+            newPlan.output,
+            newPlan.windowExpression,
+            newPlan.partitionSpec,
+            newPlan.orderSpec,
+            newPlan.child,
+            SerializedPlan(None))
+        }
 
       case u: UnionExec
           if CometConf.COMET_EXEC_UNION_ENABLED.get(conf) &&
             u.children.forall(isCometNative) =>
-        newPlanWithProto(
-          u, {
-            val cometOp = CometUnionExec(u, u.output, u.children)
-            CometSinkPlaceHolder(_, u, cometOp)
-          })
+        newPlanWithProto(u) { case (newPlan, operator) =>
+          val cometOp = CometUnionExec(newPlan, newPlan.output, newPlan.children)
+          CometSinkPlaceHolder(operator, newPlan, cometOp)
+        }
 
       case u: UnionExec if !CometConf.COMET_EXEC_UNION_ENABLED.get(conf) =>
         withInfo(u, "Union is not enabled")
@@ -420,13 +459,17 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
-        newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
+        newPlanWithProto(s) { case (newPlan, operator) =>
+          CometSinkPlaceHolder(operator, newPlan, newPlan)
+        }
 
       case s @ BroadcastQueryStageExec(
             _,
             ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
             _) =>
-        newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
+        newPlanWithProto(s) { case (newPlan, operator) =>
+          CometSinkPlaceHolder(operator, newPlan, newPlan)
+        }
 
       // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
       // exchange. It is only used for Comet native execution. We only transform Spark broadcast
@@ -473,26 +516,29 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       // For AQE shuffle stage on a Comet shuffle exchange
       case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
-        newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
+        newPlanWithProto(s) { case (newPlan, operator) =>
+          CometSinkPlaceHolder(operator, newPlan, newPlan)
+        }
 
       // For AQE shuffle stage on a reused Comet shuffle exchange
       // Note that we don't need to handle `ReusedExchangeExec` for non-AQE case, because
       // the query plan won't be re-optimized/planned in non-AQE mode.
       case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
-        newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
+        newPlanWithProto(s) { case (newPlan, operator) =>
+          CometSinkPlaceHolder(operator, newPlan, newPlan)
+        }
 
       // Native shuffle for Comet operators
       case s: ShuffleExchangeExec =>
         val nativeShuffle: Option[SparkPlan] =
           if (nativeShuffleSupported(s)) {
-            val newOp = operator2Proto(s)
-            newOp match {
-              case Some(nativeOp) =>
+            operator2Proto(s) match {
+              case Some((newPlan, newOp)) =>
                 // Switch to use Decimal128 regardless of precision, since Arrow native execution
                 // doesn't support Decimal32 and Decimal64 yet.
                 conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
-                val cometOp = CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
-                Some(CometSinkPlaceHolder(nativeOp, s, cometOp))
+                val cometOp = CometShuffleExchangeExec(newPlan, shuffleType = CometNativeShuffle)
+                Some(CometSinkPlaceHolder(newOp, newPlan, cometOp))
               case None =>
                 None
             }
