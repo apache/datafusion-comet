@@ -459,18 +459,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("ANSI support for divide (division by zero)") {
 //    TODO : Support ANSI mode in Integral divide
     val data = Seq((Integer.MIN_VALUE, 0))
-<<<<<<< HEAD
-    withSQLConf(
-<<<<<<< HEAD
-      SQLConf.ANSI_ENABLED.key -> "true",
-      CometConf.COMET_ANSI_MODE_ENABLED.key -> "true",
-      "spark.comet.explainFallback.enabled" -> "true") {
-=======
-      SQLConf.ANSI_ENABLED.key -> "true") {
->>>>>>> c5726856 (rebase_main)
-=======
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
->>>>>>> f5152d33 (rebase_main)
       withParquetTable(data, "tbl") {
         val res = spark.sql("""
                               |SELECT
@@ -490,8 +479,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-<<<<<<< HEAD
-=======
   test("Verify coalesce performs lazy evaluation") {
     val data = Seq((Integer.MAX_VALUE, 9999999999999L))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
@@ -507,7 +494,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
->>>>>>> b001f6b9 (lazy_coalesce_fallback_case_statement_rebase)
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "true") {
