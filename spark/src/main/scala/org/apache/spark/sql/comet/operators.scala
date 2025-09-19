@@ -274,28 +274,16 @@ abstract class CometNativeExec extends CometExec {
         sparkPlans.zipWithIndex.foreach { case (plan, idx) =>
           plan match {
             case c: CometBroadcastExchangeExec =>
-              inputs += c
-                .executeColumnarWithoutCache()
-                .asInstanceOf[CometBatchRDD]
-                .withNumPartitions(firstNonBroadcastPlanNumPartitions)
+              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
             case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) =>
-              inputs += c
-                .executeColumnarWithoutCache()
-                .asInstanceOf[CometBatchRDD]
-                .withNumPartitions(firstNonBroadcastPlanNumPartitions)
+              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
             case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) =>
-              inputs += c
-                .executeColumnarWithoutCache()
-                .asInstanceOf[CometBatchRDD]
-                .withNumPartitions(firstNonBroadcastPlanNumPartitions)
+              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
             case BroadcastQueryStageExec(
                   _,
                   ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
                   _) =>
-              inputs += c
-                .executeColumnarWithoutCache()
-                .asInstanceOf[CometBatchRDD]
-                .withNumPartitions(firstNonBroadcastPlanNumPartitions)
+              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
             case _: CometNativeExec =>
             // no-op
             case _ if idx == firstNonBroadcastPlan.get._2 =>

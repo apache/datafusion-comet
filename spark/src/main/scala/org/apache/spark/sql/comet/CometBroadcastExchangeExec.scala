@@ -102,14 +102,8 @@ case class CometBroadcastExchangeExec(
   @transient
   private lazy val maxBroadcastRows = 512000000
 
-  private var numPartitions: Option[Int] = None
-
-  def setNumPartitions(numPartitions: Int): CometBroadcastExchangeExec = {
-    this.numPartitions = Some(numPartitions)
-    this
-  }
   def getNumPartitions(): Int = {
-    numPartitions.getOrElse(child.executeColumnar().getNumPartitions)
+    child.executeColumnar().getNumPartitions
   }
 
   @transient
@@ -227,11 +221,13 @@ case class CometBroadcastExchangeExec(
   // After https://issues.apache.org/jira/browse/SPARK-48195, Spark plan will cache created RDD.
   // Since we may change the number of partitions in CometBatchRDD,
   // we need a method that always creates a new CometBatchRDD.
-  def executeColumnarWithoutCache(): RDD[ColumnarBatch] = {
+  def executeColumnar(numPartitions: Int): RDD[ColumnarBatch] = {
     if (isCanonicalizedPlan) {
       throw SparkException.internalError("A canonicalized plan is not supposed to be executed.")
     }
-    doExecuteColumnar()
+
+    val broadcasted = executeBroadcast[Array[ChunkedByteBuffer]]()
+    new CometBatchRDD(sparkContext, numPartitions, broadcasted)
   }
 
   override protected[sql] def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
@@ -286,7 +282,7 @@ object CometBroadcastExchangeExec {
  */
 class CometBatchRDD(
     sc: SparkContext,
-    @volatile var numPartitions: Int,
+    val numPartitions: Int,
     value: broadcast.Broadcast[Array[ChunkedByteBuffer]])
     extends RDD[ColumnarBatch](sc, Nil) {
 
@@ -299,12 +295,6 @@ class CometBatchRDD(
     partition.value.value.toIterator
       .flatMap(Utils.decodeBatches(_, this.getClass.getSimpleName))
   }
-
-  def withNumPartitions(numPartitions: Int): CometBatchRDD = {
-    this.numPartitions = numPartitions
-    this
-  }
-
 }
 
 class CometBatchPartition(
