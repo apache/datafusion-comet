@@ -26,7 +26,7 @@ import scala.concurrent.{ExecutionContext, Promise}
 import scala.concurrent.duration.NANOSECONDS
 import scala.util.control.NonFatal
 
-import org.apache.spark.{broadcast, Partition, SparkContext, TaskContext}
+import org.apache.spark.{broadcast, Partition, SparkContext, SparkException, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
@@ -222,6 +222,16 @@ case class CometBroadcastExchangeExec(
     val broadcasted = executeBroadcast[Array[ChunkedByteBuffer]]()
 
     new CometBatchRDD(sparkContext, getNumPartitions(), broadcasted)
+  }
+
+  // After https://issues.apache.org/jira/browse/SPARK-48195, Spark plan will cache created RDD.
+  // Since we may change the number of partitions in CometBatchRDD,
+  // we need a method that always creates a new CometBatchRDD.
+  def executeColumnarWithoutCache(): RDD[ColumnarBatch] = {
+    if (isCanonicalizedPlan) {
+      throw SparkException.internalError("A canonicalized plan is not supposed to be executed.")
+    }
+    doExecuteColumnar()
   }
 
   override protected[sql] def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {

@@ -275,17 +275,17 @@ abstract class CometNativeExec extends CometExec {
           plan match {
             case c: CometBroadcastExchangeExec =>
               inputs += c
-                .executeColumnar()
+                .executeColumnarWithoutCache()
                 .asInstanceOf[CometBatchRDD]
                 .withNumPartitions(firstNonBroadcastPlanNumPartitions)
             case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) =>
               inputs += c
-                .executeColumnar()
+                .executeColumnarWithoutCache()
                 .asInstanceOf[CometBatchRDD]
                 .withNumPartitions(firstNonBroadcastPlanNumPartitions)
             case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) =>
               inputs += c
-                .executeColumnar()
+                .executeColumnarWithoutCache()
                 .asInstanceOf[CometBatchRDD]
                 .withNumPartitions(firstNonBroadcastPlanNumPartitions)
             case BroadcastQueryStageExec(
@@ -293,7 +293,7 @@ abstract class CometNativeExec extends CometExec {
                   ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
                   _) =>
               inputs += c
-                .executeColumnar()
+                .executeColumnarWithoutCache()
                 .asInstanceOf[CometBatchRDD]
                 .withNumPartitions(firstNonBroadcastPlanNumPartitions)
             case _: CometNativeExec =>
