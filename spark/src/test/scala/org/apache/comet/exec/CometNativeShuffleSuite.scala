@@ -35,7 +35,7 @@ import org.apache.comet.CometConf
 
 class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
-      pos: Position): Unit = {
+                                                                                 pos: Position): Unit = {
     super.test(testName, testTags: _*) {
       withSQLConf(
         CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -248,6 +248,21 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  // This duplicates behavior seen in a much more complicated Spark SQL test
+  // "SPARK-44647: test join key is the second cluster key"
+  test("range partitioning with duplicate column references") {
+    withParquetTable((0 until 100).map(i => (i % 10, (i % 5).toByte, i % 3)), "tbl") {
+
+      val df = sql("SELECT * FROM tbl")
+
+      // This is the problematic case: duplicate references to the same column
+      // Both _1 references should get different BoundReference indices
+      val rangePartitioned = df.repartitionByRange(3, df.col("_1"), df.col("_1"), df.col("_2"))
+
+      checkShuffleAnswer(rangePartitioned, 1)
+    }
+  }
+
   // This adapts the PySpark example in https://github.com/apache/datafusion-comet/issues/1906 to
   // test for incorrect partition values after native RangePartitioning
   test("fix: range partitioning #1906") {
@@ -305,9 +320,9 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
    * used by `df` are Comet native operators.
    */
   private def checkShuffleAnswer(
-      df: DataFrame,
-      expectedNum: Int,
-      checkNativeOperators: Boolean = false): Unit = {
+                                  df: DataFrame,
+                                  expectedNum: Int,
+                                  checkNativeOperators: Boolean = false): Unit = {
     checkCometExchange(df, expectedNum, true)
     if (checkNativeOperators) {
       checkSparkAnswerAndOperator(df)
