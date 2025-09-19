@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 import java.nio.{ByteBuffer, ByteOrder}
 import java.nio.file.{Files, Paths}
 
+import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.{SparkEnv, TaskContext}
@@ -29,7 +30,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Literal}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, SinglePartition}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -218,6 +219,23 @@ class CometNativeShuffleWriter[K, V](
           val partitioning = PartitioningOuterClass.RangePartition.newBuilder()
           partitioning.setNumPartitions(outputPartitioning.numPartitions)
 
+          // Detect duplicates by tracking bound references to same exprId
+          // DataFusion will deduplicate identical sort expressions in LexOrdering,
+          // so we need to transform boundary rows to match the deduplicated structure
+          val seenExprIds = mutable.HashSet[Long]()
+          val deduplicationMap = mutable.ArrayBuffer[(Int, Boolean)]() // (originalIndex, isKept)
+
+          rangePartitioning.ordering.zipWithIndex.foreach { case (sortOrder, idx) =>
+            val attr = sortOrder.child.asInstanceOf[AttributeReference]
+
+            if (seenExprIds.contains(attr.exprId.id)) {
+              deduplicationMap += (idx -> false) // Will be deduplicated by DataFusion
+            } else {
+              seenExprIds += attr.exprId.id
+              deduplicationMap += (idx -> true) // Will be kept by DataFusion
+            }
+          }
+
           {
             // Serialize the ordering expressions for comparisons
             val orderingExprs = rangePartitioning.ordering
@@ -234,16 +252,26 @@ class CometNativeShuffleWriter[K, V](
           // internal entry is a value in that row. In other words, these are stored in row major
           // order, not column major
           val boundarySchema = rangePartitioning.ordering.flatMap(e => Some(e.dataType))
-          val boundaryExprs: Seq[Seq[Literal]] =
-            rangePartitionBounds.get.map((row: InternalRow) =>
-              // For every InternalRow, map its values to Literals to ao collection of Literals
-              row.toSeq(boundarySchema).zip(boundarySchema).map { case (value, valueType) =>
-                Literal(value, valueType)
-              })
+
+          // Transform boundary rows to match DataFusion's deduplicated structure
+          val transformedBoundaryExprs: Seq[Seq[Literal]] =
+            rangePartitionBounds.get.map((row: InternalRow) => {
+              // For every InternalRow, map its values to Literals
+              val allLiterals =
+                row.toSeq(boundarySchema).zip(boundarySchema).map { case (value, valueType) =>
+                  Literal(value, valueType)
+                }
+
+              // Keep only the literals that correspond to non-deduplicated expressions
+              allLiterals
+                .zip(deduplicationMap)
+                .filter(_._2._2) // Keep only where isKept = true
+                .map(_._1) // Extract the literal
+            })
 
           {
             // Convert the sequences of Literals to a collection of serialized BoundaryRows
-            val boundaryRows: Seq[PartitioningOuterClass.BoundaryRow] = boundaryExprs
+            val boundaryRows: Seq[PartitioningOuterClass.BoundaryRow] = transformedBoundaryExprs
               .map((rowLiterals: Seq[Literal]) => {
                 // Serialize each sequence of Literals as a BoundaryRow
                 val rowBuilder = PartitioningOuterClass.BoundaryRow.newBuilder();
