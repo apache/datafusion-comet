@@ -57,6 +57,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             black_box(spark_decimal_integral_div(
                 black_box(&args),
                 black_box(&DataType::Decimal128(10, 4)),
+                false
             ))
         })
     });
