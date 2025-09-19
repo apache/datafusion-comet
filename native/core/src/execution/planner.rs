@@ -28,7 +28,7 @@ use crate::{
     },
 };
 use arrow::compute::CastOptions;
-use arrow::datatypes::{DataType, Field, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
@@ -87,16 +87,17 @@ use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
-    ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array,
-    Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, NullArray, StringBuilder,
-    TimestampMicrosecondArray,
+    new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
+    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray,
+    NullArray, StringBuilder, TimestampMicrosecondArray,
 };
-use arrow::buffer::BooleanBuffer;
+use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
+use datafusion_comet_proto::spark_expression::ListLiteral;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
     spark_expression::{
@@ -486,117 +487,8 @@ impl PhysicalPlanner {
                             }
                         }
                         Value::ListVal(values) => {
-                            if let DataType::List(f) = data_type {
-                                match f.data_type() {
-                                    DataType::Null => {
-                                        SingleRowListArrayBuilder::new(Arc::new(NullArray::new(values.clone().null_mask.len())))
-                                            .build_list_scalar()
-                                    }
-                                    DataType::Boolean => {
-                                        let vals = values.clone();
-                                        SingleRowListArrayBuilder::new(Arc::new(BooleanArray::new(BooleanBuffer::from(vals.boolean_values), Some(vals.null_mask.into()))))
-                                            .build_list_scalar()
-                                    }
-                                    DataType::Int8 => {
-                                        let vals = values.clone();
-                                        SingleRowListArrayBuilder::new(Arc::new(Int8Array::new(vals.byte_values.iter().map(|&x| x as i8).collect::<Vec<_>>().into(), Some(vals.null_mask.into()))))
-                                            .build_list_scalar()
-                                    }
-                                    DataType::Int16 => {
-                                        let vals = values.clone();
-                                        SingleRowListArrayBuilder::new(Arc::new(Int16Array::new(vals.short_values.iter().map(|&x| x as i16).collect::<Vec<_>>().into(), Some(vals.null_mask.into()))))
-                                            .build_list_scalar()
-                                    }
-                                    DataType::Int32 => {
-                                        let vals = values.clone();
-                                        SingleRowListArrayBuilder::new(Arc::new(Int32Array::new(vals.int_values.into(), Some(vals.null_mask.into()))))
-                                            .build_list_scalar()
-                                    }
-                                    DataType::Int64 => {
-                                        let vals = values.clone();
-                                        SingleRowListArrayBuilder::new(Arc::new(Int64Array::new(vals.long_values.into(), Some(vals.null_mask.into()))))
-                                            .build_list_scalar()
-                                    }
-                                    DataType::Float32 => {
-                                        let vals = values.clone();
-                                        SingleRowListArrayBuilder::new(Arc::new(Float32Array::new(vals.float_values.into(), Some(vals.null_mask.into()))))
-                                            .build_list_scalar()
-                                    }
-                                    DataType::Float64 => {
-                                        let vals = values.clone();
-                                        SingleRowListArrayBuilder::new(Arc::new(Float64Array::new(vals.double_values.into(), Some(vals.null_mask.into()))))
-                                            .build_list_scalar()
-                                    }
-                                    DataType::Timestamp(TimeUnit::Microsecond, None) => {
-                                        let vals = values.clone();
-                                        SingleRowListArrayBuilder::new(Arc::new(TimestampMicrosecondArray::new(vals.long_values.into(), Some(vals.null_mask.into()))))
-                                            .build_list_scalar()
-                                    }
-                                    DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
-                                        let vals = values.clone();
-                                        SingleRowListArrayBuilder::new(Arc::new(TimestampMicrosecondArray::new(vals.long_values.into(), Some(vals.null_mask.into())).with_timezone(Arc::clone(tz))))
-                                            .build_list_scalar()
-                                    }
-                                    DataType::Date32 => {
-                                        let vals = values.clone();
-                                        SingleRowListArrayBuilder::new(Arc::new(Date32Array::new(vals.int_values.into(), Some(vals.null_mask.into()))))
-                                            .build_list_scalar()
-                                    }
-                                    DataType::Binary => {
-                                        // Using a builder as it is cumbersome to create BinaryArray from a vector with nulls
-                                        // and calculate correct offsets
-                                        let vals = values.clone();
-                                        let item_capacity = vals.string_values.len();
-                                        let data_capacity = vals.string_values.first().map(|s| s.len() * item_capacity).unwrap_or(0);
-                                        let mut arr = BinaryBuilder::with_capacity(item_capacity, data_capacity);
-
-                                        for (i, v) in vals.bytes_values.into_iter().enumerate() {
-                                            if vals.null_mask[i] {
-                                                arr.append_value(v);
-                                            } else {
-                                                arr.append_null();
-                                            }
-                                        }
-
-                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
-                                            .build_list_scalar()
-                                    }
-                                    DataType::Utf8 => {
-                                        // Using a builder as it is cumbersome to create StringArray from a vector with nulls
-                                        // and calculate correct offsets
-                                        let vals = values.clone();
-                                        let item_capacity = vals.string_values.len();
-                                        let data_capacity = vals.string_values.first().map(|s| s.len() * item_capacity).unwrap_or(0);
-                                        let mut arr = StringBuilder::with_capacity(item_capacity, data_capacity);
-
-                                        for (i, v) in vals.string_values.into_iter().enumerate() {
-                                            if vals.null_mask[i] {
-                                                arr.append_value(v);
-                                            } else {
-                                                arr.append_null();
-                                            }
-                                        }
-
-                                        SingleRowListArrayBuilder::new(Arc::new(arr.finish()))
-                                            .build_list_scalar()
-                                    }
-                                    DataType::Decimal128(p, s) => {
-                                        let vals = values.clone();
-                                        SingleRowListArrayBuilder::new(Arc::new(Decimal128Array::new(vals.decimal_values.into_iter().map(|v| {
-                                            let big_integer = BigInt::from_signed_bytes_be(&v);
-                                            big_integer.to_i128().ok_or_else(|| {
-                                                GeneralError(format!(
-                                                    "Cannot parse {big_integer:?} as i128 for Decimal literal"
-                                                ))
-                                            }).unwrap()
-                                        }).collect::<Vec<_>>().into(), Some(vals.null_mask.into())).with_precision_and_scale(*p, *s)?)).build_list_scalar()
-                                    }
-                                    dt => {
-                                        return Err(GeneralError(format!(
-                                            "DataType::List literal does not support {dt:?} type"
-                                        )))
-                                    }
-                                }
+                            if let DataType::List(_) = data_type {
+                                SingleRowListArrayBuilder::new(literal_to_array_ref(data_type, values.clone())?).build_list_scalar()
                             } else {
                                 return Err(GeneralError(format!(
                                     "Expected DataType::List but got {data_type:?}"
@@ -2852,13 +2744,189 @@ fn create_case_expr(
     }
 }
 
+fn literal_to_array_ref(
+    data_type: DataType,
+    list_literal: ListLiteral,
+) -> Result<ArrayRef, ExecutionError> {
+    let nulls = &list_literal.null_mask;
+    match data_type {
+        DataType::Null => Ok(Arc::new(NullArray::new(nulls.len()))),
+        DataType::Boolean => Ok(Arc::new(BooleanArray::new(
+            BooleanBuffer::from(list_literal.boolean_values),
+            Some(nulls.clone().into()),
+        ))),
+        DataType::Int8 => Ok(Arc::new(Int8Array::new(
+            list_literal
+                .byte_values
+                .iter()
+                .map(|&x| x as i8)
+                .collect::<Vec<_>>()
+                .into(),
+            Some(nulls.clone().into()),
+        ))),
+        DataType::Int16 => Ok(Arc::new(Int16Array::new(
+            list_literal
+                .short_values
+                .iter()
+                .map(|&x| x as i16)
+                .collect::<Vec<_>>()
+                .into(),
+            Some(nulls.clone().into()),
+        ))),
+        DataType::Int32 => Ok(Arc::new(Int32Array::new(
+            list_literal.int_values.into(),
+            Some(nulls.clone().into()),
+        ))),
+        DataType::Int64 => Ok(Arc::new(Int64Array::new(
+            list_literal.long_values.into(),
+            Some(nulls.clone().into()),
+        ))),
+        DataType::Float32 => Ok(Arc::new(Float32Array::new(
+            list_literal.float_values.into(),
+            Some(nulls.clone().into()),
+        ))),
+        DataType::Float64 => Ok(Arc::new(Float64Array::new(
+            list_literal.double_values.into(),
+            Some(nulls.clone().into()),
+        ))),
+        DataType::Date32 => Ok(Arc::new(Date32Array::new(
+            list_literal.int_values.into(),
+            Some(nulls.clone().into()),
+        ))),
+        DataType::Timestamp(TimeUnit::Microsecond, None) => {
+            Ok(Arc::new(TimestampMicrosecondArray::new(
+                list_literal.long_values.into(),
+                Some(nulls.clone().into()),
+            )))
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => Ok(Arc::new(
+            TimestampMicrosecondArray::new(
+                list_literal.long_values.into(),
+                Some(nulls.clone().into()),
+            )
+            .with_timezone(Arc::clone(&tz)),
+        )),
+        DataType::Binary => {
+            // Using a builder as it is cumbersome to create BinaryArray from a vector with nulls
+            // and calculate correct offsets
+            let item_capacity = list_literal.bytes_values.len();
+            let data_capacity = list_literal
+                .bytes_values
+                .first()
+                .map(|s| s.len() * item_capacity)
+                .unwrap_or(0);
+            let mut arr = BinaryBuilder::with_capacity(item_capacity, data_capacity);
+
+            for (i, v) in list_literal.bytes_values.into_iter().enumerate() {
+                if nulls[i] {
+                    arr.append_value(v);
+                } else {
+                    arr.append_null();
+                }
+            }
+
+            Ok(Arc::new(arr.finish()))
+        }
+        DataType::Utf8 => {
+            // Using a builder as it is cumbersome to create StringArray from a vector with nulls
+            // and calculate correct offsets
+            let item_capacity = list_literal.string_values.len();
+            let data_capacity = list_literal
+                .string_values
+                .first()
+                .map(|s| s.len() * item_capacity)
+                .unwrap_or(0);
+            let mut arr = StringBuilder::with_capacity(item_capacity, data_capacity);
+
+            for (i, v) in list_literal.string_values.into_iter().enumerate() {
+                if nulls[i] {
+                    arr.append_value(v);
+                } else {
+                    arr.append_null();
+                }
+            }
+
+            Ok(Arc::new(arr.finish()))
+        }
+        DataType::Decimal128(p, s) => Ok(Arc::new(
+            Decimal128Array::new(
+                list_literal
+                    .decimal_values
+                    .into_iter()
+                    .map(|v| {
+                        let big_integer = BigInt::from_signed_bytes_be(&v);
+                        big_integer
+                            .to_i128()
+                            .ok_or_else(|| {
+                                GeneralError(format!(
+                                    "Cannot parse {big_integer:?} as i128 for Decimal literal"
+                                ))
+                            })
+                            .unwrap()
+                    })
+                    .collect::<Vec<_>>()
+                    .into(),
+                Some(nulls.clone().into()),
+            )
+            .with_precision_and_scale(p, s)?,
+        )),
+        // list of primitive types
+        DataType::List(f) if !matches!(f.data_type(), DataType::List(_)) => {
+            literal_to_array_ref(f.data_type().clone(), list_literal)
+        }
+        DataType::List(ref f) => {
+            let dt = f.data_type().clone();
+
+            // Build offsets and collect non-null child arrays
+            let mut offsets = Vec::with_capacity(list_literal.list_values.len() + 1);
+            // Offsets starts with 0
+            offsets.push(0i32);
+            let mut child_arrays: Vec<ArrayRef> = Vec::new();
+
+            for (i, child_literal) in list_literal.list_values.iter().enumerate() {
+                // Check if the current child literal is non-null and not the empty array
+                if list_literal.null_mask[i] && *child_literal != ListLiteral::default() {
+                    // Non-null entry: process the child array
+                    let child_array = literal_to_array_ref(dt.clone(), child_literal.clone())?;
+                    let len = child_array.len() as i32;
+                    offsets.push(offsets.last().unwrap() + len);
+                    child_arrays.push(child_array);
+                } else {
+                    // Null entry: just repeat the last offset (empty slot)
+                    offsets.push(*offsets.last().unwrap());
+                }
+            }
+
+            // Concatenate all non-null child arrays' values into one array
+            let output_array = if !child_arrays.is_empty() {
+                let child_refs: Vec<&dyn Array> = child_arrays.iter().map(|a| a.as_ref()).collect();
+                arrow::compute::concat(&child_refs)?
+            } else {
+                // All entries are null or the list is empty
+                new_empty_array(&dt)
+            };
+
+            // Create and return the parent ListArray
+            Ok(Arc::new(ListArray::new(
+                FieldRef::from(Field::new("item", output_array.data_type().clone(), true)),
+                OffsetBuffer::new(offsets.into()),
+                output_array,
+                Some(NullBuffer::from(list_literal.null_mask.clone())),
+            )))
+        }
+        dt => Err(GeneralError(format!(
+            "DataType::List literal does not support {dt:?} type"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures::{poll, StreamExt};
     use std::{sync::Arc, task::Poll};
 
-    use arrow::array::{Array, DictionaryArray, Int32Array, RecordBatch, StringArray};
-    use arrow::datatypes::{DataType, Field, Fields, Schema};
+    use arrow::array::{Array, DictionaryArray, Int32Array, ListArray, RecordBatch, StringArray};
+    use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema};
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::object_store::ObjectStoreUrl;
@@ -2875,9 +2943,11 @@ mod tests {
     use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
 
     use crate::execution::operators::ExecutionError;
+    use crate::execution::planner::literal_to_array_ref;
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
+    use datafusion_comet_proto::spark_expression::ListLiteral;
     use datafusion_comet_proto::{
         spark_expression::expr::ExprStruct::*,
         spark_expression::Expr,
@@ -3658,6 +3728,129 @@ mod tests {
             "+-------------+",
         ];
         assert_batches_eq!(expected, &[actual]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_literal_to_list() -> Result<(), DataFusionError> {
+        /*
+           [
+               [
+                   [1, 2, 3],
+                   [4, 5, 6],
+                   [7, 8, 9, null],
+                   [],
+                   null
+               ],
+               [
+                   [10, null, 12]
+               ],
+               null,
+               []
+          ]
+        */
+        let data = ListLiteral {
+            list_values: vec![
+                ListLiteral {
+                    list_values: vec![
+                        ListLiteral {
+                            int_values: vec![1, 2, 3],
+                            null_mask: vec![true, true, true],
+                            ..Default::default()
+                        },
+                        ListLiteral {
+                            int_values: vec![4, 5, 6],
+                            null_mask: vec![true, true, true],
+                            ..Default::default()
+                        },
+                        ListLiteral {
+                            int_values: vec![7, 8, 9, 0],
+                            null_mask: vec![true, true, true, false],
+                            ..Default::default()
+                        },
+                        ListLiteral {
+                            ..Default::default()
+                        },
+                        ListLiteral {
+                            ..Default::default()
+                        },
+                    ],
+                    null_mask: vec![true, true, true, false, true],
+                    ..Default::default()
+                },
+                ListLiteral {
+                    list_values: vec![ListLiteral {
+                        int_values: vec![10, 0, 11],
+                        null_mask: vec![true, false, true],
+                        ..Default::default()
+                    }],
+                    null_mask: vec![true],
+                    ..Default::default()
+                },
+                ListLiteral {
+                    ..Default::default()
+                },
+                ListLiteral {
+                    ..Default::default()
+                },
+            ],
+            null_mask: vec![true, true, false, true],
+            ..Default::default()
+        };
+
+        let nested_type = DataType::List(FieldRef::from(Field::new(
+            "item",
+            DataType::List(
+                Field::new(
+                    "item",
+                    DataType::List(
+                        Field::new(
+                            "item",
+                            DataType::Int32,
+                            true, // Int32 nullable
+                        )
+                        .into(),
+                    ),
+                    true, // inner list nullable
+                )
+                .into(),
+            ),
+            true, // outer list nullable
+        )));
+
+        let array = literal_to_array_ref(nested_type, data)?;
+
+        // Top-level should be ListArray<ListArray<Int32>>
+        let list_outer = array.as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(list_outer.len(), 4);
+
+        // First outer element: ListArray<Int32>
+        let first_elem = list_outer.value(0);
+        let list_inner = first_elem.as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(list_inner.len(), 5);
+
+        // Inner values
+        let v0 = list_inner.value(0);
+        let vals0 = v0.as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(vals0.values(), &[1, 2, 3]);
+
+        let v1 = list_inner.value(1);
+        let vals1 = v1.as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(vals1.values(), &[4, 5, 6]);
+
+        let v2 = list_inner.value(2);
+        let vals2 = v2.as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(vals2.values(), &[7, 8, 9, 0]);
+
+        // Second outer element
+        let second_elem = list_outer.value(1);
+        let list_inner2 = second_elem.as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(list_inner2.len(), 1);
+
+        let v3 = list_inner2.value(0);
+        let vals3 = v3.as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(vals3.values(), &[10, 0, 11]);
+
         Ok(())
     }
 }
