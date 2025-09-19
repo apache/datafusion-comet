@@ -19,6 +19,8 @@
 
 package org.apache.comet.serde.literals
 
+import java.lang
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
@@ -27,7 +29,6 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.protobuf.ByteString
 
-import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, LiteralOuterClass, SupportLevel, Unsupported}
@@ -41,13 +42,15 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
     if (supportedDataType(
         expr.dataType,
         allowComplex = expr.value == null ||
+
           // Nested literal support for native reader
           // can be tracked https://github.com/apache/datafusion-comet/issues/1937
-          // now supports only Array of primitive
-          (Seq(CometConf.SCAN_NATIVE_ICEBERG_COMPAT, CometConf.SCAN_NATIVE_DATAFUSION)
-            .contains(CometConf.COMET_NATIVE_SCAN_IMPL.get()) && expr.dataType
-            .isInstanceOf[ArrayType]) && !isComplexType(
-            expr.dataType.asInstanceOf[ArrayType].elementType))) {
+          (expr.dataType
+            .isInstanceOf[ArrayType] && (!isComplexType(
+            expr.dataType.asInstanceOf[ArrayType].elementType) || expr.dataType
+            .asInstanceOf[ArrayType]
+            .elementType
+            .isInstanceOf[ArrayType])))) {
       Compatible(None)
     } else {
       Unsupported(Some(s"Unsupported data type ${expr.dataType}"))
@@ -86,84 +89,10 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
           val byteStr =
             com.google.protobuf.ByteString.copyFrom(value.asInstanceOf[Array[Byte]])
           exprBuilder.setBytesVal(byteStr)
-        case a: ArrayType =>
-          val listLiteralBuilder = ListLiteral.newBuilder()
-          val array = value.asInstanceOf[GenericArrayData].array
-          a.elementType match {
-            case NullType =>
-              array.foreach(_ => listLiteralBuilder.addNullMask(true))
-            case BooleanType =>
-              array.foreach(v => {
-                val casted = v.asInstanceOf[java.lang.Boolean]
-                listLiteralBuilder.addBooleanValues(casted)
-                listLiteralBuilder.addNullMask(casted != null)
-              })
-            case ByteType =>
-              array.foreach(v => {
-                val casted = v.asInstanceOf[java.lang.Integer]
-                listLiteralBuilder.addByteValues(casted)
-                listLiteralBuilder.addNullMask(casted != null)
-              })
-            case ShortType =>
-              array.foreach(v => {
-                val casted = v.asInstanceOf[java.lang.Short]
-                listLiteralBuilder.addShortValues(
-                  if (casted != null) casted.intValue()
-                  else null.asInstanceOf[java.lang.Integer])
-                listLiteralBuilder.addNullMask(casted != null)
-              })
-            case IntegerType | DateType =>
-              array.foreach(v => {
-                val casted = v.asInstanceOf[java.lang.Integer]
-                listLiteralBuilder.addIntValues(casted)
-                listLiteralBuilder.addNullMask(casted != null)
-              })
-            case LongType | TimestampType | TimestampNTZType =>
-              array.foreach(v => {
-                val casted = v.asInstanceOf[java.lang.Long]
-                listLiteralBuilder.addLongValues(casted)
-                listLiteralBuilder.addNullMask(casted != null)
-              })
-            case FloatType =>
-              array.foreach(v => {
-                val casted = v.asInstanceOf[java.lang.Float]
-                listLiteralBuilder.addFloatValues(casted)
-                listLiteralBuilder.addNullMask(casted != null)
-              })
-            case DoubleType =>
-              array.foreach(v => {
-                val casted = v.asInstanceOf[java.lang.Double]
-                listLiteralBuilder.addDoubleValues(casted)
-                listLiteralBuilder.addNullMask(casted != null)
-              })
-            case StringType =>
-              array.foreach(v => {
-                val casted = v.asInstanceOf[org.apache.spark.unsafe.types.UTF8String]
-                listLiteralBuilder.addStringValues(if (casted != null) casted.toString else "")
-                listLiteralBuilder.addNullMask(casted != null)
-              })
-            case _: DecimalType =>
-              array
-                .foreach(v => {
-                  val casted =
-                    v.asInstanceOf[Decimal]
-                  listLiteralBuilder.addDecimalValues(if (casted != null) {
-                    com.google.protobuf.ByteString
-                      .copyFrom(casted.toBigDecimal.underlying.unscaledValue.toByteArray)
-                  } else ByteString.EMPTY)
-                  listLiteralBuilder.addNullMask(casted != null)
-                })
-            case _: BinaryType =>
-              array
-                .foreach(v => {
-                  val casted =
-                    v.asInstanceOf[Array[Byte]]
-                  listLiteralBuilder.addBytesValues(if (casted != null) {
-                    com.google.protobuf.ByteString.copyFrom(casted)
-                  } else ByteString.EMPTY)
-                  listLiteralBuilder.addNullMask(casted != null)
-                })
-          }
+
+        case arr: ArrayType =>
+          val listLiteralBuilder: ListLiteral.Builder =
+            makeListLiteral(value.asInstanceOf[GenericArrayData].array, arr)
           exprBuilder.setListVal(listLiteralBuilder.build())
           exprBuilder.setDatatype(serializeDataType(dataType).get)
         case dt =>
@@ -187,5 +116,93 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
       None
     }
 
+  }
+
+  private def makeListLiteral(array: Array[Any], arrayType: ArrayType): ListLiteral.Builder = {
+    val listLiteralBuilder = ListLiteral.newBuilder()
+    arrayType.elementType match {
+      case NullType =>
+        array.foreach(_ => listLiteralBuilder.addNullMask(true))
+      case BooleanType =>
+        array.foreach(v => {
+          val casted = v.asInstanceOf[lang.Boolean]
+          listLiteralBuilder.addBooleanValues(casted)
+          listLiteralBuilder.addNullMask(casted != null)
+        })
+      case ByteType =>
+        array.foreach(v => {
+          val casted = v.asInstanceOf[Integer]
+          listLiteralBuilder.addByteValues(casted)
+          listLiteralBuilder.addNullMask(casted != null)
+        })
+      case ShortType =>
+        array.foreach(v => {
+          val casted = v.asInstanceOf[lang.Short]
+          listLiteralBuilder.addShortValues(
+            if (casted != null) casted.intValue()
+            else null.asInstanceOf[Integer])
+          listLiteralBuilder.addNullMask(casted != null)
+        })
+      case IntegerType | DateType =>
+        array.foreach(v => {
+          val casted = v.asInstanceOf[Integer]
+          listLiteralBuilder.addIntValues(casted)
+          listLiteralBuilder.addNullMask(casted != null)
+        })
+      case LongType | TimestampType | TimestampNTZType =>
+        array.foreach(v => {
+          val casted = v.asInstanceOf[lang.Long]
+          listLiteralBuilder.addLongValues(casted)
+          listLiteralBuilder.addNullMask(casted != null)
+        })
+      case FloatType =>
+        array.foreach(v => {
+          val casted = v.asInstanceOf[lang.Float]
+          listLiteralBuilder.addFloatValues(casted)
+          listLiteralBuilder.addNullMask(casted != null)
+        })
+      case DoubleType =>
+        array.foreach(v => {
+          val casted = v.asInstanceOf[lang.Double]
+          listLiteralBuilder.addDoubleValues(casted)
+          listLiteralBuilder.addNullMask(casted != null)
+        })
+      case StringType =>
+        array.foreach(v => {
+          val casted = v.asInstanceOf[UTF8String]
+          listLiteralBuilder.addStringValues(if (casted != null) casted.toString else "")
+          listLiteralBuilder.addNullMask(casted != null)
+        })
+      case _: DecimalType =>
+        array
+          .foreach(v => {
+            val casted =
+              v.asInstanceOf[Decimal]
+            listLiteralBuilder.addDecimalValues(if (casted != null) {
+              com.google.protobuf.ByteString
+                .copyFrom(casted.toBigDecimal.underlying.unscaledValue.toByteArray)
+            } else ByteString.EMPTY)
+            listLiteralBuilder.addNullMask(casted != null)
+          })
+      case _: BinaryType =>
+        array
+          .foreach(v => {
+            val casted =
+              v.asInstanceOf[Array[Byte]]
+            listLiteralBuilder.addBytesValues(if (casted != null) {
+              com.google.protobuf.ByteString.copyFrom(casted)
+            } else ByteString.EMPTY)
+            listLiteralBuilder.addNullMask(casted != null)
+          })
+      case a: ArrayType =>
+        array.foreach(v => {
+          val casted = v.asInstanceOf[GenericArrayData]
+          listLiteralBuilder.addListValues(if (casted != null) {
+            makeListLiteral(casted.array, a)
+          } else ListLiteral.newBuilder())
+          listLiteralBuilder.addNullMask(casted != null)
+        })
+    }
+    listLiteralBuilder
   }
 }
