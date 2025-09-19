@@ -19,21 +19,23 @@
 
 package org.apache.comet.exec
 
-import org.apache.comet.CometConf
-import org.apache.hadoop.fs.Path
-import org.apache.spark.SparkEnv
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.col
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import scala.concurrent.duration.DurationInt
+
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
-import scala.concurrent.duration.DurationInt
+import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkEnv
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.functions.col
+
+import org.apache.comet.CometConf
 
 class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
-                                                                                 pos: Position): Unit = {
+      pos: Position): Unit = {
     super.test(testName, testTags: _*) {
       withSQLConf(
         CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -341,9 +343,9 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
    * used by `df` are Comet native operators.
    */
   private def checkShuffleAnswer(
-                                  df: DataFrame,
-                                  expectedNum: Int,
-                                  checkNativeOperators: Boolean = false): Unit = {
+      df: DataFrame,
+      expectedNum: Int,
+      checkNativeOperators: Boolean = false): Unit = {
     checkCometExchange(df, expectedNum, true)
     if (checkNativeOperators) {
       checkSparkAnswerAndOperator(df)
