@@ -30,7 +30,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, SinglePartition}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -222,7 +222,7 @@ class CometNativeShuffleWriter[K, V](
           // Detect duplicates by tracking expressions directly, similar to DataFusion's LexOrdering
           // DataFusion will deduplicate identical sort expressions in LexOrdering,
           // so we need to transform boundary rows to match the deduplicated structure
-          val seenExprs = mutable.HashSet[org.apache.spark.sql.catalyst.expressions.Expression]()
+          val seenExprs = mutable.HashSet[Expression]()
           val deduplicationMap = mutable.ArrayBuffer[(Int, Boolean)]() // (originalIndex, isKept)
 
           rangePartitioning.ordering.zipWithIndex.foreach { case (sortOrder, idx) =>
