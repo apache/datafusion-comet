@@ -249,6 +249,27 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   // This duplicates behavior seen in a much more complicated Spark SQL test
+  // group-analytics.sql
+  test("range partitioning with GROUPING functions should not cause ClassCastException") {
+    // Reproduces the issue where Cast expressions in ORDER BY cause ClassCastException
+    // when trying to cast to AttributeReference in RangePartitioning deduplication logic
+    withParquetTable(
+      Seq(("Math", 2020), ("Math", 2021), ("Physics", 2020), ("Physics", 2021)),
+      "courseSales") {
+      val df = sql("""
+        SELECT _1, _2, GROUPING(_1), GROUPING(_2)
+        FROM courseSales
+        GROUP BY CUBE(_1, _2)
+        ORDER BY GROUPING(_1), GROUPING(_2), _1, _2
+      """)
+
+      // This should not throw ClassCastException during RangePartitioning
+      // The ORDER BY with GROUPING functions creates Cast expressions that cause the issue
+      df.repartitionByRange(2, col("_1")).collect()
+    }
+  }
+
+  // This duplicates behavior seen in a much more complicated Spark SQL test
   // "SPARK-44647: test join key is the second cluster key"
   test("range partitioning with duplicate column references") {
     // Test with wider schema and non-adjacent duplicate columns
