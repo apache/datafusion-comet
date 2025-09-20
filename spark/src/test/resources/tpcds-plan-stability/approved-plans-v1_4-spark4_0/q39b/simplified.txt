@@ -6,9 +6,9 @@ WholeStageCodegen (1)
           CometBroadcastHashJoin [w_warehouse_sk,i_item_sk,d_moy,mean,cov,w_warehouse_sk,i_item_sk,d_moy,mean,cov]
             CometProject [stdev] [w_warehouse_sk,i_item_sk,d_moy,mean,cov]
               CometFilter [w_warehouse_sk,i_item_sk,d_moy,stdev,mean]
-                CometHashAggregate [w_warehouse_sk,i_item_sk,d_moy,stdev,mean,w_warehouse_name,n,avg,m2,sum,count,stddev_samp(cast(inv_quantity_on_hand as double)),avg(inv_quantity_on_hand)]
+                CometHashAggregate [w_warehouse_name,n,avg,m2,sum,count] [w_warehouse_sk,i_item_sk,d_moy,stdev,mean,stddev_samp(cast(inv_quantity_on_hand as double)),avg(inv_quantity_on_hand)]
                   CometExchange [w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy] #2
-                    CometHashAggregate [w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy,n,avg,m2,sum,count,inv_quantity_on_hand]
+                    CometHashAggregate [inv_quantity_on_hand] [w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy,n,avg,m2,sum,count]
                       CometProject [inv_quantity_on_hand,i_item_sk,w_warehouse_sk,w_warehouse_name,d_moy]
                         CometBroadcastHashJoin [inv_quantity_on_hand,inv_date_sk,i_item_sk,w_warehouse_sk,w_warehouse_name,d_date_sk,d_moy]
                           CometProject [inv_quantity_on_hand,inv_date_sk,i_item_sk,w_warehouse_sk,w_warehouse_name]
@@ -38,9 +38,9 @@ WholeStageCodegen (1)
             CometBroadcastExchange [w_warehouse_sk,i_item_sk,d_moy,mean,cov] #7
               CometProject [stdev] [w_warehouse_sk,i_item_sk,d_moy,mean,cov]
                 CometFilter [w_warehouse_sk,i_item_sk,d_moy,stdev,mean]
-                  CometHashAggregate [w_warehouse_sk,i_item_sk,d_moy,stdev,mean,w_warehouse_name,n,avg,m2,sum,count,stddev_samp(cast(inv_quantity_on_hand as double)),avg(inv_quantity_on_hand)]
+                  CometHashAggregate [w_warehouse_name,n,avg,m2,sum,count] [w_warehouse_sk,i_item_sk,d_moy,stdev,mean,stddev_samp(cast(inv_quantity_on_hand as double)),avg(inv_quantity_on_hand)]
                     CometExchange [w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy] #8
-                      CometHashAggregate [w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy,n,avg,m2,sum,count,inv_quantity_on_hand]
+                      CometHashAggregate [inv_quantity_on_hand] [w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy,n,avg,m2,sum,count]
                         CometProject [inv_quantity_on_hand,i_item_sk,w_warehouse_sk,w_warehouse_name,d_moy]
                           CometBroadcastHashJoin [inv_quantity_on_hand,inv_date_sk,i_item_sk,w_warehouse_sk,w_warehouse_name,d_date_sk,d_moy]
                             CometProject [inv_quantity_on_hand,inv_date_sk,i_item_sk,w_warehouse_sk,w_warehouse_name]

@@ -12,7 +12,7 @@ WholeStageCodegen (3)
                       CometColumnarToRow
                         InputAdapter
                           CometExchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id] #2
-                            CometHashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sum,sum,sales_cnt,sales_amt]
+                            CometHashAggregate [sales_cnt,sales_amt] [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sum,sum]
                               CometHashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
                                 CometExchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt] #3
                                   CometHashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
@@ -90,7 +90,7 @@ WholeStageCodegen (3)
                       CometColumnarToRow
                         InputAdapter
                           CometExchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id] #14
-                            CometHashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sum,sum,sales_cnt,sales_amt]
+                            CometHashAggregate [sales_cnt,sales_amt] [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sum,sum]
                               CometHashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
                                 CometExchange [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt] #15
                                   CometHashAggregate [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]

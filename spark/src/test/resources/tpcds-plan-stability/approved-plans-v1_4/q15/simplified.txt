@@ -2,9 +2,9 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [ca_zip,sum(cs_sales_price)]
-        CometHashAggregate [ca_zip,sum(cs_sales_price),sum,sum(UnscaledValue(cs_sales_price))]
+        CometHashAggregate [sum] [ca_zip,sum(cs_sales_price),sum(UnscaledValue(cs_sales_price))]
           CometExchange [ca_zip] #1
-            CometHashAggregate [ca_zip,sum,cs_sales_price]
+            CometHashAggregate [cs_sales_price] [ca_zip,sum]
               CometProject [cs_sales_price,ca_zip]
                 CometBroadcastHashJoin [cs_sales_price,cs_sold_date_sk,ca_zip,d_date_sk]
                   CometProject [cs_sales_price,cs_sold_date_sk,ca_zip]

@@ -9,9 +9,9 @@ WholeStageCodegen (1)
                 CometProject [ctr_customer_sk,ctr_total_return]
                   CometBroadcastHashJoin [ctr_customer_sk,ctr_state,ctr_total_return,(avg(ctr_total_return) * 1.2),ctr_state]
                     CometFilter [ctr_customer_sk,ctr_state,ctr_total_return]
-                      CometHashAggregate [ctr_customer_sk,ctr_state,ctr_total_return,cr_returning_customer_sk,ca_state,sum,sum(UnscaledValue(cr_return_amt_inc_tax))]
+                      CometHashAggregate [sum] [ctr_customer_sk,ctr_state,ctr_total_return,cr_returning_customer_sk,ca_state,sum(UnscaledValue(cr_return_amt_inc_tax))]
                         CometExchange [cr_returning_customer_sk,ca_state] #1
-                          CometHashAggregate [cr_returning_customer_sk,ca_state,sum,cr_return_amt_inc_tax]
+                          CometHashAggregate [cr_return_amt_inc_tax] [cr_returning_customer_sk,ca_state,sum]
                             CometProject [cr_returning_customer_sk,cr_return_amt_inc_tax,ca_state]
                               CometBroadcastHashJoin [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,ca_address_sk,ca_state]
                                 CometProject [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax]
@@ -36,12 +36,12 @@ WholeStageCodegen (1)
                                       CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]
                     CometBroadcastExchange [(avg(ctr_total_return) * 1.2),ctr_state] #5
                       CometFilter [(avg(ctr_total_return) * 1.2),ctr_state]
-                        CometHashAggregate [(avg(ctr_total_return) * 1.2),ctr_state,ctr_state,sum,count,avg(ctr_total_return)]
+                        CometHashAggregate [sum,count] [(avg(ctr_total_return) * 1.2),ctr_state,avg(ctr_total_return),ctr_state]
                           CometExchange [ctr_state] #6
-                            CometHashAggregate [ctr_state,sum,count,ctr_total_return]
-                              CometHashAggregate [ctr_state,ctr_total_return,cr_returning_customer_sk,ca_state,sum,sum(UnscaledValue(cr_return_amt_inc_tax))]
+                            CometHashAggregate [ctr_total_return] [ctr_state,sum,count]
+                              CometHashAggregate [cr_returning_customer_sk,sum] [ctr_state,ctr_total_return,ca_state,sum(UnscaledValue(cr_return_amt_inc_tax))]
                                 CometExchange [cr_returning_customer_sk,ca_state] #7
-                                  CometHashAggregate [cr_returning_customer_sk,ca_state,sum,cr_return_amt_inc_tax]
+                                  CometHashAggregate [cr_return_amt_inc_tax] [cr_returning_customer_sk,ca_state,sum]
                                     CometProject [cr_returning_customer_sk,cr_return_amt_inc_tax,ca_state]
                                       CometBroadcastHashJoin [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,ca_address_sk,ca_state]
                                         CometProject [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax]

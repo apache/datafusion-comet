@@ -2,9 +2,9 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
-        CometHashAggregate [s_store_name,sum(ss_net_profit),sum,sum(UnscaledValue(ss_net_profit))]
+        CometHashAggregate [sum] [s_store_name,sum(ss_net_profit),sum(UnscaledValue(ss_net_profit))]
           CometExchange [s_store_name] #1
-            CometHashAggregate [s_store_name,sum,ss_net_profit]
+            CometHashAggregate [ss_net_profit] [s_store_name,sum]
               CometProject [ss_net_profit,s_store_name]
                 CometBroadcastHashJoin [ss_net_profit,s_store_name,s_zip,ca_zip]
                   CometProject [ss_net_profit,s_store_name,s_zip]
@@ -40,7 +40,7 @@ WholeStageCodegen (1)
                             CometBroadcastExchange [ca_zip] #7
                               CometProject [ca_zip]
                                 CometFilter [ca_zip,cnt]
-                                  CometHashAggregate [ca_zip,cnt,ca_zip,count,count(1)]
+                                  CometHashAggregate [count] [ca_zip,cnt,ca_zip,count(1)]
                                     CometExchange [ca_zip] #8
                                       CometHashAggregate [ca_zip,count]
                                         CometProject [ca_zip]

@@ -9,9 +9,9 @@ WholeStageCodegen (1)
                 CometProject [customer_id,year_total,customer_preferred_cust_flag,year_total]
                   CometBroadcastHashJoin [customer_id,year_total,customer_id,customer_preferred_cust_flag,year_total]
                     CometFilter [customer_id,year_total]
-                      CometHashAggregate [customer_id,year_total,c_customer_id,c_first_name,c_last_name,d_year,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,sum,sum(UnscaledValue((ss_ext_list_price - ss_ext_discount_amt)))]
+                      CometHashAggregate [c_first_name,c_last_name,d_year,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,sum] [customer_id,year_total,c_customer_id,sum(UnscaledValue((ss_ext_list_price - ss_ext_discount_amt)))]
                         CometExchange [c_customer_id,c_first_name,c_last_name,d_year,c_preferred_cust_flag,c_birth_country,c_login,c_email_address] #1
-                          CometHashAggregate [c_customer_id,c_first_name,c_last_name,d_year,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,sum,ss_ext_list_price,ss_ext_discount_amt]
+                          CometHashAggregate [ss_ext_list_price,ss_ext_discount_amt] [c_customer_id,c_first_name,c_last_name,d_year,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,sum]
                             CometProject [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ss_ext_discount_amt,ss_ext_list_price,d_year]
                               CometBroadcastHashJoin [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ss_ext_discount_amt,ss_ext_list_price,ss_sold_date_sk,d_date_sk,d_year]
                                 CometProject [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ss_ext_discount_amt,ss_ext_list_price,ss_sold_date_sk]
@@ -33,9 +33,9 @@ WholeStageCodegen (1)
                                   CometFilter [d_date_sk,d_year]
                                     CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                     CometBroadcastExchange [customer_id,customer_preferred_cust_flag,year_total] #5
-                      CometHashAggregate [customer_id,customer_preferred_cust_flag,year_total,c_customer_id,c_first_name,c_last_name,d_year,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,sum,sum(UnscaledValue((ss_ext_list_price - ss_ext_discount_amt)))]
+                      CometHashAggregate [c_first_name,c_last_name,d_year,c_birth_country,c_login,c_email_address,sum] [customer_id,customer_preferred_cust_flag,year_total,c_customer_id,c_preferred_cust_flag,sum(UnscaledValue((ss_ext_list_price - ss_ext_discount_amt)))]
                         CometExchange [c_customer_id,c_first_name,c_last_name,d_year,c_preferred_cust_flag,c_birth_country,c_login,c_email_address] #6
-                          CometHashAggregate [c_customer_id,c_first_name,c_last_name,d_year,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,sum,ss_ext_list_price,ss_ext_discount_amt]
+                          CometHashAggregate [ss_ext_list_price,ss_ext_discount_amt] [c_customer_id,c_first_name,c_last_name,d_year,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,sum]
                             CometProject [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ss_ext_discount_amt,ss_ext_list_price,d_year]
                               CometBroadcastHashJoin [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ss_ext_discount_amt,ss_ext_list_price,ss_sold_date_sk,d_date_sk,d_year]
                                 CometProject [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ss_ext_discount_amt,ss_ext_list_price,ss_sold_date_sk]
@@ -58,9 +58,9 @@ WholeStageCodegen (1)
                                     CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                 CometBroadcastExchange [customer_id,year_total] #10
                   CometFilter [customer_id,year_total]
-                    CometHashAggregate [customer_id,year_total,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum,sum(UnscaledValue((ws_ext_list_price - ws_ext_discount_amt)))]
+                    CometHashAggregate [c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum] [customer_id,year_total,c_customer_id,sum(UnscaledValue((ws_ext_list_price - ws_ext_discount_amt)))]
                       CometExchange [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year] #11
-                        CometHashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum,ws_ext_list_price,ws_ext_discount_amt]
+                        CometHashAggregate [ws_ext_list_price,ws_ext_discount_amt] [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum]
                           CometProject [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ws_ext_discount_amt,ws_ext_list_price,d_year]
                             CometBroadcastHashJoin [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ws_ext_discount_amt,ws_ext_list_price,ws_sold_date_sk,d_date_sk,d_year]
                               CometProject [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ws_ext_discount_amt,ws_ext_list_price,ws_sold_date_sk]
@@ -74,9 +74,9 @@ WholeStageCodegen (1)
                                         ReusedSubquery [d_date_sk] #1
                               ReusedExchange [d_date_sk,d_year] #4
             CometBroadcastExchange [customer_id,year_total] #13
-              CometHashAggregate [customer_id,year_total,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum,sum(UnscaledValue((ws_ext_list_price - ws_ext_discount_amt)))]
+              CometHashAggregate [c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum] [customer_id,year_total,c_customer_id,sum(UnscaledValue((ws_ext_list_price - ws_ext_discount_amt)))]
                 CometExchange [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year] #14
-                  CometHashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum,ws_ext_list_price,ws_ext_discount_amt]
+                  CometHashAggregate [ws_ext_list_price,ws_ext_discount_amt] [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum]
                     CometProject [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ws_ext_discount_amt,ws_ext_list_price,d_year]
                       CometBroadcastHashJoin [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ws_ext_discount_amt,ws_ext_list_price,ws_sold_date_sk,d_date_sk,d_year]
                         CometProject [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ws_ext_discount_amt,ws_ext_list_price,ws_sold_date_sk]
