@@ -1,9 +1,9 @@
 WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
-      CometHashAggregate [sum(ss_quantity),sum,sum(ss_quantity)]
+      CometHashAggregate [sum] [sum(ss_quantity),sum(ss_quantity)]
         CometExchange #1
-          CometHashAggregate [sum,ss_quantity]
+          CometHashAggregate [ss_quantity] [sum]
             CometProject [ss_quantity]
               CometBroadcastHashJoin [ss_quantity,ss_sold_date_sk,d_date_sk]
                 CometProject [ss_quantity,ss_sold_date_sk]

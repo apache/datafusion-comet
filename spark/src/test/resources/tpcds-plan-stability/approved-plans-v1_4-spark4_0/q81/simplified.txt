@@ -11,7 +11,7 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,ca_st
                     CometColumnarToRow
                       InputAdapter
                         CometExchange [cr_returning_customer_sk,ca_state] #1
-                          CometHashAggregate [cr_returning_customer_sk,ca_state,sum,cr_return_amt_inc_tax]
+                          CometHashAggregate [cr_return_amt_inc_tax] [cr_returning_customer_sk,ca_state,sum]
                             CometProject [cr_returning_customer_sk,cr_return_amt_inc_tax,ca_state]
                               CometBroadcastHashJoin [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,ca_address_sk,ca_state]
                                 CometProject [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax]
@@ -48,7 +48,7 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,ca_st
                                       CometColumnarToRow
                                         InputAdapter
                                           CometExchange [cr_returning_customer_sk,ca_state] #7
-                                            CometHashAggregate [cr_returning_customer_sk,ca_state,sum,cr_return_amt_inc_tax]
+                                            CometHashAggregate [cr_return_amt_inc_tax] [cr_returning_customer_sk,ca_state,sum]
                                               CometProject [cr_returning_customer_sk,cr_return_amt_inc_tax,ca_state]
                                                 CometBroadcastHashJoin [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax,ca_address_sk,ca_state]
                                                   CometProject [cr_returning_customer_sk,cr_returning_addr_sk,cr_return_amt_inc_tax]

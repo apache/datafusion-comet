@@ -22,7 +22,7 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,d_moy,i_category,d_year,psum,
                                           CometColumnarToRow
                                             InputAdapter
                                               CometExchange [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy] #2
-                                                CometHashAggregate [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum,ss_sales_price]
+                                                CometHashAggregate [ss_sales_price] [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum]
                                                   CometProject [i_brand,i_category,ss_sales_price,d_year,d_moy,s_store_name,s_company_name]
                                                     CometBroadcastHashJoin [i_brand,i_category,ss_store_sk,ss_sales_price,d_year,d_moy,s_store_sk,s_store_name,s_company_name]
                                                       CometProject [i_brand,i_category,ss_store_sk,ss_sales_price,d_year,d_moy]

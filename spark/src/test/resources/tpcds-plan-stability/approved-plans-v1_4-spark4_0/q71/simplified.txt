@@ -8,7 +8,7 @@ WholeStageCodegen (2)
               CometColumnarToRow
                 InputAdapter
                   CometExchange [i_brand,i_brand_id,t_hour,t_minute] #2
-                    CometHashAggregate [i_brand,i_brand_id,t_hour,t_minute,sum,ext_price]
+                    CometHashAggregate [ext_price] [i_brand,i_brand_id,t_hour,t_minute,sum]
                       CometProject [i_brand_id,i_brand,ext_price,t_hour,t_minute]
                         CometBroadcastHashJoin [i_brand_id,i_brand,ext_price,time_sk,t_time_sk,t_hour,t_minute]
                           CometProject [i_brand_id,i_brand,ext_price,time_sk]

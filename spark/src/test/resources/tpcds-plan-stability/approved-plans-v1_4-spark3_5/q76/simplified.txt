@@ -2,9 +2,9 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [channel,col_name,d_year,d_qoy,i_category,sales_cnt,sales_amt]
-        CometHashAggregate [channel,col_name,d_year,d_qoy,i_category,sales_cnt,sales_amt,count,sum,count(1),sum(UnscaledValue(ext_sales_price))]
+        CometHashAggregate [count,sum] [channel,col_name,d_year,d_qoy,i_category,sales_cnt,sales_amt,count(1),sum(UnscaledValue(ext_sales_price))]
           CometExchange [channel,col_name,d_year,d_qoy,i_category] #1
-            CometHashAggregate [channel,col_name,d_year,d_qoy,i_category,count,sum,ext_sales_price]
+            CometHashAggregate [ext_sales_price] [channel,col_name,d_year,d_qoy,i_category,count,sum]
               CometUnion [channel,col_name,d_year,d_qoy,i_category,ext_sales_price]
                 CometProject [ss_store_sk,ss_ext_sales_price] [channel,col_name,d_year,d_qoy,i_category,ext_sales_price]
                   CometBroadcastHashJoin [ss_store_sk,ss_ext_sales_price,ss_sold_date_sk,i_category,d_date_sk,d_year,d_qoy]

@@ -34,9 +34,9 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                                   InputAdapter
                                                                     CometSort [item_sk,d_date,sumws,ws_item_sk]
                                                                       CometExchange [ws_item_sk] #4
-                                                                        CometHashAggregate [item_sk,d_date,sumws,ws_item_sk,sum,sum(UnscaledValue(ws_sales_price))]
+                                                                        CometHashAggregate [sum] [item_sk,d_date,sumws,ws_item_sk,sum(UnscaledValue(ws_sales_price))]
                                                                           CometExchange [ws_item_sk,d_date] #5
-                                                                            CometHashAggregate [ws_item_sk,d_date,sum,ws_sales_price]
+                                                                            CometHashAggregate [ws_sales_price] [ws_item_sk,d_date,sum]
                                                                               CometProject [ws_item_sk,ws_sales_price,d_date]
                                                                                 CometBroadcastHashJoin [ws_item_sk,ws_sales_price,ws_sold_date_sk,d_date_sk,d_date]
                                                                                   CometFilter [ws_item_sk,ws_sales_price,ws_sold_date_sk]
@@ -83,9 +83,9 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                                   InputAdapter
                                                                     CometSort [item_sk,d_date,sumss,ss_item_sk]
                                                                       CometExchange [ss_item_sk] #11
-                                                                        CometHashAggregate [item_sk,d_date,sumss,ss_item_sk,sum,sum(UnscaledValue(ss_sales_price))]
+                                                                        CometHashAggregate [sum] [item_sk,d_date,sumss,ss_item_sk,sum(UnscaledValue(ss_sales_price))]
                                                                           CometExchange [ss_item_sk,d_date] #12
-                                                                            CometHashAggregate [ss_item_sk,d_date,sum,ss_sales_price]
+                                                                            CometHashAggregate [ss_sales_price] [ss_item_sk,d_date,sum]
                                                                               CometProject [ss_item_sk,ss_sales_price,d_date]
                                                                                 CometBroadcastHashJoin [ss_item_sk,ss_sales_price,ss_sold_date_sk,d_date_sk,d_date]
                                                                                   CometFilter [ss_item_sk,ss_sales_price,ss_sold_date_sk]
