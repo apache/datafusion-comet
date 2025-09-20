@@ -2,7 +2,7 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometSort [brand_id,brand,t_hour,t_minute,ext_price]
-        CometColumnarExchange [ext_price,brand_id] #1
+        CometExchange [ext_price,brand_id] #1
           CometHashAggregate [sum] [brand_id,brand,t_hour,t_minute,ext_price,i_brand_id,i_brand,sum(UnscaledValue(ext_price))]
             CometExchange [i_brand,i_brand_id,t_hour,t_minute] #2
               CometHashAggregate [ext_price] [i_brand,i_brand_id,t_hour,t_minute,sum]

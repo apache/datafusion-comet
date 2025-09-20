@@ -133,6 +133,21 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     }
   }
 
+  test("order by random columns") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+
+    for (_ <- 1 to 10) {
+      // We only do order by permutations of primitive types to exercise native shuffle's
+      // RangePartitioning which only supports those types.
+      val shuffledPrimitiveCols = Random.shuffle(df.columns.slice(0, 14).toList)
+      val randomSize = Random.nextInt(shuffledPrimitiveCols.length) + 1
+      val randomColsSubset = shuffledPrimitiveCols.take(randomSize).toArray.mkString(",")
+      val sql = s"SELECT $randomColsSubset FROM t1 ORDER BY $randomColsSubset"
+      checkSparkAnswerAndOperator(sql)
+    }
+  }
+
   test("distribute by single column (complex types)") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
@@ -168,7 +183,19 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     df2.collect()
     if (usingDataSourceExec) {
       val cometShuffles = collectCometShuffleExchanges(df2.queryExecution.executedPlan)
-      assert(1 == cometShuffles.length)
+      val expectedNumCometShuffles = CometConf.COMET_NATIVE_SCAN_IMPL.get() match {
+        case CometConf.SCAN_NATIVE_COMET =>
+          // native_comet does not support reading complex types
+          0
+        case CometConf.SCAN_NATIVE_ICEBERG_COMPAT | CometConf.SCAN_NATIVE_DATAFUSION =>
+          CometConf.COMET_SHUFFLE_MODE.get() match {
+            case "jvm" =>
+              1
+            case "native" =>
+              2
+          }
+      }
+      assert(cometShuffles.length == expectedNumCometShuffles)
     }
   }
 
