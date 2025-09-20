@@ -558,12 +558,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       binding: Boolean,
       conf: SQLConf): Option[AggExpr] = {
 
-    if (aggExpr.isDistinct) {
-      // https://github.com/apache/datafusion-comet/issues/1260
-      withInfo(aggExpr, s"distinct aggregate not supported: $aggExpr")
-      return None
-    }
-
     val fn = aggExpr.aggregateFunction
     val cometExpr = aggrSerdeMap.get(fn.getClass)
     cometExpr match {
