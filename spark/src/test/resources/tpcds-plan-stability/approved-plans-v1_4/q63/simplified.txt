@@ -9,9 +9,9 @@ TakeOrderedAndProject [i_manager_id,avg_monthly_sales,sum_sales]
                 InputAdapter
                   CometSort [i_manager_id,sum_sales,_w0]
                     CometExchange [i_manager_id] #1
-                      CometHashAggregate [i_manager_id,sum_sales,_w0,d_moy,sum,sum(UnscaledValue(ss_sales_price))]
+                      CometHashAggregate [d_moy,sum] [i_manager_id,sum_sales,_w0,sum(UnscaledValue(ss_sales_price))]
                         CometExchange [i_manager_id,d_moy] #2
-                          CometHashAggregate [i_manager_id,d_moy,sum,ss_sales_price]
+                          CometHashAggregate [ss_sales_price] [i_manager_id,d_moy,sum]
                             CometProject [i_manager_id,ss_sales_price,d_moy]
                               CometBroadcastHashJoin [i_manager_id,ss_store_sk,ss_sales_price,d_moy,s_store_sk]
                                 CometProject [i_manager_id,ss_store_sk,ss_sales_price,d_moy]
