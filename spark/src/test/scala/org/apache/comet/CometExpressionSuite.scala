@@ -46,6 +46,9 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
+  val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
+    """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error."""
+
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
@@ -394,15 +397,144 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("test coalesce lazy eval") {
-    withSQLConf(
-      SQLConf.ANSI_ENABLED.key -> "true",
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-      val data = Seq((9999999999999L, 0))
-      withParquetTable(data, "t1") {
+  test("ANSI support for add") {
+    val data = Seq((Integer.MAX_VALUE, 1), (Integer.MIN_VALUE, -1))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
         val res = spark.sql("""
-            |SELECT coalesce(_1, CAST(_1 AS TINYINT)) from t1;
-            |  """.stripMargin)
+             |SELECT
+             |  _1 + _2
+             |  from tbl
+             |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
+            assert(sparkExc.getMessage.contains("overflow"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for subtract") {
+    val data = Seq((Integer.MIN_VALUE, 1))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 - _2
+                              |  from tbl
+                              |  """.stripMargin)
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
+            assert(sparkExc.getMessage.contains("overflow"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for multiply") {
+    val data = Seq((Integer.MAX_VALUE, 10))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 * _2
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
+            assert(sparkExc.getMessage.contains("overflow"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for divide (division by zero)") {
+//    TODO : Support ANSI mode in Integral divide
+    val data = Seq((Integer.MIN_VALUE, 0))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 / _2
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            val cometErrorPattern =
+              """org.apache.comet.CometNativeException: [DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(sparkExc.getMessage.contains("Division by zero"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for integral divide (division by zero)") {
+    //    TODO : Support ANSI mode in Integral divide
+    val data = Seq((Integer.MIN_VALUE, 0))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 div _2
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            val cometErrorPattern =
+              """[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(sparkExc.getMessage.contains("Division by zero"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for remainder (division by zero)") {
+    //    TODO : Support ANSI mode in Integral divide
+    val data = Seq((Integer.MIN_VALUE, 0))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  mod(_1,_2)
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            val cometErrorPattern =
+              """[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(sparkExc.getMessage.contains("Division by zero"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("Verify coalesce performs lazy evaluation") {
+    val data = Seq((Integer.MAX_VALUE, 9999999999999L))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  coalesce(_1, CAST(_2 AS TINYINT))
+                              |  from tbl
+                              |  """.stripMargin)
+
         checkSparkAnswerAndOperator(res)
       }
     }

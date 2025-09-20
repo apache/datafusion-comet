@@ -87,14 +87,6 @@ trait MathBase {
 
 object CometAdd extends CometExpressionSerde[Add] with MathBase {
 
-  override def getSupportLevel(expr: Add): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
-
   override def convert(
       expr: Add,
       inputs: Seq[Attribute],
@@ -116,14 +108,6 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
 }
 
 object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
-
-  override def getSupportLevel(expr: Subtract): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
 
   override def convert(
       expr: Subtract,
@@ -147,14 +131,6 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
 
 object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 
-  override def getSupportLevel(expr: Multiply): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
-
   override def convert(
       expr: Multiply,
       inputs: Seq[Attribute],
@@ -177,14 +153,6 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 
 object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
-  override def getSupportLevel(expr: Divide): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
-
   override def convert(
       expr: Divide,
       inputs: Seq[Attribute],
@@ -192,7 +160,8 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
     // Datafusion now throws an exception for dividing by zero
     // See https://github.com/apache/arrow-datafusion/pull/6792
     // For now, use NullIf to swap zeros with nulls.
-    val rightExpr = nullIfWhenPrimitive(expr.right)
+    val rightExpr =
+      if (expr.evalMode != EvalMode.ANSI) nullIfWhenPrimitive(expr.right) else expr.right
     if (!supportedDataType(expr.left.dataType)) {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
@@ -211,18 +180,11 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
 object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with MathBase {
 
-  override def getSupportLevel(expr: IntegralDivide): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
-
   override def convert(
       expr: IntegralDivide,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+
     if (!supportedDataType(expr.left.dataType)) {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
@@ -282,14 +244,6 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
 }
 
 object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
-
-  override def getSupportLevel(expr: Remainder): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
 
   override def convert(
       expr: Remainder,
