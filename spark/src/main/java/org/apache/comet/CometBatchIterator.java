@@ -23,16 +23,21 @@ import scala.collection.Iterator;
 
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
+import org.apache.comet.vector.CometSelectionVector;
 import org.apache.comet.vector.NativeUtil;
 
 /**
- * An iterator that can be used to get batches of Arrow arrays from a Spark iterator of
- * ColumnarBatch. It will consume input iterator and return Arrow arrays by addresses. This is
- * called by native code to retrieve Arrow arrays from Spark through JNI.
+ * Iterator for fetching batches from JVM to native code. Usually called via JNI from native
+ * ScanExec.
+ *
+ * <p>Batches are owned by the JVM. Native code can safely access the batch after calling `next` but
+ * the native code must not retain references to the batch because the next call to `hasNext` will
+ * signal to the JVM that the batch can be closed.
  */
 public class CometBatchIterator {
-  final Iterator<ColumnarBatch> input;
-  final NativeUtil nativeUtil;
+  private final Iterator<ColumnarBatch> input;
+  private final NativeUtil nativeUtil;
+  private ColumnarBatch previousBatch = null;
   private ColumnarBatch currentBatch = null;
 
   CometBatchIterator(Iterator<ColumnarBatch> input, NativeUtil nativeUtil) {
@@ -41,11 +46,16 @@ public class CometBatchIterator {
   }
 
   /**
-   * Fetch the next input batch.
+   * Fetch the next input batch and allow the previous batch to be closed (this may not happen
+   * immediately).
    *
    * @return Number of rows in next batch or -1 if no batches left.
    */
   public int hasNext() {
+
+    // release reference to previous batch
+    previousBatch = null;
+
     if (currentBatch == null) {
       if (input.hasNext()) {
         currentBatch = input.next();
@@ -59,7 +69,7 @@ public class CometBatchIterator {
   }
 
   /**
-   * Get the next batches of Arrow arrays.
+   * Get the next batch of Arrow arrays.
    *
    * @param arrayAddrs The addresses of the ArrowArray structures.
    * @param schemaAddrs The addresses of the ArrowSchema structures.
@@ -69,8 +79,61 @@ public class CometBatchIterator {
     if (currentBatch == null) {
       return -1;
     }
+
+    // export the batch using the Arrow C Data Interface
     int numRows = nativeUtil.exportBatch(arrayAddrs, schemaAddrs, currentBatch);
+
+    // keep a reference to the exported batch so that it doesn't get garbage collected
+    // while the native code is still processing it
+    previousBatch = currentBatch;
+
     currentBatch = null;
+
     return numRows;
+  }
+
+  /**
+   * Check if the current batch has selection vectors for all columns.
+   *
+   * @return true if all columns are CometSelectionVector instances, false otherwise
+   */
+  public boolean hasSelectionVectors() {
+    if (currentBatch == null) {
+      return false;
+    }
+
+    // Check if all columns are CometSelectionVector instances
+    for (int i = 0; i < currentBatch.numCols(); i++) {
+      if (!(currentBatch.column(i) instanceof CometSelectionVector)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Export selection indices for all columns when they are selection vectors.
+   *
+   * @param arrayAddrs The addresses of the ArrowArray structures for indices
+   * @param schemaAddrs The addresses of the ArrowSchema structures for indices
+   * @return Number of selection indices arrays exported
+   */
+  public int exportSelectionIndices(long[] arrayAddrs, long[] schemaAddrs) {
+    if (currentBatch == null) {
+      return 0;
+    }
+
+    int exportCount = 0;
+    for (int i = 0; i < currentBatch.numCols(); i++) {
+      if (currentBatch.column(i) instanceof CometSelectionVector) {
+        CometSelectionVector selectionVector = (CometSelectionVector) currentBatch.column(i);
+
+        // Export the indices vector
+        nativeUtil.exportSingleVector(
+            selectionVector.getIndices(), arrayAddrs[exportCount], schemaAddrs[exportCount]);
+        exportCount++;
+      }
+    }
+    return exportCount;
   }
 }

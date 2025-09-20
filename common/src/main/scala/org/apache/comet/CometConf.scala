@@ -65,6 +65,8 @@ object CometConf extends ShimCometConf {
 
   val COMET_EXEC_CONFIG_PREFIX = "spark.comet.exec";
 
+  val COMET_EXPR_CONFIG_PREFIX = "spark.comet.expression";
+
   val COMET_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.enabled")
     .doc(
       "Whether to enable Comet extension for Spark. When this is turned on, Spark will use " +
@@ -228,8 +230,6 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("window", defaultValue = true)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
-  val COMET_EXEC_INITCAP_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig("initCap", defaultValue = false)
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
@@ -482,6 +482,13 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_LOG_FALLBACK_REASONS: ConfigEntry[Boolean] =
+    conf("spark.comet.logFallbackReasons.enabled")
+      .doc("When this setting is enabled, Comet will log warnings for all fallback reasons.")
+      .booleanConf
+      .createWithDefault(
+        sys.env.getOrElse("ENABLE_COMET_LOG_FALLBACK_REASONS", "false").toBoolean)
+
   val COMET_EXPLAIN_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explainFallback.enabled")
       .doc(
@@ -594,15 +601,6 @@ object CometConf extends ShimCometConf {
       .toSequence
       .createWithDefault(Seq("Range,InMemoryTableScan"))
 
-  val COMET_ANSI_MODE_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.ansi.enabled")
-    .internal()
-    .doc(
-      "Comet does not respect ANSI mode in most cases and by default will not accelerate " +
-        "queries when ansi mode is enabled. Enable this setting to test Comet's experimental " +
-        "support for ANSI mode. This should not be used in production.")
-    .booleanConf
-    .createWithDefault(COMET_ANSI_MODE_ENABLED_DEFAULT)
-
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")
       .doc(
@@ -627,14 +625,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_CAST_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
-    conf("spark.comet.cast.allowIncompatible")
-      .doc(
-        "Comet is not currently fully compatible with Spark for all cast operations. " +
-          s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_REGEXP_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.regexp.allowIncompatible")
       .doc(
@@ -651,6 +641,16 @@ object CometConf extends ShimCometConf {
       .longConf
       .createWithDefault(3000L)
 
+  val COMET_LIBHDFS_SCHEMES_KEY = "fs.comet.libhdfs.schemes"
+
+  val COMET_LIBHDFS_SCHEMES: OptionalConfigEntry[String] =
+    conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
+      .doc(
+        "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
+          "via libhdfs, separated by commas. Valid only when built with hdfs feature enabled.")
+      .stringConf
+      .createOptional
+
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
       exec: String,
@@ -663,6 +663,26 @@ object CometConf extends ShimCometConf {
           .getOrElse(""))
       .booleanConf
       .createWithDefault(defaultValue)
+  }
+
+  def isExprEnabled(name: String, conf: SQLConf = SQLConf.get): Boolean = {
+    getBooleanConf(getExprEnabledConfigKey(name), defaultValue = true, conf)
+  }
+
+  def getExprEnabledConfigKey(name: String): String = {
+    s"${CometConf.COMET_EXPR_CONFIG_PREFIX}.$name.enabled"
+  }
+
+  def isExprAllowIncompat(name: String, conf: SQLConf = SQLConf.get): Boolean = {
+    getBooleanConf(getExprAllowIncompatConfigKey(name), defaultValue = false, conf)
+  }
+
+  def getExprAllowIncompatConfigKey(name: String): String = {
+    s"${CometConf.COMET_EXPR_CONFIG_PREFIX}.$name.allowIncompatible"
+  }
+
+  def getBooleanConf(name: String, defaultValue: Boolean, conf: SQLConf): Boolean = {
+    conf.getConfString(name, defaultValue.toString).toLowerCase(Locale.ROOT) == "true"
   }
 }
 

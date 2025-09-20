@@ -35,14 +35,14 @@ use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::ScalarUDF;
 use datafusion::{
-    execution::{disk_manager::DiskManagerBuilder, runtime_env::RuntimeEnv},
+    execution::disk_manager::DiskManagerBuilder,
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::math::expm1::SparkExpm1;
-use datafusion_spark::function::string::char::SparkChar;
+use datafusion_spark::function::string::char::CharFunc;
 use futures::poll;
 use futures::stream::StreamExt;
 use jni::objects::JByteBuffer;
@@ -60,6 +60,7 @@ use jni::{
     objects::GlobalRef,
     sys::{jboolean, jdouble, jintArray, jobjectArray, jstring},
 };
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
@@ -151,6 +152,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     id: jlong,
     iterators: jobjectArray,
     serialized_query: jbyteArray,
+    serialized_spark_configs: jbyteArray,
     partition_count: jint,
     metrics_node: JObject,
     metrics_update_interval: jlong,
@@ -173,11 +175,19 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             let start = Instant::now();
 
+            // Deserialize query plan
             let array = unsafe { JPrimitiveArray::from_raw(serialized_query) };
             let bytes = env.convert_byte_array(array)?;
-
-            // Deserialize query plan
             let spark_plan = serde::deserialize_op(bytes.as_slice())?;
+
+            // Deserialize Spark configs
+            let array = unsafe { JPrimitiveArray::from_raw(serialized_spark_configs) };
+            let bytes = env.convert_byte_array(array)?;
+            let spark_configs = serde::deserialize_config(bytes.as_slice())?;
+
+            // Convert Spark configs to HashMap
+            let _spark_config_map: HashMap<String, String> =
+                spark_configs.entries.into_iter().collect();
 
             let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 
@@ -281,8 +291,7 @@ fn prepare_datafusion_session_context(
             &ScalarValue::Float64(Some(1.1)),
         );
 
-    #[allow(deprecated)]
-    let runtime = RuntimeEnv::try_new(rt_config)?;
+    let runtime = rt_config.build()?;
 
     let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
 
@@ -291,7 +300,7 @@ fn prepare_datafusion_session_context(
     // register UDFs from datafusion-spark crate
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkChar::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(CharFunc::default()));
 
     // Must be the last one to override existing functions with the same name
     datafusion_comet_spark_expr::register_all_comet_functions(&mut session_ctx)?;

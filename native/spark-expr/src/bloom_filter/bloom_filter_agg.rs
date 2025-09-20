@@ -32,7 +32,7 @@ use datafusion::physical_expr::expressions::Literal;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::Accumulator;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BloomFilterAgg {
     signature: Signature,
     num_items: i32,

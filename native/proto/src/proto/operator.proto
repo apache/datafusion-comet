@@ -23,6 +23,7 @@ package spark.spark_operator;
 
 import "expr.proto";
 import "partitioning.proto";
+import "types.proto";
 
 option java_package = "org.apache.comet.serde";
 
@@ -76,6 +77,8 @@ message Scan {
   // is purely for informational purposes when viewing native query plans in
   // debug mode.
   string source = 2;
+  // Whether native code can assume ownership of batches that it receives
+  bool arrow_ffi_safe = 3;
 }
 
 message NativeScan {
@@ -109,7 +112,6 @@ message Projection {
 
 message Filter {
   spark.spark_expression.Expr predicate = 1;
-  bool use_datafusion_filter = 2;
   // Some expressions don't support dictionary arrays, so may need to wrap the child in a CopyExec
   bool wrap_child_in_copy_exec = 3;
 }

@@ -237,6 +237,7 @@ abstract class CometNativeExec extends CometExec {
           case (_: CometBroadcastExchangeExec, _) => false
           case (BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _), _) => false
           case (BroadcastQueryStageExec(_, _: ReusedExchangeExec, _), _) => false
+          case (ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) => false
           case _ => true
         }
         // Find the first non broadcast plan which is not a reused exchange if possible
@@ -251,6 +252,7 @@ abstract class CometNativeExec extends CometExec {
           case _: CometBroadcastExchangeExec => true
           case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
           case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => true
+          case ReusedExchangeExec(_, _: CometBroadcastExchangeExec) => true
           case _ => false
         }
 
@@ -278,16 +280,16 @@ abstract class CometNativeExec extends CometExec {
         sparkPlans.zipWithIndex.foreach { case (plan, idx) =>
           plan match {
             case c: CometBroadcastExchangeExec =>
-              inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
+              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
             case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) =>
-              inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
+              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
             case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) =>
-              inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
+              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
             case BroadcastQueryStageExec(
                   _,
                   ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
                   _) =>
-              inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
+              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
             case _: CometNativeExec =>
             // no-op
             case _ if idx == firstNonBroadcastPlan.get._2 =>
@@ -707,6 +709,8 @@ case class CometHashAggregateExec(
     override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec
     with PartitioningPreservingUnaryExecNode {
+  override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(resultExpressions)
+
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
 

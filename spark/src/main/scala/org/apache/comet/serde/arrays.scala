@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -29,24 +29,10 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.CometExprShim
 
-object CometArrayRemove extends CometExpressionSerde[ArrayRemove] with CometExprShim {
-
-  /** Exposed for unit testing */
-  @tailrec
-  def isTypeSupported(dt: DataType): Boolean = {
-    import DataTypes._
-    dt match {
-      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-          _: DecimalType | DateType | TimestampType | TimestampNTZType | StringType |
-          BinaryType =>
-        true
-      case ArrayType(elementType, _) => isTypeSupported(elementType)
-      case _: StructType =>
-        // https://github.com/apache/datafusion-comet/issues/1307
-        false
-      case _ => false
-    }
-  }
+object CometArrayRemove
+    extends CometExpressionSerde[ArrayRemove]
+    with CometExprShim
+    with ArraysBase {
 
   override def convert(
       expr: ArrayRemove,
@@ -93,7 +79,10 @@ object CometArrayRemove extends CometExpressionSerde[ArrayRemove] with CometExpr
   }
 }
 
-object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with IncompatExpr {
+object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
+
+  override def getSupportLevel(expr: ArrayAppend): SupportLevel = Incompatible(None)
+
   override def convert(
       expr: ArrayAppend,
       inputs: Seq[Attribute],
@@ -149,7 +138,10 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
   }
 }
 
-object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] with IncompatExpr {
+object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] {
+
+  override def getSupportLevel(expr: ArrayDistinct): SupportLevel = Incompatible(None)
+
   override def convert(
       expr: ArrayDistinct,
       inputs: Seq[Attribute],
@@ -162,7 +154,10 @@ object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] with Incom
   }
 }
 
-object CometArrayIntersect extends CometExpressionSerde[ArrayIntersect] with IncompatExpr {
+object CometArrayIntersect extends CometExpressionSerde[ArrayIntersect] {
+
+  override def getSupportLevel(expr: ArrayIntersect): SupportLevel = Incompatible(None)
+
   override def convert(
       expr: ArrayIntersect,
       inputs: Seq[Attribute],
@@ -189,7 +184,22 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] {
   }
 }
 
-object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] with IncompatExpr {
+object CometArrayMin extends CometExpressionSerde[ArrayMin] {
+  override def convert(
+      expr: ArrayMin,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
+
+    val arrayMinScalarExpr = scalarFunctionExprToProto("array_min", arrayExprProto)
+    optExprWithInfo(arrayMinScalarExpr, expr)
+  }
+}
+
+object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
+
+  override def getSupportLevel(expr: ArraysOverlap): SupportLevel = Incompatible(None)
+
   override def convert(
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
@@ -206,7 +216,10 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] with Incom
   }
 }
 
-object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] with IncompatExpr {
+object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] {
+
+  override def getSupportLevel(expr: ArrayRepeat): SupportLevel = Incompatible(None)
+
   override def convert(
       expr: ArrayRepeat,
       inputs: Seq[Attribute],
@@ -220,7 +233,10 @@ object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] with IncompatE
   }
 }
 
-object CometArrayCompact extends CometExpressionSerde[Expression] with IncompatExpr {
+object CometArrayCompact extends CometExpressionSerde[Expression] {
+
+  override def getSupportLevel(expr: Expression): SupportLevel = Incompatible(None)
+
   override def convert(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -240,10 +256,9 @@ object CometArrayCompact extends CometExpressionSerde[Expression] with IncompatE
   }
 }
 
-object CometArrayExcept
-    extends CometExpressionSerde[ArrayExcept]
-    with CometExprShim
-    with IncompatExpr {
+object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExprShim {
+
+  override def getSupportLevel(expr: ArrayExcept): SupportLevel = Incompatible(None)
 
   @tailrec
   def isTypeSupported(dt: DataType): Boolean = {
@@ -280,7 +295,10 @@ object CometArrayExcept
   }
 }
 
-object CometArrayJoin extends CometExpressionSerde[ArrayJoin] with IncompatExpr {
+object CometArrayJoin extends CometExpressionSerde[ArrayJoin] {
+
+  override def getSupportLevel(expr: ArrayJoin): SupportLevel = Incompatible(None)
+
   override def convert(
       expr: ArrayJoin,
       inputs: Seq[Attribute],
@@ -314,7 +332,10 @@ object CometArrayJoin extends CometExpressionSerde[ArrayJoin] with IncompatExpr 
   }
 }
 
-object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with IncompatExpr {
+object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
+
+  override def getSupportLevel(expr: ArrayInsert): SupportLevel = Incompatible(None)
+
   override def convert(
       expr: ArrayInsert,
       inputs: Seq[Attribute],
@@ -349,7 +370,10 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with IncompatE
   }
 }
 
-object CometArrayUnion extends CometExpressionSerde[ArrayUnion] with IncompatExpr {
+object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
+
+  override def getSupportLevel(expr: ArrayUnion): SupportLevel = Incompatible(None)
+
   override def convert(
       expr: ArrayUnion,
       inputs: Seq[Attribute],
@@ -376,6 +400,109 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
     } else {
       withInfo(expr, "unsupported arguments for CreateArray", children: _*)
       None
+    }
+  }
+}
+
+object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
+  override def convert(
+      expr: GetArrayItem,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val ordinalExpr = exprToProtoInternal(expr.ordinal, inputs, binding)
+
+    if (childExpr.isDefined && ordinalExpr.isDefined) {
+      val listExtractBuilder = ExprOuterClass.ListExtract
+        .newBuilder()
+        .setChild(childExpr.get)
+        .setOrdinal(ordinalExpr.get)
+        .setOneBased(false)
+        .setFailOnError(expr.failOnError)
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setListExtract(listExtractBuilder)
+          .build())
+    } else {
+      withInfo(expr, "unsupported arguments for GetArrayItem", expr.child, expr.ordinal)
+      None
+    }
+  }
+}
+
+object CometElementAt extends CometExpressionSerde[ElementAt] {
+
+  override def convert(
+      expr: ElementAt,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.left, inputs, binding)
+    val ordinalExpr = exprToProtoInternal(expr.right, inputs, binding)
+    val defaultExpr = expr.defaultValueOutOfBound.flatMap(exprToProtoInternal(_, inputs, binding))
+
+    if (!expr.left.dataType.isInstanceOf[ArrayType]) {
+      withInfo(expr, "Input is not an array")
+      return None
+    }
+
+    if (childExpr.isDefined && ordinalExpr.isDefined &&
+      defaultExpr.isDefined == expr.defaultValueOutOfBound.isDefined) {
+      val arrayExtractBuilder = ExprOuterClass.ListExtract
+        .newBuilder()
+        .setChild(childExpr.get)
+        .setOrdinal(ordinalExpr.get)
+        .setOneBased(true)
+        .setFailOnError(expr.failOnError)
+
+      defaultExpr.foreach(arrayExtractBuilder.setDefaultValue(_))
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setListExtract(arrayExtractBuilder)
+          .build())
+    } else {
+      withInfo(expr, "unsupported arguments for ElementAt", expr.left, expr.right)
+      None
+    }
+  }
+}
+
+object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
+
+  override def convert(
+      expr: Flatten,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val inputTypes = expr.children.map(_.dataType).toSet
+    for (dt <- inputTypes) {
+      if (!isTypeSupported(dt)) {
+        withInfo(expr, s"data type not supported: $dt")
+        return None
+      }
+    }
+    val flattenExprProto = exprToProto(expr.child, inputs, binding)
+    val flattenScalarExpr = scalarFunctionExprToProto("flatten", flattenExprProto)
+    optExprWithInfo(flattenScalarExpr, expr, expr.children: _*)
+  }
+}
+
+trait ArraysBase {
+
+  def isTypeSupported(dt: DataType): Boolean = {
+    import DataTypes._
+    dt match {
+      case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+          _: DecimalType | DateType | TimestampType | TimestampNTZType | StringType =>
+        true
+      case BinaryType => false
+      case ArrayType(elementType, _) => isTypeSupported(elementType)
+      case _: StructType =>
+        // https://github.com/apache/datafusion-comet/issues/1307
+        false
+      case _ => false
     }
   }
 }

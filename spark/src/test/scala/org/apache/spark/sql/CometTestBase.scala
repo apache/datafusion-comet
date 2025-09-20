@@ -82,14 +82,19 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
-    // set the scan impl to SCAN_NATIVE_COMET because many tests are implemented
-    // with the assumption that this is the default and would need updating if we
-    // change the default
-    conf.set(CometConf.COMET_NATIVE_SCAN_IMPL.key, CometConf.SCAN_NATIVE_COMET)
     conf.set(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key, "true")
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
     conf
+  }
+
+  protected def isFeatureEnabled(feature: String): Boolean = {
+    try {
+      NativeBase.isFeatureEnabled(feature)
+    } catch {
+      case _: Throwable =>
+        false
+    }
   }
 
   /**

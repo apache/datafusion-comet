@@ -67,6 +67,8 @@ runs:
       if: ${{ inputs.suites == '' }}
       env:
         COMET_PARQUET_SCAN_IMPL: ${{ inputs.scan_impl }}
+        SPARK_LOCAL_HOSTNAME: "localhost"
+        SPARK_LOCAL_IP: "127.0.0.1"
       run: |
         MAVEN_OPTS="-Xmx4G -Xms2G -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B clean install ${{ inputs.maven_opts }}
     - name: Run specified tests
@@ -74,6 +76,8 @@ runs:
       if: ${{ inputs.suites != '' }}
       env:
         COMET_PARQUET_SCAN_IMPL: ${{ inputs.scan_impl }}
+        SPARK_LOCAL_HOSTNAME: "localhost"
+        SPARK_LOCAL_IP: "127.0.0.1"
       run: |
         MAVEN_SUITES="$(echo "${{ inputs.suites }}" | paste -sd, -)"
         echo "Running with MAVEN_SUITES=$MAVEN_SUITES"

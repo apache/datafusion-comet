@@ -36,7 +36,7 @@ import org.apache.comet.vector.NativeUtil
  * and use Arrow FFI to return the Arrow record batch.
  */
 case class NativeBatchDecoderIterator(
-    var in: InputStream,
+    in: InputStream,
     taskContext: TaskContext,
     decodeTime: SQLMetric)
     extends Iterator[ColumnarBatch] {
@@ -45,10 +45,11 @@ case class NativeBatchDecoderIterator(
   private val longBuf = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
   private val native = new Native()
   private val nativeUtil = new NativeUtil()
+  private val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
   private var currentBatch: ColumnarBatch = null
   private var batch = fetchNext()
 
-  import NativeBatchDecoderIterator.threadLocalDataBuf
+  import NativeBatchDecoderIterator._
 
   if (taskContext != null) {
     taskContext.addTaskCompletionListener[Unit](_ => {
@@ -167,7 +168,7 @@ case class NativeBatchDecoderIterator(
           bytesToRead.toInt,
           arrayAddrs,
           schemaAddrs,
-          CometConf.COMET_TRACING_ENABLED.get())
+          tracingEnabled)
       })
     decodeTime.add(System.nanoTime() - startTime)
 
@@ -182,6 +183,8 @@ case class NativeBatchDecoderIterator(
           currentBatch = null
         }
         in.close()
+        nativeUtil.close()
+        resetDataBuf()
         isClosed = true
       }
     }
@@ -189,7 +192,16 @@ case class NativeBatchDecoderIterator(
 }
 
 object NativeBatchDecoderIterator {
+
+  private val INITIAL_BUFFER_SIZE = 128 * 1024
+
   private val threadLocalDataBuf: ThreadLocal[ByteBuffer] = ThreadLocal.withInitial(() => {
-    ByteBuffer.allocateDirect(128 * 1024)
+    ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE)
   })
+
+  private def resetDataBuf(): Unit = {
+    if (threadLocalDataBuf.get().capacity() > INITIAL_BUFFER_SIZE) {
+      threadLocalDataBuf.set(ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE))
+    }
+  }
 }

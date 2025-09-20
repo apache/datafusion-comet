@@ -40,7 +40,7 @@ use num::{integer::div_ceil, Integer};
 use DataType::*;
 
 /// AVG aggregate expression
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AvgDecimal {
     signature: Signature,
     sum_data_type: DataType,

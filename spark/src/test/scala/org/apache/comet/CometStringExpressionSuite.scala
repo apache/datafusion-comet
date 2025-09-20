@@ -51,7 +51,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("Chr") {
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       val table = "test"
       withTable(table) {
         sql(s"create table $table(col varchar(20)) using parquet")
@@ -64,7 +64,7 @@ class CometStringExpressionSuite extends CometTestBase {
 
   test("Chr with null character") {
     // test compatibility with Spark, spark supports chr(0)
-    withSQLConf(CometConf.COMET_CAST_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       val table = "test0"
       withTable(table) {
         sql(s"create table $table(c9 int, c4 int) using parquet")
@@ -95,20 +95,27 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
-  test("InitCap") {
+  test("InitCap compatible cases") {
     val table = "names"
     withTable(table) {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
-      sql(
-        s"insert into $table values(1, 'james smith'), (2, 'michael rose'), " +
-          "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith'), " +
-          "(6, 'robert rose-smith'), (7, 'james ähtäri')")
-      if (CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
-        // TODO: remove this if clause https://github.com/apache/datafusion-comet/issues/1052
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true") {
+        sql(
+          s"insert into $table values(1, 'james smith'), (2, 'michael rose'), " +
+            "(3, 'robert williams'), (4, 'rames rose'), (5, 'james smith'), " +
+            "(7, 'james ähtäri')")
         checkSparkAnswerAndOperator(s"SELECT initcap(name) FROM $table")
-      } else {
-        checkSparkAnswer(s"SELECT initcap(name) FROM $table")
       }
+    }
+  }
+
+  test("InitCap incompatible cases") {
+    val table = "names"
+    withTable(table) {
+      sql(s"create table $table(id int, name varchar(20)) using parquet")
+      // Comet and Spark differ on hyphenated names
+      sql(s"insert into $table values(6, 'robert rose-smith')")
+      checkSparkAnswer(s"SELECT initcap(name) FROM $table")
     }
   }
 

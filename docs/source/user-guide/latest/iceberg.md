@@ -39,7 +39,7 @@ make release
 Set `COMET_JAR` env var:
 
 ```shell
-export COMET_JAR=`pwd`/spark/target/comet-spark-spark3.5_2.12-0.10.0-SNAPSHOT.jar
+export COMET_JAR=`pwd`/spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar
 ```
 
 ## Build Iceberg
@@ -84,7 +84,9 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.iceberg.parquet.reader-type=COMET \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=2g
+    --conf spark.memory.offHeap.size=2g \
+    --conf spark.comet.use.lazyMaterialization=false \
+    --conf spark.comet.schemaEvolution.enabled=true
 ```
 
 Create an Iceberg table. Note that Comet will not accelerate this part.
@@ -139,3 +141,7 @@ scala> spark.sql(s"SELECT * from t1").explain()
 *(1) CometColumnarToRow
 +- CometBatchScan spark_catalog.default.t1[c0#26, c1#27] spark_catalog.default.t1 (branch=null) [filters=, groupedBy=] RuntimeFilters: []
 ```
+
+## Known issues
+ - Spark Runtime Filtering isn't [working](https://github.com/apache/datafusion-comet/issues/2116)
+   - You can bypass the issue by either setting `spark.sql.adaptive.enabled=false` or `spark.comet.exec.broadcastExchange.enabled=false`

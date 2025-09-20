@@ -64,13 +64,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
           spark.sql(query).noop()
         }
 
-        benchmark.addCase(s"SQL Parquet - Comet (Scan) ($aggregateFunction)") { _ =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
-            spark.sql(query).noop()
-          }
-        }
-
-        benchmark.addCase(s"SQL Parquet - Comet (Scan, Exec) ($aggregateFunction)") { _ =>
+        benchmark.addCase(s"SQL Parquet - Comet ($aggregateFunction)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true") {
@@ -111,13 +105,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
           spark.sql(query).noop()
         }
 
-        benchmark.addCase(s"SQL Parquet - Comet (Scan) ($aggregateFunction)") { _ =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
-            spark.sql(query).noop()
-          }
-        }
-
-        benchmark.addCase(s"SQL Parquet - Comet (Scan, Exec) ($aggregateFunction)") { _ =>
+        benchmark.addCase(s"SQL Parquet - Comet ($aggregateFunction)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true") {
@@ -153,15 +141,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
           spark.sql(query).noop()
         }
 
-        benchmark.addCase(s"SQL Parquet - Comet (Scan) ($aggregateFunction)") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_MEMORY_OVERHEAD.key -> "1G") {
-            spark.sql(query).noop()
-          }
-        }
-
-        benchmark.addCase(s"SQL Parquet - Comet (Scan, Exec) ($aggregateFunction)") { _ =>
+        benchmark.addCase(s"SQL Parquet - Comet ($aggregateFunction)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -198,13 +178,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
           spark.sql(query).noop()
         }
 
-        benchmark.addCase(s"SQL Parquet - Comet (Scan) ($aggregateFunction)") { _ =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
-            spark.sql(query).noop()
-          }
-        }
-
-        benchmark.addCase(s"SQL Parquet - Comet (Scan, Exec) ($aggregateFunction)") { _ =>
+        benchmark.addCase(s"SQL Parquet - Comet ($aggregateFunction)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true") {

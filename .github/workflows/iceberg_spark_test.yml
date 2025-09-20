@@ -40,17 +40,17 @@ env:
   RUST_VERSION: stable
 
 jobs:
-  iceberg-spark-sql:
+  iceberg-spark:
     if: contains(github.event.pull_request.title, '[iceberg]')
     strategy:
       matrix:
         os: [ubuntu-24.04]
         java-version: [11, 17]
-        iceberg-version: [{short: '1.8', full: '1.8.1'}]
+        iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}]
         spark-version: [{short: '3.5', full: '3.5.6'}]
         scala-version: ['2.13']
       fail-fast: false
-    name: iceberg-spark-sql/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
+    name: iceberg-spark/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -63,24 +63,96 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
+      - name: Build Comet
+        shell: bash
+        run: |
+          PROFILES="-Pspark-${{matrix.spark-version.short}} -Pscala-${{matrix.scala-version}}" make release
       - name: Setup Iceberg
         uses: ./.github/actions/setup-iceberg-builder
         with:
           iceberg-version: ${{ matrix.iceberg-version.full }}
-          scala-version: ${{ matrix.scala-version }}
-          spark-short-version: ${{ matrix.spark-version.short }}
-      - name: Build local Spark jar with comet patch
-        uses: ./.github/actions/setup-spark-local-jar
-        with:
-          spark-short-version: ${{ matrix.spark-version.short }}
-          spark-version: ${{ matrix.spark-version.full }}
-          scala-version: ${{ matrix.scala-version }}
       - name: Run Iceberg Spark tests
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           ENABLE_COMET=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
-            :iceberg-spark:iceberg-spark-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:check \
-            :iceberg-spark:iceberg-spark-extensions-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:check \
-            :iceberg-spark:iceberg-spark-runtime-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:check \
+            :iceberg-spark:iceberg-spark-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:test \
+            -Pquick=true -x javadoc
+
+  iceberg-spark-extensions:
+    if: contains(github.event.pull_request.title, '[iceberg]')
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+        java-version: [11, 17]
+        iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}]
+        spark-version: [{short: '3.5', full: '3.5.6'}]
+        scala-version: ['2.13']
+      fail-fast: false
+    name: iceberg-spark-extensions/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
+    runs-on: ${{ matrix.os }}
+    container:
+      image: amd64/rust
+    env:
+      SPARK_LOCAL_IP: localhost
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ matrix.java-version }}
+      - name: Build Comet
+        shell: bash
+        run: |
+          PROFILES="-Pspark-${{matrix.spark-version.short}} -Pscala-${{matrix.scala-version}}" make release
+      - name: Setup Iceberg
+        uses: ./.github/actions/setup-iceberg-builder
+        with:
+          iceberg-version: ${{ matrix.iceberg-version.full }}
+      - name: Run Iceberg Spark extensions tests
+        run: |
+          cd apache-iceberg
+          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          ENABLE_COMET=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
+            :iceberg-spark:iceberg-spark-extensions-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:test \
+            -Pquick=true -x javadoc
+
+  iceberg-spark-runtime:
+    if: contains(github.event.pull_request.title, '[iceberg]')
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+        java-version: [11, 17]
+        iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}]
+        spark-version: [{short: '3.5', full: '3.5.6'}]
+        scala-version: ['2.13']
+      fail-fast: false
+    name: iceberg-spark-runtime/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
+    runs-on: ${{ matrix.os }}
+    container:
+      image: amd64/rust
+    env:
+      SPARK_LOCAL_IP: localhost
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: ${{ matrix.java-version }}
+      - name: Build Comet
+        shell: bash
+        run: |
+          PROFILES="-Pspark-${{matrix.spark-version.short}} -Pscala-${{matrix.scala-version}}" make release
+      - name: Setup Iceberg
+        uses: ./.github/actions/setup-iceberg-builder
+        with:
+          iceberg-version: ${{ matrix.iceberg-version.full }}
+      - name: Run Iceberg Spark runtime tests
+        run: |
+          cd apache-iceberg
+          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          ENABLE_COMET=true ./gradlew -DsparkVersions=${{ matrix.spark-version.short }} -DscalaVersion=${{ matrix.scala-version }} -DflinkVersions= -DkafkaVersions= \
+            :iceberg-spark:iceberg-spark-runtime-${{ matrix.spark-version.short }}_${{ matrix.scala-version }}:integrationTest \
             -Pquick=true -x javadoc
