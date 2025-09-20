@@ -14,7 +14,7 @@ TakeOrderedAndProject [avg_quarterly_sales,sum_sales,i_manufact_id]
                           CometColumnarToRow
                             InputAdapter
                               CometExchange [i_manufact_id,d_qoy] #2
-                                CometHashAggregate [i_manufact_id,d_qoy,sum,ss_sales_price]
+                                CometHashAggregate [ss_sales_price] [i_manufact_id,d_qoy,sum]
                                   CometProject [i_manufact_id,ss_sales_price,d_qoy]
                                     CometBroadcastHashJoin [i_manufact_id,ss_store_sk,ss_sales_price,d_qoy,s_store_sk]
                                       CometProject [i_manufact_id,ss_store_sk,ss_sales_price,d_qoy]

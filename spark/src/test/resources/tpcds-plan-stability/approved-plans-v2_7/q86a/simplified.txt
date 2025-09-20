@@ -8,13 +8,13 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
               InputAdapter
                 CometSort [total_sum,i_category,i_class,lochierarchy,_w0]
                   CometExchange [lochierarchy,_w0] #1
-                    CometHashAggregate [total_sum,i_category,i_class,lochierarchy,_w0,g_category,g_class]
+                    CometHashAggregate [g_category] [total_sum,i_category,i_class,lochierarchy,_w0,g_class]
                       CometExchange [total_sum,i_category,i_class,g_category,g_class,lochierarchy] #2
                         CometHashAggregate [total_sum,i_category,i_class,g_category,g_class,lochierarchy]
                           CometUnion [total_sum,i_category,i_class,g_category,g_class,lochierarchy]
-                            CometHashAggregate [total_sum,i_category,i_class,g_category,g_class,lochierarchy,i_category,i_class,sum,sum(UnscaledValue(ws_net_paid))]
+                            CometHashAggregate [sum] [total_sum,i_category,i_class,g_category,g_class,lochierarchy,sum(UnscaledValue(ws_net_paid)),i_category,i_class]
                               CometExchange [i_category,i_class] #3
-                                CometHashAggregate [i_category,i_class,sum,ws_net_paid]
+                                CometHashAggregate [ws_net_paid] [i_category,i_class,sum]
                                   CometProject [ws_net_paid,i_class,i_category]
                                     CometBroadcastHashJoin [ws_item_sk,ws_net_paid,i_item_sk,i_class,i_category]
                                       CometProject [ws_item_sk,ws_net_paid]
@@ -37,13 +37,13 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                         CometProject [i_class,i_category] [i_item_sk,i_class,i_category]
                                           CometFilter [i_item_sk,i_class,i_category]
                                             CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
-                            CometHashAggregate [total_sum,i_category,i_class,g_category,g_class,lochierarchy,sum,isEmpty,sum(total_sum)]
+                            CometHashAggregate [sum,isEmpty] [total_sum,i_category,i_class,g_category,g_class,lochierarchy,sum(total_sum)]
                               CometExchange [i_category] #7
-                                CometHashAggregate [i_category,sum,isEmpty,total_sum]
-                                  CometHashAggregate [total_sum,i_category,i_class,sum,sum(UnscaledValue(ws_net_paid))]
+                                CometHashAggregate [total_sum] [i_category,sum,isEmpty]
+                                  CometHashAggregate [i_class,sum] [total_sum,i_category,sum(UnscaledValue(ws_net_paid))]
                                     ReusedExchange [i_category,i_class,sum] #3
-                            CometHashAggregate [total_sum,i_category,i_class,g_category,g_class,lochierarchy,sum,isEmpty,sum(total_sum)]
+                            CometHashAggregate [sum,isEmpty] [total_sum,i_category,i_class,g_category,g_class,lochierarchy,sum(total_sum)]
                               CometExchange #8
-                                CometHashAggregate [sum,isEmpty,total_sum]
-                                  CometHashAggregate [total_sum,i_category,i_class,sum,sum(UnscaledValue(ws_net_paid))]
+                                CometHashAggregate [total_sum] [sum,isEmpty]
+                                  CometHashAggregate [i_category,i_class,sum] [total_sum,sum(UnscaledValue(ws_net_paid))]
                                     ReusedExchange [i_category,i_class,sum] #3

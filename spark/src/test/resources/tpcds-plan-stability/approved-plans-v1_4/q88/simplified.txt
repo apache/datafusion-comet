@@ -8,7 +8,7 @@ WholeStageCodegen (8)
               BroadcastNestedLoopJoin
                 CometColumnarToRow
                   InputAdapter
-                    CometHashAggregate [h8_30_to_9,count,count(1)]
+                    CometHashAggregate [count] [h8_30_to_9,count(1)]
                       CometExchange #1
                         CometHashAggregate [count]
                           CometProject
@@ -37,7 +37,7 @@ WholeStageCodegen (8)
                     WholeStageCodegen (1)
                       CometColumnarToRow
                         InputAdapter
-                          CometHashAggregate [h9_to_9_30,count,count(1)]
+                          CometHashAggregate [count] [h9_to_9_30,count(1)]
                             CometExchange #6
                               CometHashAggregate [count]
                                 CometProject
@@ -60,7 +60,7 @@ WholeStageCodegen (8)
                   WholeStageCodegen (2)
                     CometColumnarToRow
                       InputAdapter
-                        CometHashAggregate [h9_30_to_10,count,count(1)]
+                        CometHashAggregate [count] [h9_30_to_10,count(1)]
                           CometExchange #9
                             CometHashAggregate [count]
                               CometProject
@@ -83,7 +83,7 @@ WholeStageCodegen (8)
                 WholeStageCodegen (3)
                   CometColumnarToRow
                     InputAdapter
-                      CometHashAggregate [h10_to_10_30,count,count(1)]
+                      CometHashAggregate [count] [h10_to_10_30,count(1)]
                         CometExchange #12
                           CometHashAggregate [count]
                             CometProject
@@ -106,7 +106,7 @@ WholeStageCodegen (8)
               WholeStageCodegen (4)
                 CometColumnarToRow
                   InputAdapter
-                    CometHashAggregate [h10_30_to_11,count,count(1)]
+                    CometHashAggregate [count] [h10_30_to_11,count(1)]
                       CometExchange #15
                         CometHashAggregate [count]
                           CometProject
@@ -129,7 +129,7 @@ WholeStageCodegen (8)
             WholeStageCodegen (5)
               CometColumnarToRow
                 InputAdapter
-                  CometHashAggregate [h11_to_11_30,count,count(1)]
+                  CometHashAggregate [count] [h11_to_11_30,count(1)]
                     CometExchange #18
                       CometHashAggregate [count]
                         CometProject
@@ -152,7 +152,7 @@ WholeStageCodegen (8)
           WholeStageCodegen (6)
             CometColumnarToRow
               InputAdapter
-                CometHashAggregate [h11_30_to_12,count,count(1)]
+                CometHashAggregate [count] [h11_30_to_12,count(1)]
                   CometExchange #21
                     CometHashAggregate [count]
                       CometProject
@@ -175,7 +175,7 @@ WholeStageCodegen (8)
         WholeStageCodegen (7)
           CometColumnarToRow
             InputAdapter
-              CometHashAggregate [h12_to_12_30,count,count(1)]
+              CometHashAggregate [count] [h12_to_12_30,count(1)]
                 CometExchange #24
                   CometHashAggregate [count]
                     CometProject

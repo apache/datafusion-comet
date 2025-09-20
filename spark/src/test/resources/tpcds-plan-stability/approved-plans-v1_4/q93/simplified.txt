@@ -2,9 +2,9 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [ss_customer_sk,sumsales]
-        CometHashAggregate [ss_customer_sk,sumsales,sum,isEmpty,sum(act_sales)]
+        CometHashAggregate [sum,isEmpty] [ss_customer_sk,sumsales,sum(act_sales)]
           CometExchange [ss_customer_sk] #1
-            CometHashAggregate [ss_customer_sk,sum,isEmpty,act_sales]
+            CometHashAggregate [act_sales] [ss_customer_sk,sum,isEmpty]
               CometProject [sr_return_quantity,ss_quantity,ss_sales_price] [ss_customer_sk,act_sales]
                 CometBroadcastHashJoin [ss_customer_sk,ss_quantity,ss_sales_price,sr_reason_sk,sr_return_quantity,r_reason_sk]
                   CometProject [ss_customer_sk,ss_quantity,ss_sales_price,sr_reason_sk,sr_return_quantity]
