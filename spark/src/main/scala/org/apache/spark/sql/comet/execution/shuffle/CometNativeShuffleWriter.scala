@@ -219,19 +219,17 @@ class CometNativeShuffleWriter[K, V](
           val partitioning = PartitioningOuterClass.RangePartition.newBuilder()
           partitioning.setNumPartitions(outputPartitioning.numPartitions)
 
-          // Detect duplicates by tracking bound references to same exprId
+          // Detect duplicates by tracking expressions directly, similar to DataFusion's LexOrdering
           // DataFusion will deduplicate identical sort expressions in LexOrdering,
           // so we need to transform boundary rows to match the deduplicated structure
-          val seenExprIds = mutable.HashSet[Long]()
+          val seenExprs = mutable.HashSet[org.apache.spark.sql.catalyst.expressions.Expression]()
           val deduplicationMap = mutable.ArrayBuffer[(Int, Boolean)]() // (originalIndex, isKept)
 
           rangePartitioning.ordering.zipWithIndex.foreach { case (sortOrder, idx) =>
-            val attr = sortOrder.child.asInstanceOf[AttributeReference]
-
-            if (seenExprIds.contains(attr.exprId.id)) {
+            if (seenExprs.contains(sortOrder.child)) {
               deduplicationMap += (idx -> false) // Will be deduplicated by DataFusion
             } else {
-              seenExprIds += attr.exprId.id
+              seenExprs += sortOrder.child
               deduplicationMap += (idx -> true) // Will be kept by DataFusion
             }
           }
