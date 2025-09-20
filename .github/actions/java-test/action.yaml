@@ -82,6 +82,21 @@ runs:
         MAVEN_SUITES="$(echo "${{ inputs.suites }}" | paste -sd, -)"
         echo "Running with MAVEN_SUITES=$MAVEN_SUITES"
         MAVEN_OPTS="-Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B clean install ${{ inputs.maven_opts }}
+
+    - name: Check for documentation changes
+      shell: bash
+      run: |
+        # Check if any files in docs/ have been modified after Maven build (which runs GenerateDocs)
+        if [ -n "$(git status --porcelain -- docs/)" ]; then
+          echo "❌ Documentation files have been modified after Maven build:"
+          git diff --name-only -- docs/
+          echo ""
+          echo "This suggests that config defaults have changed but the documentation wasn't updated."
+          echo "Please run 'make jvm' locally and commit the updated documentation files."
+          exit 1
+        else
+          echo "✅ Documentation is up-to-date"
+        fi
     - name: Upload crash logs
       if: failure()
       uses: actions/upload-artifact@v4
