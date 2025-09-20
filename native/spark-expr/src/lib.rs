@@ -98,6 +98,15 @@ pub enum EvalMode {
     Try,
 }
 
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub enum BinaryOutputStyle {
+    Utf8,
+    Basic,
+    Base64,
+    Hex,
+    HexDiscrete,
+}
+
 pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {
     SparkError::ArithmeticOverflow {
         from_type: from_type.to_string(),
