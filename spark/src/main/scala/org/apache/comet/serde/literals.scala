@@ -131,8 +131,8 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
         })
       case ByteType =>
         array.foreach(v => {
-          val casted = v.asInstanceOf[Integer]
-          listLiteralBuilder.addByteValues(casted)
+          val casted = v.asInstanceOf[lang.Byte]
+          listLiteralBuilder.addByteValues(casted.intValue())
           listLiteralBuilder.addNullMask(casted != null)
         })
       case ShortType =>
