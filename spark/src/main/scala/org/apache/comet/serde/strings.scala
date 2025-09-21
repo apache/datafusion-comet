@@ -159,16 +159,12 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] {
       expr: StringRPad,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    expr.pad match {
-      case Literal(str, DataTypes.StringType) if str.toString == " " =>
-        scalarFunctionExprToProto(
-          "rpad",
-          exprToProtoInternal(expr.str, inputs, binding),
-          exprToProtoInternal(expr.len, inputs, binding))
-      case _ =>
-        withInfo(expr, "StringRPad with non-space characters is not supported")
-        None
-    }
+
+    scalarFunctionExprToProto(
+      "rpad",
+      exprToProtoInternal(expr.str, inputs, binding),
+      exprToProtoInternal(expr.len, inputs, binding),
+      exprToProtoInternal(expr.pad, inputs, binding))
   }
 }
 
