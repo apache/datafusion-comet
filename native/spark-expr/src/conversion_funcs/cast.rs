@@ -248,7 +248,7 @@ fn can_cast_from_string(to_type: &DataType, options: &SparkCastOptions) -> bool 
     }
 }
 
-fn can_cast_to_string(from_type: &DataType, options: &SparkCastOptions) -> bool {
+fn can_cast_to_string(from_type: &DataType, _options: &SparkCastOptions) -> bool {
     use DataType::*;
     match from_type {
         Boolean | Int8 | Int16 | Int32 | Int64 | Date32 | Date64 | Timestamp(_, _) => true,
@@ -267,7 +267,7 @@ fn can_cast_to_string(from_type: &DataType, options: &SparkCastOptions) -> bool 
         Binary => true,
         Struct(fields) => fields
             .iter()
-            .all(|f| can_cast_to_string(f.data_type(), options)),
+            .all(|f| can_cast_to_string(f.data_type(), _options)),
         _ => false,
     }
 }
