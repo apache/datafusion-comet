@@ -26,12 +26,26 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
       val sql = s"SELECT count(distinct $col) FROM t1"
-      // Comet does not support count distinct yet
-      // https://github.com/apache/datafusion-comet/issues/2292
       val (_, cometPlan) = checkSparkAnswer(sql)
       if (usingDataSourceExec) {
         assert(1 == collectNativeScans(cometPlan).length)
       }
+
+      checkSparkAnswerAndOperator(sql)
+    }
+  }
+
+  test("count distinct group by multpiple column") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    for (col <- df.columns) {
+      val sql = s"SELECT c1, c2, c3, count(distinct $col) FROM t1 group by c1, c2, c3"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      if (usingDataSourceExec) {
+        assert(1 == collectNativeScans(cometPlan).length)
+      }
+
+      checkSparkAnswerAndOperator(sql)
     }
   }
 
@@ -39,12 +53,13 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
-      // cannot run fully natively due to range partitioning and sort
       val sql = s"SELECT $col, count(*) FROM t1 GROUP BY $col ORDER BY $col"
       val (_, cometPlan) = checkSparkAnswer(sql)
       if (usingDataSourceExec) {
         assert(1 == collectNativeScans(cometPlan).length)
       }
+
+      checkSparkAnswerAndOperator(sql)
     }
   }
 
@@ -53,12 +68,13 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     df.createOrReplaceTempView("t1")
     val groupCol = df.columns.head
     for (col <- df.columns.drop(1)) {
-      // cannot run fully natively due to range partitioning and sort
       val sql = s"SELECT $groupCol, count($col) FROM t1 GROUP BY $groupCol ORDER BY $groupCol"
       val (_, cometPlan) = checkSparkAnswer(sql)
       if (usingDataSourceExec) {
         assert(1 == collectNativeScans(cometPlan).length)
       }
+
+      checkSparkAnswerAndOperator(sql)
     }
   }
 
@@ -67,13 +83,14 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     df.createOrReplaceTempView("t1")
     val groupCol = df.columns.head
     val otherCol = df.columns.drop(1)
-    // cannot run fully natively due to range partitioning and sort
     val sql = s"SELECT $groupCol, count(${otherCol.mkString(", ")}) FROM t1 " +
       s"GROUP BY $groupCol ORDER BY $groupCol"
     val (_, cometPlan) = checkSparkAnswer(sql)
     if (usingDataSourceExec) {
       assert(1 == collectNativeScans(cometPlan).length)
     }
+
+    checkSparkAnswerAndOperator(sql)
   }
 
   test("min/max aggregate") {
@@ -88,5 +105,4 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
       }
     }
   }
-
 }
