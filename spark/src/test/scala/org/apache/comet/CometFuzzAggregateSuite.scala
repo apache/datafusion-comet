@@ -35,7 +35,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     }
   }
 
-  test("count distinct group by multpiple column") {
+  test("count distinct group by multiple column") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
