@@ -72,7 +72,7 @@ WholeStageCodegen (37)
                                                                                                     CometColumnarToRow
                                                                                                       InputAdapter
                                                                                                         CometExchange [cs_item_sk] #6
-                                                                                                          CometHashAggregate [cs_item_sk,sum,sum,isEmpty,cs_ext_list_price,cr_refunded_cash,cr_reversed_charge,cr_store_credit]
+                                                                                                          CometHashAggregate [cs_ext_list_price,cr_refunded_cash,cr_reversed_charge,cr_store_credit] [cs_item_sk,sum,sum,isEmpty]
                                                                                                             CometProject [cs_item_sk,cs_ext_list_price,cr_refunded_cash,cr_reversed_charge,cr_store_credit]
                                                                                                               CometSortMergeJoin [cs_item_sk,cs_order_number,cs_ext_list_price,cr_item_sk,cr_order_number,cr_refunded_cash,cr_reversed_charge,cr_store_credit]
                                                                                                                 CometSort [cs_item_sk,cs_order_number,cs_ext_list_price]

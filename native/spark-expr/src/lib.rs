@@ -55,7 +55,6 @@ pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain};
 
 mod conditional_funcs;
 mod conversion_funcs;
-mod map_funcs;
 mod math_funcs;
 mod nondetermenistic_funcs;
 
@@ -97,6 +96,15 @@ pub enum EvalMode {
     /// Same as Ansi mode, except that it converts errors to NULL values without
     /// failing the entire query.
     Try,
+}
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub enum BinaryOutputStyle {
+    Utf8,
+    Basic,
+    Base64,
+    Hex,
+    HexDiscrete,
 }
 
 pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {

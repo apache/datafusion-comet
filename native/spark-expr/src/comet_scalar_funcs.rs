@@ -16,7 +16,6 @@
 // under the License.
 
 use crate::hash_funcs::*;
-use crate::map_funcs::spark_map_sort;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
@@ -158,10 +157,6 @@ pub fn create_comet_physical_fun(
             let fail_on_error = fail_on_error.unwrap_or(false);
             make_comet_scalar_udf!("spark_modulo", func, without data_type, fail_on_error)
         }
-        "map_sort" => {
-            let func = Arc::new(spark_map_sort);
-            make_comet_scalar_udf!("spark_map_sort", func, without data_type)
-        }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",
@@ -195,6 +190,26 @@ struct CometScalarFunction {
     signature: Signature,
     data_type: DataType,
     func: ScalarFunctionImplementation,
+}
+
+impl PartialEq for CometScalarFunction {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.signature == other.signature
+            && self.data_type == other.data_type
+        // Note: we do not test ScalarFunctionImplementation equality, relying on function metadata.
+    }
+}
+
+impl Eq for CometScalarFunction {}
+
+impl std::hash::Hash for CometScalarFunction {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.signature.hash(state);
+        self.data_type.hash(state);
+        // Note: we do not hash ScalarFunctionImplementation, relying on function metadata.
+    }
 }
 
 impl Debug for CometScalarFunction {

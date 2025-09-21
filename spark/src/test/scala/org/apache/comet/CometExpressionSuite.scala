@@ -33,7 +33,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Literal}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec, CometWindowExec}
-import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
@@ -405,6 +405,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             |  """.stripMargin)
         checkSparkAnswerAndOperator(res)
       }
+    }
+  }
+  test("Verify rpad expr support for second arg instead of just literal") {
+    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("తెలుగు", 2))
+    withParquetTable(data, "t1") {
+      val res = sql("select rpad(_1,_2) , rpad(_1,2) from t1 order by _1")
+      checkSparkAnswerAndOperator(res)
     }
   }
 
@@ -1301,6 +1308,40 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("disable expression using dynamic config") {
+    def countSparkProjectExec(plan: SparkPlan) = {
+      plan.collect { case _: ProjectExec =>
+        true
+      }.length
+    }
+    withParquetTable(Seq(0, 1, 2).map(n => (n, n)), "tbl") {
+      val sql = "select _1+_2 from tbl"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      assert(0 == countSparkProjectExec(cometPlan))
+      withSQLConf(CometConf.getExprEnabledConfigKey("Add") -> "false") {
+        val (_, cometPlan) = checkSparkAnswer(sql)
+        assert(1 == countSparkProjectExec(cometPlan))
+      }
+    }
+  }
+
+  test("enable incompat expression using dynamic config") {
+    def countSparkProjectExec(plan: SparkPlan) = {
+      plan.collect { case _: ProjectExec =>
+        true
+      }.length
+    }
+    withParquetTable(Seq(0, 1, 2).map(n => (n.toString, n.toString)), "tbl") {
+      val sql = "select initcap(_1) from tbl"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      assert(1 == countSparkProjectExec(cometPlan))
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true") {
+        val (_, cometPlan) = checkSparkAnswer(sql)
+        assert(0 == countSparkProjectExec(cometPlan))
+      }
+    }
+  }
+
   test("signum") {
     testDoubleScalarExpr("signum")
   }
@@ -1681,14 +1722,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("Year") {
+  test("DatePart functions: Year/Month/DayOfMonth/DayOfWeek/DayOfYear/WeekOfYear/Quarter") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
         val table = "test"
         withTable(table) {
           sql(s"create table $table(col timestamp) using parquet")
-          sql(s"insert into $table values (now()), (null)")
-          checkSparkAnswerAndOperator(s"SELECT year(col) FROM $table")
+          sql(s"insert into $table values (now()), (timestamp('1900-01-01')), (null)")
+          checkSparkAnswerAndOperator(
+            "SELECT col, year(col), month(col), day(col), weekday(col), " +
+              s" dayofweek(col), dayofyear(col), weekofyear(col), quarter(col) FROM $table")
         }
       }
     }

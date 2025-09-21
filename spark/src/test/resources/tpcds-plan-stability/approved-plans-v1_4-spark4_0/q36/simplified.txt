@@ -13,7 +13,7 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,gross_margin,i
                         CometColumnarToRow
                           InputAdapter
                             CometExchange [i_category,i_class,spark_grouping_id] #2
-                              CometHashAggregate [i_category,i_class,spark_grouping_id,sum,sum,ss_net_profit,ss_ext_sales_price]
+                              CometHashAggregate [ss_net_profit,ss_ext_sales_price] [i_category,i_class,spark_grouping_id,sum,sum]
                                 CometExpand [i_category,i_class] [ss_ext_sales_price,ss_net_profit,i_category,i_class,spark_grouping_id]
                                   CometProject [ss_ext_sales_price,ss_net_profit,i_category,i_class]
                                     CometBroadcastHashJoin [ss_store_sk,ss_ext_sales_price,ss_net_profit,i_class,i_category,s_store_sk]

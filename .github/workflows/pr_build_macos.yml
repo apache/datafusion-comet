@@ -67,6 +67,7 @@ jobs:
           - name: "fuzz"
             value: |
               org.apache.comet.CometFuzzTestSuite
+              org.apache.comet.CometFuzzAggregateSuite
               org.apache.comet.DataGeneratorSuite
           - name: "shuffle"
             value: |
@@ -113,6 +114,9 @@ jobs:
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
               org.apache.comet.objectstore.NativeConfigSuite
+          - name: "sql"
+            value: |
+              ${{ matrix.profile.maven_opts != 'Spark 3.4, JDK 11, Scala 2.12' && 'org.apache.spark.sql.CometToPrettyStringSuite' || ''}}
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
