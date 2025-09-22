@@ -62,6 +62,40 @@ runs:
       run: |
         ./mvnw -B compile test-compile scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ inputs.maven_opts }}
 
+    - name: Check for documentation changes
+      shell: bash
+      run: |
+        # Capture the initial state of docs before we potentially regenerate them
+        echo "Checking documentation consistency..."
+
+        # Save current state of docs directory
+        git add docs/ || true
+        INITIAL_DOCS_HASH=$(git write-tree --prefix=docs/)
+        echo "Initial docs hash: $INITIAL_DOCS_HASH"
+
+        # Reset any staged changes to docs
+        git reset docs/ || true
+
+        # Force regenerate docs by running just the package phase to ensure GenerateDocs runs
+        echo "Running Maven package to regenerate documentation..."
+        ./mvnw package -DskipTests -q -pl spark
+
+        # Check if docs changed after regeneration
+        git add docs/ || true
+        FINAL_DOCS_HASH=$(git write-tree --prefix=docs/)
+        echo "Final docs hash: $FINAL_DOCS_HASH"
+
+        if [ "$INITIAL_DOCS_HASH" != "$FINAL_DOCS_HASH" ]; then
+          echo "Documentation files have been modified after running GenerateDocs:"
+          git diff --name-only $INITIAL_DOCS_HASH $FINAL_DOCS_HASH
+          echo ""
+          echo "This suggests that config defaults have changed but the documentation wasn't updated."
+          echo "Please run 'make jvm' locally and commit the updated documentation files."
+          exit 1
+        else
+          echo "Documentation is up-to-date"
+        fi
+
     - name: Run all tests
       shell: bash
       if: ${{ inputs.suites == '' }}
@@ -83,20 +117,6 @@ runs:
         echo "Running with MAVEN_SUITES=$MAVEN_SUITES"
         MAVEN_OPTS="-Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B clean install ${{ inputs.maven_opts }}
 
-    - name: Check for documentation changes
-      shell: bash
-      run: |
-        # Check if any files in docs/ have been modified after Maven build (which runs GenerateDocs)
-        if [ -n "$(git status --porcelain -- docs/)" ]; then
-          echo "❌ Documentation files have been modified after Maven build:"
-          git diff --name-only -- docs/
-          echo ""
-          echo "This suggests that config defaults have changed but the documentation wasn't updated."
-          echo "Please run 'make jvm' locally and commit the updated documentation files."
-          exit 1
-        else
-          echo "✅ Documentation is up-to-date"
-        fi
     - name: Upload crash logs
       if: failure()
       uses: actions/upload-artifact@v4
