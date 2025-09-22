@@ -19,11 +19,6 @@ use log::{debug, error};
 use std::collections::HashMap;
 use url::Url;
 
-use std::{
-    sync::{Arc, RwLock},
-    time::{Duration, SystemTime},
-};
-
 use crate::execution::jni_api::get_runtime;
 use async_trait::async_trait;
 use aws_config::{
@@ -37,9 +32,14 @@ use aws_credential_types::{
     Credentials,
 };
 use object_store::{
-    aws::{resolve_bucket_region, AmazonS3Builder, AmazonS3ConfigKey, AwsCredential},
+    aws::{AmazonS3Builder, AmazonS3ConfigKey, AwsCredential},
     path::Path,
-    ClientOptions, CredentialProvider, ObjectStore, ObjectStoreScheme,
+    CredentialProvider, ObjectStore, ObjectStoreScheme,
+};
+use std::error::Error;
+use std::{
+    sync::{Arc, RwLock},
+    time::{Duration, SystemTime},
 };
 
 /// Creates an S3 object store using options specified as Hadoop S3A configurations.
@@ -92,8 +92,12 @@ pub fn create_store(
     if !s3_configs.contains_key(&AmazonS3ConfigKey::Endpoint)
         && !s3_configs.contains_key(&AmazonS3ConfigKey::Region)
     {
-        let region =
-            get_runtime().block_on(resolve_bucket_region(bucket, &ClientOptions::new()))?;
+        let region = get_runtime()
+            .block_on(resolve_bucket_region(bucket))
+            .map_err(|e| object_store::Error::Generic {
+                store: "S3",
+                source: format!("Failed to resolve region: {e}").into(),
+            })?;
         debug!("resolved region: {region:?}");
         builder = builder.with_config(AmazonS3ConfigKey::Region, region.to_string());
     }
@@ -105,6 +109,37 @@ pub fn create_store(
     let object_store = builder.build()?;
 
     Ok((Box::new(object_store), path))
+}
+
+/// Get the bucket region using the [HeadBucket API]. This will fail if the bucket does not exist.
+///
+/// [HeadBucket API]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadBucket.html
+pub async fn resolve_bucket_region(bucket: &str) -> Result<String, Box<dyn Error>> {
+    let endpoint = format!("https://{bucket}.s3.amazonaws.com");
+    let client = reqwest::Client::new();
+
+    let response = client.head(&endpoint).send().await?;
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(Box::new(object_store::Error::Generic {
+            store: "S3",
+            source: format!("Bucket not found: {bucket}").into(),
+        }));
+    }
+
+    let region = response
+        .headers()
+        .get("x-amz-bucket-region")
+        .ok_or_else(|| {
+            Box::new(object_store::Error::Generic {
+                store: "S3",
+                source: format!("Bucket not found: {bucket}").into(),
+            })
+        })?
+        .to_str()?
+        .to_string();
+
+    Ok(region)
 }
 
 /// Extracts S3 configuration options from Hadoop S3A configurations and returns them
