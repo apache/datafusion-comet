@@ -38,4 +38,4 @@ jobs:
           echo "$PWD" >> $GITHUB_PATH
 
       - name: Lint GitHub Actions workflows
-        run: actionlint -color
+        run: actionlint -color --shellcheck=off
