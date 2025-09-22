@@ -68,6 +68,9 @@ runs:
         # Capture the initial state of docs before we potentially regenerate them
         echo "Checking documentation consistency..."
 
+        # Configure git for safe directory access in container
+        git config --global --add safe.directory "$(pwd)"
+
         # Save current state of docs directory
         git add docs/ || true
         INITIAL_DOCS_HASH=$(git write-tree --prefix=docs/)
