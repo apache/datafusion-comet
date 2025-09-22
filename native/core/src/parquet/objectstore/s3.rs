@@ -114,6 +114,9 @@ pub fn create_store(
 /// Get the bucket region using the [HeadBucket API]. This will fail if the bucket does not exist.
 ///
 /// [HeadBucket API]: https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadBucket.html
+///
+/// TODO this is copied from the object store crate and has been adapted as a workaround
+/// for https://github.com/apache/arrow-rs-object-store/issues/479
 pub async fn resolve_bucket_region(bucket: &str) -> Result<String, Box<dyn Error>> {
     let endpoint = format!("https://{bucket}.s3.amazonaws.com");
     let client = reqwest::Client::new();
@@ -133,7 +136,7 @@ pub async fn resolve_bucket_region(bucket: &str) -> Result<String, Box<dyn Error
         .ok_or_else(|| {
             Box::new(object_store::Error::Generic {
                 store: "S3",
-                source: format!("Bucket not found: {bucket}").into(),
+                source: format!("Missing region for bucket: {bucket}").into(),
             })
         })?
         .to_str()?
