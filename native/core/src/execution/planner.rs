@@ -2376,14 +2376,18 @@ impl PhysicalPlanner {
                     // For each serialized expr in a boundary row, convert to a Literal
                     // expression, then extract the ScalarValue from the Literal and push it
                     // into the collection of ScalarValues
-                    for col_idx in 0..lex_ordering.len() {
+                    for (col_idx, col_values) in scalar_values
+                        .iter_mut()
+                        .enumerate()
+                        .take(lex_ordering.len())
+                    {
                         let expr = self.create_expr(
                             &boundary_row.partition_bounds[col_idx],
                             Arc::clone(&input_schema),
                         )?;
                         let literal_expr =
                             expr.as_any().downcast_ref::<Literal>().expect("Literal");
-                        scalar_values[col_idx].push(literal_expr.value().clone());
+                        col_values.push(literal_expr.value().clone());
                     }
                 }
 
