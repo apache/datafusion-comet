@@ -46,7 +46,6 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanE
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
-import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.shims.CometTypeShim
 
 /**
