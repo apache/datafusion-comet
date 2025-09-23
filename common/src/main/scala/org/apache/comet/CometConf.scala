@@ -325,12 +325,9 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
-  // RangePartitioning contains bugs https://github.com/apache/datafusion-comet/issues/1906
   val COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.range.enabled")
-      .doc("Experimental feature to enable range partitioning for Comet native shuffle. " +
-        "This feature is experimental while we investigate scenarios that don't partition data " +
-        "correctly.")
+      .doc("Whether to enable range partitioning for Comet native shuffle.")
       .booleanConf
       .createWithDefault(true)
 
