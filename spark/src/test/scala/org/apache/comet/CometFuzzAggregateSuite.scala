@@ -30,6 +30,8 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
       if (usingDataSourceExec) {
         assert(1 == collectNativeScans(cometPlan).length)
       }
+
+      checkSparkAnswerAndOperator(sql)
     }
   }
 

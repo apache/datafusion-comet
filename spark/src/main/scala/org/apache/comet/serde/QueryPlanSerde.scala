@@ -558,6 +558,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
       binding: Boolean,
       conf: SQLConf): Option[AggExpr] = {
 
+    // Support Count(distinct single_value)
+    // COUNT(DISTINCT x) - supported
+    // COUNT(DISTINCT x, x) - supported through transition to COUNT(DISTINCT x)
+    // COUNT(DISTINCT x, y) - not supported
+    if (aggExpr.isDistinct && (aggExpr.aggregateFunction.prettyName.toLowerCase == "count" && aggExpr.aggregateFunction.children.length == 1)) {
+      withInfo(aggExpr, s"Distinct aggregate not supported for: $aggExpr")
+      return None
+    }
+
     val fn = aggExpr.aggregateFunction
     val cometExpr = aggrSerdeMap.get(fn.getClass)
     cometExpr match {
