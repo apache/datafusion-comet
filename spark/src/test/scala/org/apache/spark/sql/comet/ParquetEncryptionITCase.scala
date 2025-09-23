@@ -35,6 +35,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SQLTestUtils
 
 import org.apache.comet.{CometConf, IntegrationTestSuite}
+import org.apache.comet.CometConf.{SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT}
 
 /**
  * A integration test suite that tests parquet modular encryption usage.
@@ -49,8 +50,6 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
   private val key2 = encoder.encodeToString("1234567890123451".getBytes(StandardCharsets.UTF_8))
 
   test("SPARK-34990: Write and read an encrypted parquet") {
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
 
     import testImplicits._
 
@@ -93,8 +92,6 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
   }
 
   test("SPARK-37117: Can't read files in Parquet encryption external key material mode") {
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
 
     import testImplicits._
 
@@ -146,13 +143,29 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
+
     Seq("true", "false").foreach { cometEnabled =>
-      super.test(testName + s" Comet($cometEnabled)", testTags: _*) {
-        withSQLConf(
-          CometConf.COMET_ENABLED.key -> cometEnabled,
-          CometConf.COMET_EXEC_ENABLED.key -> "true",
-          SQLConf.ANSI_ENABLED.key -> "true") {
-          testFun
+      if (cometEnabled == "true") {
+        Seq(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT).foreach {
+          scanImpl =>
+            super.test(testName + s" Comet($cometEnabled)" + s"Scan($scanImpl)", testTags: _*) {
+              withSQLConf(
+                CometConf.COMET_ENABLED.key -> cometEnabled,
+                CometConf.COMET_EXEC_ENABLED.key -> "true",
+                SQLConf.ANSI_ENABLED.key -> "false",
+                CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl) {
+                testFun
+              }
+            }
+        }
+      } else {
+        super.test(testName + s" Comet($cometEnabled)", testTags: _*) {
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> cometEnabled,
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            SQLConf.ANSI_ENABLED.key -> "false") {
+            testFun
+          }
         }
       }
     }
@@ -164,7 +177,9 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
   }
 
   private var _spark: SparkSessionType = _
+
   protected implicit override def spark: SparkSessionType = _spark
+
   protected implicit override def sqlContext: SQLContext = _spark.sqlContext
 
   /**

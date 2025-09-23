@@ -1153,6 +1153,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
           // Collect S3/cloud storage configurations
           val hadoopConf = scan.relation.sparkSession.sessionState
             .newHadoopConfWithOptions(scan.relation.options)
+          val encryptionEnabled: Boolean = hadoopConf
+            .get("parquet.crypto.factory.class")
+            .nonEmpty || hadoopConf.get("parquet.encryption.kms.client.class", "").nonEmpty
+
+          nativeScanBuilder.setEncryptionEnabled(encryptionEnabled)
+
           firstPartition.foreach { partitionFile =>
             val objectStoreOptions =
               NativeConfig.extractObjectStoreOptions(hadoopConf, partitionFile.pathUri)

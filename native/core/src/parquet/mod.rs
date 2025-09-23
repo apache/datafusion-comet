@@ -52,8 +52,11 @@ use crate::execution::operators::ExecutionError;
 use crate::execution::planner::PhysicalPlanner;
 use crate::execution::serde;
 use crate::execution::utils::SparkArrowConvert;
+use crate::jvm_bridge::{jni_new_global_ref, JVMClasses};
 use crate::parquet::data_type::AsBytes;
-use crate::parquet::parquet_exec::init_datasource_exec;
+use crate::parquet::parquet_exec::{
+    init_datasource_exec, CometEncryptionFactory, ENCRYPTION_FACTORY_ID,
+};
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use arrow::array::{Array, RecordBatch};
 use arrow::buffer::{Buffer, MutableBuffer};
@@ -712,8 +715,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     batch_size: jint,
     case_sensitive: jboolean,
     object_store_options: jobject,
+    key_unwrapper_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
+        JVMClasses::init(&mut env);
         let session_config = SessionConfig::new().with_batch_size(batch_size as usize);
         let planner =
             PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)), 0);
@@ -766,6 +771,22 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             .unwrap()
             .into();
 
+        // Handle key unwrapper for encrypted files
+        let encryption_enabled = if !key_unwrapper_obj.is_null() {
+            let encryption_factory = CometEncryptionFactory {
+                key_unwrapper: jni_new_global_ref!(env, key_unwrapper_obj)?,
+            };
+            session_ctx
+                .runtime_env()
+                .register_parquet_encryption_factory(
+                    ENCRYPTION_FACTORY_ID,
+                    Arc::new(encryption_factory),
+                );
+            true
+        } else {
+            false
+        };
+
         let scan = init_datasource_exec(
             required_schema,
             Some(data_schema),
@@ -778,6 +799,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             None,
             session_timezone.as_str(),
             case_sensitive != JNI_FALSE,
+            session_ctx,
+            encryption_enabled,
         )?;
 
         let partition_index: usize = 0;

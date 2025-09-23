@@ -80,7 +80,7 @@ import org.apache.comet.shims.ShimFileFormat;
 import org.apache.comet.vector.CometVector;
 import org.apache.comet.vector.NativeUtil;
 
-import static scala.jdk.javaapi.CollectionConverters.*;
+import static scala.jdk.javaapi.CollectionConverters.asJava;
 
 /**
  * A vectorized Parquet reader that reads a Parquet file in a batched fashion.
@@ -410,6 +410,16 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         }
       }
 
+      boolean encryptionEnabled =
+          !conf.get("parquet.crypto.factory.class").isEmpty()
+              || !conf.get("parquet.encryption.kms.client.class", "").isEmpty();
+
+      // Create keyUnwrapper if encryption is enabled
+      CometFileKeyUnwrapper keyUnwrapper = encryptionEnabled ? new CometFileKeyUnwrapper() : null;
+      if (encryptionEnabled) {
+        keyUnwrapper.storeDecryptionKeyRetriever(file.filePath().toString(), conf);
+      }
+
       int batchSize =
           conf.getInt(
               CometConf.COMET_BATCH_SIZE().key(),
@@ -426,7 +436,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
               timeZoneId,
               batchSize,
               caseSensitive,
-              objectStoreOptions);
+              objectStoreOptions,
+              keyUnwrapper);
     }
     isInitialized = true;
   }
