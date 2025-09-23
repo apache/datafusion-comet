@@ -1254,7 +1254,7 @@ fn cast_array_to_string(
         } else {
             str.clear();
             let value_ref = array.value(row_index);
-            let native_cast_result = cast_array(value_ref, &Utf8, &spark_cast_options).unwrap();
+            let native_cast_result = cast_array(value_ref, &Utf8, spark_cast_options).unwrap();
             let string_array = native_cast_result
                 .as_any()
                 .downcast_ref::<StringArray>()
@@ -1268,7 +1268,7 @@ fn cast_array_to_string(
                 str.push_str(s.unwrap_or("null"));
                 any_fields_written = true;
             }
-            str.push_str("]");
+            str.push(']');
             builder.append_value(&str);
         }
     }
