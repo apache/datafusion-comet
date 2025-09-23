@@ -411,8 +411,10 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       }
 
       boolean encryptionEnabled =
-          !conf.get("parquet.crypto.factory.class").isEmpty()
-              || !conf.get("parquet.encryption.kms.client.class", "").isEmpty();
+          (conf.get("parquet.crypto.factory.class") != null
+                  && !conf.get("parquet.crypto.factory.class").isEmpty())
+              || (conf.get("parquet.encryption.kms.client.class") != null
+                  && !conf.get("parquet.encryption.kms.client.class").isEmpty());
 
       // Create keyUnwrapper if encryption is enabled
       CometFileKeyUnwrapper keyUnwrapper = encryptionEnabled ? new CometFileKeyUnwrapper() : null;

@@ -104,11 +104,13 @@ pub(crate) fn init_datasource_exec(
         }
     }
 
-    parquet_source = parquet_source.with_encryption_factory(
-        session_ctx
-            .runtime_env()
-            .parquet_encryption_factory(ENCRYPTION_FACTORY_ID)?,
-    );
+    if encryption_enabled {
+        parquet_source = parquet_source.with_encryption_factory(
+            session_ctx
+                .runtime_env()
+                .parquet_encryption_factory(ENCRYPTION_FACTORY_ID)?,
+        );
+    }
 
     let file_source = parquet_source.with_schema_adapter_factory(Arc::new(
         SparkSchemaAdapterFactory::new(spark_parquet_options, default_values),
