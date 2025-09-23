@@ -30,8 +30,6 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
       if (usingDataSourceExec) {
         assert(1 == collectNativeScans(cometPlan).length)
       }
-
-      checkSparkAnswerAndOperator(sql)
     }
   }
 
@@ -44,8 +42,6 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
       if (usingDataSourceExec) {
         assert(1 == collectNativeScans(cometPlan).length)
       }
-
-      checkSparkAnswerAndOperator(sql)
     }
   }
 
@@ -58,8 +54,6 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
       if (usingDataSourceExec) {
         assert(1 == collectNativeScans(cometPlan).length)
       }
-
-      checkSparkAnswerAndOperator(sql)
     }
   }
 
@@ -73,8 +67,6 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
       if (usingDataSourceExec) {
         assert(1 == collectNativeScans(cometPlan).length)
       }
-
-      checkSparkAnswerAndOperator(sql)
     }
   }
 
@@ -89,8 +81,6 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     if (usingDataSourceExec) {
       assert(1 == collectNativeScans(cometPlan).length)
     }
-
-    checkSparkAnswerAndOperator(sql)
   }
 
   test("min/max aggregate") {
