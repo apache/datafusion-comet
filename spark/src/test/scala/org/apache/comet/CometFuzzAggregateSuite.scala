@@ -45,6 +45,18 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     }
   }
 
+  test("count distinct multiple values and group by multiple column") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    for (col <- df.columns) {
+      val sql = s"SELECT c1, c2, c3, count(distinct $col, c4, c5) FROM t1 group by c1, c2, c3"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      if (usingDataSourceExec) {
+        assert(1 == collectNativeScans(cometPlan).length)
+      }
+    }
+  }
+
   test("count(*) group by single column") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
