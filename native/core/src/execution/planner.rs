@@ -62,8 +62,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_modulo_expr, create_negate_expr, BloomFilterAgg,
-    BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
+    create_comet_physical_fun, create_modulo_expr, create_negate_expr, BinaryOutputStyle,
+    BloomFilterAgg, BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -809,6 +809,8 @@ impl PhysicalPlanner {
                     SparkCastOptions::new(EvalMode::Try, &expr.timezone, true);
                 let null_string = "NULL";
                 spark_cast_options.null_string = null_string.to_string();
+                spark_cast_options.binary_output_style =
+                    from_protobuf_binary_output_style(expr.binary_output_style).ok();
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let cast = Arc::new(Cast::new(
                     Arc::clone(&child),
@@ -2690,6 +2692,18 @@ fn create_case_expr(
             when_then_pairs,
             else_expr.clone(),
         )?))
+    }
+}
+
+fn from_protobuf_binary_output_style(
+    value: i32,
+) -> Result<BinaryOutputStyle, prost::UnknownEnumValue> {
+    match spark_expression::BinaryOutputStyle::try_from(value)? {
+        spark_expression::BinaryOutputStyle::Utf8 => Ok(BinaryOutputStyle::Utf8),
+        spark_expression::BinaryOutputStyle::Basic => Ok(BinaryOutputStyle::Basic),
+        spark_expression::BinaryOutputStyle::Base64 => Ok(BinaryOutputStyle::Base64),
+        spark_expression::BinaryOutputStyle::Hex => Ok(BinaryOutputStyle::Hex),
+        spark_expression::BinaryOutputStyle::HexDiscrete => Ok(BinaryOutputStyle::HexDiscrete),
     }
 }
 

@@ -210,6 +210,7 @@ The following cast operations are generally compatible with Spark except for the
 | string | long |  |
 | string | binary |  |
 | string | date | Only supports years between 262143 BC and 262142 AD |
+| binary | string |  |
 | date | string |  |
 | timestamp | long |  |
 | timestamp | string |  |
@@ -233,7 +234,6 @@ The following cast operations are not compatible with Spark for all inputs and a
 | string | double  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
 | string | decimal  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits |
 | string | timestamp  | Not all valid formats are supported |
-| binary | string  | Only works for binary data representing valid UTF-8 strings |
 <!--END:INCOMPAT_CAST_TABLE-->
 
 ### Unsupported Casts

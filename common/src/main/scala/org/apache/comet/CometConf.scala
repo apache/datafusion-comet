@@ -599,7 +599,7 @@ object CometConf extends ShimCometConf {
           "format when 'spark.comet.sparkToColumnar.enabled' is true")
       .stringConf
       .toSequence
-      .createWithDefault(Seq("Range,InMemoryTableScan"))
+      .createWithDefault(Seq("Range,InMemoryTableScan,RDDScan"))
 
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")
