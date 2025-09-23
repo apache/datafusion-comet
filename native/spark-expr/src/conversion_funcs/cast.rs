@@ -2985,8 +2985,8 @@ mod tests {
         .unwrap();
         let string_array = string_array.as_string::<i32>();
         assert_eq!(r#"[a, b, c]"#, string_array.value(0));
-        assert_eq!(r#"[a, NULL]"#, string_array.value(1));
-        assert_eq!(r#"[NULL]"#, string_array.value(2));
+        assert_eq!(r#"[a, null]"#, string_array.value(1));
+        assert_eq!(r#"[null]"#, string_array.value(2));
         assert_eq!(r#"[]"#, string_array.value(3));
     }
 
@@ -3010,8 +3010,8 @@ mod tests {
         .unwrap();
         let string_array = string_array.as_string::<i32>();
         assert_eq!(r#"[1, 2, 3]"#, string_array.value(0));
-        assert_eq!(r#"[1, NULL]"#, string_array.value(1));
-        assert_eq!(r#"[NULL]"#, string_array.value(2));
+        assert_eq!(r#"[1, null]"#, string_array.value(1));
+        assert_eq!(r#"[null]"#, string_array.value(2));
         assert_eq!(r#"[]"#, string_array.value(3));
     }
 }
