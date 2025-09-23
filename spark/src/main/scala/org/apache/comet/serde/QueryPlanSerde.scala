@@ -562,7 +562,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
     // COUNT(DISTINCT x) - supported
     // COUNT(DISTINCT x, x) - supported through transition to COUNT(DISTINCT x)
     // COUNT(DISTINCT x, y) - not supported
-    if (aggExpr.isDistinct && (aggExpr.aggregateFunction.prettyName.toLowerCase == "count" && aggExpr.aggregateFunction.children.length == 1)) {
+    if (aggExpr.isDistinct
+      &&
+      (aggExpr.aggregateFunction.prettyName == "count" &&
+        aggExpr.aggregateFunction.children.length == 1)) {
       withInfo(aggExpr, s"Distinct aggregate not supported for: $aggExpr")
       return None
     }
