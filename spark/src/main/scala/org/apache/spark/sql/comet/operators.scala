@@ -218,9 +218,13 @@ abstract class CometNativeExec extends CometExec {
           // properties.
           val hadoopConf = scan.relation.sparkSession.sessionState
             .newHadoopConfWithOptions(scan.relation.options)
-          val encryptionEnabled: Boolean =
-            hadoopConf.get("parquet.crypto.factory.class").nonEmpty &&
-              hadoopConf.get("parquet.encryption.kms.client.class", "").nonEmpty
+          val encryptionEnabled: Boolean = (hadoopConf
+            .get("parquet.crypto.factory.class") != null && hadoopConf
+            .get("parquet.crypto.factory.class")
+            .nonEmpty) || (hadoopConf
+            .get("parquet.encryption.kms.client.class") != null && hadoopConf
+            .get("parquet.encryption.kms.client.class")
+            .nonEmpty)
           if (encryptionEnabled) {
             // hadoopConf isn't serializable, so we have to do a broadcasted config.
             val broadcastedConf =

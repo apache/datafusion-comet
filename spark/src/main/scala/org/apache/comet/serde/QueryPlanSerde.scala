@@ -1153,9 +1153,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
           // Collect S3/cloud storage configurations
           val hadoopConf = scan.relation.sparkSession.sessionState
             .newHadoopConfWithOptions(scan.relation.options)
-          val encryptionEnabled: Boolean = hadoopConf
+          val encryptionEnabled: Boolean = (hadoopConf
+            .get("parquet.crypto.factory.class") != null && hadoopConf
             .get("parquet.crypto.factory.class")
-            .nonEmpty || hadoopConf.get("parquet.encryption.kms.client.class", "").nonEmpty
+            .nonEmpty) || (hadoopConf
+            .get("parquet.encryption.kms.client.class") != null && hadoopConf
+            .get("parquet.encryption.kms.client.class")
+            .nonEmpty)
 
           nativeScanBuilder.setEncryptionEnabled(encryptionEnabled)
 
@@ -1700,6 +1704,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   }
 
   // scalastyle:off
+
   /**
    * Align w/ Arrow's
    * [[https://github.com/apache/arrow-rs/blob/55.2.0/arrow-ord/src/rank.rs#L30-L40 can_rank]] and
