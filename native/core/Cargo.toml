@@ -73,7 +73,7 @@ aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
 parking_lot = "0.12.3"
 datafusion-comet-objectstore-hdfs = { path = "../hdfs", optional = true, default-features = false, features = ["hdfs"] }
-reqwest = "0.12.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
 object_store_opendal = {version = "0.54.0", optional = true}
 hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
 opendal = { version ="0.54.0", optional = true, features = ["services-hdfs"] }
