@@ -2363,31 +2363,29 @@ impl PhysicalPlanner {
                 let sort_fields: Vec<SortField> = lex_ordering
                     .iter()
                     .map(|sort_expr| {
-                        let data_type = sort_expr.expr.data_type(input_schema.as_ref()).unwrap();
-                        SortField::new_with_options(data_type, sort_expr.options)
+                        sort_expr
+                            .expr
+                            .data_type(input_schema.as_ref())
+                            .map(|dt| SortField::new_with_options(dt, sort_expr.options))
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 // Deserialize the literals to columnar collections of ScalarValues
                 let mut scalar_values: Vec<Vec<ScalarValue>> = vec![vec![]; lex_ordering.len()];
-                range_partition
-                    .boundary_rows
-                    .iter()
-                    .for_each(|boundary_row| {
-                        // For each serialized expr in a boundary row, convert to a Literal
-                        // expression, then extract the ScalarValue from the Literal and push it
-                        // into the collection of ScalarValues
-                        (0..lex_ordering.len()).for_each(|col_idx| {
-                            let expr = self
-                                .create_expr(
-                                    &boundary_row.partition_bounds[col_idx],
-                                    Arc::clone(&input_schema),
-                                )
-                                .unwrap();
-                            let literal_expr = expr.as_any().downcast_ref::<Literal>().unwrap();
-                            scalar_values[col_idx].push(literal_expr.value().clone());
-                        });
-                    });
+                for boundary_row in &range_partition.boundary_rows {
+                    // For each serialized expr in a boundary row, convert to a Literal
+                    // expression, then extract the ScalarValue from the Literal and push it
+                    // into the collection of ScalarValues
+                    for col_idx in 0..lex_ordering.len() {
+                        let expr = self.create_expr(
+                            &boundary_row.partition_bounds[col_idx],
+                            Arc::clone(&input_schema),
+                        )?;
+                        let literal_expr =
+                            expr.as_any().downcast_ref::<Literal>().expect("Literal");
+                        scalar_values[col_idx].push(literal_expr.value().clone());
+                    }
+                }
 
                 // Convert the collection of ScalarValues to collection of Arrow Arrays
                 let arrays: Vec<ArrayRef> = scalar_values
