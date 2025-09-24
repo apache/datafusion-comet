@@ -40,7 +40,7 @@ Comet provides the following configuration settings.
 | spark.comet.exceptionOnDatetimeRebase | Whether to throw exception when seeing dates/timestamps from the legacy hybrid (Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according to the Proleptic Gregorian calendar. When this is true, Comet will throw exceptions when seeing these dates/timestamps that were written by Spark version before 3.0. If this is false, these dates/timestamps will be read as if they were written to the Proleptic Gregorian calendar and will not be rebased. | false |
 | spark.comet.exec.aggregate.enabled | Whether to enable aggregate by default. | true |
 | spark.comet.exec.broadcastExchange.enabled | Whether to enable broadcastExchange by default. | true |
-| spark.comet.exec.broadcastHashJoin.enabled | Whether to enable broadcastHashJoin by default. | true |
+| spark.comet.exec.broadcastHashJoin.enabled | Whether to enable broadcastHashJoin by default. | false |
 | spark.comet.exec.coalesce.enabled | Whether to enable coalesce by default. | true |
 | spark.comet.exec.collectLimit.enabled | Whether to enable collectLimit by default. | true |
 | spark.comet.exec.enabled | Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of 'spark.comet.exec.<operator_name>.enabled' at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native. | true |
