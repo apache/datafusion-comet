@@ -79,7 +79,7 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     }
   }
 
-  // Not yet supported
+  // COUNT(distinct x, y, z, ...) not yet supported
   // https://github.com/apache/datafusion-comet/issues/2292
   test("count distinct multiple values and group by multiple column") {
     val df = spark.read.parquet(filename)

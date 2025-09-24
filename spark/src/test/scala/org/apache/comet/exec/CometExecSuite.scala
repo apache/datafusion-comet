@@ -1031,6 +1031,8 @@ class CometExecSuite extends CometTestBase {
           |GROUP BY key
               """.stripMargin)
 
+      // The above query uses SUM(DISTINCT) and count(distinct value1, value2)
+      // which is not yet supported
       checkSparkAnswer(df)
       val subPlan = stripAQEPlan(df.queryExecution.executedPlan).collectFirst {
         case s: CometHashAggregateExec => s
