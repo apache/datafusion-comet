@@ -601,6 +601,13 @@ object CometConf extends ShimCometConf {
       .toSequence
       .createWithDefault(Seq("Range,InMemoryTableScan,RDDScan"))
 
+  val COMET_PREFER_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.preferToColumnar.enabled")
+      .internal()
+      .doc("TODO: doc")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_CASE_CONVERSION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.caseConversion.enabled")
       .doc(

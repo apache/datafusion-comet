@@ -138,16 +138,20 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
     def operator2Proto[T <: SparkPlan](plan: T): Option[(T, Operator)] = {
-      val newChildren = plan.children.map {
-        case p: CometNativeExec => p
-        case op =>
-          val cometOp = CometSparkToColumnarExec(op)
-          QueryPlanSerde
-            .operator2Proto(cometOp)
-            .map(CometScanWrapper(_, cometOp))
-            .getOrElse(op)
+      val newPlan = if (CometConf.COMET_PREFER_TO_ARROW_ENABLED.get(conf)) {
+        val newChildren = plan.children.map {
+          case p: CometNativeExec => p
+          case op =>
+            val cometOp = CometSparkToColumnarExec(op)
+            QueryPlanSerde
+              .operator2Proto(cometOp)
+              .map(CometScanWrapper(_, cometOp))
+              .getOrElse(op)
+        }
+        plan.withNewChildren(newChildren).asInstanceOf[T]
+      } else {
+        plan
       }
-      val newPlan = plan.withNewChildren(newChildren).asInstanceOf[T]
       if (newPlan.children.forall(_.isInstanceOf[CometNativeExec])) {
         QueryPlanSerde
           .operator2Proto(
