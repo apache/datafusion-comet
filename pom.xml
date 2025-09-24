@@ -64,7 +64,7 @@ under the License.
     <scalafix-maven-plugin.version>0.1.7_0.10.4</scalafix-maven-plugin.version>
     <extra-enforcer-rules.version>1.7.0</extra-enforcer-rules.version>
     <scalafmt.version>3.6.1</scalafmt.version>
-    <apache-rat-plugin.version>0.16</apache-rat-plugin.version>
+    <apache-rat-plugin.version>0.16.1</apache-rat-plugin.version>
     <scala.version>2.12.18</scala.version>
     <scala.binary.version>2.12</scala.binary.version>
     <scala.plugin.version>4.8.0</scala.plugin.version>
