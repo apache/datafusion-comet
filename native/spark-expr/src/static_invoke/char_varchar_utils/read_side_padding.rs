@@ -25,6 +25,7 @@ use datafusion::common::{cast::as_generic_string_array, DataFusionError, ScalarV
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
+const SPACE: &str = " ";
 /// Similar to DataFusion `rpad`, but not to truncate when the string is already longer than length
 pub fn spark_read_side_padding(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     spark_read_side_padding2(args, false)
@@ -46,13 +47,13 @@ fn spark_read_side_padding2(
                     array,
                     truncate,
                     ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
-                    " ",
+                    SPACE,
                 ),
                 DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(
                     array,
                     truncate,
                     ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
-                    " ",
+                    SPACE,
                 ),
                 // Dictionary support required for SPARK-48498
                 DataType::Dictionary(_, value_type) => {
@@ -62,14 +63,14 @@ fn spark_read_side_padding2(
                             dict.values(),
                             truncate,
                             ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
-                            " ",
+                            SPACE,
                         )?
                     } else {
                         spark_read_side_padding_internal::<i64>(
                             dict.values(),
                             truncate,
                             ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
-                            " ",
+                            SPACE,
                         )?
                     };
                     // col consists of an array, so arg of to_array() is not used. Can be anything
@@ -105,14 +106,14 @@ fn spark_read_side_padding2(
                             dict.values(),
                             truncate,
                             ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
-                            " ",
+                            SPACE,
                         )?
                     } else {
                         spark_read_side_padding_internal::<i64>(
                             dict.values(),
                             truncate,
                             ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
-                            " ",
+                            SPACE,
                         )?
                     };
                     // col consists of an array, so arg of to_array() is not used. Can be anything
@@ -130,13 +131,13 @@ fn spark_read_side_padding2(
                 array,
                 truncate,
                 ColumnarValue::Array(Arc::<dyn Array>::clone(array_int)),
-                " ",
+                SPACE,
             ),
             DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(
                 array,
                 truncate,
                 ColumnarValue::Array(Arc::<dyn Array>::clone(array_int)),
-                " ",
+                SPACE,
             ),
             other => Err(DataFusionError::Internal(format!(
                 "Unsupported data type {other:?} for function rpad/read_side_padding",

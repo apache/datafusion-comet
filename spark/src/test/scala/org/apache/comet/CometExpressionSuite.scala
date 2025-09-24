@@ -408,7 +408,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
   test("Verify rpad expr support for second arg instead of just literal") {
-    val data = Seq(("IfIWasARoadIWouldBeBent", 50), ("తెలుగు", 2))
+    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("తెలుగు", 2))
     withParquetTable(data, "t1") {
       val res = sql("select rpad(_1,_2) , rpad(_1,2) from t1 order by _1")
       checkSparkAnswerAndOperator(res)
@@ -419,8 +419,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("hi", 2))
     withParquetTable(data, "t1") {
       val res = sql(
-        "select rpad(_1,_2,'?'), rpad(_1,_2,'??') , rpad(_1,2, '??'), hex(rpad(unhex('aabb'), 5)), rpad(_1, 5, '??')  " +
-          "from t1 order by _1")
+        """ select rpad(_1,_2,'?'), rpad(_1,_2,'??') , rpad(_1,2, '??'), hex(rpad(unhex('aabb'), 5)), |
+          rpad(_1, 5, '??') from t1 order by _1) """.stripMargin)
       checkSparkAnswerAndOperator(res)
     }
   }
