@@ -148,7 +148,7 @@ class CometNativeShuffleWriter[K, V](
       // Spark sometimes generates RangePartitioning schemes with numPartitions == 1,
       // or the computed bounds results in a single target partition.
       // In this case Comet just serializes a SinglePartition scheme to native.
-     rp.numPartitions == 1 || rangePartitionBounds.forall(_.isEmpty)
+      rp.numPartitions == 1 || rangePartitionBounds.forall(_.isEmpty)
     case hp: HashPartitioning => hp.numPartitions == 1
     case _ => false
   }
