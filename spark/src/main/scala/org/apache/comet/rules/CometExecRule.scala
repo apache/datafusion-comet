@@ -535,8 +535,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       case op =>
         op match {
-          case _: CometExec | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
-              _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec |
+          case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
               _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec =>
             // Some execs should never be replaced. We include
             // these cases specially here so we do not add a misleading 'info' message
