@@ -25,6 +25,7 @@ import org.apache.spark.sql.ExtendedExplainGenerator
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.execution.{InputAdapter, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 import org.apache.comet.CometExplainInfo.getActualPlan
 
@@ -158,6 +159,7 @@ object CometExplainInfo {
       case p: InputAdapter => getActualPlan(p.child)
       case p: QueryStageExec => getActualPlan(p.plan)
       case p: WholeStageCodegenExec => getActualPlan(p.child)
+      case p: ReusedExchangeExec => getActualPlan(p.child)
       case p => p
     }
   }
