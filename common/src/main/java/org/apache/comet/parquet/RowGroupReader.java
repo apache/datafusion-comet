@@ -30,7 +30,7 @@ import org.apache.parquet.column.page.PageReader;
 import org.apache.parquet.internal.filter2.columnindex.RowRanges;
 
 public class RowGroupReader implements PageReadStore {
-  private final Map<ColumnDescriptor, PageReader> readers = new HashMap<>();
+  private final Map<String, PageReader> readers = new HashMap<>();
   private final long rowCount;
   private final RowRanges rowRanges;
   private final long rowIndexOffset;
@@ -54,7 +54,11 @@ public class RowGroupReader implements PageReadStore {
 
   @Override
   public PageReader getPageReader(ColumnDescriptor path) {
-    final PageReader pageReader = readers.get(path);
+    return getPageReader(path.getPath());
+  }
+
+  public PageReader getPageReader(String[] path) {
+    final PageReader pageReader = readers.get(String.join(".", path));
     if (pageReader == null) {
       throw new IllegalArgumentException(
           path + " is not found: " + readers.keySet() + " " + rowCount);
@@ -73,7 +77,7 @@ public class RowGroupReader implements PageReadStore {
   }
 
   void addColumn(ColumnDescriptor path, ColumnPageReader reader) {
-    if (readers.put(path, reader) != null) {
+    if (readers.put(String.join(".", path.getPath()), reader) != null) {
       throw new IllegalStateException(path + " was already added");
     }
   }
