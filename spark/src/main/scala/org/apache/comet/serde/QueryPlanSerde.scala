@@ -48,6 +48,7 @@ import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
+import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
@@ -1153,15 +1154,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
           // Collect S3/cloud storage configurations
           val hadoopConf = scan.relation.sparkSession.sessionState
             .newHadoopConfWithOptions(scan.relation.options)
-          val encryptionEnabled: Boolean = (hadoopConf
-            .get("parquet.crypto.factory.class") != null && hadoopConf
-            .get("parquet.crypto.factory.class")
-            .nonEmpty) || (hadoopConf
-            .get("parquet.encryption.kms.client.class") != null && hadoopConf
-            .get("parquet.encryption.kms.client.class")
-            .nonEmpty)
 
-          nativeScanBuilder.setEncryptionEnabled(encryptionEnabled)
+          nativeScanBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
 
           firstPartition.foreach { partitionFile =>
             val objectStoreOptions =

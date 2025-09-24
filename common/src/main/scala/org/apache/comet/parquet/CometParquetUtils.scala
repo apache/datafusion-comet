@@ -20,6 +20,8 @@
 package org.apache.comet.parquet
 
 import org.apache.hadoop.conf.Configuration
+import org.apache.parquet.crypto.DecryptionPropertiesFactory
+import org.apache.parquet.crypto.keytools.KeyToolkit
 import org.apache.spark.sql.internal.SQLConf
 
 object CometParquetUtils {
@@ -38,4 +40,13 @@ object CometParquetUtils {
 
   def ignoreMissingIds(conf: SQLConf): Boolean =
     conf.getConfString(IGNORE_MISSING_PARQUET_FIELD_ID, "false").toBoolean
+
+  def encryptionEnabled(hadoopConf: Configuration): Boolean = {
+    // TODO: Are there any other properties to check?
+    val encryptionKeys = Seq(
+      DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME,
+      KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME)
+
+    encryptionKeys.exists(key => Option(hadoopConf.get(key)).exists(_.nonEmpty))
+  }
 }

@@ -47,6 +47,7 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException}
+import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
@@ -218,13 +219,7 @@ abstract class CometNativeExec extends CometExec {
           // properties.
           val hadoopConf = scan.relation.sparkSession.sessionState
             .newHadoopConfWithOptions(scan.relation.options)
-          val encryptionEnabled: Boolean = (hadoopConf
-            .get("parquet.crypto.factory.class") != null && hadoopConf
-            .get("parquet.crypto.factory.class")
-            .nonEmpty) || (hadoopConf
-            .get("parquet.encryption.kms.client.class") != null && hadoopConf
-            .get("parquet.encryption.kms.client.class")
-            .nonEmpty)
+          val encryptionEnabled = CometParquetUtils.encryptionEnabled(hadoopConf)
           if (encryptionEnabled) {
             // hadoopConf isn't serializable, so we have to do a broadcasted config.
             val broadcastedConf =
