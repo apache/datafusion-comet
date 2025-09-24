@@ -468,8 +468,8 @@ class CometExecSuite extends CometTestBase {
         withSQLConf(
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
           CometConf.COMET_SHUFFLE_MODE.key -> columnarShuffleMode) {
-          val df = sql("SELECT * FROM v where c1 = 1 order by c1, c2")
-          val shuffle = find(df.queryExecution.executedPlan) {
+          val (_, cometPlan) = checkSparkAnswer("SELECT * FROM v where c1 = 1 order by c1, c2")
+          val shuffle = find(cometPlan) {
             case _: CometShuffleExchangeExec if columnarShuffleMode.equalsIgnoreCase("jvm") =>
               true
             case _: ShuffleExchangeExec if !columnarShuffleMode.equalsIgnoreCase("jvm") => true
