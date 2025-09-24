@@ -2399,14 +2399,17 @@ impl PhysicalPlanner {
 
                 // Create a RowConverter and use to create OwnedRows from the Arrays
                 let converter = RowConverter::new(sort_fields)?;
-                let rows = converter.convert_columns(&arrays)?;
-                let owned_rows: Vec<OwnedRow> = rows.iter().map(|row| row.owned()).collect();
+                let boundary_rows = converter.convert_columns(&arrays)?;
+                // Rows are only a view into Arrow Arrays. We need to create OwnedRows with their
+                // own internal memory ownership to pass as our boundary values to the partitioner.
+                let boundary_owned_rows: Vec<OwnedRow> =
+                    boundary_rows.iter().map(|row| row.owned()).collect();
 
                 Ok(CometPartitioning::RangePartitioning(
                     lex_ordering,
                     range_partition.num_partitions as usize,
                     Arc::new(converter),
-                    owned_rows,
+                    boundary_owned_rows,
                 ))
             }
             PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),

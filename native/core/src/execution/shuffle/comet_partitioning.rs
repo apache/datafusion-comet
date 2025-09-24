@@ -23,10 +23,13 @@ use std::sync::Arc;
 pub enum CometPartitioning {
     SinglePartition,
     /// Allocate rows based on a hash of one of more expressions and the specified number of
-    /// partitions
+    /// partitions. Args are 1) the expression to hash on, and 2) the number of partitions.
     Hash(Vec<Arc<dyn PhysicalExpr>>, usize),
     /// Allocate rows based on the lexical order of one of more expressions and the specified number of
-    /// partitions
+    /// partitions. Args are 1) the LexOrdering to use to compare values and split into partitions,
+    /// 2) the number of partitions, 3) the RowConverter used to view incoming RecordBatches as Arrow
+    /// Rows for comparing to 4) OwnedRows that represent the boundaries of each partition, used with
+    /// LexOrdering to bin each value in the RecordBatch to a partition.
     RangePartitioning(LexOrdering, usize, Arc<RowConverter>, Vec<OwnedRow>),
 }
 
