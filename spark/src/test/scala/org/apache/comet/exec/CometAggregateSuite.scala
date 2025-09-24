@@ -409,7 +409,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             (0 until 100).map(i => (i, (i % 10).toString)),
             "tbl",
             dictionaryEnabled) {
-            val n = if (nativeShuffleEnabled) 2 else 1
+            val n =
+              if (nativeShuffleEnabled || CometConf.COMET_PREFER_TO_ARROW_ENABLED.get()) 2 else 1
             checkSparkAnswerAndNumOfAggregates("SELECT _2, SUM(_1) FROM tbl GROUP BY _2", n)
             checkSparkAnswerAndNumOfAggregates("SELECT _2, COUNT(_1) FROM tbl GROUP BY _2", n)
             checkSparkAnswerAndNumOfAggregates("SELECT _2, MIN(_1) FROM tbl GROUP BY _2", n)
@@ -592,7 +593,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val path = new Path(dir.toURI.toString, "test")
             makeParquetFile(path, 1000, 20, dictionaryEnabled)
             withParquetTable(path.toUri.toString, "tbl") {
-              val expectedNumOfCometAggregates = if (nativeShuffleEnabled) 2 else 1
+              val expectedNumOfCometAggregates =
+                if (nativeShuffleEnabled || CometConf.COMET_PREFER_TO_ARROW_ENABLED.get()) 2
+                else 1
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g2, SUM(_7) FROM tbl GROUP BY _g2",
@@ -734,7 +737,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql("CREATE TABLE t(v VARCHAR(3), i INT) USING PARQUET")
       sql("INSERT INTO t VALUES ('c', 1)")
       withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
-        checkSparkAnswerAndNumOfAggregates("SELECT v, sum(i) FROM t GROUP BY v ORDER BY v", 1)
+        val expectedNumOfCometAggregates =
+          if (CometConf.COMET_PREFER_TO_ARROW_ENABLED.get()) 2 else 1
+        checkSparkAnswerAndNumOfAggregates(
+          "SELECT v, sum(i) FROM t GROUP BY v ORDER BY v",
+          expectedNumOfCometAggregates)
       }
     }
   }
@@ -1058,7 +1065,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "tbl",
         dictionaryEnabled) {
         withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
-          checkSparkAnswerAndNumOfAggregates("SELECT _2 , AVG(_1) FROM tbl GROUP BY _2", 1)
+          val expectedNumOfCometAggregates =
+            if (CometConf.COMET_PREFER_TO_ARROW_ENABLED.get()) 2 else 1
+          checkSparkAnswerAndNumOfAggregates(
+            "SELECT _2 , AVG(_1) FROM tbl GROUP BY _2",
+            expectedNumOfCometAggregates)
         }
       }
     }
@@ -1095,7 +1106,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val path = new Path(dir.toURI.toString, "test")
             makeParquetFile(path, 1000, 20, dictionaryEnabled)
             withParquetTable(path.toUri.toString, "tbl") {
-              val expectedNumOfCometAggregates = if (nativeShuffleEnabled) 2 else 1
+              val expectedNumOfCometAggregates =
+                if (nativeShuffleEnabled || CometConf.COMET_PREFER_TO_ARROW_ENABLED.get()) 2
+                else 1
 
               checkSparkAnswerAndNumOfAggregates(
                 "SELECT _g2, AVG(_7) FROM tbl GROUP BY _g2",
