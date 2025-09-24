@@ -1265,7 +1265,7 @@ fn cast_array_to_string(
                 if any_fields_written {
                     str.push_str(", ");
                 }
-                str.push_str(s.unwrap_or("null"));
+                str.push_str(s.unwrap_or(&spark_cast_options.null_string));
                 any_fields_written = true;
             }
             str.push(']');
