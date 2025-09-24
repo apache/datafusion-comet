@@ -44,11 +44,11 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
   def singleGroupAndAggregate(
       values: Int,
       groupingKeyCardinality: Int,
-      aggregateFunction: String): Unit = {
+      aggregateFunction: BenchAggregateFunction): Unit = {
     val benchmark =
       new Benchmark(
         s"Grouped HashAgg Exec: single group key (cardinality $groupingKeyCardinality), " +
-          s"single aggregate $aggregateFunction",
+          s"single aggregate ${aggregateFunction.name}",
         values,
         output = output)
 
@@ -58,13 +58,14 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
           dir,
           spark.sql(s"SELECT value, floor(rand() * $groupingKeyCardinality) as key FROM $tbl"))
 
-        val query = s"SELECT key, $aggregateFunction(value) FROM parquetV1Table GROUP BY key"
+        val functionSQL = aggFunctionSQL(aggregateFunction, "value")
+        val query = s"SELECT key, $functionSQL FROM parquetV1Table GROUP BY key"
 
-        benchmark.addCase(s"SQL Parquet - Spark ($aggregateFunction)") { _ =>
+        benchmark.addCase(s"SQL Parquet - Spark (${aggregateFunction.name})") { _ =>
           spark.sql(query).noop()
         }
 
-        benchmark.addCase(s"SQL Parquet - Comet ($aggregateFunction)") { _ =>
+        benchmark.addCase(s"SQL Parquet - Comet (${aggregateFunction.name})") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true") {
@@ -77,11 +78,15 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
     }
   }
 
+  def aggFunctionSQL(aggregateFunction: BenchAggregateFunction, input: String): String = {
+    s"${aggregateFunction.name}(${if (aggregateFunction.distinct) s"DISTINCT $input" else input})"
+  }
+
   def singleGroupAndAggregateDecimal(
       values: Int,
       dataType: DecimalType,
       groupingKeyCardinality: Int,
-      aggregateFunction: String): Unit = {
+      aggregateFunction: BenchAggregateFunction): Unit = {
     val benchmark =
       new Benchmark(
         s"Grouped HashAgg Exec: single group key (cardinality $groupingKeyCardinality), " +
@@ -99,13 +104,14 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
           spark.sql(
             s"SELECT dec as value, floor(rand() * $groupingKeyCardinality) as key FROM $tbl"))
 
-        val query = s"SELECT key, $aggregateFunction(value) FROM parquetV1Table GROUP BY key"
+        val functionSQL = aggFunctionSQL(aggregateFunction, "value")
+        val query = s"SELECT key, $functionSQL FROM parquetV1Table GROUP BY key"
 
-        benchmark.addCase(s"SQL Parquet - Spark ($aggregateFunction)") { _ =>
+        benchmark.addCase(s"SQL Parquet - Spark (${aggregateFunction.name})") { _ =>
           spark.sql(query).noop()
         }
 
-        benchmark.addCase(s"SQL Parquet - Comet ($aggregateFunction)") { _ =>
+        benchmark.addCase(s"SQL Parquet - Comet (${aggregateFunction.name})") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true") {
@@ -118,11 +124,14 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
     }
   }
 
-  def multiGroupKeys(values: Int, groupingKeyCard: Int, aggregateFunction: String): Unit = {
+  def multiGroupKeys(
+      values: Int,
+      groupingKeyCard: Int,
+      aggregateFunction: BenchAggregateFunction): Unit = {
     val benchmark =
       new Benchmark(
         s"Grouped HashAgg Exec: multiple group keys (cardinality $groupingKeyCard), " +
-          s"single aggregate $aggregateFunction",
+          s"single aggregate ${aggregateFunction.name}",
         values,
         output = output)
 
@@ -134,14 +143,15 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
             s"SELECT value, floor(rand() * $groupingKeyCard) as key1, " +
               s"floor(rand() * $groupingKeyCard) as key2 FROM $tbl"))
 
+        val functionSQL = aggFunctionSQL(aggregateFunction, "value")
         val query =
-          s"SELECT key1, key2, $aggregateFunction(value) FROM parquetV1Table GROUP BY key1, key2"
+          s"SELECT key1, key2, $functionSQL FROM parquetV1Table GROUP BY key1, key2"
 
-        benchmark.addCase(s"SQL Parquet - Spark ($aggregateFunction)") { _ =>
+        benchmark.addCase(s"SQL Parquet - Spark (${aggregateFunction.name})") { _ =>
           spark.sql(query).noop()
         }
 
-        benchmark.addCase(s"SQL Parquet - Comet ($aggregateFunction)") { _ =>
+        benchmark.addCase(s"SQL Parquet - Comet (${aggregateFunction.name})") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -155,11 +165,14 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
     }
   }
 
-  def multiAggregates(values: Int, groupingKeyCard: Int, aggregateFunction: String): Unit = {
+  def multiAggregates(
+      values: Int,
+      groupingKeyCard: Int,
+      aggregateFunction: BenchAggregateFunction): Unit = {
     val benchmark =
       new Benchmark(
         s"Grouped HashAgg Exec: single group key (cardinality $groupingKeyCard), " +
-          s"multiple aggregates $aggregateFunction",
+          s"multiple aggregates ${aggregateFunction.name}",
         values,
         output = output)
 
@@ -171,14 +184,17 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
             s"SELECT value as value1, value as value2, floor(rand() * $groupingKeyCard) as key " +
               s"FROM $tbl"))
 
-        val query = s"SELECT key, $aggregateFunction(value1), $aggregateFunction(value2) " +
+        val functionSQL1 = aggFunctionSQL(aggregateFunction, "value1")
+        val functionSQL2 = aggFunctionSQL(aggregateFunction, "value2")
+
+        val query = s"SELECT key, $functionSQL1, $functionSQL2 " +
           "FROM parquetV1Table GROUP BY key"
 
-        benchmark.addCase(s"SQL Parquet - Spark ($aggregateFunction)") { _ =>
+        benchmark.addCase(s"SQL Parquet - Spark (${aggregateFunction.name})") { _ =>
           spark.sql(query).noop()
         }
 
-        benchmark.addCase(s"SQL Parquet - Comet ($aggregateFunction)") { _ =>
+        benchmark.addCase(s"SQL Parquet - Comet (${aggregateFunction.name})") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true") {
@@ -191,12 +207,19 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
     }
   }
 
+  case class BenchAggregateFunction(name: String, distinct: Boolean = false)
+  private val benchmarkAggFuncs = Seq(
+    BenchAggregateFunction("SUM"),
+    BenchAggregateFunction("MIN"),
+    BenchAggregateFunction("MAX"),
+    BenchAggregateFunction("COUNT"),
+    BenchAggregateFunction("COUNT", distinct = true))
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val total = 1024 * 1024 * 10
     val combinations = List(100, 1024, 1024 * 1024) // number of distinct groups
-    val aggregateFunctions = List("SUM", "MIN", "MAX", "COUNT")
 
-    aggregateFunctions.foreach { aggFunc =>
+    benchmarkAggFuncs.foreach { aggFunc =>
       runBenchmarkWithTable(
         s"Grouped Aggregate (single group key + single aggregate $aggFunc)",
         total) { v =>
