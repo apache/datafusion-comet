@@ -1,7 +1,7 @@
 == Physical Plan ==
 * CometColumnarToRow (37)
 +- CometSort (36)
-   +- CometColumnarExchange (35)
+   +- CometExchange (35)
       +- CometHashAggregate (34)
          +- CometExchange (33)
             +- CometHashAggregate (32)
@@ -201,9 +201,9 @@ Input [5]: [i_brand#5, i_brand_id#2, t_hour#36, t_minute#37, sum#39]
 Keys [4]: [i_brand#5, i_brand_id#2, t_hour#36, t_minute#37]
 Functions [1]: [sum(UnscaledValue(ext_price#14))]
 
-(35) CometColumnarExchange
+(35) CometExchange
 Input [5]: [brand_id#40, brand#41, t_hour#36, t_minute#37, ext_price#42]
-Arguments: rangepartitioning(ext_price#42 DESC NULLS LAST, brand_id#40 ASC NULLS FIRST, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
+Arguments: rangepartitioning(ext_price#42 DESC NULLS LAST, brand_id#40 ASC NULLS FIRST, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (36) CometSort
 Input [5]: [brand_id#40, brand#41, t_hour#36, t_minute#37, ext_price#42]

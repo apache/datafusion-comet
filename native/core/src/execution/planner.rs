@@ -92,6 +92,7 @@ use arrow::array::{
     NullArray, StringBuilder, TimestampMicrosecondArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
+use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec;
@@ -484,14 +485,14 @@ impl PhysicalPlanner {
                                     )))
                                 }
                             }
-                        },
+                        }
                         Value::ListVal(values) => {
                             if let DataType::List(_) = data_type {
                                 SingleRowListArrayBuilder::new(literal_to_array_ref(data_type, values.clone())?).build_list_scalar()
                             } else {
                                 return Err(GeneralError(format!(
                                     "Expected DataType::List but got {data_type:?}"
-                                )))
+                                )));
                             }
                         }
                     }
@@ -1402,8 +1403,14 @@ impl PhysicalPlanner {
                 assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
-                let partitioning = self
-                    .create_partitioning(writer.partitioning.as_ref().unwrap(), child.schema())?;
+                // We wrap native shuffle in a CopyExec. This existed previously, but for
+                // RangePartitioning at least we want to ensure that dictionaries are unpacked.
+                let wrapped_child = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
+
+                let partitioning = self.create_partitioning(
+                    writer.partitioning.as_ref().unwrap(),
+                    wrapped_child.schema(),
+                )?;
 
                 let codec = match writer.codec.try_into() {
                     Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
@@ -1419,7 +1426,7 @@ impl PhysicalPlanner {
                 }?;
 
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
+                    wrapped_child,
                     partitioning,
                     codec,
                     writer.output_data_file.clone(),
@@ -2344,16 +2351,65 @@ impl PhysicalPlanner {
                 ))
             }
             PartitioningStruct::RangePartition(range_partition) => {
+                // Generate the lexical ordering for comparisons
                 let exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = range_partition
                     .sort_orders
                     .iter()
                     .map(|expr| self.create_sort_expr(expr, Arc::clone(&input_schema)))
                     .collect();
                 let lex_ordering = LexOrdering::new(exprs?).unwrap();
+
+                // Generate the row converter for comparing incoming batches to boundary rows
+                let sort_fields: Vec<SortField> = lex_ordering
+                    .iter()
+                    .map(|sort_expr| {
+                        sort_expr
+                            .expr
+                            .data_type(input_schema.as_ref())
+                            .map(|dt| SortField::new_with_options(dt, sort_expr.options))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // Deserialize the literals to columnar collections of ScalarValues
+                let mut scalar_values: Vec<Vec<ScalarValue>> = vec![vec![]; lex_ordering.len()];
+                for boundary_row in &range_partition.boundary_rows {
+                    // For each serialized expr in a boundary row, convert to a Literal
+                    // expression, then extract the ScalarValue from the Literal and push it
+                    // into the collection of ScalarValues
+                    for (col_idx, col_values) in scalar_values
+                        .iter_mut()
+                        .enumerate()
+                        .take(lex_ordering.len())
+                    {
+                        let expr = self.create_expr(
+                            &boundary_row.partition_bounds[col_idx],
+                            Arc::clone(&input_schema),
+                        )?;
+                        let literal_expr =
+                            expr.as_any().downcast_ref::<Literal>().expect("Literal");
+                        col_values.push(literal_expr.value().clone());
+                    }
+                }
+
+                // Convert the collection of ScalarValues to collection of Arrow Arrays
+                let arrays: Vec<ArrayRef> = scalar_values
+                    .iter()
+                    .map(|scalar_vec| ScalarValue::iter_to_array(scalar_vec.iter().cloned()))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // Create a RowConverter and use to create OwnedRows from the Arrays
+                let converter = RowConverter::new(sort_fields)?;
+                let boundary_rows = converter.convert_columns(&arrays)?;
+                // Rows are only a view into Arrow Arrays. We need to create OwnedRows with their
+                // own internal memory ownership to pass as our boundary values to the partitioner.
+                let boundary_owned_rows: Vec<OwnedRow> =
+                    boundary_rows.iter().map(|row| row.owned()).collect();
+
                 Ok(CometPartitioning::RangePartitioning(
                     lex_ordering,
                     range_partition.num_partitions as usize,
-                    range_partition.sample_size as usize,
+                    Arc::new(converter),
+                    boundary_owned_rows,
                 ))
             }
             PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
