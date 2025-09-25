@@ -2918,7 +2918,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("ANSI support for divide (division by zero)")  {
+  test("ANSI support for divide (division by zero)") {
     //    TODO : Support ANSI mode in Integral divide -
     val data = Seq((Integer.MIN_VALUE, 0))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
