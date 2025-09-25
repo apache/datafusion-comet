@@ -341,7 +341,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       case op: BroadcastHashJoinExec
           if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) &&
-            op.children.forall(isCometNative) =>
+            // check has columnar broadcast child
+            op.children.exists {
+              case CometSinkPlaceHolder(_, _, _, true) => true
+              case _ => false
+            } =>
         newPlanWithProto(op) { case (newPlan, operator) =>
           CometBroadcastHashJoinExec(
             operator,
@@ -464,7 +468,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
         newPlanWithProto(s) { case (newPlan, operator) =>
-          CometSinkPlaceHolder(operator, newPlan, newPlan)
+          CometSinkPlaceHolder(operator, newPlan, newPlan, isBroadcast = true)
         }
 
       case s @ BroadcastQueryStageExec(
@@ -472,7 +476,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
             _) =>
         newPlanWithProto(s) { case (newPlan, operator) =>
-          CometSinkPlaceHolder(operator, newPlan, newPlan)
+          CometSinkPlaceHolder(operator, newPlan, newPlan, isBroadcast = true)
         }
 
       // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
@@ -487,7 +491,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             QueryPlanSerde.operator2Proto(b) match {
               case Some(nativeOp) =>
                 val cometOp = CometBroadcastExchangeExec(b, b.output, b.mode, b.child)
-                CometSinkPlaceHolder(nativeOp, b, cometOp)
+                CometSinkPlaceHolder(nativeOp, b, cometOp, isBroadcast = true)
               case None => b
             }
           case other => other
@@ -706,7 +710,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       // Remove placeholders
       newPlan = newPlan.transform {
-        case CometSinkPlaceHolder(_, _, s) => s
+        case CometSinkPlaceHolder(_, _, s, _) => s
         case CometScanWrapper(_, s) => s
       }
 
