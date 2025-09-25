@@ -180,14 +180,6 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
 object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with MathBase {
 
-  override def getSupportLevel(expr: IntegralDivide): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
-
   override def convert(
       expr: IntegralDivide,
       inputs: Seq[Attribute],
@@ -206,7 +198,7 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       if (expr.right.dataType.isInstanceOf[DecimalType]) expr.right
       else Cast(expr.right, DecimalType(19, 0))
 
-    val rightExpr = nullIfWhenPrimitive(right)
+    val rightExpr = if (expr.evalMode != EvalMode.ANSI) right else nullIfWhenPrimitive(right)
 
     val dataType = (left.dataType, right.dataType) match {
       case (l: DecimalType, r: DecimalType) =>
