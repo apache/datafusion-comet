@@ -24,7 +24,7 @@ WholeStageCodegen (28)
                                               CometColumnarToRow
                                                 InputAdapter
                                                   CometExchange [s_store_sk] #3
-                                                    CometHashAggregate [s_store_sk,sum,sum,ss_ext_sales_price,ss_net_profit]
+                                                    CometHashAggregate [ss_ext_sales_price,ss_net_profit] [s_store_sk,sum,sum]
                                                       CometProject [ss_ext_sales_price,ss_net_profit,s_store_sk]
                                                         CometBroadcastHashJoin [ss_store_sk,ss_ext_sales_price,ss_net_profit,s_store_sk]
                                                           CometProject [ss_store_sk,ss_ext_sales_price,ss_net_profit]
@@ -53,7 +53,7 @@ WholeStageCodegen (28)
                                                     CometColumnarToRow
                                                       InputAdapter
                                                         CometExchange [s_store_sk] #8
-                                                          CometHashAggregate [s_store_sk,sum,sum,sr_return_amt,sr_net_loss]
+                                                          CometHashAggregate [sr_return_amt,sr_net_loss] [s_store_sk,sum,sum]
                                                             CometProject [sr_return_amt,sr_net_loss,s_store_sk]
                                                               CometBroadcastHashJoin [sr_store_sk,sr_return_amt,sr_net_loss,s_store_sk]
                                                                 CometProject [sr_store_sk,sr_return_amt,sr_net_loss]
@@ -73,7 +73,7 @@ WholeStageCodegen (28)
                                                     CometColumnarToRow
                                                       InputAdapter
                                                         CometExchange [cs_call_center_sk] #10
-                                                          CometHashAggregate [cs_call_center_sk,sum,sum,cs_ext_sales_price,cs_net_profit]
+                                                          CometHashAggregate [cs_ext_sales_price,cs_net_profit] [cs_call_center_sk,sum,sum]
                                                             CometProject [cs_call_center_sk,cs_ext_sales_price,cs_net_profit]
                                                               CometBroadcastHashJoin [cs_call_center_sk,cs_ext_sales_price,cs_net_profit,cs_sold_date_sk,d_date_sk]
                                                                 CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_call_center_sk,cs_ext_sales_price,cs_net_profit,cs_sold_date_sk]
@@ -83,7 +83,7 @@ WholeStageCodegen (28)
                                               CometColumnarToRow
                                                 InputAdapter
                                                   CometExchange #11
-                                                    CometHashAggregate [sum,sum,cr_return_amount,cr_net_loss]
+                                                    CometHashAggregate [cr_return_amount,cr_net_loss] [sum,sum]
                                                       CometProject [cr_return_amount,cr_net_loss]
                                                         CometBroadcastHashJoin [cr_return_amount,cr_net_loss,cr_returned_date_sk,d_date_sk]
                                                           CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_returns [cr_return_amount,cr_net_loss,cr_returned_date_sk]
@@ -96,7 +96,7 @@ WholeStageCodegen (28)
                                               CometColumnarToRow
                                                 InputAdapter
                                                   CometExchange [wp_web_page_sk] #12
-                                                    CometHashAggregate [wp_web_page_sk,sum,sum,ws_ext_sales_price,ws_net_profit]
+                                                    CometHashAggregate [ws_ext_sales_price,ws_net_profit] [wp_web_page_sk,sum,sum]
                                                       CometProject [ws_ext_sales_price,ws_net_profit,wp_web_page_sk]
                                                         CometBroadcastHashJoin [ws_web_page_sk,ws_ext_sales_price,ws_net_profit,wp_web_page_sk]
                                                           CometProject [ws_web_page_sk,ws_ext_sales_price,ws_net_profit]
@@ -115,7 +115,7 @@ WholeStageCodegen (28)
                                                     CometColumnarToRow
                                                       InputAdapter
                                                         CometExchange [wp_web_page_sk] #15
-                                                          CometHashAggregate [wp_web_page_sk,sum,sum,wr_return_amt,wr_net_loss]
+                                                          CometHashAggregate [wr_return_amt,wr_net_loss] [wp_web_page_sk,sum,sum]
                                                             CometProject [wr_return_amt,wr_net_loss,wp_web_page_sk]
                                                               CometBroadcastHashJoin [wr_web_page_sk,wr_return_amt,wr_net_loss,wp_web_page_sk]
                                                                 CometProject [wr_web_page_sk,wr_return_amt,wr_net_loss]

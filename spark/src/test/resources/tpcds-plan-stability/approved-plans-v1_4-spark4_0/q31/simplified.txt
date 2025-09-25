@@ -16,7 +16,7 @@ WholeStageCodegen (7)
                               CometColumnarToRow
                                 InputAdapter
                                   CometExchange [ca_county,d_qoy,d_year] #2
-                                    CometHashAggregate [ca_county,d_qoy,d_year,sum,ss_ext_sales_price]
+                                    CometHashAggregate [ss_ext_sales_price] [ca_county,d_qoy,d_year,sum]
                                       CometProject [ss_ext_sales_price,d_year,d_qoy,ca_county]
                                         CometBroadcastHashJoin [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy,ca_address_sk,ca_county]
                                           CometProject [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy]
@@ -43,7 +43,7 @@ WholeStageCodegen (7)
                                     CometColumnarToRow
                                       InputAdapter
                                         CometExchange [ca_county,d_qoy,d_year] #7
-                                          CometHashAggregate [ca_county,d_qoy,d_year,sum,ss_ext_sales_price]
+                                          CometHashAggregate [ss_ext_sales_price] [ca_county,d_qoy,d_year,sum]
                                             CometProject [ss_ext_sales_price,d_year,d_qoy,ca_county]
                                               CometBroadcastHashJoin [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy,ca_address_sk,ca_county]
                                                 CometProject [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy]
@@ -68,7 +68,7 @@ WholeStageCodegen (7)
                                   CometColumnarToRow
                                     InputAdapter
                                       CometExchange [ca_county,d_qoy,d_year] #11
-                                        CometHashAggregate [ca_county,d_qoy,d_year,sum,ss_ext_sales_price]
+                                        CometHashAggregate [ss_ext_sales_price] [ca_county,d_qoy,d_year,sum]
                                           CometProject [ss_ext_sales_price,d_year,d_qoy,ca_county]
                                             CometBroadcastHashJoin [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy,ca_address_sk,ca_county]
                                               CometProject [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy]
@@ -93,7 +93,7 @@ WholeStageCodegen (7)
                               CometColumnarToRow
                                 InputAdapter
                                   CometExchange [ca_county,d_qoy,d_year] #15
-                                    CometHashAggregate [ca_county,d_qoy,d_year,sum,ws_ext_sales_price]
+                                    CometHashAggregate [ws_ext_sales_price] [ca_county,d_qoy,d_year,sum]
                                       CometProject [ws_ext_sales_price,d_year,d_qoy,ca_county]
                                         CometBroadcastHashJoin [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy,ca_address_sk,ca_county]
                                           CometProject [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy]
@@ -110,7 +110,7 @@ WholeStageCodegen (7)
                             CometColumnarToRow
                               InputAdapter
                                 CometExchange [ca_county,d_qoy,d_year] #17
-                                  CometHashAggregate [ca_county,d_qoy,d_year,sum,ws_ext_sales_price]
+                                  CometHashAggregate [ws_ext_sales_price] [ca_county,d_qoy,d_year,sum]
                                     CometProject [ws_ext_sales_price,d_year,d_qoy,ca_county]
                                       CometBroadcastHashJoin [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy,ca_address_sk,ca_county]
                                         CometProject [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy]
@@ -127,7 +127,7 @@ WholeStageCodegen (7)
                         CometColumnarToRow
                           InputAdapter
                             CometExchange [ca_county,d_qoy,d_year] #19
-                              CometHashAggregate [ca_county,d_qoy,d_year,sum,ws_ext_sales_price]
+                              CometHashAggregate [ws_ext_sales_price] [ca_county,d_qoy,d_year,sum]
                                 CometProject [ws_ext_sales_price,d_year,d_qoy,ca_county]
                                   CometBroadcastHashJoin [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy,ca_address_sk,ca_county]
                                     CometProject [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy]

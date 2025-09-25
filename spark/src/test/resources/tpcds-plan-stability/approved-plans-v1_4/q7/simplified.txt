@@ -2,9 +2,9 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [i_item_id,agg1,agg2,agg3,agg4]
-        CometHashAggregate [i_item_id,agg1,agg2,agg3,agg4,sum,count,sum,count,sum,count,sum,count,avg(ss_quantity),avg(UnscaledValue(ss_list_price)),avg(UnscaledValue(ss_coupon_amt)),avg(UnscaledValue(ss_sales_price))]
+        CometHashAggregate [sum,count,sum,count,sum,count,sum,count] [i_item_id,agg1,agg2,agg3,agg4,avg(ss_quantity),avg(UnscaledValue(ss_list_price)),avg(UnscaledValue(ss_coupon_amt)),avg(UnscaledValue(ss_sales_price))]
           CometExchange [i_item_id] #1
-            CometHashAggregate [i_item_id,sum,count,sum,count,sum,count,sum,count,ss_quantity,ss_list_price,ss_coupon_amt,ss_sales_price]
+            CometHashAggregate [ss_quantity,ss_list_price,ss_coupon_amt,ss_sales_price] [i_item_id,sum,count,sum,count,sum,count,sum,count]
               CometProject [ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_id]
                 CometBroadcastHashJoin [ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_id,p_promo_sk]
                   CometProject [ss_promo_sk,ss_quantity,ss_list_price,ss_sales_price,ss_coupon_amt,i_item_id]

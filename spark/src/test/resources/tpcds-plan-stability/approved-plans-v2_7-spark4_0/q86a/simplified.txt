@@ -8,7 +8,7 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
               InputAdapter
                 CometSort [total_sum,i_category,i_class,lochierarchy,_w0]
                   CometExchange [lochierarchy,_w0] #1
-                    CometHashAggregate [total_sum,i_category,i_class,lochierarchy,_w0,g_category,g_class]
+                    CometHashAggregate [g_category] [total_sum,i_category,i_class,lochierarchy,_w0,g_class]
                       CometColumnarExchange [total_sum,i_category,i_class,g_category,g_class,lochierarchy] #2
                         WholeStageCodegen (6)
                           HashAggregate [total_sum,i_category,i_class,g_category,g_class,lochierarchy]
@@ -19,7 +19,7 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                     CometColumnarToRow
                                       InputAdapter
                                         CometExchange [i_category,i_class] #3
-                                          CometHashAggregate [i_category,i_class,sum,ws_net_paid]
+                                          CometHashAggregate [ws_net_paid] [i_category,i_class,sum]
                                             CometProject [ws_net_paid,i_class,i_category]
                                               CometBroadcastHashJoin [ws_item_sk,ws_net_paid,i_item_sk,i_class,i_category]
                                                 CometProject [ws_item_sk,ws_net_paid]

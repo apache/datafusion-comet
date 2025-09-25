@@ -65,28 +65,10 @@ trait CometTPCQueryBenchmarkBase extends SqlBasedBenchmark with CometTPCQueryBas
       benchmark.addCase(s"$name$nameSuffix") { _ =>
         cometSpark.sql(queryString).noop()
       }
-      benchmark.addCase(s"$name$nameSuffix: Comet (Scan)") { _ =>
-        withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
-          cometSpark.sql(queryString).noop()
-        }
-      }
-      benchmark.addCase(s"$name$nameSuffix: Comet (Scan, Exec)") { _ =>
+      benchmark.addCase(s"$name$nameSuffix: Comet") { _ =>
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-          CometConf.COMET_SHUFFLE_MODE.key -> "auto") {
-          cometSpark.sql(queryString).noop()
-        }
-      }
-      benchmark.addCase(s"$name$nameSuffix: Comet (Exec)") { _ =>
-        withSQLConf(
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-          CometConf.COMET_SHUFFLE_MODE.key -> "auto") {
+          CometConf.COMET_EXEC_ENABLED.key -> "true") {
           cometSpark.sql(queryString).noop()
         }
       }

@@ -3,7 +3,7 @@ WholeStageCodegen (2)
     BroadcastNestedLoopJoin
       CometColumnarToRow
         InputAdapter
-          CometHashAggregate [amc,count,count(1)]
+          CometHashAggregate [count] [amc,count(1)]
             CometExchange #1
               CometHashAggregate [count]
                 CometProject
@@ -32,7 +32,7 @@ WholeStageCodegen (2)
           WholeStageCodegen (1)
             CometColumnarToRow
               InputAdapter
-                CometHashAggregate [pmc,count,count(1)]
+                CometHashAggregate [count] [pmc,count(1)]
                   CometExchange #6
                     CometHashAggregate [count]
                       CometProject

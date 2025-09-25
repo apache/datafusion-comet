@@ -2,7 +2,7 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [i_item_desc,w_warehouse_name,d_week_seq,no_promo,promo,total_cnt]
-        CometHashAggregate [i_item_desc,w_warehouse_name,d_week_seq,no_promo,promo,total_cnt,count,count(1)]
+        CometHashAggregate [count] [i_item_desc,w_warehouse_name,d_week_seq,no_promo,promo,total_cnt,count(1)]
           CometExchange [i_item_desc,w_warehouse_name,d_week_seq] #1
             CometHashAggregate [i_item_desc,w_warehouse_name,d_week_seq,count]
               CometProject [w_warehouse_name,i_item_desc,d_week_seq]

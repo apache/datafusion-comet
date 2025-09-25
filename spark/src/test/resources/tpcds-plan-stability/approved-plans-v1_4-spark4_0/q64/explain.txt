@@ -1,7 +1,7 @@
 == Physical Plan ==
 * CometColumnarToRow (185)
 +- CometSort (184)
-   +- CometColumnarExchange (183)
+   +- CometExchange (183)
       +- CometProject (182)
          +- CometSortMergeJoin (181)
             :- CometSort (112)
@@ -1013,9 +1013,9 @@ Arguments: [item_sk#92, store_name#93, store_zip#94], [item_sk#178, store_name#1
 Input [25]: [product_name#91, item_sk#92, store_name#93, store_zip#94, b_street_number#95, b_streen_name#96, b_city#97, b_zip#98, c_street_number#99, c_street_name#100, c_city#101, c_zip#102, syear#103, cnt#104, s1#105, s2#106, s3#107, item_sk#178, store_name#179, store_zip#180, syear#181, cnt#182, s1#183, s2#184, s3#185]
 Arguments: [product_name#91, store_name#93, store_zip#94, b_street_number#95, b_streen_name#96, b_city#97, b_zip#98, c_street_number#99, c_street_name#100, c_city#101, c_zip#102, syear#103, cnt#104, s1#105, s2#106, s3#107, s1#183, s2#184, s3#185, syear#181, cnt#182], [product_name#91, store_name#93, store_zip#94, b_street_number#95, b_streen_name#96, b_city#97, b_zip#98, c_street_number#99, c_street_name#100, c_city#101, c_zip#102, syear#103, cnt#104, s1#105, s2#106, s3#107, s1#183, s2#184, s3#185, syear#181, cnt#182]
 
-(183) CometColumnarExchange
+(183) CometExchange
 Input [21]: [product_name#91, store_name#93, store_zip#94, b_street_number#95, b_streen_name#96, b_city#97, b_zip#98, c_street_number#99, c_street_name#100, c_city#101, c_zip#102, syear#103, cnt#104, s1#105, s2#106, s3#107, s1#183, s2#184, s3#185, syear#181, cnt#182]
-Arguments: rangepartitioning(product_name#91 ASC NULLS FIRST, store_name#93 ASC NULLS FIRST, cnt#182 ASC NULLS FIRST, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=17]
+Arguments: rangepartitioning(product_name#91 ASC NULLS FIRST, store_name#93 ASC NULLS FIRST, cnt#182 ASC NULLS FIRST, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=17]
 
 (184) CometSort
 Input [21]: [product_name#91, store_name#93, store_zip#94, b_street_number#95, b_streen_name#96, b_city#97, b_zip#98, c_street_number#99, c_street_name#100, c_city#101, c_zip#102, syear#103, cnt#104, s1#105, s2#106, s3#107, s1#183, s2#184, s3#185, syear#181, cnt#182]

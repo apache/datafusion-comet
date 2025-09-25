@@ -114,6 +114,9 @@ jobs:
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
               org.apache.comet.objectstore.NativeConfigSuite
+          - name: "sql"
+            value: |
+              org.apache.spark.sql.CometToPrettyStringSuite
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
@@ -130,5 +133,5 @@ jobs:
         uses: ./.github/actions/java-test
         with:
           artifact_name: ${{ matrix.os }}-${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
-          suites: ${{ matrix.suite.value }}
+          suites: ${{ matrix.suite.name == 'sql' && matrix.profile.name == 'Spark 3.4, JDK 11, Scala 2.12' && '' || matrix.suite.value }}
           maven_opts: ${{ matrix.profile.maven_opts }}

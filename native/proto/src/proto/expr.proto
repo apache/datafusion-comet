@@ -269,9 +269,18 @@ message ToJson {
   bool ignore_null_fields = 6;
 }
 
+enum BinaryOutputStyle {
+  UTF8 = 0;
+  BASIC = 1;
+  BASE64 = 2;
+  HEX = 3;
+  HEX_DISCRETE = 4;
+}
+
 message ToPrettyString {
   Expr child = 1;
   string timezone = 2;
+  BinaryOutputStyle binaryOutputStyle = 3;
 }
 
 message Hour {

@@ -13,7 +13,7 @@ TakeOrderedAndProject [ratio,ss_qty,ss_wc,ss_sp,other_chan_qty,other_chan_wholes
                         CometColumnarToRow
                           InputAdapter
                             CometExchange [d_year,ss_item_sk,ss_customer_sk] #1
-                              CometHashAggregate [d_year,ss_item_sk,ss_customer_sk,sum,sum,sum,ss_quantity,ss_wholesale_cost,ss_sales_price]
+                              CometHashAggregate [ss_quantity,ss_wholesale_cost,ss_sales_price] [d_year,ss_item_sk,ss_customer_sk,sum,sum,sum]
                                 CometProject [ss_item_sk,ss_customer_sk,ss_quantity,ss_wholesale_cost,ss_sales_price,d_year]
                                   CometBroadcastHashJoin [ss_item_sk,ss_customer_sk,ss_quantity,ss_wholesale_cost,ss_sales_price,ss_sold_date_sk,d_date_sk,d_year]
                                     CometProject [ss_item_sk,ss_customer_sk,ss_quantity,ss_wholesale_cost,ss_sales_price,ss_sold_date_sk]
@@ -46,7 +46,7 @@ TakeOrderedAndProject [ratio,ss_qty,ss_wc,ss_sp,other_chan_qty,other_chan_wholes
                           CometColumnarToRow
                             InputAdapter
                               CometExchange [d_year,ws_item_sk,ws_bill_customer_sk] #6
-                                CometHashAggregate [d_year,ws_item_sk,ws_bill_customer_sk,sum,sum,sum,ws_quantity,ws_wholesale_cost,ws_sales_price]
+                                CometHashAggregate [ws_quantity,ws_wholesale_cost,ws_sales_price] [d_year,ws_item_sk,ws_bill_customer_sk,sum,sum,sum]
                                   CometProject [ws_item_sk,ws_bill_customer_sk,ws_quantity,ws_wholesale_cost,ws_sales_price,d_year]
                                     CometBroadcastHashJoin [ws_item_sk,ws_bill_customer_sk,ws_quantity,ws_wholesale_cost,ws_sales_price,ws_sold_date_sk,d_date_sk,d_year]
                                       CometProject [ws_item_sk,ws_bill_customer_sk,ws_quantity,ws_wholesale_cost,ws_sales_price,ws_sold_date_sk]
@@ -71,7 +71,7 @@ TakeOrderedAndProject [ratio,ss_qty,ss_wc,ss_sp,other_chan_qty,other_chan_wholes
                   CometColumnarToRow
                     InputAdapter
                       CometExchange [d_year,cs_item_sk,cs_bill_customer_sk] #9
-                        CometHashAggregate [d_year,cs_item_sk,cs_bill_customer_sk,sum,sum,sum,cs_quantity,cs_wholesale_cost,cs_sales_price]
+                        CometHashAggregate [cs_quantity,cs_wholesale_cost,cs_sales_price] [d_year,cs_item_sk,cs_bill_customer_sk,sum,sum,sum]
                           CometProject [cs_bill_customer_sk,cs_item_sk,cs_quantity,cs_wholesale_cost,cs_sales_price,d_year]
                             CometBroadcastHashJoin [cs_bill_customer_sk,cs_item_sk,cs_quantity,cs_wholesale_cost,cs_sales_price,cs_sold_date_sk,d_date_sk,d_year]
                               CometProject [cs_bill_customer_sk,cs_item_sk,cs_quantity,cs_wholesale_cost,cs_sales_price,cs_sold_date_sk]

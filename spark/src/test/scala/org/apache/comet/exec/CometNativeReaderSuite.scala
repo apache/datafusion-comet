@@ -468,7 +468,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array(1, 2, null, 3, null) from tbl")
+      "select array(cast(1 as byte), cast(2 as byte), null, cast(3 as byte), null) from tbl")
   }
 
   test("native reader - support ARRAY literal SHORT fields") {

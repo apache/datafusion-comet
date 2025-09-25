@@ -420,6 +420,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("RPAD with character support other than default space") {
+    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("hi", 2))
+    withParquetTable(data, "t1") {
+      val res = sql(
+        """ select rpad(_1,_2,'?'), rpad(_1,_2,'??') , rpad(_1,2, '??'), hex(rpad(unhex('aabb'), 5)),
+          rpad(_1, 5, '??') from t1 order by _1 """.stripMargin)
+      checkSparkAnswerAndOperator(res)
+    }
+  }
+
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "true") {

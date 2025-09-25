@@ -13,7 +13,7 @@ WholeStageCodegen (1)
                   CometBroadcastExchange [i_manufact] #2
                     CometProject [i_manufact]
                       CometFilter [item_cnt,i_manufact]
-                        CometHashAggregate [item_cnt,i_manufact,count,count(1)]
+                        CometHashAggregate [count] [item_cnt,i_manufact,count(1)]
                           CometExchange [i_manufact] #3
                             CometHashAggregate [i_manufact,count]
                               CometProject [i_manufact] [i_manufact]

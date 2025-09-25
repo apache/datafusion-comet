@@ -59,7 +59,7 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                                                         CometColumnarToRow
                                                                           InputAdapter
                                                                             CometExchange [s_state] #7
-                                                                              CometHashAggregate [s_state,sum,ss_net_profit]
+                                                                              CometHashAggregate [ss_net_profit] [s_state,sum]
                                                                                 CometProject [ss_net_profit,s_state]
                                                                                   CometBroadcastHashJoin [ss_net_profit,ss_sold_date_sk,s_state,d_date_sk]
                                                                                     CometProject [ss_net_profit,ss_sold_date_sk,s_state]
