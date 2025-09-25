@@ -92,7 +92,9 @@ impl MemoryPool for CometMemoryPool {
     fn shrink(&self, _: &MemoryReservation, size: usize) {
         self.release(size)
             .unwrap_or_else(|_| panic!("Failed to release {size} bytes"));
-        self.used.checked_sub(size).unwrap();
+        if self.used.checked_sub(size).is_some() {
+            panic!("Failed to release {size} bytes due to overflow")
+        }
     }
 
     fn try_grow(&self, _: &MemoryReservation, additional: usize) -> Result<(), DataFusionError> {
@@ -111,7 +113,12 @@ impl MemoryPool for CometMemoryPool {
                     self.reserved()
                 ));
             }
-            self.used.checked_add(acquired as usize).unwrap();
+            if self.used.checked_add(acquired as usize).is_none() {
+                return Err(resources_datafusion_err!(
+                    "Failed to acquire {} bytes due to overflow",
+                    additional
+                ));
+            }
         }
         Ok(())
     }
