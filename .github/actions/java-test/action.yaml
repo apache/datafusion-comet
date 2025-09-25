@@ -62,6 +62,24 @@ runs:
       run: |
         ./mvnw -B compile test-compile scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ inputs.maven_opts }}
 
+    - name: Check for documentation changes
+      shell: bash
+      run: |
+        # Configure git for safe directory access in container
+        git config --global --add safe.directory "$(pwd)"
+
+        # Force regenerate docs by running just the package phase to ensure GenerateDocs runs
+        echo "Running Maven package to regenerate documentation..."
+        ./mvnw package -DskipTests -q -pl spark
+
+        # Check if there are any uncommitted changes after build/format
+        if ! git diff --quiet || ! git diff --cached --quiet; then
+          echo "Found uncommitted changes after build/format"
+          git status
+          git diff
+          exit 1
+        fi
+
     - name: Run all tests
       shell: bash
       if: ${{ inputs.suites == '' }}
@@ -82,6 +100,7 @@ runs:
         MAVEN_SUITES="$(echo "${{ inputs.suites }}" | paste -sd, -)"
         echo "Running with MAVEN_SUITES=$MAVEN_SUITES"
         MAVEN_OPTS="-Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B clean install ${{ inputs.maven_opts }}
+
     - name: Upload crash logs
       if: failure()
       uses: actions/upload-artifact@v4
