@@ -17,35 +17,31 @@
 
 use std::{
     fmt::{Debug, Formatter, Result as FmtResult},
-    sync::{
-        atomic::{AtomicUsize, Ordering::Relaxed},
-        Arc,
-    },
+    sync::Arc,
 };
 
 use jni::objects::GlobalRef;
 
-use datafusion::{
-    common::{resources_datafusion_err, DataFusionError},
-    execution::memory_pool::{MemoryPool, MemoryReservation},
-};
-
 use crate::{
     errors::CometResult,
     jvm_bridge::{jni_call, JVMClasses},
+};
+use datafusion::{
+    common::{resources_datafusion_err, DataFusionError},
+    execution::memory_pool::{MemoryPool, MemoryReservation},
 };
 
 /// A DataFusion `MemoryPool` implementation for Comet. Internally this is
 /// implemented via delegating calls to [`crate::jvm_bridge::CometTaskMemoryManager`].
 pub struct CometMemoryPool {
     task_memory_manager_handle: Arc<GlobalRef>,
-    used: AtomicUsize,
+    used: usize,
 }
 
 impl Debug for CometMemoryPool {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.debug_struct("CometMemoryPool")
-            .field("used", &self.used.load(Relaxed))
+            .field("used", &self.used)
             .finish()
     }
 }
@@ -54,7 +50,7 @@ impl CometMemoryPool {
     pub fn new(task_memory_manager_handle: Arc<GlobalRef>) -> CometMemoryPool {
         Self {
             task_memory_manager_handle,
-            used: AtomicUsize::new(0),
+            used: 0,
         }
     }
 
@@ -78,7 +74,7 @@ impl CometMemoryPool {
 
 impl Drop for CometMemoryPool {
     fn drop(&mut self) {
-        let used = self.used.load(Relaxed);
+        let used = self.used;
         if used != 0 {
             log::warn!("CometMemoryPool dropped with {used} bytes still reserved");
         }
@@ -96,7 +92,7 @@ impl MemoryPool for CometMemoryPool {
     fn shrink(&self, _: &MemoryReservation, size: usize) {
         self.release(size)
             .unwrap_or_else(|_| panic!("Failed to release {size} bytes"));
-        self.used.fetch_sub(size, Relaxed);
+        self.used.checked_sub(size).unwrap();
     }
 
     fn try_grow(&self, _: &MemoryReservation, additional: usize) -> Result<(), DataFusionError> {
@@ -115,12 +111,12 @@ impl MemoryPool for CometMemoryPool {
                     self.reserved()
                 ));
             }
-            self.used.fetch_add(acquired as usize, Relaxed);
+            self.used.checked_add(acquired as usize).unwrap();
         }
         Ok(())
     }
 
     fn reserved(&self) -> usize {
-        self.used.load(Relaxed)
+        self.used
     }
 }
