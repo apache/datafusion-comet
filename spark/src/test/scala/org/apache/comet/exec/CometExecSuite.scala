@@ -1031,9 +1031,8 @@ class CometExecSuite extends CometTestBase {
           |GROUP BY key
               """.stripMargin)
 
-      // The above query uses COUNT(DISTINCT) which Comet doesn't support yet, so the plan will
-      // have a mix of `HashAggregate` and `CometHashAggregate`. In the following we check all
-      // operators starting from `CometHashAggregate` are native.
+      // The above query uses SUM(DISTINCT) and count(distinct value1, value2)
+      // which is not yet supported
       checkSparkAnswer(df)
       val subPlan = stripAQEPlan(df.queryExecution.executedPlan).collectFirst {
         case s: CometHashAggregateExec => s
