@@ -100,14 +100,14 @@ fn spark_read_side_padding2(
                     truncate,
                     ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
                     string,
-                    is_left_pad
+                    is_left_pad,
                 ),
                 DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(
                     array,
                     truncate,
                     ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
                     string,
-                    is_left_pad
+                    is_left_pad,
                 ),
                 // Dictionary support required for SPARK-48498
                 DataType::Dictionary(_, value_type) => {
@@ -268,15 +268,13 @@ fn add_padding_string(
         } else {
             Ok(string)
         }
-    } else if is_left_pad {
-        println!("is lpad so flipping padding and the string");
-        let pad_needed = length - char_len;
-        let pad: String = pad_string.chars().cycle().take(pad_needed).collect();
-        Ok(format!("{}{}", pad, string))
     } else {
         let pad_needed = length - char_len;
         let pad: String = pad_string.chars().cycle().take(pad_needed).collect();
-        Ok(string + &pad)
-
+        if is_left_pad {
+            Ok(format!("{}{}", pad, string))
+        } else {
+            Ok(string + &pad)
+        }
     }
 }
