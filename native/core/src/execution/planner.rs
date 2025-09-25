@@ -63,8 +63,8 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, create_modulo_expr,
-    create_negate_expr, BloomFilterAgg, BloomFilterMightContain, EvalMode, SparkHour, SparkMinute,
-    SparkSecond,
+    create_negate_expr, BinaryOutputStyle, BloomFilterAgg, BloomFilterMightContain, EvalMode,
+    SparkHour, SparkMinute, SparkSecond,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
