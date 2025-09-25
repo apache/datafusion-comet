@@ -18,7 +18,11 @@
 use arrow::array::{Array, ArrowNativeTypeOp, PrimitiveArray, PrimitiveBuilder};
 use arrow::array::{ArrayRef, AsArray};
 
-use arrow::datatypes::{ArrowPrimitiveType, DataType, Int32Type, Int64Type};
+use crate::{divide_by_zero_error, EvalMode, SparkError};
+use arrow::datatypes::{
+    ArrowPrimitiveType, DataType, Float16Type, Float32Type, Float64Type, Int16Type, Int32Type,
+    Int64Type, Int8Type,
+};
 use datafusion::common::DataFusionError;
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
@@ -27,6 +31,7 @@ pub fn try_arithmetic_kernel<T>(
     left: &PrimitiveArray<T>,
     right: &PrimitiveArray<T>,
     op: &str,
+    is_ansi_mode: bool,
 ) -> Result<ArrayRef, DataFusionError>
 where
     T: ArrowPrimitiveType,
@@ -39,7 +44,19 @@ where
                 if left.is_null(i) || right.is_null(i) {
                     builder.append_null();
                 } else {
-                    builder.append_option(left.value(i).add_checked(right.value(i)).ok());
+                    match left.value(i).add_checked(right.value(i)) {
+                        Ok(v) => builder.append_value(v),
+                        Err(_e) => {
+                            if is_ansi_mode {
+                                return Err(SparkError::ArithmeticOverflow {
+                                    from_type: String::from("integer"),
+                                }
+                                .into());
+                            } else {
+                                builder.append_null();
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -48,7 +65,19 @@ where
                 if left.is_null(i) || right.is_null(i) {
                     builder.append_null();
                 } else {
-                    builder.append_option(left.value(i).sub_checked(right.value(i)).ok());
+                    match left.value(i).sub_checked(right.value(i)) {
+                        Ok(v) => builder.append_value(v),
+                        Err(_e) => {
+                            if is_ansi_mode {
+                                return Err(SparkError::ArithmeticOverflow {
+                                    from_type: String::from("integer"),
+                                }
+                                .into());
+                            } else {
+                                builder.append_null();
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -57,7 +86,19 @@ where
                 if left.is_null(i) || right.is_null(i) {
                     builder.append_null();
                 } else {
-                    builder.append_option(left.value(i).mul_checked(right.value(i)).ok());
+                    match left.value(i).mul_checked(right.value(i)) {
+                        Ok(v) => builder.append_value(v),
+                        Err(_e) => {
+                            if is_ansi_mode {
+                                return Err(SparkError::ArithmeticOverflow {
+                                    from_type: String::from("integer"),
+                                }
+                                .into());
+                            } else {
+                                builder.append_null();
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -66,7 +107,23 @@ where
                 if left.is_null(i) || right.is_null(i) {
                     builder.append_null();
                 } else {
-                    builder.append_option(left.value(i).div_checked(right.value(i)).ok());
+                    match left.value(i).div_checked(right.value(i)) {
+                        Ok(v) => builder.append_value(v),
+                        Err(_e) => {
+                            if is_ansi_mode {
+                                return if right.value(i).is_zero() {
+                                    Err(divide_by_zero_error().into())
+                                } else {
+                                    return Err(SparkError::ArithmeticOverflow {
+                                        from_type: String::from("integer"),
+                                    }
+                                    .into());
+                                };
+                            } else {
+                                builder.append_null();
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -84,38 +141,54 @@ where
 pub fn checked_add(
     args: &[ColumnarValue],
     data_type: &DataType,
+    eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
-    checked_arithmetic_internal(args, data_type, "checked_add")
+    checked_arithmetic_internal(args, data_type, "checked_add", eval_mode)
 }
 
 pub fn checked_sub(
     args: &[ColumnarValue],
     data_type: &DataType,
+    eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
-    checked_arithmetic_internal(args, data_type, "checked_sub")
+    checked_arithmetic_internal(args, data_type, "checked_sub", eval_mode)
 }
 
 pub fn checked_mul(
     args: &[ColumnarValue],
     data_type: &DataType,
+    eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
-    checked_arithmetic_internal(args, data_type, "checked_mul")
+    checked_arithmetic_internal(args, data_type, "checked_mul", eval_mode)
 }
 
 pub fn checked_div(
     args: &[ColumnarValue],
     data_type: &DataType,
+    eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
-    checked_arithmetic_internal(args, data_type, "checked_div")
+    checked_arithmetic_internal(args, data_type, "checked_div", eval_mode)
 }
 
 fn checked_arithmetic_internal(
     args: &[ColumnarValue],
     data_type: &DataType,
     op: &str,
+    eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
     let left = &args[0];
     let right = &args[1];
+
+    let is_ansi_mode = match eval_mode {
+        EvalMode::Try => false,
+        EvalMode::Ansi => true,
+        _ => {
+            return Err(DataFusionError::Internal(format!(
+                "Unsupported mode : {:?}",
+                eval_mode
+            )))
+        }
+    };
 
     let (left_arr, right_arr): (ArrayRef, ArrayRef) = match (left, right) {
         (ColumnarValue::Array(l), ColumnarValue::Array(r)) => (Arc::clone(l), Arc::clone(r)),
@@ -128,17 +201,50 @@ fn checked_arithmetic_internal(
         (ColumnarValue::Scalar(l), ColumnarValue::Scalar(r)) => (l.to_array()?, r.to_array()?),
     };
 
-    // Rust only supports checked_arithmetic on Int32 and Int64
+    // Rust only supports checked_arithmetic on numeric types
     let result_array = match data_type {
+        DataType::Int8 => try_arithmetic_kernel::<Int8Type>(
+            left_arr.as_primitive::<Int8Type>(),
+            right_arr.as_primitive::<Int8Type>(),
+            op,
+            is_ansi_mode,
+        ),
+        DataType::Int16 => try_arithmetic_kernel::<Int16Type>(
+            left_arr.as_primitive::<Int16Type>(),
+            right_arr.as_primitive::<Int16Type>(),
+            op,
+            is_ansi_mode,
+        ),
         DataType::Int32 => try_arithmetic_kernel::<Int32Type>(
             left_arr.as_primitive::<Int32Type>(),
             right_arr.as_primitive::<Int32Type>(),
             op,
+            is_ansi_mode,
         ),
         DataType::Int64 => try_arithmetic_kernel::<Int64Type>(
             left_arr.as_primitive::<Int64Type>(),
             right_arr.as_primitive::<Int64Type>(),
             op,
+            is_ansi_mode,
+        ),
+        // Spark always casts division operands to floats
+        DataType::Float16 if (op == "checked_div") => try_arithmetic_kernel::<Float16Type>(
+            left_arr.as_primitive::<Float16Type>(),
+            right_arr.as_primitive::<Float16Type>(),
+            op,
+            is_ansi_mode,
+        ),
+        DataType::Float32 if (op == "checked_div") => try_arithmetic_kernel::<Float32Type>(
+            left_arr.as_primitive::<Float32Type>(),
+            right_arr.as_primitive::<Float32Type>(),
+            op,
+            is_ansi_mode,
+        ),
+        DataType::Float64 if (op == "checked_div") => try_arithmetic_kernel::<Float64Type>(
+            left_arr.as_primitive::<Float64Type>(),
+            right_arr.as_primitive::<Float64Type>(),
+            op,
+            is_ansi_mode,
         ),
         _ => Err(DataFusionError::Internal(format!(
             "Unsupported data type: {:?}",

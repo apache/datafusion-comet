@@ -1,3 +1,16 @@
+diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
+index 3a409eea348..38fed024c98 100644
+--- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
++++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
+@@ -69,6 +69,8 @@ SELECT '' AS one, i.* FROM INT4_TBL i WHERE (i.f1 % smallint('2')) = smallint('1
+ -- any evens
+ SELECT '' AS three, i.* FROM INT4_TBL i WHERE (i.f1 % int('2')) = smallint('0');
+ 
++-- https://github.com/apache/datafusion-comet/issues/2215
++--SET spark.comet.exec.enabled=false
+ -- [SPARK-28024] Incorrect value when out of range
+ SELECT '' AS five, i.f1, i.f1 * smallint('2') AS x FROM INT4_TBL i;
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 index 82f0ef347f8..5fa014f6719 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
@@ -296,10 +309,30 @@ index 84639f7c87e..d10c5ddf043 100644
          checkAnswer(shjCodegenDF, Seq.empty)
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index 8a3e7457618..5e04319dd97 100644
+index 8a3e7457618..843f0472c23 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-@@ -4468,7 +4468,11 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+@@ -4430,7 +4430,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+   }
+ 
+   test("SPARK-39166: Query context of binary arithmetic should be serialized to executors" +
+-    " when WSCG is off") {
++    " when WSCG is off",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
+     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+       SQLConf.ANSI_ENABLED.key -> "true") {
+       withTable("t") {
+@@ -4451,7 +4452,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+   }
+ 
+   test("SPARK-39175: Query context of Cast should be serialized to executors" +
+-    " when WSCG is off") {
++    " when WSCG is off",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
+     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+       SQLConf.ANSI_ENABLED.key -> "true") {
+       withTable("t") {
+@@ -4468,14 +4470,19 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
            val msg = intercept[SparkException] {
              sql(query).collect()
            }.getMessage
@@ -312,6 +345,15 @@ index 8a3e7457618..5e04319dd97 100644
          }
        }
      }
+   }
+ 
+   test("SPARK-39190,SPARK-39208,SPARK-39210: Query context of decimal overflow error should " +
+-    "be serialized to executors when WSCG is off") {
++    "be serialized to executors when WSCG is off",
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
+     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+       SQLConf.ANSI_ENABLED.key -> "true") {
+       withTable("t") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 index 18123a4d6ec..fbe4c766eee 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
