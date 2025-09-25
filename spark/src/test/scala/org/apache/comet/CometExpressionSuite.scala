@@ -57,6 +57,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
     """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
+  val DIVIDE_BY_ZERO_EXCEPTION_MSG =
+    """org.apache.comet.CometNativeException: [DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
 
   test("compare true/false to negative zero") {
     Seq(false, true).foreach { dictionary =>
@@ -2916,8 +2918,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("ANSI support for divide (division by zero)") {
-    //    TODO : Support ANSI mode in Integral divide
+  test("ANSI support for divide (division by zero)")  {
+    //    TODO : Support ANSI mode in Integral divide -
     val data = Seq((Integer.MIN_VALUE, 0))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -2929,9 +2931,28 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         checkSparkMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
-            val cometErrorPattern =
-              """org.apache.comet.CometNativeException: [DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
-            assert(cometExc.getMessage.contains(cometErrorPattern))
+            assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
+            assert(sparkExc.getMessage.contains("Division by zero"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for divide (division by zero) float division") {
+    //    TODO : Support ANSI mode in Integral divide -
+    val data = Seq((Integer.MIN_VALUE, 0))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 / _2
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("Division by zero"))
           case _ => fail("Exception should be thrown")
         }
