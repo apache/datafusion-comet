@@ -21,6 +21,7 @@ package org.apache.comet
 
 import java.io.File
 
+import scala.collection.mutable.ListBuffer
 import scala.util.Random
 import scala.util.matching.Regex
 
@@ -30,10 +31,11 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
+import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.Compatible
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -1047,7 +1049,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ArrayType to StringType") {
-    sql("set spark.comet.explainFallback.enabled=true")
+    val cometScanTypeChecker = CometScanTypeChecker(conf.getConfString(CometConf.COMET_NATIVE_SCAN_IMPL.key))
+    val scanImpl = conf.getConfString(CometConf.COMET_NATIVE_SCAN_IMPL.key)
+    val hasIncompatibleType = (dt: DataType) => cometScanTypeChecker.isTypeSupported(dt, scanImpl, ListBuffer.empty)
     Seq(
       BooleanType,
       StringType,
@@ -1058,9 +1062,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       //      FloatType,
       //      DoubleType,
       DecimalType(10, 2),
-      BinaryType).foreach { tpe =>
-      val input = generateArrays(100, tpe)
-      castTest(input, StringType)
+      DecimalType(38,18),
+      BinaryType).foreach { dt =>
+      val input = generateArrays(100, dt)
+      castTest(input, StringType, hasIncompatibleType(input.schema))
     }
   }
 
