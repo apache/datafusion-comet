@@ -28,7 +28,7 @@ use jni::objects::GlobalRef;
 use once_cell::sync::OnceCell;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use unified_pool::CometMemoryPool;
+use unified_pool::CometUnifiedMemoryPool;
 
 pub(crate) use config::*;
 pub(crate) use task_shared::*;
@@ -42,7 +42,7 @@ pub(crate) fn create_memory_pool(
     match memory_pool_config.pool_type {
         MemoryPoolType::Unified => {
             // Set Comet memory pool for native
-            let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
+            let memory_pool = CometUnifiedMemoryPool::new(comet_task_memory_manager);
             Arc::new(TrackConsumersPool::new(
                 memory_pool,
                 NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
