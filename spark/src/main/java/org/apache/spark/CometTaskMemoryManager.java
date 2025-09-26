@@ -54,8 +54,15 @@ public class CometTaskMemoryManager {
   // Returns the actual amount of memory (in bytes) granted.
   public long acquireMemory(long size) {
     long acquired = internal.acquireExecutionMemory(size, nativeMemoryConsumer);
-    used.addAndGet(acquired);
+    long newUsed = used.addAndGet(acquired);
     if (acquired < size) {
+      logger.warn(
+          "Request for {} bytes only allocated {} bytes. Current allocation is {} and " +
+          "the total memory consumption for this task is {} bytes.",
+          size,
+          acquired,
+          newUsed,
+          internal.getMemoryConsumptionForThisTask());
       // If memory manager is not able to acquire the requested size, log memory usage
       internal.showMemoryUsage();
     }
