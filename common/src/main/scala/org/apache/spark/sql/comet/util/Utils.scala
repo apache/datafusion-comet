@@ -154,7 +154,13 @@ object Utils extends CometTypeShim {
           name,
           fieldType,
           Seq(toArrowField("element", elementType, containsNull, timeZoneId)).asJava)
-      case StructType(fields) =>
+      case st @ StructType(fields) =>
+        if (st.names.toSet.size != fields.length) {
+          throw new SparkException(
+            "Duplicated field names in Arrow Struct are not allowed," +
+              s" got ${st.names.mkString("[", ", ", "]")}.")
+        }
+
         val fieldType = new FieldType(nullable, ArrowType.Struct.INSTANCE, null)
         new Field(
           name,
