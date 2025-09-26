@@ -53,6 +53,7 @@ public class CometTaskMemoryManager {
   // Called by Comet native through JNI.
   // Returns the actual amount of memory (in bytes) granted.
   public long acquireMemory(long size) {
+    logger.info("Task {} requested {} bytes", TaskContext.get().taskAttemptId(), size);
     long acquired = internal.acquireExecutionMemory(size, nativeMemoryConsumer);
     long newUsed = used.addAndGet(acquired);
     if (acquired < size) {
@@ -72,6 +73,7 @@ public class CometTaskMemoryManager {
 
   // Called by Comet native through JNI
   public void releaseMemory(long size) {
+    logger.info("Task {} released {} bytes", TaskContext.get().taskAttemptId(), size);
     long newUsed = used.addAndGet(-size);
     if (newUsed < 0) {
       logger.error(

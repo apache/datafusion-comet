@@ -162,7 +162,22 @@ class CometExecIterator(
           nativeUtil.getNextBatch(
             numOutputCols,
             (arrayAddrs, schemaAddrs) => {
-              nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
+              try {
+                nativeLib.executePlan(
+                  ctx.stageId(),
+                  partitionIndex,
+                  plan,
+                  arrayAddrs,
+                  schemaAddrs)
+              } catch {
+                case e: CometNativeException =>
+                  val prefix = s"[Task ${TaskContext.get().taskAttemptId()}] "
+                  if (e.getMessage.startsWith(prefix)) {
+                    throw e
+                  } else {
+                    throw new CometNativeException(s"$prefix ${e.getMessage}")
+                  }
+              }
             })
         })
     } catch {
