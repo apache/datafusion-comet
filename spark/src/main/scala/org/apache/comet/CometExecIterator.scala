@@ -174,7 +174,7 @@ class CometExecIterator(
                   val taskContext = TaskContext.get()
                   if (taskContext != null) {
                     val prefix = s"[Task ${taskContext.taskAttemptId()}] "
-                    if (e.getMessage.startsWith(prefix)) {
+                    if (e.getMessage != null && e.getMessage.startsWith(prefix)) {
                       throw e
                     } else {
                       throw new CometNativeException(s"$prefix ${e.getMessage}")
