@@ -559,9 +559,15 @@ object QueryPlanSerde extends Logging with CometExprShim {
       binding: Boolean,
       conf: SQLConf): Option[AggExpr] = {
 
-    if (aggExpr.isDistinct) {
-      // https://github.com/apache/datafusion-comet/issues/1260
-      withInfo(aggExpr, s"distinct aggregate not supported: $aggExpr")
+    // Support Count(distinct single_value)
+    // COUNT(DISTINCT x) - supported
+    // COUNT(DISTINCT x, x) - supported through transition to COUNT(DISTINCT x)
+    // COUNT(DISTINCT x, y) - not supported
+    if (aggExpr.isDistinct
+      &&
+      !(aggExpr.aggregateFunction.prettyName == "count" &&
+        aggExpr.aggregateFunction.children.length == 1)) {
+      withInfo(aggExpr, s"Distinct aggregate not supported for: $aggExpr")
       return None
     }
 

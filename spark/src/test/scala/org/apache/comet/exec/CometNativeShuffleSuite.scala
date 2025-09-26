@@ -20,13 +20,14 @@
 package org.apache.comet.exec
 
 import scala.concurrent.duration.DurationInt
+import scala.util.Random
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkEnv
-import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
@@ -244,6 +245,129 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       eventually(timeout(30.seconds), interval(1.seconds)) {
         System.gc()
         assert(diskBlockManager.getAllFiles().isEmpty)
+      }
+    }
+  }
+
+  // This duplicates behavior seen in a much more complicated Spark SQL test
+  // "SPARK-44647: test join key is the second cluster key"
+  test("range partitioning with duplicate column references") {
+    // Test with wider schema and non-adjacent duplicate columns
+    withParquetTable(
+      (0 until 100).map(i => (i % 10, (i % 5).toByte, i % 3, i % 7, (i % 4).toShort, i.toString)),
+      "tbl") {
+
+      val df = sql("SELECT * FROM tbl")
+
+      // Test case 1: Adjacent duplicates (original case)
+      val rangePartitioned1 = df.repartitionByRange(3, df.col("_1"), df.col("_1"), df.col("_2"))
+      checkShuffleAnswer(rangePartitioned1, 1)
+
+      // Test case 2: Non-adjacent duplicates in wider schema
+      // Duplicate _1 at positions 0 and 3, with different columns in between
+      val rangePartitioned2 =
+        df.repartitionByRange(4, df.col("_1"), df.col("_3"), df.col("_5"), df.col("_1"))
+      checkShuffleAnswer(rangePartitioned2, 1)
+
+      // Test case 3: Multiple duplicate pairs
+      // _1 duplicated at positions 0,2 and _4 duplicated at positions 1,3
+      val rangePartitioned3 =
+        df.repartitionByRange(4, df.col("_1"), df.col("_4"), df.col("_1"), df.col("_4"))
+      checkShuffleAnswer(rangePartitioned3, 1)
+
+      // Test case 4: Triple duplicates with gaps
+      val rangePartitioned4 = df.repartitionByRange(
+        5,
+        df.col("_1"),
+        df.col("_2"),
+        df.col("_1"),
+        df.col("_3"),
+        df.col("_1"))
+      checkShuffleAnswer(rangePartitioned4, 1)
+    }
+  }
+
+  // Asserts ordering properties of partitions in a Dataset that has been RangePartitioned
+  private def checkRangePartitionedDataset(df_range_partitioned: Dataset[Row]): Unit = {
+    val partition_bounds = df_range_partitioned.rdd
+      .mapPartitionsWithIndex((idx: Int, iterator: Iterator[Row]) => {
+        // Find the min and max value in each partition
+        var min: Option[Int] = None
+        var max: Option[Int] = None
+        iterator.foreach((row: Row) => {
+          val row_val = row.get(0).asInstanceOf[Int]
+          if (min.isEmpty || row_val < min.get) {
+            min = Some(row_val)
+          }
+          if (max.isEmpty || row_val > max.get) {
+            max = Some(row_val)
+          }
+        })
+        Iterator.single((idx, min, max))
+      })
+      .collect()
+
+    // Check min and max values in each partition
+    for (i <- partition_bounds.indices.init) {
+      val currentPartition = partition_bounds(i)
+      val nextPartition = partition_bounds(i + 1)
+
+      if (currentPartition._2.isDefined && currentPartition._3.isDefined) {
+        val currentMin = currentPartition._2.get
+        val currentMax = currentPartition._3.get
+        assert(currentMin <= currentMax)
+      }
+
+      if (currentPartition._3.isDefined && nextPartition._2.isDefined) {
+        val currentMax = currentPartition._3.get
+        val nextMin = nextPartition._2.get
+        assert(currentMax < nextMin)
+      }
+    }
+  }
+
+  // This adapts the PySpark example in https://github.com/apache/datafusion-comet/issues/1906 to
+  // test for incorrect partition values after native RangePartitioning
+  test("fix: range partitioning #1906") {
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true") {
+      withParquetTable((0 until 100000).map(i => (i, i + 1)), "tbl") {
+        val df = sql("SELECT * from tbl")
+
+        // Repartition with two sort columns
+        val repartitioned_df = df.repartitionByRange(10, df.col("_1"))
+        checkSparkAnswerAndOperator(repartitioned_df)
+        checkRangePartitionedDataset(repartitioned_df)
+      }
+    }
+  }
+
+  // This adapts the PySpark example in https://github.com/apache/datafusion-comet/issues/1906 to
+  // test for incorrect partition values after native RangePartitioning
+  test("fix: range partitioning #1906, two columns") {
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true") {
+      withParquetTable((0 until 100000).map(i => (i, i + 1)), "tbl") {
+        val df = sql("SELECT * from tbl")
+
+        // Repartition with two sort columns
+        val repartitioned_df = df.repartitionByRange(10, df.col("_1"), df.col("_2"))
+        checkSparkAnswerAndOperator(repartitioned_df)
+        checkRangePartitionedDataset(repartitioned_df)
+      }
+    }
+  }
+
+  // This adapts the PySpark example in https://github.com/apache/datafusion-comet/issues/1906 to
+  // test for incorrect partition values after native RangePartitioning
+  test("fix: range partitioning #1906, random sort column with duplicates") {
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key -> "true") {
+      val random = new Random(42)
+      withParquetTable((0 until 100000).map(i => (random.nextInt(10000), i)), "tbl") {
+        val df = sql("SELECT * from tbl")
+
+        // Repartition with two sort columns
+        val repartitioned_df = df.repartitionByRange(10, df.col("_1"))
+        checkSparkAnswerAndOperator(repartitioned_df)
+        checkRangePartitionedDataset(repartitioned_df)
       }
     }
   }

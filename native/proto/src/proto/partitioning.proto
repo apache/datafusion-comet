@@ -42,8 +42,12 @@ message HashPartition {
 message SinglePartition {
 }
 
+message BoundaryRow {
+  repeated spark.spark_expression.Expr partition_bounds = 1;
+}
+
 message RangePartition {
   repeated spark.spark_expression.Expr sort_orders = 1;
   int32 num_partitions = 2;
-  int32 sample_size = 3;
+  repeated BoundaryRow boundary_rows = 4;
 }

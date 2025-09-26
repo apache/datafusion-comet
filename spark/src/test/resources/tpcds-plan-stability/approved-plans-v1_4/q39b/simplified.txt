@@ -2,7 +2,7 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometSort [w_warehouse_sk,i_item_sk,d_moy,mean,cov,w_warehouse_sk,i_item_sk,d_moy,mean,cov]
-        CometColumnarExchange [w_warehouse_sk,i_item_sk,d_moy,mean,cov,d_moy,mean,cov] #1
+        CometExchange [w_warehouse_sk,i_item_sk,d_moy,mean,cov,d_moy,mean,cov] #1
           CometBroadcastHashJoin [w_warehouse_sk,i_item_sk,d_moy,mean,cov,w_warehouse_sk,i_item_sk,d_moy,mean,cov]
             CometProject [stdev] [w_warehouse_sk,i_item_sk,d_moy,mean,cov]
               CometFilter [w_warehouse_sk,i_item_sk,d_moy,stdev,mean]

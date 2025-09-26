@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::row::{OwnedRow, RowConverter};
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr};
 use std::sync::Arc;
 
@@ -22,11 +23,14 @@ use std::sync::Arc;
 pub enum CometPartitioning {
     SinglePartition,
     /// Allocate rows based on a hash of one of more expressions and the specified number of
-    /// partitions
+    /// partitions. Args are 1) the expression to hash on, and 2) the number of partitions.
     Hash(Vec<Arc<dyn PhysicalExpr>>, usize),
     /// Allocate rows based on the lexical order of one of more expressions and the specified number of
-    /// partitions
-    RangePartitioning(LexOrdering, usize, usize),
+    /// partitions. Args are 1) the LexOrdering to use to compare values and split into partitions,
+    /// 2) the number of partitions, 3) the RowConverter used to view incoming RecordBatches as Arrow
+    /// Rows for comparing to 4) OwnedRows that represent the boundaries of each partition, used with
+    /// LexOrdering to bin each value in the RecordBatch to a partition.
+    RangePartitioning(LexOrdering, usize, Arc<RowConverter>, Vec<OwnedRow>),
 }
 
 impl CometPartitioning {
@@ -34,7 +38,7 @@ impl CometPartitioning {
         use CometPartitioning::*;
         match self {
             SinglePartition => 1,
-            Hash(_, n) | RangePartitioning(_, n, _) => *n,
+            Hash(_, n) | RangePartitioning(_, n, _, _) => *n,
         }
     }
 }
