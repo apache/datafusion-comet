@@ -16,6 +16,7 @@
 // under the License.
 
 pub mod data_type;
+pub mod encryption_support;
 pub mod mutable_vector;
 pub use mutable_vector::*;
 
@@ -54,9 +55,8 @@ use crate::execution::serde;
 use crate::execution::utils::SparkArrowConvert;
 use crate::jvm_bridge::{jni_new_global_ref, JVMClasses};
 use crate::parquet::data_type::AsBytes;
-use crate::parquet::parquet_exec::{
-    init_datasource_exec, CometEncryptionFactory, ENCRYPTION_FACTORY_ID,
-};
+use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
+use crate::parquet::parquet_exec::init_datasource_exec;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use arrow::array::{Array, RecordBatch};
 use arrow::buffer::{Buffer, MutableBuffer};
