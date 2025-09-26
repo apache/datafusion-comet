@@ -89,7 +89,6 @@ fn spark_decimal_div_internal(
             let l = BigInt::from(l) * &l_mul;
             let r = BigInt::from(r) * &r_mul;
             if eval_mode == EvalMode::Ansi && r.is_zero() {
-                println!("ANSI MODE ENABLED AND R is ZERO !!!!");
                 return Err(ArrowError::ComputeError(divide_by_zero_error().to_string()));
             }
             let div = if r.eq(&zero) { zero.clone() } else { &l / &r };
@@ -109,7 +108,6 @@ fn spark_decimal_div_internal(
             let l = l * l_mul;
             let r = r * r_mul;
             if eval_mode == EvalMode::Ansi && r.is_zero() {
-                println!("ELSE ::: ANSI MODE ENABLED AND R is ZERO !!!!");
                 return Err(ArrowError::ComputeError(divide_by_zero_error().to_string()));
             }
             let div = if r == 0 { 0 } else { l / r };
