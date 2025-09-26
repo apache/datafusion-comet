@@ -109,6 +109,10 @@ class CometExecSuite extends CometTestBase {
       Seq("parquet").foreach { v1List =>
         withSQLConf(
           SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
+          // FIXME: prefer to arrow will cause DPP not work,
+          //  PlanAdaptiveDynamicPruningFilters/PlanDynamicPruningFilters will check BHJ to reused,
+          //  but preferToArrow will cause BHJ to convert to CometBHJ
+          CometConf.COMET_PREFER_TO_ARROW_ENABLED.key -> "false",
           CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "true") {
           spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact")
           spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim")
@@ -469,6 +473,7 @@ class CometExecSuite extends CometTestBase {
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
           CometConf.COMET_SHUFFLE_MODE.key -> columnarShuffleMode) {
           val (_, cometPlan) = checkSparkAnswer("SELECT * FROM v where c1 = 1 order by c1, c2")
+          println(cometPlan)
           val shuffle = find(cometPlan) {
             case _: CometShuffleExchangeExec if columnarShuffleMode.equalsIgnoreCase("jvm") =>
               true
