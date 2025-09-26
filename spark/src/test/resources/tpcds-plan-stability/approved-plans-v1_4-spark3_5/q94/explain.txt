@@ -3,6 +3,10 @@
 +- * CometColumnarToRow (40)
    +- CometColumnarExchange (39)
       +- * HashAggregate (38)
+
+      this should fail CI
+
+
          +- * HashAggregate (37)
             +- * CometColumnarToRow (36)
                +- CometHashAggregate (35)

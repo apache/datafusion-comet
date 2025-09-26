@@ -1,4 +1,7 @@
 == Physical Plan ==
+
+this should fail CI
+
 * HashAggregate (41)
 +- * CometColumnarToRow (40)
    +- CometColumnarExchange (39)
