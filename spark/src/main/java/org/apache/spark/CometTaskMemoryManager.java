@@ -53,14 +53,14 @@ public class CometTaskMemoryManager {
   // Called by Comet native through JNI.
   // Returns the actual amount of memory (in bytes) granted.
   public long acquireMemory(long size) {
-    logger.info("Task {} requested {} bytes", TaskContext.get().taskAttemptId(), size);
+    logger.info("Task {} requested {} bytes", taskAttemptId(), size);
     long acquired = internal.acquireExecutionMemory(size, nativeMemoryConsumer);
     long newUsed = used.addAndGet(acquired);
     if (acquired < size) {
       logger.warn(
           "Task {} requested {} bytes but only received {} bytes. Current allocation is {} and "
               + "the total memory consumption is {} bytes.",
-          TaskContext.get().taskAttemptId(),
+          taskAttemptId(),
           size,
           acquired,
           newUsed,
@@ -73,13 +73,22 @@ public class CometTaskMemoryManager {
 
   // Called by Comet native through JNI
   public void releaseMemory(long size) {
-    logger.info("Task {} released {} bytes", TaskContext.get().taskAttemptId(), size);
+    logger.info("Task {} released {} bytes", taskAttemptId(), size);
     long newUsed = used.addAndGet(-size);
     if (newUsed < 0) {
       logger.error(
           "Used memory is negative: " + newUsed + " after releasing memory chunk of: " + size);
     }
     internal.releaseExecutionMemory(size, nativeMemoryConsumer);
+  }
+
+  private long taskAttemptId() {
+    TaskContext taskContext = TaskContext.get();
+    if (taskContext == null) {
+      return 0;
+    } else {
+      return taskContext.taskAttemptId();
+    }
   }
 
   public long getUsed() {

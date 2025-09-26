@@ -108,7 +108,7 @@ class CometExecIterator(
       memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
       memoryLimit,
       memoryLimitPerTask = getMemoryLimitPerTask(conf),
-      taskAttemptId = TaskContext.get().taskAttemptId,
+      taskAttemptId = Option(TaskContext.get()).map(_.taskAttemptId).getOrElse(0),
       debug = COMET_DEBUG_ENABLED.get(),
       explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
       tracingEnabled)
@@ -171,11 +171,16 @@ class CometExecIterator(
                   schemaAddrs)
               } catch {
                 case e: CometNativeException =>
-                  val prefix = s"[Task ${TaskContext.get().taskAttemptId()}] "
-                  if (e.getMessage.startsWith(prefix)) {
-                    throw e
+                  val taskContext = TaskContext.get()
+                  if (taskContext != null) {
+                    val prefix = s"[Task ${taskContext.taskAttemptId()}] "
+                    if (e.getMessage.startsWith(prefix)) {
+                      throw e
+                    } else {
+                      throw new CometNativeException(s"$prefix ${e.getMessage}")
+                    }
                   } else {
-                    throw new CometNativeException(s"$prefix ${e.getMessage}")
+                    throw e
                   }
               }
             })
