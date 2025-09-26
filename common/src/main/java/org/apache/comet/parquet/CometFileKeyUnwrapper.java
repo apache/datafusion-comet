@@ -30,8 +30,9 @@ import org.apache.parquet.crypto.ParquetCryptoRuntimeException;
 
 /**
  * Helper class to access DecryptionKeyRetriever.getKey from native code via JNI. This class handles
- * the complexity of getting the proper Hadoop Configuration from the current Spark context and
- * creating properly configured DecryptionKeyRetriever instances using DecryptionPropertiesFactory.
+ * the complexity of creating and caching properly configured DecryptionKeyRetriever instances using
+ * DecryptionPropertiesFactory. The life of this object is meant to map to a single Comet plan, so
+ * associated with CometExecIterator.
  */
 public class CometFileKeyUnwrapper {
 
@@ -40,7 +41,7 @@ public class CometFileKeyUnwrapper {
       new ConcurrentHashMap<>();
 
   // Each hadoopConf yields a unique DecryptionPropertiesFactory. While it's unlikely that
-  // this plan contains more than one hadoopConf, we don't want to assume that. So we'll
+  // this Comet plan contains more than one hadoopConf, we don't want to assume that. So we'll
   // provide the ability to cache more than one Factory with a map.
   private final ConcurrentHashMap<Configuration, DecryptionPropertiesFactory> factoryCache =
       new ConcurrentHashMap<>();
