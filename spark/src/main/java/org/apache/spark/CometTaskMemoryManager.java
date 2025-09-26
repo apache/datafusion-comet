@@ -57,8 +57,8 @@ public class CometTaskMemoryManager {
     long newUsed = used.addAndGet(acquired);
     if (acquired < size) {
       logger.warn(
-          "Task {} requested {} bytes but only received {} bytes. Current allocation is {} and " +
-          "the total memory consumption is {} bytes.",
+          "Task {} requested {} bytes but only received {} bytes. Current allocation is {} and "
+              + "the total memory consumption is {} bytes.",
           TaskContext.get().taskAttemptId(),
           size,
           acquired,
