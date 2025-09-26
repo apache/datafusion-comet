@@ -1047,6 +1047,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ArrayType to StringType") {
+    sql("set spark.comet.explainFallback.enabled=true")
     Seq(
       BooleanType,
       StringType,
