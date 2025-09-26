@@ -21,6 +21,7 @@ package org.apache.spark.sql
 
 import org.apache.comet.{CometConf, CometFuzzTestBase}
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
+import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.Compatible
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
@@ -28,9 +29,13 @@ import org.apache.spark.sql.catalyst.expressions.{Alias, ToPrettyString}
 import org.apache.spark.sql.catalyst.plans.logical.Project
 import org.apache.spark.sql.types.DataTypes
 
+import scala.collection.mutable.ListBuffer
+
 class CometToPrettyStringSuite extends CometFuzzTestBase {
 
   test("ToPrettyString") {
+    val cometScanTypeChecker = CometScanTypeChecker(conf.getConfString(CometConf.COMET_NATIVE_SCAN_IMPL.key))
+    val scanImpl = conf.getConfString(CometConf.COMET_NATIVE_SCAN_IMPL.key)
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val table = spark.sessionState.catalog.lookupRelation(TableIdentifier("t1"))
@@ -42,8 +47,7 @@ class CometToPrettyStringSuite extends CometFuzzTestBase {
       val analyzed = spark.sessionState.analyzer.execute(plan)
       val result: DataFrame = Dataset.ofRows(spark, analyzed)
       CometCast.isSupported(field.dataType, DataTypes.StringType, Some(spark.sessionState.conf.sessionLocalTimeZone), CometEvalMode.TRY) match {
-        // `native_comet` doesn't support complex type scan, see CometScanTypeChecker#isTypeSupported for more details
-        case _: Compatible if conf.getConfString(CometConf.COMET_NATIVE_SCAN_IMPL.key) != CometConf.SCAN_NATIVE_COMET =>
+        case _: Compatible if cometScanTypeChecker.isTypeSupported(field.dataType, scanImpl, ListBuffer.empty) =>
           checkSparkAnswerAndOperator(result)
         case _ => checkSparkAnswer(result)
       }
