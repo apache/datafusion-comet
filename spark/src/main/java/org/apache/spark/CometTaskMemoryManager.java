@@ -40,12 +40,15 @@ public class CometTaskMemoryManager {
   /** The id uniquely identifies the native plan this memory manager is associated to */
   private final long id;
 
+  private final long taskAttemptId;
+
   public final TaskMemoryManager internal;
   private final NativeMemoryConsumer nativeMemoryConsumer;
   private final AtomicLong used = new AtomicLong();
 
-  public CometTaskMemoryManager(long id) {
+  public CometTaskMemoryManager(long id, long taskAttemptId) {
     this.id = id;
+    this.taskAttemptId = taskAttemptId;
     this.internal = TaskContext$.MODULE$.get().taskMemoryManager();
     this.nativeMemoryConsumer = new NativeMemoryConsumer();
   }
@@ -53,14 +56,14 @@ public class CometTaskMemoryManager {
   // Called by Comet native through JNI.
   // Returns the actual amount of memory (in bytes) granted.
   public long acquireMemory(long size) {
-    logger.info("Task {} requested {} bytes", taskAttemptId(), size);
+    logger.info("Task {} requested {} bytes", taskAttemptId, size);
     long acquired = internal.acquireExecutionMemory(size, nativeMemoryConsumer);
     long newUsed = used.addAndGet(acquired);
     if (acquired < size) {
       logger.warn(
           "Task {} requested {} bytes but only received {} bytes. Current allocation is {} and "
               + "the total memory consumption is {} bytes.",
-          taskAttemptId(),
+          taskAttemptId,
           size,
           acquired,
           newUsed,
@@ -73,22 +76,13 @@ public class CometTaskMemoryManager {
 
   // Called by Comet native through JNI
   public void releaseMemory(long size) {
-    logger.info("Task {} released {} bytes", taskAttemptId(), size);
+    logger.info("Task {} released {} bytes", taskAttemptId, size);
     long newUsed = used.addAndGet(-size);
     if (newUsed < 0) {
       logger.error(
           "Used memory is negative: " + newUsed + " after releasing memory chunk of: " + size);
     }
     internal.releaseExecutionMemory(size, nativeMemoryConsumer);
-  }
-
-  private long taskAttemptId() {
-    TaskContext taskContext = TaskContext.get();
-    if (taskContext == null) {
-      return 0;
-    } else {
-      return taskContext.taskAttemptId();
-    }
   }
 
   public long getUsed() {

@@ -68,7 +68,8 @@ class CometExecIterator(
   private val memoryMXBean = ManagementFactory.getMemoryMXBean
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
-  private val cometTaskMemoryManager = new CometTaskMemoryManager(id)
+  private val taskAttemptId = TaskContext.get().taskAttemptId
+  private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
   private val cometBatchIterators = inputs.map { iterator =>
     new CometBatchIterator(iterator, nativeUtil)
   }.toArray
