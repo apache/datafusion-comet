@@ -28,6 +28,62 @@ import org.apache.parquet.crypto.DecryptionPropertiesFactory;
 import org.apache.parquet.crypto.FileDecryptionProperties;
 import org.apache.parquet.crypto.ParquetCryptoRuntimeException;
 
+// spotless:off
+/*
+ * Architecture Overview:
+ *
+ *          JVM Side                           |                     Native Side
+ *   ┌─────────────────────────────────────┐   |   ┌─────────────────────────────────────┐
+ *   │     CometFileKeyUnwrapper           │   |   │       Parquet File Reading          │
+ *   │                                     │   |   │                                     │
+ *   │  ┌─────────────────────────────┐    │   |   │  ┌─────────────────────────────┐    │
+ *   │  │      hadoopConf             │    │   |   │  │     file1.parquet           │    │
+ *   │  │   (Configuration)           │    │   |   │  │     file2.parquet           │    │
+ *   │  └─────────────────────────────┘    │   |   │  │     file3.parquet           │    │
+ *   │              │                      │   |   │  └─────────────────────────────┘    │
+ *   │              ▼                      │   |   │              │                      │
+ *   │  ┌─────────────────────────────┐    │   |   │              │                      │
+ *   │  │      factoryCache           │    │   |   │              ▼                      │
+ *   │  │   (many-to-one mapping)     │    │   |   │  ┌─────────────────────────────┐    │
+ *   │  │                             │    │   |   │  │  Parse file metadata &      │    │
+ *   │  │ file1 ──┐                   │    │   |   │  │  extract keyMetadata        │    │
+ *   │  │ file2 ──┼─► DecryptionProps │    │   |   │  └─────────────────────────────┘    │
+ *   │  │ file3 ──┘      Factory      │    │   |   │              │                      │
+ *   │  └─────────────────────────────┘    │   |   │              │                      │
+ *   │              │                      │   |   │              ▼                      │
+ *   │              ▼                      │   |   │  ╔═════════════════════════════╗    │
+ *   │  ┌─────────────────────────────┐    │   |   │  ║        JNI CALL:            ║    │
+ *   │  │      retrieverCache         │    │   |   │  ║       getKey(filePath,      ║    │
+ *   │  │  filePath -> KeyRetriever   │◄───┼───┼───┼──║        keyMetadata)         ║    │
+ *   │  └─────────────────────────────┘    │   |   │  ╚═════════════════════════════╝    │
+ *   │              │                      │   |   │                                     │
+ *   │              ▼                      │   |   │                                     │
+ *   │  ┌─────────────────────────────┐    │   |   │                                     │
+ *   │  │  DecryptionKeyRetriever     │    │   |   │                                     │
+ *   │  │     .getKey(keyMetadata)    │    │   |   │                                     │
+ *   │  └─────────────────────────────┘    │   |   │                                     │
+ *   │              │                      │   |   │                                     │
+ *   │              ▼                      │   |   │                                     │
+ *   │  ┌─────────────────────────────┐    │   |   │  ┌─────────────────────────────┐    │
+ *   │  │      return key bytes       │────┼───┼───┼─►│   Use key for decryption    │    │
+ *   │  └─────────────────────────────┘    │   |   │  │    of parquet data          │    │
+ *   └─────────────────────────────────────┘   |   │  └─────────────────────────────┘    │
+ *                                             |   └─────────────────────────────────────┘
+ *                                             |
+ *                                    JNI Boundary
+ *
+ * Setup Phase (storeDecryptionKeyRetriever):
+ * 1. hadoopConf → DecryptionPropertiesFactory (cached in factoryCache)
+ * 2. Factory + filePath → DecryptionKeyRetriever (cached in retrieverCache)
+ *
+ * Runtime Phase (getKey):
+ * 3. Native code calls getKey(filePath, keyMetadata) ──► JVM
+ * 4. Retrieve cached DecryptionKeyRetriever for filePath
+ * 5. KeyRetriever.getKey(keyMetadata) → decrypted key bytes
+ * 6. Return key bytes ──► Native code for parquet decryption
+ */
+// spotless:on
+
 /**
  * Helper class to access DecryptionKeyRetriever.getKey from native code via JNI. This class handles
  * the complexity of creating and caching properly configured DecryptionKeyRetriever instances using
