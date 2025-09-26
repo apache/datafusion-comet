@@ -32,7 +32,7 @@ use datafusion::{
     execution::memory_pool::{MemoryPool, MemoryReservation},
 };
 use jni::objects::GlobalRef;
-use log::warn;
+use log::{error, warn};
 
 /// A DataFusion `MemoryPool` implementation for Comet that delegates to
 /// Spark's off-heap executor memory pool via JNI by calling
@@ -96,8 +96,9 @@ impl MemoryPool for CometUnifiedMemoryPool {
     }
 
     fn shrink(&self, _: &MemoryReservation, size: usize) {
-        self.release_to_spark(size)
-            .unwrap_or_else(|_| panic!("Failed to release {size} bytes"));
+        if let Err(e) = self.release_to_spark(size) {
+            error!("Failed to return {size} bytes to Spark: {e:?}");
+        }
         if let Err(prev) = self
             .used
             .fetch_update(Relaxed, Relaxed, |old| old.checked_sub(size))
