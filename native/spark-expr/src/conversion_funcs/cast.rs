@@ -19,8 +19,9 @@ use crate::utils::array_with_timezone;
 use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
-use arrow::array::{DictionaryArray, GenericByteArray, StringArray, StructArray};
+use arrow::array::{DictionaryArray, GenericByteArray, ListArray, StringArray, StructArray};
 use arrow::compute::can_cast_types;
+use arrow::datatypes::DataType::Utf8;
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, DataType, GenericBinaryType, Schema,
 };
@@ -1023,6 +1024,7 @@ fn cast_array(
             to_type,
             cast_options,
         )?),
+        (List(_), Utf8) => Ok(cast_array_to_string(array.as_list(), cast_options)?),
         (List(_), List(_)) if can_cast_types(from_type, to_type) => {
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
@@ -1237,6 +1239,39 @@ fn cast_struct_to_struct(
         }
         _ => unreachable!(),
     }
+}
+
+fn cast_array_to_string(
+    array: &ListArray,
+    spark_cast_options: &SparkCastOptions,
+) -> DataFusionResult<ArrayRef> {
+    let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
+    let mut str = String::with_capacity(array.len() * 16);
+    for row_index in 0..array.len() {
+        if array.is_null(row_index) {
+            builder.append_null();
+        } else {
+            str.clear();
+            let value_ref = array.value(row_index);
+            let native_cast_result = cast_array(value_ref, &Utf8, spark_cast_options).unwrap();
+            let string_array = native_cast_result
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let mut any_fields_written = false;
+            str.push('[');
+            for s in string_array.iter() {
+                if any_fields_written {
+                    str.push_str(", ");
+                }
+                str.push_str(s.unwrap_or(&spark_cast_options.null_string));
+                any_fields_written = true;
+            }
+            str.push(']');
+            builder.append_value(&str);
+        }
+    }
+    Ok(Arc::new(builder.finish()))
 }
 
 fn casts_struct_to_string(
@@ -2824,5 +2859,56 @@ mod tests {
         assert!(casted.is_null(7));
         assert!(casted.is_null(8));
         assert!(casted.is_null(9));
+    }
+
+    #[test]
+    fn test_cast_string_array_to_string() {
+        use arrow::array::ListArray;
+        use arrow::buffer::OffsetBuffer;
+        let values_array =
+            StringArray::from(vec![Some("a"), Some("b"), Some("c"), Some("a"), None, None]);
+        let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 3, 5, 6, 6].into());
+        let item_field = Arc::new(Field::new("item", DataType::Utf8, true));
+        let list_array = Arc::new(ListArray::new(
+            item_field,
+            offsets_buffer,
+            Arc::new(values_array),
+            None,
+        ));
+        let string_array = cast_array_to_string(
+            &list_array,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
+        let string_array = string_array.as_string::<i32>();
+        assert_eq!(r#"[a, b, c]"#, string_array.value(0));
+        assert_eq!(r#"[a, null]"#, string_array.value(1));
+        assert_eq!(r#"[null]"#, string_array.value(2));
+        assert_eq!(r#"[]"#, string_array.value(3));
+    }
+
+    #[test]
+    fn test_cast_i32_array_to_string() {
+        use arrow::array::ListArray;
+        use arrow::buffer::OffsetBuffer;
+        let values_array = Int32Array::from(vec![Some(1), Some(2), Some(3), Some(1), None, None]);
+        let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 3, 5, 6, 6].into());
+        let item_field = Arc::new(Field::new("item", DataType::Int32, true));
+        let list_array = Arc::new(ListArray::new(
+            item_field,
+            offsets_buffer,
+            Arc::new(values_array),
+            None,
+        ));
+        let string_array = cast_array_to_string(
+            &list_array,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
+        let string_array = string_array.as_string::<i32>();
+        assert_eq!(r#"[1, 2, 3]"#, string_array.value(0));
+        assert_eq!(r#"[1, null]"#, string_array.value(1));
+        assert_eq!(r#"[null]"#, string_array.value(2));
+        assert_eq!(r#"[]"#, string_array.value(3));
     }
 }

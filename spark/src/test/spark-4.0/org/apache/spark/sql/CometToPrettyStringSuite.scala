@@ -19,8 +19,11 @@
 
 package org.apache.spark.sql
 
-import org.apache.comet.CometFuzzTestBase
+import scala.collection.mutable.ListBuffer
+
+import org.apache.comet.{CometConf, CometFuzzTestBase}
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
+import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.Compatible
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
@@ -34,6 +37,8 @@ import org.apache.spark.sql.types.DataTypes
 class CometToPrettyStringSuite extends CometFuzzTestBase {
 
   test("ToPrettyString") {
+    val cometScanTypeChecker = CometScanTypeChecker(conf.getConfString(CometConf.COMET_NATIVE_SCAN_IMPL.key))
+    val scanImpl = conf.getConfString(CometConf.COMET_NATIVE_SCAN_IMPL.key)
     val style = List(
       BinaryOutputStyle.UTF8,
       BinaryOutputStyle.BASIC,
@@ -54,7 +59,8 @@ class CometToPrettyStringSuite extends CometFuzzTestBase {
           val analyzed = spark.sessionState.analyzer.execute(plan)
           val result: DataFrame = Dataset.ofRows(spark, analyzed)
           CometCast.isSupported(field.dataType, DataTypes.StringType, Some(spark.sessionState.conf.sessionLocalTimeZone), CometEvalMode.TRY) match {
-            case _: Compatible => checkSparkAnswerAndOperator(result)
+            case _: Compatible if cometScanTypeChecker.isTypeSupported(field.dataType, scanImpl, ListBuffer.empty) =>
+              checkSparkAnswerAndOperator(result)
             case _ => checkSparkAnswer(result)
           }
         }
