@@ -24,14 +24,18 @@ import java.lang.management.ManagementFactory
 
 import scala.util.matching.Regex
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
+import org.apache.spark.util.SerializableConfiguration
 
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_METRICS_UPDATE_INTERVAL}
+import org.apache.comet.CometConf._
 import org.apache.comet.Tracing.withTrace
+import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.vector.NativeUtil
 
@@ -52,6 +56,8 @@ import org.apache.comet.vector.NativeUtil
  *   The number of partitions.
  * @param partitionIndex
  *   The index of the partition.
+ * @param encryptedFilePaths
+ *   Paths to encrypted Parquet files that need key unwrapping.
  */
 class CometExecIterator(
     val id: Long,
@@ -60,7 +66,8 @@ class CometExecIterator(
     protobufQueryPlan: Array[Byte],
     nativeMetrics: CometMetricNode,
     numParts: Int,
-    partitionIndex: Int)
+    partitionIndex: Int,
+    encryptedFilePaths: Seq[(String, Broadcast[SerializableConfiguration])] = Seq.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -72,6 +79,7 @@ class CometExecIterator(
   private val cometBatchIterators = inputs.map { iterator =>
     new CometBatchIterator(iterator, nativeUtil)
   }.toArray
+
   private val plan = {
     val conf = SparkEnv.get.conf
     val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
@@ -93,6 +101,20 @@ class CometExecIterator(
     }
     val protobufSparkConfigs = builder.build().toByteArray
 
+    // Create keyUnwrapper if encryption is enabled
+    val keyUnwrapper = if (encryptedFilePaths.nonEmpty) {
+      val unwrapper = new CometFileKeyUnwrapper()
+
+      encryptedFilePaths.foreach { case (filePath, broadcastedConf) =>
+        val hadoopConf: Configuration = broadcastedConf.value.value
+        unwrapper.storeDecryptionKeyRetriever(filePath, hadoopConf)
+      }
+
+      unwrapper
+    } else {
+      null
+    }
+
     nativeLib.createPlan(
       id,
       cometBatchIterators,
@@ -111,7 +133,8 @@ class CometExecIterator(
       taskAttemptId = TaskContext.get().taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
       explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
-      tracingEnabled)
+      tracingEnabled,
+      keyUnwrapper)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
@@ -135,6 +158,7 @@ class CometExecIterator(
     def convertToInt(threads: String): Int = {
       if (threads == "*") Runtime.getRuntime.availableProcessors() else threads.toInt
     }
+
     val LOCAL_N_REGEX = """local\[([0-9]+|\*)\]""".r
     val LOCAL_N_FAILURES_REGEX = """local\[([0-9]+|\*)\s*,\s*([0-9]+)\]""".r
     val master = conf.get("spark.master")
