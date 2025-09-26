@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql
 
+import scala.collection.mutable.ListBuffer
+
 import org.apache.comet.{CometConf, CometFuzzTestBase}
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker

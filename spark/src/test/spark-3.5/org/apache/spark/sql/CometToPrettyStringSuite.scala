@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql
 
+import scala.collection.mutable.ListBuffer
+
 import org.apache.comet.{CometConf, CometFuzzTestBase}
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
@@ -28,8 +30,6 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Alias, ToPrettyString}
 import org.apache.spark.sql.catalyst.plans.logical.Project
 import org.apache.spark.sql.types.DataTypes
-
-import scala.collection.mutable.ListBuffer
 
 class CometToPrettyStringSuite extends CometFuzzTestBase {
 
