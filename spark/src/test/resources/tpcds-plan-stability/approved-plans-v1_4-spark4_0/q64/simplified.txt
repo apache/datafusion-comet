@@ -2,7 +2,7 @@ WholeStageCodegen (37)
   CometColumnarToRow
     InputAdapter
       CometSort [product_name,store_name,store_zip,b_street_number,b_streen_name,b_city,b_zip,c_street_number,c_street_name,c_city,c_zip,syear,cnt,s1,s2,s3,s1,s2,s3,syear,cnt]
-        CometColumnarExchange [product_name,store_name,cnt] #1
+        CometExchange [product_name,store_name,cnt] #1
           CometProject [product_name,store_name,store_zip,b_street_number,b_streen_name,b_city,b_zip,c_street_number,c_street_name,c_city,c_zip,syear,cnt,s1,s2,s3,s1,s2,s3,syear,cnt]
             CometSortMergeJoin [product_name,item_sk,store_name,store_zip,b_street_number,b_streen_name,b_city,b_zip,c_street_number,c_street_name,c_city,c_zip,syear,cnt,s1,s2,s3,item_sk,store_name,store_zip,syear,cnt,s1,s2,s3]
               CometSort [product_name,item_sk,store_name,store_zip,b_street_number,b_streen_name,b_city,b_zip,c_street_number,c_street_name,c_city,c_zip,syear,cnt,s1,s2,s3]
@@ -72,7 +72,7 @@ WholeStageCodegen (37)
                                                                                                     CometColumnarToRow
                                                                                                       InputAdapter
                                                                                                         CometExchange [cs_item_sk] #6
-                                                                                                          CometHashAggregate [cs_item_sk,sum,sum,isEmpty,cs_ext_list_price,cr_refunded_cash,cr_reversed_charge,cr_store_credit]
+                                                                                                          CometHashAggregate [cs_ext_list_price,cr_refunded_cash,cr_reversed_charge,cr_store_credit] [cs_item_sk,sum,sum,isEmpty]
                                                                                                             CometProject [cs_item_sk,cs_ext_list_price,cr_refunded_cash,cr_reversed_charge,cr_store_credit]
                                                                                                               CometSortMergeJoin [cs_item_sk,cs_order_number,cs_ext_list_price,cr_item_sk,cr_order_number,cr_refunded_cash,cr_reversed_charge,cr_store_credit]
                                                                                                                 CometSort [cs_item_sk,cs_order_number,cs_ext_list_price]

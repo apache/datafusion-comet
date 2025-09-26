@@ -5,7 +5,7 @@ WholeStageCodegen (2)
         CometColumnarToRow
           InputAdapter
             CometExchange #1
-              CometHashAggregate [sum,ss_ext_sales_price]
+              CometHashAggregate [ss_ext_sales_price] [sum]
                 CometProject [ss_ext_sales_price]
                   CometBroadcastHashJoin [ss_item_sk,ss_ext_sales_price,i_item_sk]
                     CometProject [ss_item_sk,ss_ext_sales_price]
@@ -58,7 +58,7 @@ WholeStageCodegen (2)
               CometColumnarToRow
                 InputAdapter
                   CometExchange #10
-                    CometHashAggregate [sum,ss_ext_sales_price]
+                    CometHashAggregate [ss_ext_sales_price] [sum]
                       CometProject [ss_ext_sales_price]
                         CometBroadcastHashJoin [ss_item_sk,ss_ext_sales_price,i_item_sk]
                           CometProject [ss_item_sk,ss_ext_sales_price]

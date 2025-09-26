@@ -22,7 +22,7 @@ WholeStageCodegen (19)
                                           CometColumnarToRow
                                             InputAdapter
                                               CometExchange [s_store_id] #3
-                                                CometHashAggregate [s_store_id,sum,sum,sum,sum,sales_price,return_amt,profit,net_loss]
+                                                CometHashAggregate [sales_price,return_amt,profit,net_loss] [s_store_id,sum,sum,sum,sum]
                                                   CometProject [sales_price,profit,return_amt,net_loss,s_store_id]
                                                     CometBroadcastHashJoin [store_sk,sales_price,profit,return_amt,net_loss,s_store_sk,s_store_id]
                                                       CometProject [store_sk,sales_price,profit,return_amt,net_loss]
@@ -56,7 +56,7 @@ WholeStageCodegen (19)
                                           CometColumnarToRow
                                             InputAdapter
                                               CometExchange [cp_catalog_page_id] #7
-                                                CometHashAggregate [cp_catalog_page_id,sum,sum,sum,sum,sales_price,return_amt,profit,net_loss]
+                                                CometHashAggregate [sales_price,return_amt,profit,net_loss] [cp_catalog_page_id,sum,sum,sum,sum]
                                                   CometProject [sales_price,profit,return_amt,net_loss,cp_catalog_page_id]
                                                     CometBroadcastHashJoin [page_sk,sales_price,profit,return_amt,net_loss,cp_catalog_page_sk,cp_catalog_page_id]
                                                       CometProject [page_sk,sales_price,profit,return_amt,net_loss]
@@ -80,7 +80,7 @@ WholeStageCodegen (19)
                                           CometColumnarToRow
                                             InputAdapter
                                               CometExchange [web_site_id] #9
-                                                CometHashAggregate [web_site_id,sum,sum,sum,sum,sales_price,return_amt,profit,net_loss]
+                                                CometHashAggregate [sales_price,return_amt,profit,net_loss] [web_site_id,sum,sum,sum,sum]
                                                   CometProject [sales_price,profit,return_amt,net_loss,web_site_id]
                                                     CometBroadcastHashJoin [wsr_web_site_sk,sales_price,profit,return_amt,net_loss,web_site_sk,web_site_id]
                                                       CometProject [wsr_web_site_sk,sales_price,profit,return_amt,net_loss]

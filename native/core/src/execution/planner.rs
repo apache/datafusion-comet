@@ -62,8 +62,9 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_modulo_expr, create_negate_expr, BloomFilterAgg,
-    BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
+    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, create_modulo_expr,
+    create_negate_expr, BinaryOutputStyle, BloomFilterAgg, BloomFilterMightContain, EvalMode,
+    SparkHour, SparkMinute, SparkSecond,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -92,6 +93,7 @@ use arrow::array::{
     NullArray, StringBuilder, TimestampMicrosecondArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
+use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec;
@@ -241,8 +243,6 @@ impl PhysicalPlanner {
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
             ExprStruct::Add(expr) => {
-                // TODO respect ANSI eval mode
-                // https://github.com/apache/datafusion-comet/issues/536
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
@@ -254,8 +254,6 @@ impl PhysicalPlanner {
                 )
             }
             ExprStruct::Subtract(expr) => {
-                // TODO respect ANSI eval mode
-                // https://github.com/apache/datafusion-comet/issues/535
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
@@ -267,8 +265,6 @@ impl PhysicalPlanner {
                 )
             }
             ExprStruct::Multiply(expr) => {
-                // TODO respect ANSI eval mode
-                // https://github.com/apache/datafusion-comet/issues/534
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
@@ -280,8 +276,6 @@ impl PhysicalPlanner {
                 )
             }
             ExprStruct::Divide(expr) => {
-                // TODO respect ANSI eval mode
-                // https://github.com/apache/datafusion-comet/issues/533
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr(
                     expr.left.as_ref().unwrap(),
@@ -484,14 +478,14 @@ impl PhysicalPlanner {
                                     )))
                                 }
                             }
-                        },
+                        }
                         Value::ListVal(values) => {
                             if let DataType::List(_) = data_type {
                                 SingleRowListArrayBuilder::new(literal_to_array_ref(data_type, values.clone())?).build_list_scalar()
                             } else {
                                 return Err(GeneralError(format!(
                                     "Expected DataType::List but got {data_type:?}"
-                                )))
+                                )));
                             }
                         }
                     }
@@ -809,6 +803,8 @@ impl PhysicalPlanner {
                     SparkCastOptions::new(EvalMode::Try, &expr.timezone, true);
                 let null_string = "NULL";
                 spark_cast_options.null_string = null_string.to_string();
+                spark_cast_options.binary_output_style =
+                    from_protobuf_binary_output_style(expr.binary_output_style).ok();
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let cast = Arc::new(Cast::new(
                     Arc::clone(&child),
@@ -1007,21 +1003,25 @@ impl PhysicalPlanner {
             }
             _ => {
                 let data_type = return_type.map(to_arrow_datatype).unwrap();
-                if eval_mode == EvalMode::Try && data_type.is_integer() {
+                if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode)
+                    && (data_type.is_integer()
+                        || (data_type.is_floating() && op == DataFusionOperator::Divide))
+                {
                     let op_str = match op {
                         DataFusionOperator::Plus => "checked_add",
                         DataFusionOperator::Minus => "checked_sub",
                         DataFusionOperator::Multiply => "checked_mul",
                         DataFusionOperator::Divide => "checked_div",
                         _ => {
-                            todo!("Operator yet to be implemented!");
+                            todo!("ANSI mode for Operator yet to be implemented!");
                         }
                     };
-                    let fun_expr = create_comet_physical_fun(
+                    let fun_expr = create_comet_physical_fun_with_eval_mode(
                         op_str,
                         data_type.clone(),
                         &self.session_ctx.state(),
                         None,
+                        eval_mode,
                     )?;
                     Ok(Arc::new(ScalarFunctionExpr::new(
                         op_str,
@@ -1400,8 +1400,14 @@ impl PhysicalPlanner {
                 assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
-                let partitioning = self
-                    .create_partitioning(writer.partitioning.as_ref().unwrap(), child.schema())?;
+                // We wrap native shuffle in a CopyExec. This existed previously, but for
+                // RangePartitioning at least we want to ensure that dictionaries are unpacked.
+                let wrapped_child = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
+
+                let partitioning = self.create_partitioning(
+                    writer.partitioning.as_ref().unwrap(),
+                    wrapped_child.schema(),
+                )?;
 
                 let codec = match writer.codec.try_into() {
                     Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
@@ -1417,7 +1423,7 @@ impl PhysicalPlanner {
                 }?;
 
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
+                    wrapped_child,
                     partitioning,
                     codec,
                     writer.output_data_file.clone(),
@@ -2342,16 +2348,65 @@ impl PhysicalPlanner {
                 ))
             }
             PartitioningStruct::RangePartition(range_partition) => {
+                // Generate the lexical ordering for comparisons
                 let exprs: Result<Vec<PhysicalSortExpr>, ExecutionError> = range_partition
                     .sort_orders
                     .iter()
                     .map(|expr| self.create_sort_expr(expr, Arc::clone(&input_schema)))
                     .collect();
                 let lex_ordering = LexOrdering::new(exprs?).unwrap();
+
+                // Generate the row converter for comparing incoming batches to boundary rows
+                let sort_fields: Vec<SortField> = lex_ordering
+                    .iter()
+                    .map(|sort_expr| {
+                        sort_expr
+                            .expr
+                            .data_type(input_schema.as_ref())
+                            .map(|dt| SortField::new_with_options(dt, sort_expr.options))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // Deserialize the literals to columnar collections of ScalarValues
+                let mut scalar_values: Vec<Vec<ScalarValue>> = vec![vec![]; lex_ordering.len()];
+                for boundary_row in &range_partition.boundary_rows {
+                    // For each serialized expr in a boundary row, convert to a Literal
+                    // expression, then extract the ScalarValue from the Literal and push it
+                    // into the collection of ScalarValues
+                    for (col_idx, col_values) in scalar_values
+                        .iter_mut()
+                        .enumerate()
+                        .take(lex_ordering.len())
+                    {
+                        let expr = self.create_expr(
+                            &boundary_row.partition_bounds[col_idx],
+                            Arc::clone(&input_schema),
+                        )?;
+                        let literal_expr =
+                            expr.as_any().downcast_ref::<Literal>().expect("Literal");
+                        col_values.push(literal_expr.value().clone());
+                    }
+                }
+
+                // Convert the collection of ScalarValues to collection of Arrow Arrays
+                let arrays: Vec<ArrayRef> = scalar_values
+                    .iter()
+                    .map(|scalar_vec| ScalarValue::iter_to_array(scalar_vec.iter().cloned()))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // Create a RowConverter and use to create OwnedRows from the Arrays
+                let converter = RowConverter::new(sort_fields)?;
+                let boundary_rows = converter.convert_columns(&arrays)?;
+                // Rows are only a view into Arrow Arrays. We need to create OwnedRows with their
+                // own internal memory ownership to pass as our boundary values to the partitioner.
+                let boundary_owned_rows: Vec<OwnedRow> =
+                    boundary_rows.iter().map(|row| row.owned()).collect();
+
                 Ok(CometPartitioning::RangePartitioning(
                     lex_ordering,
                     range_partition.num_partitions as usize,
-                    range_partition.sample_size as usize,
+                    Arc::new(converter),
+                    boundary_owned_rows,
                 ))
             }
             PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
@@ -2690,6 +2745,18 @@ fn create_case_expr(
             when_then_pairs,
             else_expr.clone(),
         )?))
+    }
+}
+
+fn from_protobuf_binary_output_style(
+    value: i32,
+) -> Result<BinaryOutputStyle, prost::UnknownEnumValue> {
+    match spark_expression::BinaryOutputStyle::try_from(value)? {
+        spark_expression::BinaryOutputStyle::Utf8 => Ok(BinaryOutputStyle::Utf8),
+        spark_expression::BinaryOutputStyle::Basic => Ok(BinaryOutputStyle::Basic),
+        spark_expression::BinaryOutputStyle::Base64 => Ok(BinaryOutputStyle::Base64),
+        spark_expression::BinaryOutputStyle::Hex => Ok(BinaryOutputStyle::Hex),
+        spark_expression::BinaryOutputStyle::HexDiscrete => Ok(BinaryOutputStyle::HexDiscrete),
     }
 }
 

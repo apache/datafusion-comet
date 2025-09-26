@@ -23,15 +23,15 @@ TakeOrderedAndProject [rnk,best_performing,worst_performing]
                                             WholeStageCodegen (1)
                                               CometColumnarToRow
                                                 InputAdapter
-                                                  CometHashAggregate [rank_col,ss_store_sk,sum,count,avg(UnscaledValue(ss_net_profit))]
+                                                  CometHashAggregate [ss_store_sk,sum,count] [rank_col,avg(UnscaledValue(ss_net_profit))]
                                                     CometExchange [ss_store_sk] #3
-                                                      CometHashAggregate [ss_store_sk,sum,count,ss_net_profit]
+                                                      CometHashAggregate [ss_net_profit] [ss_store_sk,sum,count]
                                                         CometProject [ss_store_sk,ss_net_profit]
                                                           CometFilter [ss_addr_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]
                                                             CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_addr_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]
-                                          CometHashAggregate [item_sk,rank_col,ss_item_sk,sum,count,avg(UnscaledValue(ss_net_profit))]
+                                          CometHashAggregate [sum,count] [item_sk,rank_col,ss_item_sk,avg(UnscaledValue(ss_net_profit))]
                                             CometExchange [ss_item_sk] #2
-                                              CometHashAggregate [ss_item_sk,sum,count,ss_net_profit]
+                                              CometHashAggregate [ss_net_profit] [ss_item_sk,sum,count]
                                                 CometProject [ss_item_sk,ss_net_profit]
                                                   CometFilter [ss_item_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]
                                                     CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_net_profit,ss_sold_date_sk]

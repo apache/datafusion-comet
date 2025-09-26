@@ -19,15 +19,73 @@
 
 package org.apache.comet
 
+import org.apache.comet.DataTypeSupport.isComplexType
+
 class CometFuzzAggregateSuite extends CometFuzzTestBase {
 
-  test("count distinct") {
+  test("count distinct - simple columns") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    for (col <- df.schema.fields.filterNot(f => isComplexType(f.dataType)).map(_.name)) {
+      val sql = s"SELECT count(distinct $col) FROM t1"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      if (usingDataSourceExec) {
+        assert(1 == collectNativeScans(cometPlan).length)
+      }
+
+      checkSparkAnswerAndOperator(sql)
+    }
+  }
+
+  // Aggregate by complex columns not yet supported
+  // https://github.com/apache/datafusion-comet/issues/2382
+  test("count distinct - complex columns") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    for (col <- df.schema.fields.filter(f => isComplexType(f.dataType)).map(_.name)) {
+      val sql = s"SELECT count(distinct $col) FROM t1"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      if (usingDataSourceExec) {
+        assert(1 == collectNativeScans(cometPlan).length)
+      }
+    }
+  }
+
+  test("count distinct group by multiple column - simple columns ") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    for (col <- df.schema.fields.filterNot(f => isComplexType(f.dataType)).map(_.name)) {
+      val sql = s"SELECT c1, c2, c3, count(distinct $col) FROM t1 group by c1, c2, c3"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      if (usingDataSourceExec) {
+        assert(1 == collectNativeScans(cometPlan).length)
+      }
+
+      checkSparkAnswerAndOperator(sql)
+    }
+  }
+
+  // Aggregate by complex columns not yet supported
+  // https://github.com/apache/datafusion-comet/issues/2382
+  test("count distinct group by multiple column - complex columns ") {
+    val df = spark.read.parquet(filename)
+    df.createOrReplaceTempView("t1")
+    for (col <- df.schema.fields.filter(f => isComplexType(f.dataType)).map(_.name)) {
+      val sql = s"SELECT c1, c2, c3, count(distinct $col) FROM t1 group by c1, c2, c3"
+      val (_, cometPlan) = checkSparkAnswer(sql)
+      if (usingDataSourceExec) {
+        assert(1 == collectNativeScans(cometPlan).length)
+      }
+    }
+  }
+
+  // COUNT(distinct x, y, z, ...) not yet supported
+  // https://github.com/apache/datafusion-comet/issues/2292
+  test("count distinct multiple values and group by multiple column") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
-      val sql = s"SELECT count(distinct $col) FROM t1"
-      // Comet does not support count distinct yet
-      // https://github.com/apache/datafusion-comet/issues/2292
+      val sql = s"SELECT c1, c2, c3, count(distinct $col, c4, c5) FROM t1 group by c1, c2, c3"
       val (_, cometPlan) = checkSparkAnswer(sql)
       if (usingDataSourceExec) {
         assert(1 == collectNativeScans(cometPlan).length)
@@ -39,7 +97,6 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     for (col <- df.columns) {
-      // cannot run fully natively due to range partitioning and sort
       val sql = s"SELECT $col, count(*) FROM t1 GROUP BY $col ORDER BY $col"
       val (_, cometPlan) = checkSparkAnswer(sql)
       if (usingDataSourceExec) {
@@ -53,7 +110,6 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     df.createOrReplaceTempView("t1")
     val groupCol = df.columns.head
     for (col <- df.columns.drop(1)) {
-      // cannot run fully natively due to range partitioning and sort
       val sql = s"SELECT $groupCol, count($col) FROM t1 GROUP BY $groupCol ORDER BY $groupCol"
       val (_, cometPlan) = checkSparkAnswer(sql)
       if (usingDataSourceExec) {
@@ -67,7 +123,6 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
     df.createOrReplaceTempView("t1")
     val groupCol = df.columns.head
     val otherCol = df.columns.drop(1)
-    // cannot run fully natively due to range partitioning and sort
     val sql = s"SELECT $groupCol, count(${otherCol.mkString(", ")}) FROM t1 " +
       s"GROUP BY $groupCol ORDER BY $groupCol"
     val (_, cometPlan) = checkSparkAnswer(sql)
@@ -88,5 +143,4 @@ class CometFuzzAggregateSuite extends CometFuzzTestBase {
       }
     }
   }
-
 }

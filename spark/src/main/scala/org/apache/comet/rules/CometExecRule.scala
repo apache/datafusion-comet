@@ -535,8 +535,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       case op =>
         op match {
-          case _: CometExec | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
-              _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec |
+          case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
               _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec =>
             // Some execs should never be replaced. We include
             // these cases specially here so we do not add a misleading 'info' message
@@ -774,7 +773,16 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
      * operations like `groupByKey`, `reduceByKey` or `join`. Native code does not support hashing
      * complex types, see hash_funcs/utils.rs
      */
-    def supportedPartitioningDataType(dt: DataType): Boolean = dt match {
+    def supportedHashPartitioningDataType(dt: DataType): Boolean = dt match {
+      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
+          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
+          _: TimestampNTZType | _: DecimalType | _: DateType =>
+        true
+      case _ =>
+        false
+    }
+
+    def supportedRangePartitioningDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DecimalType | _: DateType =>
@@ -847,7 +855,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           }
         }
         for (dt <- expressions.map(_.dataType).distinct) {
-          if (!supportedPartitioningDataType(dt)) {
+          if (!supportedHashPartitioningDataType(dt)) {
             withInfo(s, s"unsupported hash partitioning data type for native shuffle: $dt")
             supported = false
           }
@@ -873,7 +881,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           }
         }
         for (dt <- orderings.map(_.dataType).distinct) {
-          if (!supportedPartitioningDataType(dt)) {
+          if (!supportedRangePartitioningDataType(dt)) {
             withInfo(s, s"unsupported range partitioning data type for native shuffle: $dt")
             supported = false
           }

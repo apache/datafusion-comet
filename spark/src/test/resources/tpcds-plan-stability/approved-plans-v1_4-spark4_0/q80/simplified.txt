@@ -14,7 +14,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                           CometColumnarToRow
                             InputAdapter
                               CometExchange [s_store_id] #2
-                                CometHashAggregate [s_store_id,sum,sum,isEmpty,sum,isEmpty,ss_ext_sales_price,sr_return_amt,ss_net_profit,sr_net_loss]
+                                CometHashAggregate [ss_ext_sales_price,sr_return_amt,ss_net_profit,sr_net_loss] [s_store_id,sum,sum,isEmpty,sum,isEmpty]
                                   CometProject [ss_ext_sales_price,ss_net_profit,sr_return_amt,sr_net_loss,s_store_id]
                                     CometBroadcastHashJoin [ss_promo_sk,ss_ext_sales_price,ss_net_profit,sr_return_amt,sr_net_loss,s_store_id,p_promo_sk]
                                       CometProject [ss_promo_sk,ss_ext_sales_price,ss_net_profit,sr_return_amt,sr_net_loss,s_store_id]
@@ -63,7 +63,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                           CometColumnarToRow
                             InputAdapter
                               CometExchange [cp_catalog_page_id] #10
-                                CometHashAggregate [cp_catalog_page_id,sum,sum,isEmpty,sum,isEmpty,cs_ext_sales_price,cr_return_amount,cs_net_profit,cr_net_loss]
+                                CometHashAggregate [cs_ext_sales_price,cr_return_amount,cs_net_profit,cr_net_loss] [cp_catalog_page_id,sum,sum,isEmpty,sum,isEmpty]
                                   CometProject [cs_ext_sales_price,cs_net_profit,cr_return_amount,cr_net_loss,cp_catalog_page_id]
                                     CometBroadcastHashJoin [cs_promo_sk,cs_ext_sales_price,cs_net_profit,cr_return_amount,cr_net_loss,cp_catalog_page_id,p_promo_sk]
                                       CometProject [cs_promo_sk,cs_ext_sales_price,cs_net_profit,cr_return_amount,cr_net_loss,cp_catalog_page_id]
@@ -96,7 +96,7 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                           CometColumnarToRow
                             InputAdapter
                               CometExchange [web_site_id] #14
-                                CometHashAggregate [web_site_id,sum,sum,isEmpty,sum,isEmpty,ws_ext_sales_price,wr_return_amt,ws_net_profit,wr_net_loss]
+                                CometHashAggregate [ws_ext_sales_price,wr_return_amt,ws_net_profit,wr_net_loss] [web_site_id,sum,sum,isEmpty,sum,isEmpty]
                                   CometProject [ws_ext_sales_price,ws_net_profit,wr_return_amt,wr_net_loss,web_site_id]
                                     CometBroadcastHashJoin [ws_promo_sk,ws_ext_sales_price,ws_net_profit,wr_return_amt,wr_net_loss,web_site_id,p_promo_sk]
                                       CometProject [ws_promo_sk,ws_ext_sales_price,ws_net_profit,wr_return_amt,wr_net_loss,web_site_id]

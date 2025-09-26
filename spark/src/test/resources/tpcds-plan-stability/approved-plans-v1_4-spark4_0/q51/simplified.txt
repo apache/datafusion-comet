@@ -26,7 +26,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                   CometColumnarToRow
                                                     InputAdapter
                                                       CometExchange [ws_item_sk,d_date] #4
-                                                        CometHashAggregate [ws_item_sk,d_date,sum,ws_sales_price]
+                                                        CometHashAggregate [ws_sales_price] [ws_item_sk,d_date,sum]
                                                           CometProject [ws_item_sk,ws_sales_price,d_date]
                                                             CometBroadcastHashJoin [ws_item_sk,ws_sales_price,ws_sold_date_sk,d_date_sk,d_date]
                                                               CometFilter [ws_item_sk,ws_sales_price,ws_sold_date_sk]
@@ -59,7 +59,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                   CometColumnarToRow
                                                     InputAdapter
                                                       CometExchange [ss_item_sk,d_date] #9
-                                                        CometHashAggregate [ss_item_sk,d_date,sum,ss_sales_price]
+                                                        CometHashAggregate [ss_sales_price] [ss_item_sk,d_date,sum]
                                                           CometProject [ss_item_sk,ss_sales_price,d_date]
                                                             CometBroadcastHashJoin [ss_item_sk,ss_sales_price,ss_sold_date_sk,d_date_sk,d_date]
                                                               CometFilter [ss_item_sk,ss_sales_price,ss_sold_date_sk]

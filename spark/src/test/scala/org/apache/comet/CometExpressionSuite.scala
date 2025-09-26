@@ -55,6 +55,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
+    """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
+  val DIVIDE_BY_ZERO_EXCEPTION_MSG =
+    """org.apache.comet.CometNativeException: [DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+
   test("compare true/false to negative zero") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
@@ -411,6 +416,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("తెలుగు", 2))
     withParquetTable(data, "t1") {
       val res = sql("select rpad(_1,_2) , rpad(_1,2) from t1 order by _1")
+      checkSparkAnswerAndOperator(res)
+    }
+  }
+
+  test("RPAD with character support other than default space") {
+    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("hi", 2))
+    withParquetTable(data, "t1") {
+      val res = sql(
+        """ select rpad(_1,_2,'?'), rpad(_1,_2,'??') , rpad(_1,2, '??'), hex(rpad(unhex('aabb'), 5)),
+          rpad(_1, 5, '??') from t1 order by _1 """.stripMargin)
       checkSparkAnswerAndOperator(res)
     }
   }
@@ -2849,6 +2864,107 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   | order by t1._id""".stripMargin)
             }
           }
+        }
+      }
+    }
+  }
+
+  test("ANSI support for add") {
+    val data = Seq((Integer.MAX_VALUE, 1), (Integer.MIN_VALUE, -1))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 + _2
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
+            assert(sparkExc.getMessage.contains("overflow"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for subtract") {
+    val data = Seq((Integer.MIN_VALUE, 1))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 - _2
+                              |  from tbl
+                              |  """.stripMargin)
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
+            assert(sparkExc.getMessage.contains("overflow"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for multiply") {
+    val data = Seq((Integer.MAX_VALUE, 10))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 * _2
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
+            assert(sparkExc.getMessage.contains("overflow"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for divide (division by zero)") {
+    //    TODO : Support ANSI mode in Integral divide -
+    val data = Seq((Integer.MIN_VALUE, 0))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 / _2
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
+            assert(sparkExc.getMessage.contains("Division by zero"))
+          case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for divide (division by zero) float division") {
+    //    TODO : Support ANSI mode in Integral divide -
+    val data = Seq((Float.MinPositiveValue, 0.0))
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withParquetTable(data, "tbl") {
+        val res = spark.sql("""
+                              |SELECT
+                              |  _1 / _2
+                              |  from tbl
+                              |  """.stripMargin)
+
+        checkSparkMaybeThrows(res) match {
+          case (Some(sparkExc), Some(cometExc)) =>
+            assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
+            assert(sparkExc.getMessage.contains("Division by zero"))
+          case _ => fail("Exception should be thrown")
         }
       }
     }

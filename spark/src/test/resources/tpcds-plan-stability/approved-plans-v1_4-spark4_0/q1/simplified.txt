@@ -11,7 +11,7 @@ TakeOrderedAndProject [c_customer_id]
                     CometColumnarToRow
                       InputAdapter
                         CometExchange [sr_customer_sk,sr_store_sk] #1
-                          CometHashAggregate [sr_customer_sk,sr_store_sk,sum,sr_return_amt]
+                          CometHashAggregate [sr_return_amt] [sr_customer_sk,sr_store_sk,sum]
                             CometProject [sr_customer_sk,sr_store_sk,sr_return_amt]
                               CometBroadcastHashJoin [sr_customer_sk,sr_store_sk,sr_return_amt,sr_returned_date_sk,d_date_sk]
                                 CometFilter [sr_customer_sk,sr_store_sk,sr_return_amt,sr_returned_date_sk]
@@ -42,7 +42,7 @@ TakeOrderedAndProject [c_customer_id]
                                       CometColumnarToRow
                                         InputAdapter
                                           CometExchange [sr_customer_sk,sr_store_sk] #6
-                                            CometHashAggregate [sr_customer_sk,sr_store_sk,sum,sr_return_amt]
+                                            CometHashAggregate [sr_return_amt] [sr_customer_sk,sr_store_sk,sum]
                                               CometProject [sr_customer_sk,sr_store_sk,sr_return_amt]
                                                 CometBroadcastHashJoin [sr_customer_sk,sr_store_sk,sr_return_amt,sr_returned_date_sk,d_date_sk]
                                                   CometFilter [sr_customer_sk,sr_store_sk,sr_return_amt,sr_returned_date_sk]

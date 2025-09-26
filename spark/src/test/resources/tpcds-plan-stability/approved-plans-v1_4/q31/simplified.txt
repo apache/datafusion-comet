@@ -2,7 +2,7 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometSort [ca_county,d_year,web_q1_q2_increase,store_q1_q2_increase,web_q2_q3_increase,store_q2_q3_increase]
-        CometColumnarExchange [ca_county] #1
+        CometExchange [ca_county] #1
           CometProject [web_sales,web_sales,store_sales,store_sales,web_sales,store_sales] [ca_county,d_year,web_q1_q2_increase,store_q1_q2_increase,web_q2_q3_increase,store_q2_q3_increase]
             CometBroadcastHashJoin [ca_county,d_year,store_sales,store_sales,store_sales,ca_county,web_sales,web_sales,ca_county,web_sales]
               CometProject [ca_county,d_year,store_sales,store_sales,store_sales,ca_county,web_sales,web_sales]
@@ -11,9 +11,9 @@ WholeStageCodegen (1)
                     CometProject [ca_county,d_year,store_sales,store_sales,store_sales]
                       CometBroadcastHashJoin [ca_county,d_year,store_sales,ca_county,store_sales,ca_county,store_sales]
                         CometBroadcastHashJoin [ca_county,d_year,store_sales,ca_county,store_sales]
-                          CometHashAggregate [ca_county,d_year,store_sales,d_qoy,sum,sum(UnscaledValue(ss_ext_sales_price))]
+                          CometHashAggregate [d_qoy,sum] [ca_county,d_year,store_sales,sum(UnscaledValue(ss_ext_sales_price))]
                             CometExchange [ca_county,d_qoy,d_year] #2
-                              CometHashAggregate [ca_county,d_qoy,d_year,sum,ss_ext_sales_price]
+                              CometHashAggregate [ss_ext_sales_price] [ca_county,d_qoy,d_year,sum]
                                 CometProject [ss_ext_sales_price,d_year,d_qoy,ca_county]
                                   CometBroadcastHashJoin [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy,ca_address_sk,ca_county]
                                     CometProject [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy]
@@ -34,9 +34,9 @@ WholeStageCodegen (1)
                                       CometFilter [ca_address_sk,ca_county]
                                         CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_county]
                           CometBroadcastExchange [ca_county,store_sales] #6
-                            CometHashAggregate [ca_county,store_sales,d_qoy,d_year,sum,sum(UnscaledValue(ss_ext_sales_price))]
+                            CometHashAggregate [d_qoy,d_year,sum] [ca_county,store_sales,sum(UnscaledValue(ss_ext_sales_price))]
                               CometExchange [ca_county,d_qoy,d_year] #7
-                                CometHashAggregate [ca_county,d_qoy,d_year,sum,ss_ext_sales_price]
+                                CometHashAggregate [ss_ext_sales_price] [ca_county,d_qoy,d_year,sum]
                                   CometProject [ss_ext_sales_price,d_year,d_qoy,ca_county]
                                     CometBroadcastHashJoin [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy,ca_address_sk,ca_county]
                                       CometProject [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy]
@@ -55,9 +55,9 @@ WholeStageCodegen (1)
                                               CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
                                       ReusedExchange [ca_address_sk,ca_county] #5
                         CometBroadcastExchange [ca_county,store_sales] #10
-                          CometHashAggregate [ca_county,store_sales,d_qoy,d_year,sum,sum(UnscaledValue(ss_ext_sales_price))]
+                          CometHashAggregate [d_qoy,d_year,sum] [ca_county,store_sales,sum(UnscaledValue(ss_ext_sales_price))]
                             CometExchange [ca_county,d_qoy,d_year] #11
-                              CometHashAggregate [ca_county,d_qoy,d_year,sum,ss_ext_sales_price]
+                              CometHashAggregate [ss_ext_sales_price] [ca_county,d_qoy,d_year,sum]
                                 CometProject [ss_ext_sales_price,d_year,d_qoy,ca_county]
                                   CometBroadcastHashJoin [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy,ca_address_sk,ca_county]
                                     CometProject [ss_addr_sk,ss_ext_sales_price,d_year,d_qoy]
@@ -76,9 +76,9 @@ WholeStageCodegen (1)
                                             CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
                                     ReusedExchange [ca_address_sk,ca_county] #5
                     CometBroadcastExchange [ca_county,web_sales] #14
-                      CometHashAggregate [ca_county,web_sales,d_qoy,d_year,sum,sum(UnscaledValue(ws_ext_sales_price))]
+                      CometHashAggregate [d_qoy,d_year,sum] [ca_county,web_sales,sum(UnscaledValue(ws_ext_sales_price))]
                         CometExchange [ca_county,d_qoy,d_year] #15
-                          CometHashAggregate [ca_county,d_qoy,d_year,sum,ws_ext_sales_price]
+                          CometHashAggregate [ws_ext_sales_price] [ca_county,d_qoy,d_year,sum]
                             CometProject [ws_ext_sales_price,d_year,d_qoy,ca_county]
                               CometBroadcastHashJoin [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy,ca_address_sk,ca_county]
                                 CometProject [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy]
@@ -89,9 +89,9 @@ WholeStageCodegen (1)
                                     ReusedExchange [d_date_sk,d_year,d_qoy] #4
                                 ReusedExchange [ca_address_sk,ca_county] #5
                   CometBroadcastExchange [ca_county,web_sales] #16
-                    CometHashAggregate [ca_county,web_sales,d_qoy,d_year,sum,sum(UnscaledValue(ws_ext_sales_price))]
+                    CometHashAggregate [d_qoy,d_year,sum] [ca_county,web_sales,sum(UnscaledValue(ws_ext_sales_price))]
                       CometExchange [ca_county,d_qoy,d_year] #17
-                        CometHashAggregate [ca_county,d_qoy,d_year,sum,ws_ext_sales_price]
+                        CometHashAggregate [ws_ext_sales_price] [ca_county,d_qoy,d_year,sum]
                           CometProject [ws_ext_sales_price,d_year,d_qoy,ca_county]
                             CometBroadcastHashJoin [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy,ca_address_sk,ca_county]
                               CometProject [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy]
@@ -102,9 +102,9 @@ WholeStageCodegen (1)
                                   ReusedExchange [d_date_sk,d_year,d_qoy] #9
                               ReusedExchange [ca_address_sk,ca_county] #5
               CometBroadcastExchange [ca_county,web_sales] #18
-                CometHashAggregate [ca_county,web_sales,d_qoy,d_year,sum,sum(UnscaledValue(ws_ext_sales_price))]
+                CometHashAggregate [d_qoy,d_year,sum] [ca_county,web_sales,sum(UnscaledValue(ws_ext_sales_price))]
                   CometExchange [ca_county,d_qoy,d_year] #19
-                    CometHashAggregate [ca_county,d_qoy,d_year,sum,ws_ext_sales_price]
+                    CometHashAggregate [ws_ext_sales_price] [ca_county,d_qoy,d_year,sum]
                       CometProject [ws_ext_sales_price,d_year,d_qoy,ca_county]
                         CometBroadcastHashJoin [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy,ca_address_sk,ca_county]
                           CometProject [ws_bill_addr_sk,ws_ext_sales_price,d_year,d_qoy]

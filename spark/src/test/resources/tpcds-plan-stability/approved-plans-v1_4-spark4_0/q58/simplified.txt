@@ -9,7 +9,7 @@ TakeOrderedAndProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev
                 CometColumnarToRow
                   InputAdapter
                     CometExchange [i_item_id] #1
-                      CometHashAggregate [i_item_id,sum,ss_ext_sales_price]
+                      CometHashAggregate [ss_ext_sales_price] [i_item_id,sum]
                         CometProject [ss_ext_sales_price,i_item_id]
                           CometBroadcastHashJoin [ss_ext_sales_price,ss_sold_date_sk,i_item_id,d_date_sk]
                             CometProject [ss_ext_sales_price,ss_sold_date_sk,i_item_id]
@@ -55,7 +55,7 @@ TakeOrderedAndProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev
                       CometColumnarToRow
                         InputAdapter
                           CometExchange [i_item_id] #7
-                            CometHashAggregate [i_item_id,sum,cs_ext_sales_price]
+                            CometHashAggregate [cs_ext_sales_price] [i_item_id,sum]
                               CometProject [cs_ext_sales_price,i_item_id]
                                 CometBroadcastHashJoin [cs_ext_sales_price,cs_sold_date_sk,i_item_id,d_date_sk]
                                   CometProject [cs_ext_sales_price,cs_sold_date_sk,i_item_id]
@@ -73,7 +73,7 @@ TakeOrderedAndProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev
                   CometColumnarToRow
                     InputAdapter
                       CometExchange [i_item_id] #9
-                        CometHashAggregate [i_item_id,sum,ws_ext_sales_price]
+                        CometHashAggregate [ws_ext_sales_price] [i_item_id,sum]
                           CometProject [ws_ext_sales_price,i_item_id]
                             CometBroadcastHashJoin [ws_ext_sales_price,ws_sold_date_sk,i_item_id,d_date_sk]
                               CometProject [ws_ext_sales_price,ws_sold_date_sk,i_item_id]

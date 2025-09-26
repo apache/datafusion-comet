@@ -4,7 +4,7 @@ TakeOrderedAndProject [d_year,ext_price,brand_id,brand]
       CometColumnarToRow
         InputAdapter
           CometExchange [d_year,i_brand,i_brand_id] #1
-            CometHashAggregate [d_year,i_brand,i_brand_id,sum,ss_ext_sales_price]
+            CometHashAggregate [ss_ext_sales_price] [d_year,i_brand,i_brand_id,sum]
               CometProject [d_year,ss_ext_sales_price,i_brand_id,i_brand]
                 CometBroadcastHashJoin [d_year,ss_item_sk,ss_ext_sales_price,i_item_sk,i_brand_id,i_brand]
                   CometProject [d_year,ss_item_sk,ss_ext_sales_price]
