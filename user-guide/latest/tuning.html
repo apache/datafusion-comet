@@ -695,8 +695,6 @@ under the License.
 <p>Comet uses a global tokio runtime per executor process using tokio’s defaults of one worker thread per core and a
 maximum of 512 blocking threads. These values can be overridden using the environment variables <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code>
 and <code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code>.</p>
-<p>DataFusion currently has a known issue when merging spill files in sort operators where the process can deadlock if
-there are more spill files than <code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code> (<a class="reference external" href="https://github.com/apache/datafusion/issues/15323">tracking issue</a>).</p>
 </section>
 <section id="memory-tuning">
 <h2>Memory Tuning<a class="headerlink" href="#memory-tuning" title="Link to this heading">¶</a></h2>
