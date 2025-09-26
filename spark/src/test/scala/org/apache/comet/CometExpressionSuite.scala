@@ -2861,7 +2861,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             randomSize = 10000)
           withParquetTable(path1.toString, "tbl1") {
             withParquetTable(path2.toString, "tbl2") {
-              checkSparkAnswerAndOperator("""
+              val res = spark.sql("""
                   |select
                   | t1._2 div t2._2, div(t1._2, t2._2),
                   | t1._3 div t2._3, div(t1._3, t2._3),
@@ -2872,6 +2872,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   | t1._11 div t2._11, div(t1._11, t2._11)
                   | from tbl1 t1 join tbl2 t2 on t1._id = t2._id
                   | order by t1._id""".stripMargin)
+
+//              res.show(10, false)
+
+              checkSparkAnswerAndOperator(res)
+//              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+//                res.show(10, false)
+//              }
 
               checkSparkAnswerAndOperator("""
                   |select
