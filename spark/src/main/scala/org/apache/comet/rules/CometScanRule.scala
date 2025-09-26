@@ -46,6 +46,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanE
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
+import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -147,9 +148,12 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
         var scanImpl = COMET_NATIVE_SCAN_IMPL.get()
 
+        val hadoopConf = scanExec.relation.sparkSession.sessionState
+          .newHadoopConfWithOptions(scanExec.relation.options)
+
         // if scan is auto then pick the best available scan
         if (scanImpl == SCAN_AUTO) {
-          scanImpl = selectScan(scanExec, r.partitionSchema)
+          scanImpl = selectScan(scanExec, r.partitionSchema, hadoopConf)
         }
 
         if (scanImpl == SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
@@ -194,6 +198,12 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           fallbackReasons +=
             "Full native scan disabled because nested types for default values are not supported"
           return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+        if (scanImpl != CometConf.SCAN_NATIVE_COMET && encryptionEnabled(hadoopConf)) {
+          if (!isEncryptionConfigSupported(hadoopConf)) {
+            return withInfos(scanExec, fallbackReasons.toSet)
+          }
         }
 
         val typeChecker = CometScanTypeChecker(scanImpl)
@@ -287,7 +297,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     }
   }
 
-  private def selectScan(scanExec: FileSourceScanExec, partitionSchema: StructType): String = {
+  private def selectScan(
+      scanExec: FileSourceScanExec,
+      partitionSchema: StructType,
+      hadoopConf: Configuration): String = {
 
     val fallbackReasons = new ListBuffer[String]()
 
@@ -297,10 +310,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
       val filePath = scanExec.relation.inputFiles.headOption
       if (filePath.exists(_.startsWith("s3a://"))) {
-        validateObjectStoreConfig(
-          filePath.get,
-          session.sparkContext.hadoopConfiguration,
-          fallbackReasons)
+        validateObjectStoreConfig(filePath.get, hadoopConf, fallbackReasons)
       }
     } else {
       fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT only supports local filesystem and S3"
