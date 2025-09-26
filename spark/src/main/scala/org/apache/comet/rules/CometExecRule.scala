@@ -609,7 +609,17 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     plan.transformUp { case op =>
-      convertNode(op)
+      val newOp = convertNode(op)
+      // if newOp is not columnar and newOp.children has columnar, we need to add columnar to row
+      if (!newOp.supportsColumnar && !newOp.isInstanceOf[ColumnarToRowTransition]) {
+        val newChildren = newOp.children.map {
+          case c if c.supportsColumnar => CometColumnarToRowExec(c)
+          case other => other
+        }
+        newOp.withNewChildren(newChildren)
+      } else {
+        newOp
+      }
     }
   }
 
