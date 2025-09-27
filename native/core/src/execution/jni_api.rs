@@ -65,6 +65,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
+use datafusion_spark::function::hash::sha1::SparkSha1;
 use tokio::runtime::Runtime;
 
 use crate::execution::memory_pools::{
@@ -303,6 +304,7 @@ fn prepare_datafusion_session_context(
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(CharFunc::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitGet::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
 
     // Must be the last one to override existing functions with the same name
     datafusion_comet_spark_expr::register_all_comet_functions(&mut session_ctx)?;
