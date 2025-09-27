@@ -998,7 +998,8 @@ case class CometScanWrapper(override val nativeOp: Operator, override val origin
 case class CometSinkPlaceHolder(
     override val nativeOp: Operator, // Must be a Scan
     override val originalPlan: SparkPlan,
-    child: SparkPlan)
+    child: SparkPlan,
+    isBroadcast: Boolean = false)
     extends CometUnaryExec {
   override val serializedPlanOpt: SerializedPlan = SerializedPlan(None)
 

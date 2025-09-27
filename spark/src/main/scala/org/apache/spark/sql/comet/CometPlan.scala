@@ -19,9 +19,17 @@
 
 package org.apache.spark.sql.comet
 
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.SparkPlan
 
 /**
  * The base trait for physical Comet operators.
  */
-trait CometPlan extends SparkPlan
+trait CometPlan extends SparkPlan {
+
+  override def setLogicalLink(logicalPlan: LogicalPlan): Unit = {
+    // Don't propagate the logical plan to children, as they may not be CometPlan.
+    setTagValue(SparkPlan.LOGICAL_PLAN_TAG, logicalPlan)
+  }
+
+}

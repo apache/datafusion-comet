@@ -53,6 +53,7 @@ import org.apache.comet.vector.CometPlainVector
  */
 case class CometColumnarToRowExec(child: SparkPlan)
     extends ColumnarToRowTransition
+    with CometPlan
     with CodegenSupport {
   // supportsColumnar requires to be only called on driver side, see also SPARK-37779.
   assert(Utils.isInRunningSparkTask || child.supportsColumnar)
