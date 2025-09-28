@@ -43,7 +43,6 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
-use base64::prelude::*;
 use chrono::{DateTime, NaiveDate, TimeZone, Timelike};
 use datafusion::common::{
     cast::as_generic_string_array, internal_err, DataFusionError, Result as DataFusionResult,
@@ -64,6 +63,8 @@ use std::{
     num::Wrapping,
     sync::Arc,
 };
+
+use base64::prelude::*;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
