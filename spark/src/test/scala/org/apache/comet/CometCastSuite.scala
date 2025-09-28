@@ -322,8 +322,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateInts(), DataTypes.DoubleType)
   }
 
-  ignore("cast IntegerType to DecimalType(10,2)") {
-    // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE] -1117686336 cannot be represented as Decimal(10, 2)
+  test("cast IntegerType to DecimalType(10,2)") {
     castTest(generateInts(), DataTypes.createDecimalType(10, 2))
   }
 
