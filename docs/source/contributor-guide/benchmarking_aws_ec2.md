@@ -39,6 +39,17 @@ sudo yum groupinstall -y "Development Tools"
 export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
 ```
 
+## Generate Benchmark Data
+
+```shell
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+RUSTFLAGS='-C target-cpu=native' cargo install tpchgen-cli
+tpchgen-cli -s 100 --format parquet --parts 32 --output-dir data
+```
+
+Rename the generated directories so that they have a `.parquet` suffix. For example, rename `customer` to
+`customer.parquet`.
+
 ## Install Apache Spark
 
 ```shell
@@ -88,17 +99,6 @@ Set `COMET_JAR` environment variable.
 ```shell
 export COMET_JAR=/home/ec2-user/datafusion-comet/spark/target/comet-spark-spark3.5_2.12-0.11.0-SNAPSHOT.jar
 ```
-
-## Generate Benchmark Data
-
-```shell
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-RUSTFLAGS='-C target-cpu=native' cargo install tpchgen-cli
-tpchgen-cli -s 100 --format parquet --parts 32 --output-dir data
-```
-
-Rename the generated directories so that they have a `.parquet` suffix. For example, rename `customer` to
-`customer.parquet`.
 
 ## Run Benchmarks
 
