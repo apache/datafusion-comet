@@ -297,7 +297,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
     case DataTypes.FloatType | DataTypes.DoubleType =>
       Compatible()
     case _: DecimalType =>
-      Incompatible(Some("No overflow check"))
+      Compatible()
     case _ =>
       unsupported(DataTypes.LongType, toType)
   }

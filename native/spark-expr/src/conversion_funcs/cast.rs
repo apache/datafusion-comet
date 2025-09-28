@@ -19,8 +19,12 @@ use crate::utils::array_with_timezone;
 use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
-use arrow::array::{DictionaryArray, GenericByteArray, StringArray, StructArray};
+use arrow::array::{
+    ArrowNativeTypeOp, Decimal128Builder, DictionaryArray, GenericByteArray, StringArray,
+    StructArray,
+};
 use arrow::compute::can_cast_types;
+use arrow::datatypes::DataType::Float32;
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, DataType, GenericBinaryType, Schema,
 };
@@ -41,6 +45,7 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
+use base64::prelude::*;
 use chrono::{DateTime, NaiveDate, TimeZone, Timelike};
 use datafusion::common::{
     cast::as_generic_string_array, internal_err, DataFusionError, Result as DataFusionResult,
@@ -48,8 +53,9 @@ use datafusion::common::{
 };
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
+use futures::future::err;
 use num::{
-    cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
+    cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num, Signed,
     ToPrimitive,
 };
 use regex::Regex;
@@ -61,8 +67,6 @@ use std::{
     num::Wrapping,
     sync::Arc,
 };
-
-use base64::prelude::*;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -983,6 +987,9 @@ fn cast_array(
         {
             spark_cast_int_to_int(&array, eval_mode, from_type, to_type)
         }
+        (Int8 | Int16 | Int32 | Int64, Decimal128(precision, scale)) => {
+            cast_int_to_decimal128(&array, eval_mode, from_type, to_type, *precision, *scale)
+        }
         (Utf8, Int8 | Int16 | Int32 | Int64) => {
             cast_string_to_int::<i32>(to_type, &array, eval_mode)
         }
@@ -1462,6 +1469,106 @@ where
     OffsetSize: OffsetSizeTrait,
 {
     cast_float_to_string!(from, _eval_mode, f32, Float32Array, OffsetSize)
+}
+
+fn cast_int_to_decimal128_internal<T>(
+    array: &PrimitiveArray<T>,
+    precision: u8,
+    scale: i8,
+    eval_mode: EvalMode,
+) -> SparkResult<ArrayRef>
+where
+    T: ArrowPrimitiveType,
+    T::Native: Into<i128>,
+{
+    let mut builder = Decimal128Builder::with_capacity(array.len());
+    let multiplier = 10_i128.pow(scale as u32);
+
+    for i in 0..array.len() {
+        if array.is_null(i) {
+            builder.append_null();
+        } else {
+            let v = array.value(i).into();
+            let scaled = v.checked_mul(multiplier);
+            match scaled {
+                Some(scaled) => {
+                    if !is_validate_decimal_precision(scaled, precision) {
+                        match eval_mode {
+                            EvalMode::Ansi => {
+                                return Err(SparkError::NumericValueOutOfRange {
+                                    value: v.to_string(),
+                                    precision,
+                                    scale,
+                                });
+                            }
+                            (EvalMode::Try | EvalMode::Legacy) => {
+                                builder.append_null()
+                            }
+                        }
+                    } else {
+                        builder.append_value(scaled);
+                    }
+                }
+                _ => {
+                    return Err(SparkError::NumericValueOutOfRange {
+                        value: v.to_string(),
+                        precision,
+                        scale,
+                    })
+                }
+            }
+        }
+    }
+    Ok(Arc::new(
+        builder.with_precision_and_scale(precision, scale)?.finish(),
+    ))
+}
+fn cast_int_to_decimal128(
+    array: &dyn Array,
+    eval_mode: EvalMode,
+    from_type: &DataType,
+    to_type: &DataType,
+    precision: u8,
+    scale: i8,
+) -> SparkResult<ArrayRef> {
+    match (from_type, to_type) {
+        (DataType::Int8, DataType::Decimal128(p, s)) => {
+            cast_int_to_decimal128_internal::<Int8Type>(
+                array.as_primitive::<Int8Type>(),
+                precision,
+                scale,
+                eval_mode,
+            )
+        }
+        (DataType::Int16, DataType::Decimal128(p, s)) => {
+            cast_int_to_decimal128_internal::<Int16Type>(
+                array.as_primitive::<Int16Type>(),
+                precision,
+                scale,
+                eval_mode,
+            )
+        }
+        (DataType::Int32, DataType::Decimal128(p, s)) => {
+            cast_int_to_decimal128_internal::<Int32Type>(
+                array.as_primitive::<Int32Type>(),
+                precision,
+                scale,
+                eval_mode,
+            )
+        }
+        (DataType::Int64, DataType::Decimal128(p, s)) => {
+            cast_int_to_decimal128_internal::<Int64Type>(
+                array.as_primitive::<Int64Type>(),
+                precision,
+                scale,
+                eval_mode,
+            )
+        }
+        _ => Err(SparkError::Internal(format!(
+            "Unsupported cast from datatype : {}",
+            from_type
+        ))),
+    }
 }
 
 fn spark_cast_int_to_int(
