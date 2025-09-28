@@ -20,11 +20,10 @@ use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
 use arrow::array::{
-    ArrowNativeTypeOp, Decimal128Builder, DictionaryArray, GenericByteArray, StringArray,
+    Decimal128Builder, DictionaryArray, GenericByteArray, StringArray,
     StructArray,
 };
 use arrow::compute::can_cast_types;
-use arrow::datatypes::DataType::Float32;
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, DataType, GenericBinaryType, Schema,
 };
@@ -53,9 +52,8 @@ use datafusion::common::{
 };
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
-use futures::future::err;
 use num::{
-    cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num, Signed,
+    cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
     ToPrimitive,
 };
 use regex::Regex;
@@ -1501,7 +1499,7 @@ where
                                     scale,
                                 });
                             }
-                            (EvalMode::Try | EvalMode::Legacy) => {
+                            EvalMode::Try | EvalMode::Legacy => {
                                 builder.append_null()
                             }
                         }
@@ -1532,7 +1530,7 @@ fn cast_int_to_decimal128(
     scale: i8,
 ) -> SparkResult<ArrayRef> {
     match (from_type, to_type) {
-        (DataType::Int8, DataType::Decimal128(p, s)) => {
+        (DataType::Int8, DataType::Decimal128(_p, _s)) => {
             cast_int_to_decimal128_internal::<Int8Type>(
                 array.as_primitive::<Int8Type>(),
                 precision,
@@ -1540,7 +1538,7 @@ fn cast_int_to_decimal128(
                 eval_mode,
             )
         }
-        (DataType::Int16, DataType::Decimal128(p, s)) => {
+        (DataType::Int16, DataType::Decimal128(_p, _s)) => {
             cast_int_to_decimal128_internal::<Int16Type>(
                 array.as_primitive::<Int16Type>(),
                 precision,
@@ -1548,7 +1546,7 @@ fn cast_int_to_decimal128(
                 eval_mode,
             )
         }
-        (DataType::Int32, DataType::Decimal128(p, s)) => {
+        (DataType::Int32, DataType::Decimal128(_p, _s)) => {
             cast_int_to_decimal128_internal::<Int32Type>(
                 array.as_primitive::<Int32Type>(),
                 precision,
@@ -1556,7 +1554,7 @@ fn cast_int_to_decimal128(
                 eval_mode,
             )
         }
-        (DataType::Int64, DataType::Decimal128(p, s)) => {
+        (DataType::Int64, DataType::Decimal128(_p, _s)) => {
             cast_int_to_decimal128_internal::<Int64Type>(
                 array.as_primitive::<Int64Type>(),
                 precision,
