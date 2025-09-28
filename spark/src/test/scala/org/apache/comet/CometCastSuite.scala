@@ -21,7 +21,6 @@ package org.apache.comet
 
 import java.io.File
 
-import scala.collection.mutable.ListBuffer
 import scala.util.Random
 import scala.util.matching.Regex
 
@@ -35,7 +34,6 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.Compatible
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
