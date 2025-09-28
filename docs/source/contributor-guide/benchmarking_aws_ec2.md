@@ -94,7 +94,7 @@ export COMET_JAR=/home/ec2-user/datafusion-comet/spark/target/comet-spark-spark3
 ```shell
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 RUSTFLAGS='-C target-cpu=native' cargo install tpchgen-cli
-tpchgen-cli -s 100 --format parquet --parts 32
+tpchgen-cli -s 100 --format parquet --parts 32 --output-dir data
 ```
 
 Rename the generated directories so that they have a `.parquet` suffix. For example, rename `customer` to
@@ -107,7 +107,7 @@ Use the scripts in `dev/benchmarks` in the Comet repository.
 ```shell
 cd dev/benchmarks
 export TPCH_QUERIES=/home/ec2-user/datafusion-benchmarks/tpch/queries/
-export TPCH_DATA=/home/ec2-user/
+export TPCH_DATA=/home/ec2-user/data
 ```
 
 Run Spark benchmark:
@@ -131,7 +131,13 @@ This should take around 420 seconds using the recommended instance type.
 Copy the Parquet data to an S3 bucket.
 
 ```shell
-aws s3 cp . s3://your-bucket-name/top-level-folder/ --recursive
+aws s3 cp /home/ec2-user/data s3://your-bucket-name/--recursive
+```
+
+Update `TPCH_DATA` environment variable.
+
+```shell
+export TPCH_DATA=s3a://your-bucket-name
 ```
 
 Install Hadoop jar files:
@@ -152,8 +158,14 @@ aws_secret_access_key=your-secret-key
 Modify the scripts to add the following configurations.
 
 ```shell
-  --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
-  --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
+--conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
+--conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
+```
+
+Make sure that Comet is using `auto` scan implementation.
+
+```shell
+--conf spark.comet.scan.impl=auto \
 ```
 
 Now run the `spark-tpch.sh` and `comet-tpch.sh` scripts.
