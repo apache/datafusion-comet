@@ -20,8 +20,7 @@ use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
 use arrow::array::{
-    Decimal128Builder, DictionaryArray, GenericByteArray, StringArray,
-    StructArray,
+    Decimal128Builder, DictionaryArray, GenericByteArray, StringArray, StructArray,
 };
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{
@@ -1499,9 +1498,7 @@ where
                                     scale,
                                 });
                             }
-                            EvalMode::Try | EvalMode::Legacy => {
-                                builder.append_null()
-                            }
+                            EvalMode::Try | EvalMode::Legacy => builder.append_null(),
                         }
                     } else {
                         builder.append_value(scaled);
