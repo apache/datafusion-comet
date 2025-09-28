@@ -50,6 +50,12 @@ tpchgen-cli -s 100 --format parquet --parts 32 --output-dir data
 Rename the generated directories so that they have a `.parquet` suffix. For example, rename `customer` to
 `customer.parquet`.
 
+Set the `TPCH_DATA` environment variable. This will be referenced by the benchmarking scripts.
+
+```shell
+export TPCH_DATA=/home/ec2-user/data
+```
+
 ## Install Apache Spark
 
 ```shell
@@ -107,7 +113,6 @@ Use the scripts in `dev/benchmarks` in the Comet repository.
 ```shell
 cd dev/benchmarks
 export TPCH_QUERIES=/home/ec2-user/datafusion-benchmarks/tpch/queries/
-export TPCH_DATA=/home/ec2-user/data
 ```
 
 Run Spark benchmark:
