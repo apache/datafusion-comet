@@ -3122,4 +3122,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("test reverse function") {
+    withTable("t1") {
+      sql("create table t1 using parquet as select sequence(id, 10) as c1 from range(10)")
+      // FIXME: Change checkSparkAnswer to checkSparkAnswerAndOperator after resolving
+      //  https://github.com/apache/datafusion-comet/issues/2478
+      checkSparkAnswer("select reverse(c1) AS x FROM t1 ORDER BY c1")
+    }
+  }
 }
