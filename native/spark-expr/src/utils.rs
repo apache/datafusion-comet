@@ -24,7 +24,7 @@ use arrow::{
     },
     buffer::BooleanBuffer,
 };
-use datafusion::logical_expr::EmitTo;
+use datafusion::logical_expr::{ColumnarValue, EmitTo};
 use std::sync::Arc;
 
 use crate::timezone::Tz;
@@ -36,6 +36,7 @@ use arrow::{
     temporal_conversions::as_datetime,
 };
 use chrono::{DateTime, Offset, TimeZone};
+use datafusion::common::{DataFusionError, ScalarValue};
 
 /// Preprocesses input arrays to add timezone information from Spark to Arrow array datatype or
 /// to apply timezone offset.
@@ -238,6 +239,38 @@ pub fn build_bool_state(state: &mut BooleanBufferBuilder, emit_to: &EmitTo) -> B
         EmitTo::First(n) => {
             state.append_buffer(&bool_state.slice(*n, bool_state.len() - n));
             bool_state.slice(0, *n)
+        }
+    }
+}
+
+pub fn make_scalar_function<F>(
+    inner: F,
+) -> impl Fn(&[ColumnarValue]) -> Result<ColumnarValue, DataFusionError>
+where
+    F: Fn(&[ArrayRef]) -> Result<ArrayRef, DataFusionError>,
+{
+    move |args: &[ColumnarValue]| {
+        // first, identify if any of the arguments is an Array. If yes, store its `len`,
+        // as any scalar will need to be converted to an array of len `len`.
+        let len = args
+            .iter()
+            .fold(Option::<usize>::None, |acc, arg| match arg {
+                ColumnarValue::Scalar(_) => acc,
+                ColumnarValue::Array(a) => Some(a.len()),
+            });
+
+        let is_scalar = len.is_none();
+
+        let args = ColumnarValue::values_to_arrays(args)?;
+
+        let result = (inner)(&args);
+
+        if is_scalar {
+            // If all inputs are scalar, keeps output as scalar
+            let result = result.and_then(|arr| ScalarValue::try_from_array(&arr, 0));
+            result.map(ColumnarValue::Scalar)
+        } else {
+            result.map(ColumnarValue::Array)
         }
     }
 }

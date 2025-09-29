@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::utils::make_scalar_function;
 use arrow::array::{
     new_null_array, Array, ArrayRef, Capacities, GenericListArray, ListArray, MutableArrayData,
     NullBufferBuilder, OffsetSizeTrait, UInt64Array,
@@ -29,44 +30,12 @@ use datafusion::common::{exec_err, DataFusionError, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 use std::sync::Arc;
 
-pub fn make_scalar_function<F>(
-    inner: F,
-) -> impl Fn(&[ColumnarValue]) -> Result<ColumnarValue, DataFusionError>
-where
-    F: Fn(&[ArrayRef]) -> Result<ArrayRef, DataFusionError>,
-{
-    move |args: &[ColumnarValue]| {
-        // first, identify if any of the arguments is an Array. If yes, store its `len`,
-        // as any scalar will need to be converted to an array of len `len`.
-        let len = args
-            .iter()
-            .fold(Option::<usize>::None, |acc, arg| match arg {
-                ColumnarValue::Scalar(_) => acc,
-                ColumnarValue::Array(a) => Some(a.len()),
-            });
-
-        let is_scalar = len.is_none();
-
-        let args = ColumnarValue::values_to_arrays(args)?;
-
-        let result = (inner)(&args);
-
-        if is_scalar {
-            // If all inputs are scalar, keeps output as scalar
-            let result = result.and_then(|arr| ScalarValue::try_from_array(&arr, 0));
-            result.map(ColumnarValue::Scalar)
-        } else {
-            result.map(ColumnarValue::Array)
-        }
-    }
-}
-
 pub fn spark_array_repeat(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     make_scalar_function(spark_array_repeat_inner)(args)
 }
 
 /// Array_repeat SQL function
-fn spark_array_repeat_inner(args: &[ArrayRef]) -> datafusion::common::Result<ArrayRef> {
+fn spark_array_repeat_inner(args: &[ArrayRef]) -> Result<ArrayRef, DataFusionError> {
     let element = &args[0];
     let count_array = &args[1];
 
