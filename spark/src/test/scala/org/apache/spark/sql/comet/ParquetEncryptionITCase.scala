@@ -116,6 +116,45 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
           .option(PropertiesDrivenCryptoFactory.FOOTER_KEY_PROPERTY_NAME, "footerKey")
           .parquet(parquetDir)
 
+        verifyParquetEncrypted(parquetDir)
+
+        val parquetDF = spark.read.parquet(parquetDir)
+        assert(parquetDF.inputFiles.nonEmpty)
+        val readDataset = parquetDF.select("a", "b", "c")
+
+        if (CometConf.COMET_ENABLED.get(conf)) {
+          checkSparkAnswerAndOperator(readDataset)
+        } else {
+          checkAnswer(readDataset, inputDF)
+        }
+      }
+    }
+  }
+
+  test("SPARK-42114: Test of uniform parquet encryption") {
+
+    import testImplicits._
+
+    withTempDir { dir =>
+      withSQLConf(
+        DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
+        KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
+          "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
+        InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
+          s"key1: ${key1}") {
+
+        val inputDF = spark
+          .range(0, 2000)
+          .map(i => (i, i.toString, i.toFloat))
+          .repartition(10)
+          .toDF("a", "b", "c")
+        val parquetDir = new File(dir, "parquet").getCanonicalPath
+        inputDF.write
+          .option("parquet.encryption.uniform.key", "key1")
+          .parquet(parquetDir)
+
+        verifyParquetEncrypted(parquetDir)
+
         val parquetDF = spark.read.parquet(parquetDir)
         assert(parquetDF.inputFiles.nonEmpty)
         val readDataset = parquetDF.select("a", "b", "c")
