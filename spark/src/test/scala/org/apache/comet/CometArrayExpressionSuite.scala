@@ -26,10 +26,11 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{CometArrayExcept, CometArrayRemove, CometFlatten}
+import org.apache.comet.serde.{CometArrayExcept, CometArrayRemove, CometArrayReverse, CometFlatten}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -767,10 +768,38 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  test("test reverse function") {
-    withTable("t1") {
-      sql("create table t1 using parquet as select sequence(id, 10) as c1 from range(10)")
-      checkSparkAnswerAndOperator("select reverse(c1) AS x FROM t1 ORDER BY c1")
+  test("array_reverse") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val options = DataGenOptions(
+          allowNull = true,
+          generateNegativeZero = true,
+          generateArray = true,
+          generateStruct = true,
+          generateMap = false)
+        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+      }
+      withSQLConf(
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+        withTempView("t1", "t2") {
+          val table = spark.read.parquet(filename)
+          table.createOrReplaceTempView("t1")
+          val fieldNames =
+            table.schema.fields
+              .filter(filed => CometArrayReverse.isTypeSupported(filed.dataType))
+              .map(_.name)
+          for (fieldName <- fieldNames) {
+            sql(s"SELECT $fieldName as a FROM t1")
+              .createOrReplaceTempView("t2")
+            checkSparkAnswer(sql("SELECT reverse(a) FROM t2"))
+          }
+        }
+      }
     }
   }
 }
