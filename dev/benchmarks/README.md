@@ -22,6 +22,10 @@ under the License.
 This directory contains scripts used for generating benchmark results that are published in this repository and in 
 the Comet documentation.
 
+For full instructions on running these benchmarks on an EC2 instance, see the [Comet Benchmarking on EC2 Guide].
+
+[Comet Benchmarking on EC2 Guide]: https://datafusion.apache.org/comet/contributor-guide/benchmarking_aws_ec2.html
+
 ## Example usage
 
 Set Spark environment variables:
