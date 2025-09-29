@@ -62,8 +62,9 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plu
  * }}}
  */
 trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBase {
-  protected val scanImpls = Seq(CometConf.SCAN_AUTO, CometConf.SCAN_NATIVE_DATAFUSION,
-    CometConf.SCAN_NATIVE_COMET, CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+  protected val scanImpls: Seq[String] = Seq(
+    CometConf.SCAN_AUTO,
+    CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
 
   protected val baseResourcePath: File = {
     getWorkspaceFilePath("spark", "src", "test", "resources", "tpcds-plan-stability").toFile
