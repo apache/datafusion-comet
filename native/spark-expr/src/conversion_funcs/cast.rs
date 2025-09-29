@@ -19,7 +19,7 @@ use crate::utils::array_with_timezone;
 use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
-use arrow::array::{DictionaryArray, GenericByteArray, StringArray, StructArray};
+use arrow::array::{BooleanBuilder, DictionaryArray, GenericByteArray, StringArray, StructArray};
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, DataType, GenericBinaryType, Schema,
@@ -50,7 +50,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
-    ToPrimitive,
+    ToPrimitive, Zero,
 };
 use regex::Regex;
 use std::str::FromStr;
@@ -1015,6 +1015,7 @@ fn cast_array(
         {
             spark_cast_nonintegral_numeric_to_integral(&array, eval_mode, from_type, to_type)
         }
+        (Decimal128(_p, _s), Boolean) => spark_cast_decimal_to_boolean(&array, from_type, to_type),
         (Utf8View, Utf8) => Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?),
         (Struct(_), Utf8) => Ok(casts_struct_to_string(array.as_struct(), cast_options)?),
         (Struct(_), Struct(_)) => Ok(cast_struct_to_struct(
@@ -1528,6 +1529,32 @@ where
     Ok(Arc::new(output_array))
 }
 
+fn spark_cast_decimal_to_boolean(
+    array: &dyn Array,
+    from_type: &DataType,
+    to_type: &DataType,
+) -> SparkResult<ArrayRef> {
+    match (from_type, to_type) {
+        (DataType::Decimal128(_p, _s), DataType::Boolean) => {
+            let decimal_array = array.as_primitive::<Decimal128Type>();
+            let mut result = BooleanBuilder::with_capacity(decimal_array.len());
+            for i in 0..decimal_array.len() {
+                if decimal_array.is_null(i) {
+                    result.append_null()
+                } else if decimal_array.value(i).is_zero() {
+                    result.append_value(false);
+                } else {
+                    result.append_value(true);
+                }
+            }
+            Ok(Arc::new(result.finish()))
+        }
+        _ => panic!(
+            "{}",
+            format!("invalid cast from decimal type: {from_type} to boolean type: {to_type}")
+        ),
+    }
+}
 fn spark_cast_nonintegral_numeric_to_integral(
     array: &dyn Array,
     eval_mode: EvalMode,

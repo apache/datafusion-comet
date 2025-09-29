@@ -505,7 +505,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // CAST from DecimalType(10,2)
 
-  ignore("cast DecimalType(10,2) to BooleanType") {
+  test("cast DecimalType(10,2) to BooleanType") {
     // Arrow error: Cast error: Casting from Decimal128(38, 18) to Boolean not supported
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.BooleanType)
   }
