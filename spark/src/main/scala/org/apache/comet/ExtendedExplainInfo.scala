@@ -89,6 +89,20 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     val eligible = planStats.sparkOperators + planStats.cometOperators
     val converted =
       if (eligible == 0) 0.0 else planStats.cometOperators.toDouble / eligible * 100.0
+    val summary = s"Comet accelerated ${planStats.cometOperators} out of $eligible " +
+      s"eligible operators (${converted.toInt}%). " +
+      s"Final plan contains ${planStats.transitions} transitions."
+    s"${outString.toString()}\n$summary"
+  }
+
+  /** Get the coverage statistics without the full plan */
+  def generateCoverageInfo(plan: SparkPlan): String = {
+    val planStats = new CometCoverageStats()
+    val outString = new StringBuilder()
+    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
+    val eligible = planStats.sparkOperators + planStats.cometOperators
+    val converted =
+      if (eligible == 0) 0.0 else planStats.cometOperators.toDouble / eligible * 100.0
     s"Comet accelerated ${planStats.cometOperators} out of $eligible " +
       s"eligible operators (${converted.toInt}%). " +
       s"Final plan contains ${planStats.transitions} transitions."
