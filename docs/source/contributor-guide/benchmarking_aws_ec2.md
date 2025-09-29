@@ -17,7 +17,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Comet Benchmarking in AWS
+# Comet Benchmarking in EC2
 
 This guide is for setting up benchmarks on AWS EC2 with a single node with Parquet files either located on an
 attached EBS volume, or stored in S3.
@@ -59,17 +59,18 @@ export TPCH_DATA=/home/ec2-user/data
 ## Install Apache Spark
 
 ```shell
-wget https://archive.apache.org/dist/spark/spark-3.5.6/spark-3.5.6-bin-hadoop3.tgz
-tar xzf spark-3.5.6-bin-hadoop3.tgz
-sudo mv spark-3.5.6-bin-hadoop3 /opt
-export SPARK_HOME=/opt/spark-3.5.6-bin-hadoop3/
+export SPARK_VERSION=3.5.6
+wget https://archive.apache.org/dist/spark/spark-$SPARK_VERSION/spark-$SPARK_VERSION-bin-hadoop3.tgz
+tar xzf spark-$SPARK_VERSION-bin-hadoop3.tgz
+sudo mv spark-$SPARK_VERSION-bin-hadoop3 /opt
+export SPARK_HOME=/opt/spark-$SPARK_VERSION-bin-hadoop3/
 mkdir /tmp/spark-events
 ```
 
 Set `SPARK_MASTER` env var (IP address will need to be edited):
 
 ```shell
-export SPARK_MASTER=spark://172.31.34.87:7077
+export SPARK_MASTER=spark://172.31.34.87:7077 
 ```
 
 Set `SPARK_LOCAL_DIRS` to point to EBS volume
@@ -121,15 +122,11 @@ Run Spark benchmark:
 ./spark-tpch.sh
 ```
 
-This should take around 1,000 seconds using the recommended instance type.
-
 Run Comet benchmark:
 
 ```shell
 ./comet-tpch.sh
 ```
-
-This should take around 420 seconds using the recommended instance type.
 
 ## Running Benchmarks with S3
 
@@ -165,12 +162,6 @@ Modify the scripts to add the following configurations.
 ```shell
 --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
 --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
-```
-
-Make sure that Comet is using `auto` scan implementation.
-
-```shell
---conf spark.comet.scan.impl=auto \
 ```
 
 Now run the `spark-tpch.sh` and `comet-tpch.sh` scripts.

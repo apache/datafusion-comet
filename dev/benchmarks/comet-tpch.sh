@@ -43,6 +43,8 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.comet.exec.replaceSortMergeJoin=true \
     --conf spark.comet.expression.allowIncompatible=true \
     --conf spark.comet.scan.impl=native_datafusion \
+    --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
+    --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
     tpcbench.py \
     --name comet \
     --benchmark tpch \
