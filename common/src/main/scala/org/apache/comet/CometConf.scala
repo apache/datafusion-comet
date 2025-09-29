@@ -329,7 +329,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.native.shuffle.partitioning.range.enabled")
       .doc("Whether to enable range partitioning for Comet native shuffle.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
