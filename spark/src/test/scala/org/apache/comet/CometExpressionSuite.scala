@@ -2296,7 +2296,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         for (length <- Seq(2, 10)) {
           checkSparkAnswerAndOperator(
             s"SELECT id, name1, rpad(name1, $length, ' '), rpad('name1', 10, ' ')," +
-              s" rpad(name1, len, name2), rpad('111', 10, name2), rpad(name1, 10, null)," +
+              " rpad(name1, len, name2), rpad('111', 10, name2), rpad(name1, 10, null)," +
               s" rpad(name1, null, name2) FROM $table ORDER BY id")
           checkSparkAnswerAndOperator(
             s"SELECT id, name2, rpad(name2, $length, ' ') FROM $table ORDER BY id")
