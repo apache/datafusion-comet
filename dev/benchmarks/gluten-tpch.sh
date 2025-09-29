@@ -42,6 +42,8 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.gluten.sql.columnar.forceShuffledHashJoin=true \
     --conf spark.shuffle.manager=org.apache.spark.shuffle.sort.ColumnarShuffleManager \
     --conf spark.sql.session.timeZone=UTC \
+    --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
+    --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
     tpcbench.py \
     --name gluten \
     --benchmark tpch \
