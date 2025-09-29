@@ -467,7 +467,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
   test("array_intersect") {
     withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           withTempView("t1") {
@@ -597,7 +596,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             generateMap = false))
       }
       withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-
         withTempView("t1", "t2") {
           val table = spark.read.parquet(filename)
           table.createOrReplaceTempView("t1")
