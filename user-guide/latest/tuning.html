@@ -848,14 +848,14 @@ Shuffle and if that is not possible it will try to use Columnar Shuffle. If neit
 back to Spark for shuffle operations.</p>
 <section id="native-shuffle">
 <h4>Native Shuffle<a class="headerlink" href="#native-shuffle" title="Link to this heading">¶</a></h4>
-<p>Comet provides a fully native shuffle implementation, which generally provides the best performance. However,
-native shuffle currently only supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> and <code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code> and has some restrictions on
-supported data types.</p>
+<p>Comet provides a fully native shuffle implementation, which generally provides the best performance. Native shuffle
+supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code> and <code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code> but currently only supports primitive type
+partitioning keys. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.</p>
 </section>
 <section id="columnar-jvm-shuffle">
 <h4>Columnar (JVM) Shuffle<a class="headerlink" href="#columnar-jvm-shuffle" title="Link to this heading">¶</a></h4>
 <p>Comet Columnar shuffle is JVM-based and supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, and
-<code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code>. This shuffle implementation supports more data types than native shuffle.</p>
+<code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code>. This shuffle implementation supports complex data types as partitioning keys.</p>
 </section>
 </section>
 <section id="shuffle-compression">
