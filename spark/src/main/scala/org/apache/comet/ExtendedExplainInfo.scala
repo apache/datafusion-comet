@@ -89,8 +89,9 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     val eligible = planStats.sparkOperators + planStats.cometOperators
     val converted =
       if (eligible == 0) 0.0 else planStats.cometOperators.toDouble / eligible * 100.0
-    val summary = s"Comet accelerated ${converted.toInt}% of eligible operators ($planStats)."
-    s"${outString.toString()}\n$summary"
+    s"Comet accelerated ${planStats.cometOperators} out of $eligible " +
+      s"eligible operators (${converted.toInt}%). " +
+      s"Final plan contains ${planStats.transitions} transitions."
   }
 
   // Simplified generateTreeString from Spark TreeNode. Appends explain info to the node if any
@@ -105,7 +106,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     node match {
       case _: AdaptiveSparkPlanExec | _: InputAdapter | _: QueryStageExec |
           _: WholeStageCodegenExec | _: ReusedExchangeExec | _: AQEShuffleReadExec =>
-        planStats.wrappers += 1
+      // ignore
       case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
           _: CometSparkToColumnarExec =>
         planStats.transitions += 1
@@ -183,13 +184,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
 class CometCoverageStats {
   var sparkOperators: Int = 0
   var cometOperators: Int = 0
-  var wrappers: Int = 0
   var transitions: Int = 0
-
-  override def toString: String = {
-    s"sparkOperators=$sparkOperators, cometOperators=$cometOperators, " +
-      s"transitions=$transitions, wrappers=$wrappers"
-  }
 }
 
 object CometExplainInfo {
