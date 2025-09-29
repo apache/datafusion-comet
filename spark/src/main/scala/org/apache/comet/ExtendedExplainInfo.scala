@@ -83,7 +83,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
   // generates the extended info in a verbose manner, printing each node along with the
   // extended information in a tree display
   def generateVerboseExtendedInfo(plan: SparkPlan): String = {
-    val planStats = new PlanStats()
+    val planStats = new CometCoverageStats()
     val outString = new StringBuilder()
     generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
     val eligible = planStats.sparkOperators + planStats.cometOperators
@@ -100,7 +100,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       lastChildren: Seq[Boolean],
       indent: Int,
       outString: StringBuilder,
-      planStats: PlanStats): Unit = {
+      planStats: CometCoverageStats): Unit = {
 
     node match {
       case _: AdaptiveSparkPlanExec | _: InputAdapter | _: QueryStageExec |
@@ -180,7 +180,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
   }
 }
 
-class PlanStats {
+class CometCoverageStats {
   var sparkOperators: Int = 0
   var cometOperators: Int = 0
   var wrappers: Int = 0
