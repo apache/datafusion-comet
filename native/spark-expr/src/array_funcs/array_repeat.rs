@@ -26,7 +26,7 @@ use arrow::compute::cast;
 use arrow::datatypes::DataType::{LargeList, List};
 use arrow::datatypes::{DataType, Field};
 use datafusion::common::cast::{as_large_list_array, as_list_array, as_uint64_array};
-use datafusion::common::{exec_err, DataFusionError, ScalarValue};
+use datafusion::common::{exec_err, DataFusionError};
 use datafusion::logical_expr::ColumnarValue;
 use std::sync::Arc;
 
