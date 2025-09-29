@@ -692,4 +692,20 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
     }
   }
+
+  test("array literals") {
+    withSQLConf(
+      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 100)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+          checkSparkAnswerAndOperator(
+            sql("SELECT array(array(1, 2, 3), null, array(), array(null), array(1)) from t1"))
+        }
+      }
+    }
+  }
 }

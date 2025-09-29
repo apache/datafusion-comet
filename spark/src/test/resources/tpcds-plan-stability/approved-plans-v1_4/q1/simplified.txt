@@ -9,9 +9,9 @@ WholeStageCodegen (1)
                 CometProject [ctr_customer_sk,ctr_store_sk]
                   CometBroadcastHashJoin [ctr_customer_sk,ctr_store_sk,ctr_total_return,(avg(ctr_total_return) * 1.2),ctr_store_sk]
                     CometFilter [ctr_customer_sk,ctr_store_sk,ctr_total_return]
-                      CometHashAggregate [ctr_customer_sk,ctr_store_sk,ctr_total_return,sr_customer_sk,sr_store_sk,sum,sum(UnscaledValue(sr_return_amt))]
+                      CometHashAggregate [sum] [ctr_customer_sk,ctr_store_sk,ctr_total_return,sr_customer_sk,sr_store_sk,sum(UnscaledValue(sr_return_amt))]
                         CometExchange [sr_customer_sk,sr_store_sk] #1
-                          CometHashAggregate [sr_customer_sk,sr_store_sk,sum,sr_return_amt]
+                          CometHashAggregate [sr_return_amt] [sr_customer_sk,sr_store_sk,sum]
                             CometProject [sr_customer_sk,sr_store_sk,sr_return_amt]
                               CometBroadcastHashJoin [sr_customer_sk,sr_store_sk,sr_return_amt,sr_returned_date_sk,d_date_sk]
                                 CometFilter [sr_customer_sk,sr_store_sk,sr_return_amt,sr_returned_date_sk]
@@ -30,12 +30,12 @@ WholeStageCodegen (1)
                                       CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                     CometBroadcastExchange [(avg(ctr_total_return) * 1.2),ctr_store_sk] #4
                       CometFilter [(avg(ctr_total_return) * 1.2),ctr_store_sk]
-                        CometHashAggregate [(avg(ctr_total_return) * 1.2),ctr_store_sk,ctr_store_sk,sum,count,avg(ctr_total_return)]
+                        CometHashAggregate [sum,count] [(avg(ctr_total_return) * 1.2),ctr_store_sk,avg(ctr_total_return),ctr_store_sk]
                           CometExchange [ctr_store_sk] #5
-                            CometHashAggregate [ctr_store_sk,sum,count,ctr_total_return]
-                              CometHashAggregate [ctr_store_sk,ctr_total_return,sr_customer_sk,sr_store_sk,sum,sum(UnscaledValue(sr_return_amt))]
+                            CometHashAggregate [ctr_total_return] [ctr_store_sk,sum,count]
+                              CometHashAggregate [sr_customer_sk,sum] [ctr_store_sk,ctr_total_return,sr_store_sk,sum(UnscaledValue(sr_return_amt))]
                                 CometExchange [sr_customer_sk,sr_store_sk] #6
-                                  CometHashAggregate [sr_customer_sk,sr_store_sk,sum,sr_return_amt]
+                                  CometHashAggregate [sr_return_amt] [sr_customer_sk,sr_store_sk,sum]
                                     CometProject [sr_customer_sk,sr_store_sk,sr_return_amt]
                                       CometBroadcastHashJoin [sr_customer_sk,sr_store_sk,sr_return_amt,sr_returned_date_sk,d_date_sk]
                                         CometFilter [sr_customer_sk,sr_store_sk,sr_return_amt,sr_returned_date_sk]

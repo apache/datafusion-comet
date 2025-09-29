@@ -3,7 +3,7 @@ WholeStageCodegen (1)
     InputAdapter
       CometTakeOrderedAndProject [state,cnt,ca_state]
         CometFilter [state,cnt,ca_state]
-          CometHashAggregate [state,cnt,ca_state,count,count(1)]
+          CometHashAggregate [count] [state,cnt,ca_state,count(1)]
             CometExchange [ca_state] #1
               CometHashAggregate [ca_state,count]
                 CometProject [ca_state]
@@ -53,9 +53,9 @@ WholeStageCodegen (1)
                             CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_current_price,i_category]
                           CometBroadcastExchange [avg(i_current_price),i_category] #8
                             CometFilter [avg(i_current_price),i_category]
-                              CometHashAggregate [avg(i_current_price),i_category,sum,count,avg(UnscaledValue(i_current_price))]
+                              CometHashAggregate [sum,count] [avg(i_current_price),i_category,avg(UnscaledValue(i_current_price))]
                                 CometExchange [i_category] #9
-                                  CometHashAggregate [i_category,sum,count,i_current_price]
+                                  CometHashAggregate [i_current_price] [i_category,sum,count]
                                     CometProject [i_category] [i_current_price,i_category]
                                       CometFilter [i_current_price,i_category]
                                         CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_current_price,i_category]

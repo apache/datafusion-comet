@@ -43,7 +43,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04]
         java-version: [17]
-        spark-version: [{short: '4.0', full: '4.0.0'}]
+        spark-version: [{short: '4.0', full: '4.0.1'}]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql/core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}

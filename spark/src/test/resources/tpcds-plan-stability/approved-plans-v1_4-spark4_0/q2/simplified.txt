@@ -12,7 +12,7 @@ WholeStageCodegen (5)
                       CometColumnarToRow
                         InputAdapter
                           CometExchange [d_week_seq] #2
-                            CometHashAggregate [d_week_seq,sum,sum,sum,sum,sum,sum,sum,d_day_name,sales_price]
+                            CometHashAggregate [d_day_name,sales_price] [d_week_seq,sum,sum,sum,sum,sum,sum,sum]
                               CometProject [sales_price,d_week_seq,d_day_name]
                                 CometBroadcastHashJoin [sold_date_sk,sales_price,d_date_sk,d_week_seq,d_day_name]
                                   CometUnion [sold_date_sk,sales_price]

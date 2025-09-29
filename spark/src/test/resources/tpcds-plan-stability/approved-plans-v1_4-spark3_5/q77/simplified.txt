@@ -14,9 +14,9 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                           InputAdapter
                             CometProject [returns,profit,profit_loss,s_store_sk] [sales,returns,profit,channel,id]
                               CometBroadcastHashJoin [s_store_sk,sales,profit,s_store_sk,returns,profit_loss]
-                                CometHashAggregate [s_store_sk,sales,profit,sum,sum,sum(UnscaledValue(ss_ext_sales_price)),sum(UnscaledValue(ss_net_profit))]
+                                CometHashAggregate [sum,sum] [s_store_sk,sales,profit,sum(UnscaledValue(ss_ext_sales_price)),sum(UnscaledValue(ss_net_profit))]
                                   CometExchange [s_store_sk] #2
-                                    CometHashAggregate [s_store_sk,sum,sum,ss_ext_sales_price,ss_net_profit]
+                                    CometHashAggregate [ss_ext_sales_price,ss_net_profit] [s_store_sk,sum,sum]
                                       CometProject [ss_ext_sales_price,ss_net_profit,s_store_sk]
                                         CometBroadcastHashJoin [ss_store_sk,ss_ext_sales_price,ss_net_profit,s_store_sk]
                                           CometProject [ss_store_sk,ss_ext_sales_price,ss_net_profit]
@@ -39,9 +39,9 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                             CometFilter [s_store_sk]
                                               CometScan [native_iceberg_compat] parquet spark_catalog.default.store [s_store_sk]
                                 CometBroadcastExchange [s_store_sk,returns,profit_loss] #6
-                                  CometHashAggregate [s_store_sk,returns,profit_loss,sum,sum,sum(UnscaledValue(sr_return_amt)),sum(UnscaledValue(sr_net_loss))]
+                                  CometHashAggregate [sum,sum] [s_store_sk,returns,profit_loss,sum(UnscaledValue(sr_return_amt)),sum(UnscaledValue(sr_net_loss))]
                                     CometExchange [s_store_sk] #7
-                                      CometHashAggregate [s_store_sk,sum,sum,sr_return_amt,sr_net_loss]
+                                      CometHashAggregate [sr_return_amt,sr_net_loss] [s_store_sk,sum,sum]
                                         CometProject [sr_return_amt,sr_net_loss,s_store_sk]
                                           CometBroadcastHashJoin [sr_store_sk,sr_return_amt,sr_net_loss,s_store_sk]
                                             CometProject [sr_store_sk,sr_return_amt,sr_net_loss]
@@ -59,9 +59,9 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                 WholeStageCodegen (2)
                                   CometColumnarToRow
                                     InputAdapter
-                                      CometHashAggregate [cs_call_center_sk,sales,profit,sum,sum,sum(UnscaledValue(cs_ext_sales_price)),sum(UnscaledValue(cs_net_profit))]
+                                      CometHashAggregate [sum,sum] [cs_call_center_sk,sales,profit,sum(UnscaledValue(cs_ext_sales_price)),sum(UnscaledValue(cs_net_profit))]
                                         CometExchange [cs_call_center_sk] #9
-                                          CometHashAggregate [cs_call_center_sk,sum,sum,cs_ext_sales_price,cs_net_profit]
+                                          CometHashAggregate [cs_ext_sales_price,cs_net_profit] [cs_call_center_sk,sum,sum]
                                             CometProject [cs_call_center_sk,cs_ext_sales_price,cs_net_profit]
                                               CometBroadcastHashJoin [cs_call_center_sk,cs_ext_sales_price,cs_net_profit,cs_sold_date_sk,d_date_sk]
                                                 CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_call_center_sk,cs_ext_sales_price,cs_net_profit,cs_sold_date_sk]
@@ -69,9 +69,9 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                                 ReusedExchange [d_date_sk] #4
                             CometColumnarToRow
                               InputAdapter
-                                CometHashAggregate [returns,profit_loss,sum,sum,sum(UnscaledValue(cr_return_amount)),sum(UnscaledValue(cr_net_loss))]
+                                CometHashAggregate [sum,sum] [returns,profit_loss,sum(UnscaledValue(cr_return_amount)),sum(UnscaledValue(cr_net_loss))]
                                   CometExchange #10
-                                    CometHashAggregate [sum,sum,cr_return_amount,cr_net_loss]
+                                    CometHashAggregate [cr_return_amount,cr_net_loss] [sum,sum]
                                       CometProject [cr_return_amount,cr_net_loss]
                                         CometBroadcastHashJoin [cr_return_amount,cr_net_loss,cr_returned_date_sk,d_date_sk]
                                           CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_returns [cr_return_amount,cr_net_loss,cr_returned_date_sk]
@@ -82,9 +82,9 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                           InputAdapter
                             CometProject [returns,profit,profit_loss,wp_web_page_sk] [sales,returns,profit,channel,id]
                               CometBroadcastHashJoin [wp_web_page_sk,sales,profit,wp_web_page_sk,returns,profit_loss]
-                                CometHashAggregate [wp_web_page_sk,sales,profit,sum,sum,sum(UnscaledValue(ws_ext_sales_price)),sum(UnscaledValue(ws_net_profit))]
+                                CometHashAggregate [sum,sum] [wp_web_page_sk,sales,profit,sum(UnscaledValue(ws_ext_sales_price)),sum(UnscaledValue(ws_net_profit))]
                                   CometExchange [wp_web_page_sk] #11
-                                    CometHashAggregate [wp_web_page_sk,sum,sum,ws_ext_sales_price,ws_net_profit]
+                                    CometHashAggregate [ws_ext_sales_price,ws_net_profit] [wp_web_page_sk,sum,sum]
                                       CometProject [ws_ext_sales_price,ws_net_profit,wp_web_page_sk]
                                         CometBroadcastHashJoin [ws_web_page_sk,ws_ext_sales_price,ws_net_profit,wp_web_page_sk]
                                           CometProject [ws_web_page_sk,ws_ext_sales_price,ws_net_profit]
@@ -97,9 +97,9 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                             CometFilter [wp_web_page_sk]
                                               CometScan [native_iceberg_compat] parquet spark_catalog.default.web_page [wp_web_page_sk]
                                 CometBroadcastExchange [wp_web_page_sk,returns,profit_loss] #13
-                                  CometHashAggregate [wp_web_page_sk,returns,profit_loss,sum,sum,sum(UnscaledValue(wr_return_amt)),sum(UnscaledValue(wr_net_loss))]
+                                  CometHashAggregate [sum,sum] [wp_web_page_sk,returns,profit_loss,sum(UnscaledValue(wr_return_amt)),sum(UnscaledValue(wr_net_loss))]
                                     CometExchange [wp_web_page_sk] #14
-                                      CometHashAggregate [wp_web_page_sk,sum,sum,wr_return_amt,wr_net_loss]
+                                      CometHashAggregate [wr_return_amt,wr_net_loss] [wp_web_page_sk,sum,sum]
                                         CometProject [wr_return_amt,wr_net_loss,wp_web_page_sk]
                                           CometBroadcastHashJoin [wr_web_page_sk,wr_return_amt,wr_net_loss,wp_web_page_sk]
                                             CometProject [wr_web_page_sk,wr_return_amt,wr_net_loss]

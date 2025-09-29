@@ -3,11 +3,11 @@ WholeStageCodegen (1)
     InputAdapter
       CometTakeOrderedAndProject [i_product_name,i_brand,i_class,i_category,qoh]
         CometUnion [i_product_name,i_brand,i_class,i_category,qoh]
-          CometHashAggregate [i_product_name,i_brand,i_class,i_category,qoh,i_product_name,i_brand,i_class,i_category,sum,count,avg(qoh)]
-            CometHashAggregate [i_product_name,i_brand,i_class,i_category,sum,count,qoh]
-              CometHashAggregate [i_product_name,i_brand,i_class,i_category,qoh,sum,count,avg(inv_quantity_on_hand)]
+          CometHashAggregate [sum,count] [i_product_name,i_brand,i_class,i_category,qoh,i_product_name,i_brand,i_class,i_category,avg(qoh)]
+            CometHashAggregate [qoh] [i_product_name,i_brand,i_class,i_category,sum,count]
+              CometHashAggregate [sum,count] [i_product_name,i_brand,i_class,i_category,qoh,avg(inv_quantity_on_hand)]
                 CometExchange [i_product_name,i_brand,i_class,i_category] #1
-                  CometHashAggregate [i_product_name,i_brand,i_class,i_category,sum,count,inv_quantity_on_hand]
+                  CometHashAggregate [inv_quantity_on_hand] [i_product_name,i_brand,i_class,i_category,sum,count]
                     CometProject [inv_quantity_on_hand,i_brand,i_class,i_category,i_product_name]
                       CometBroadcastHashJoin [inv_warehouse_sk,inv_quantity_on_hand,i_brand,i_class,i_category,i_product_name,w_warehouse_sk]
                         CometProject [inv_warehouse_sk,inv_quantity_on_hand,i_brand,i_class,i_category,i_product_name]
@@ -35,23 +35,23 @@ WholeStageCodegen (1)
                         CometBroadcastExchange [w_warehouse_sk] #5
                           CometFilter [w_warehouse_sk]
                             CometScan [native_iceberg_compat] parquet spark_catalog.default.warehouse [w_warehouse_sk]
-          CometHashAggregate [i_product_name,i_brand,i_class,i_category,qoh,sum,count,avg(qoh)]
+          CometHashAggregate [sum,count] [i_product_name,i_brand,i_class,i_category,qoh,avg(qoh)]
             CometExchange [i_product_name,i_brand,i_class] #6
-              CometHashAggregate [i_product_name,i_brand,i_class,sum,count,qoh]
-                CometHashAggregate [i_product_name,i_brand,i_class,qoh,i_category,sum,count,avg(inv_quantity_on_hand)]
+              CometHashAggregate [qoh] [i_product_name,i_brand,i_class,sum,count]
+                CometHashAggregate [i_category,sum,count] [i_product_name,i_brand,i_class,qoh,avg(inv_quantity_on_hand)]
                   ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
-          CometHashAggregate [i_product_name,i_brand,i_class,i_category,qoh,sum,count,avg(qoh)]
+          CometHashAggregate [sum,count] [i_product_name,i_brand,i_class,i_category,qoh,avg(qoh)]
             CometExchange [i_product_name,i_brand] #7
-              CometHashAggregate [i_product_name,i_brand,sum,count,qoh]
-                CometHashAggregate [i_product_name,i_brand,qoh,i_class,i_category,sum,count,avg(inv_quantity_on_hand)]
+              CometHashAggregate [qoh] [i_product_name,i_brand,sum,count]
+                CometHashAggregate [i_class,i_category,sum,count] [i_product_name,i_brand,qoh,avg(inv_quantity_on_hand)]
                   ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
-          CometHashAggregate [i_product_name,i_brand,i_class,i_category,qoh,sum,count,avg(qoh)]
+          CometHashAggregate [sum,count] [i_product_name,i_brand,i_class,i_category,qoh,avg(qoh)]
             CometExchange [i_product_name] #8
-              CometHashAggregate [i_product_name,sum,count,qoh]
-                CometHashAggregate [i_product_name,qoh,i_brand,i_class,i_category,sum,count,avg(inv_quantity_on_hand)]
+              CometHashAggregate [qoh] [i_product_name,sum,count]
+                CometHashAggregate [i_brand,i_class,i_category,sum,count] [i_product_name,qoh,avg(inv_quantity_on_hand)]
                   ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1
-          CometHashAggregate [i_product_name,i_brand,i_class,i_category,qoh,sum,count,avg(qoh)]
+          CometHashAggregate [sum,count] [i_product_name,i_brand,i_class,i_category,qoh,avg(qoh)]
             CometExchange #9
-              CometHashAggregate [sum,count,qoh]
-                CometHashAggregate [qoh,i_product_name,i_brand,i_class,i_category,sum,count,avg(inv_quantity_on_hand)]
+              CometHashAggregate [qoh] [sum,count]
+                CometHashAggregate [i_product_name,i_brand,i_class,i_category,sum,count] [qoh,avg(inv_quantity_on_hand)]
                   ReusedExchange [i_product_name,i_brand,i_class,i_category,sum,count] #1

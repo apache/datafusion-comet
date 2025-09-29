@@ -3,9 +3,9 @@ WholeStageCodegen (1)
     InputAdapter
       CometTakeOrderedAndProject [w_warehouse_name,i_item_id,inv_before,inv_after]
         CometFilter [w_warehouse_name,i_item_id,inv_before,inv_after]
-          CometHashAggregate [w_warehouse_name,i_item_id,inv_before,inv_after,sum,sum,sum(CASE WHEN (d_date < 2000-03-11) THEN inv_quantity_on_hand ELSE 0 END),sum(CASE WHEN (d_date >= 2000-03-11) THEN inv_quantity_on_hand ELSE 0 END)]
+          CometHashAggregate [sum,sum] [w_warehouse_name,i_item_id,inv_before,inv_after,sum(CASE WHEN (d_date < 2000-03-11) THEN inv_quantity_on_hand ELSE 0 END),sum(CASE WHEN (d_date >= 2000-03-11) THEN inv_quantity_on_hand ELSE 0 END)]
             CometExchange [w_warehouse_name,i_item_id] #1
-              CometHashAggregate [w_warehouse_name,i_item_id,sum,sum,d_date,inv_quantity_on_hand]
+              CometHashAggregate [d_date,inv_quantity_on_hand] [w_warehouse_name,i_item_id,sum,sum]
                 CometProject [inv_quantity_on_hand,w_warehouse_name,i_item_id,d_date]
                   CometBroadcastHashJoin [inv_quantity_on_hand,inv_date_sk,w_warehouse_name,i_item_id,d_date_sk,d_date]
                     CometProject [inv_quantity_on_hand,inv_date_sk,w_warehouse_name,i_item_id]

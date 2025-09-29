@@ -27,9 +27,6 @@ Comet uses a global tokio runtime per executor process using tokio's defaults of
 maximum of 512 blocking threads. These values can be overridden using the environment variables `COMET_WORKER_THREADS`
 and `COMET_MAX_BLOCKING_THREADS`.
 
-DataFusion currently has a known issue when merging spill files in sort operators where the process can deadlock if
-there are more spill files than `COMET_MAX_BLOCKING_THREADS` ([tracking issue](https://github.com/apache/datafusion/issues/15323)).
-
 ## Memory Tuning
 
 It is necessary to specify how much memory Comet can use in addition to memory already allocated to Spark. In some
@@ -211,14 +208,14 @@ back to Spark for shuffle operations.
 
 #### Native Shuffle
 
-Comet provides a fully native shuffle implementation, which generally provides the best performance. However,
-native shuffle currently only supports `HashPartitioning` and `SinglePartitioning` and has some restrictions on
-supported data types.
+Comet provides a fully native shuffle implementation, which generally provides the best performance. Native shuffle
+supports `HashPartitioning`, `RangePartitioning` and `SinglePartitioning` but currently only supports primitive type
+partitioning keys. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
 
 #### Columnar (JVM) Shuffle
 
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
-`SinglePartitioning`. This shuffle implementation supports more data types than native shuffle.
+`SinglePartitioning`. This shuffle implementation supports complex data types as partitioning keys.
 
 ### Shuffle Compression
 

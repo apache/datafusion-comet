@@ -156,7 +156,16 @@ case class CometScanExec(
   }
 
   @transient
-  private lazy val pushedDownFilters = getPushedDownFilters(relation, dataFilters)
+  private lazy val pushedDownFilters = {
+    val supportedFilters = if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION) {
+      // `native_datafusion` scan does not support subquery pushdown filters,
+      // see: https://github.com/apache/datafusion-comet/issues/2424
+      dataFilters.filterNot(isDynamicPruningFilter)
+    } else {
+      dataFilters
+    }
+    getPushedDownFilters(relation, supportedFilters)
+  }
 
   override lazy val metadata: Map[String, String] =
     if (wrapped == null) Map.empty else wrapped.metadata

@@ -8,7 +8,7 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
               InputAdapter
                 CometSort [total_sum,s_state,s_county,lochierarchy,_w0]
                   CometExchange [lochierarchy,_w0] #1
-                    CometHashAggregate [total_sum,s_state,s_county,lochierarchy,_w0,g_state,g_county]
+                    CometHashAggregate [g_state] [total_sum,s_state,s_county,lochierarchy,_w0,g_county]
                       CometColumnarExchange [total_sum,s_state,s_county,g_state,g_county,lochierarchy] #2
                         WholeStageCodegen (18)
                           HashAggregate [total_sum,s_state,s_county,g_state,g_county,lochierarchy]
@@ -64,7 +64,7 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                                                                   CometColumnarToRow
                                                                                     InputAdapter
                                                                                       CometExchange [s_state] #8
-                                                                                        CometHashAggregate [s_state,sum,ss_net_profit]
+                                                                                        CometHashAggregate [ss_net_profit] [s_state,sum]
                                                                                           CometProject [ss_net_profit,s_state]
                                                                                             CometBroadcastHashJoin [ss_net_profit,ss_sold_date_sk,s_state,d_date_sk]
                                                                                               CometProject [ss_net_profit,ss_sold_date_sk,s_state]

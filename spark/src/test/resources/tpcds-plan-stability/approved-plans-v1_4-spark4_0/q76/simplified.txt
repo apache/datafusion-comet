@@ -4,7 +4,7 @@ TakeOrderedAndProject [channel,col_name,d_year,d_qoy,i_category,sales_cnt,sales_
       CometColumnarToRow
         InputAdapter
           CometExchange [channel,col_name,d_year,d_qoy,i_category] #1
-            CometHashAggregate [channel,col_name,d_year,d_qoy,i_category,count,sum,ext_sales_price]
+            CometHashAggregate [ext_sales_price] [channel,col_name,d_year,d_qoy,i_category,count,sum]
               CometUnion [channel,col_name,d_year,d_qoy,i_category,ext_sales_price]
                 CometProject [ss_store_sk,ss_ext_sales_price] [channel,col_name,d_year,d_qoy,i_category,ext_sales_price]
                   CometBroadcastHashJoin [ss_store_sk,ss_ext_sales_price,ss_sold_date_sk,i_category,d_date_sk,d_year,d_qoy]

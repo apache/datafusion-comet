@@ -64,7 +64,10 @@ pub use conditional_funcs::*;
 pub use conversion_funcs::*;
 pub use nondetermenistic_funcs::*;
 
-pub use comet_scalar_funcs::{create_comet_physical_fun, register_all_comet_functions};
+pub use comet_scalar_funcs::{
+    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode,
+    register_all_comet_functions,
+};
 pub use datetime_funcs::{
     spark_date_add, spark_date_sub, SparkDateTrunc, SparkHour, SparkMinute, SparkSecond,
     TimestampTruncExpr,
@@ -96,6 +99,15 @@ pub enum EvalMode {
     /// Same as Ansi mode, except that it converts errors to NULL values without
     /// failing the entire query.
     Try,
+}
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub enum BinaryOutputStyle {
+    Utf8,
+    Basic,
+    Base64,
+    Hex,
+    HexDiscrete,
 }
 
 pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {

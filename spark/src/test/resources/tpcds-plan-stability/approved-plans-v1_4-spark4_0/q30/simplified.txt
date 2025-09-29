@@ -11,7 +11,7 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,c_pre
                     CometColumnarToRow
                       InputAdapter
                         CometExchange [wr_returning_customer_sk,ca_state] #1
-                          CometHashAggregate [wr_returning_customer_sk,ca_state,sum,wr_return_amt]
+                          CometHashAggregate [wr_return_amt] [wr_returning_customer_sk,ca_state,sum]
                             CometProject [wr_returning_customer_sk,wr_return_amt,ca_state]
                               CometBroadcastHashJoin [wr_returning_customer_sk,wr_returning_addr_sk,wr_return_amt,ca_address_sk,ca_state]
                                 CometProject [wr_returning_customer_sk,wr_returning_addr_sk,wr_return_amt]
@@ -48,7 +48,7 @@ TakeOrderedAndProject [c_customer_id,c_salutation,c_first_name,c_last_name,c_pre
                                       CometColumnarToRow
                                         InputAdapter
                                           CometExchange [wr_returning_customer_sk,ca_state] #7
-                                            CometHashAggregate [wr_returning_customer_sk,ca_state,sum,wr_return_amt]
+                                            CometHashAggregate [wr_return_amt] [wr_returning_customer_sk,ca_state,sum]
                                               CometProject [wr_returning_customer_sk,wr_return_amt,ca_state]
                                                 CometBroadcastHashJoin [wr_returning_customer_sk,wr_returning_addr_sk,wr_return_amt,ca_address_sk,ca_state]
                                                   CometProject [wr_returning_customer_sk,wr_returning_addr_sk,wr_return_amt]

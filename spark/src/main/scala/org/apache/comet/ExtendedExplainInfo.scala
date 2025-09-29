@@ -201,6 +201,7 @@ object CometExplainInfo {
       case p: InputAdapter => getActualPlan(p.child)
       case p: QueryStageExec => getActualPlan(p.plan)
       case p: WholeStageCodegenExec => getActualPlan(p.child)
+      case p: ReusedExchangeExec => getActualPlan(p.child)
       case p => p
     }
   }
