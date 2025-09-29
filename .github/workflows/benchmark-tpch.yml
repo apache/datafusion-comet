@@ -69,6 +69,8 @@ jobs:
         with:
           path: ./tpch
           key: tpch-${{ hashFiles('.github/workflows/benchmark-tpch.yml') }}
+      - name: Build Comet
+        run: make release
       - name: Generate TPC-H (SF=1) table data
         if: steps.cache-tpch-sf-1.outputs.cache-hit != 'true'
         run: |

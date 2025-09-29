@@ -63,7 +63,8 @@ jobs:
           key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
             ${{ runner.os }}-java-maven-
-
+      - name: Build Comet
+        run: make release
       - name: Cache TPC-DS generated data
         id: cache-tpcds-sf-1
         uses: actions/cache@v4
