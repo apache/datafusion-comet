@@ -20,9 +20,11 @@
 package org.apache.comet.serde
 
 import scala.annotation.tailrec
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArrayUnion, ArraysOverlap, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, Literal, Reverse}
+
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, Literal, Reverse}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.CometExprShim
@@ -432,9 +434,9 @@ object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
 
 object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
   override def convert(
-                        expr: Reverse,
-                        inputs: Seq[Attribute],
-                        binding: Boolean): Option[ExprOuterClass.Expr] = {
+      expr: Reverse,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
     val reverseExprProto = exprToProto(expr.child, inputs, binding)
     val reverseScalarExpr = scalarFunctionExprToProto("array_reverse", reverseExprProto)
     optExprWithInfo(reverseScalarExpr, expr, expr.children: _*)
