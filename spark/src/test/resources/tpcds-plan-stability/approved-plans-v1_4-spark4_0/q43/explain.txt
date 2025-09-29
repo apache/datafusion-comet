@@ -39,7 +39,7 @@ Arguments: [d_date_sk#1, d_day_name#4], [d_date_sk#1, static_invoke(CharVarcharC
 Output [3]: [ss_store_sk#5, ss_sales_price#6, ss_sold_date_sk#7]
 Batched: true
 Location: InMemoryFileIndex []
-PartitionFilters: [isnotnull(ss_sold_date_sk#7), dynamicpruningexpression(true)]
+PartitionFilters: [isnotnull(ss_sold_date_sk#7)]
 PushedFilters: [IsNotNull(ss_store_sk)]
 ReadSchema: struct<ss_store_sk:int,ss_sales_price:decimal(7,2)>
 

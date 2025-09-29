@@ -23,40 +23,30 @@ WholeStageCodegen (1)
                             CometBroadcastExchange [ss_item_sk,ss_customer_sk,ss_sold_date_sk] #3
                               CometFilter [ss_item_sk,ss_customer_sk,ss_sold_date_sk]
                                 CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_sold_date_sk]
-                                  SubqueryBroadcast [d_date_sk] #1
-                                    BroadcastExchange #4
-                                      WholeStageCodegen (1)
-                                        CometColumnarToRow
-                                          InputAdapter
-                                            CometProject [d_date_sk]
-                                              CometFilter [d_date_sk,d_month_seq]
-                                                ReusedSubquery [d_month_seq] #2
-                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
-                                                  Subquery #2
-                                                    WholeStageCodegen (1)
-                                                      CometColumnarToRow
-                                                        InputAdapter
-                                                          CometHashAggregate [d_month_seq]
-                                                            CometExchange [d_month_seq] #5
-                                                              CometHashAggregate [d_month_seq]
-                                                                CometProject [d_month_seq]
-                                                                  CometFilter [d_month_seq,d_year,d_moy]
-                                                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_month_seq,d_year,d_moy]
-                        CometBroadcastExchange [d_date_sk] #6
+                        CometBroadcastExchange [d_date_sk] #4
                           CometProject [d_date_sk]
                             CometFilter [d_date_sk,d_month_seq]
-                              ReusedSubquery [d_month_seq] #2
+                              ReusedSubquery [d_month_seq] #1
                               CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
-                                ReusedSubquery [d_month_seq] #2
-                    CometBroadcastExchange [i_item_sk] #7
+                                Subquery #1
+                                  WholeStageCodegen (1)
+                                    CometColumnarToRow
+                                      InputAdapter
+                                        CometHashAggregate [d_month_seq]
+                                          CometExchange [d_month_seq] #5
+                                            CometHashAggregate [d_month_seq]
+                                              CometProject [d_month_seq]
+                                                CometFilter [d_month_seq,d_year,d_moy]
+                                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_month_seq,d_year,d_moy]
+                    CometBroadcastExchange [i_item_sk] #6
                       CometProject [i_item_sk]
                         CometBroadcastHashJoin [i_item_sk,i_current_price,i_category,avg(i_current_price),i_category]
                           CometFilter [i_item_sk,i_current_price,i_category]
                             CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_current_price,i_category]
-                          CometBroadcastExchange [avg(i_current_price),i_category] #8
+                          CometBroadcastExchange [avg(i_current_price),i_category] #7
                             CometFilter [avg(i_current_price),i_category]
                               CometHashAggregate [sum,count] [avg(i_current_price),i_category,avg(UnscaledValue(i_current_price))]
-                                CometExchange [i_category] #9
+                                CometExchange [i_category] #8
                                   CometHashAggregate [i_current_price] [i_category,sum,count]
                                     CometProject [i_category] [i_category,i_current_price]
                                       CometFilter [i_current_price,i_category]

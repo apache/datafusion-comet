@@ -27,18 +27,10 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,s_store_name,i_category,i_cla
                                               CometBroadcastExchange [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk] #3
                                                 CometFilter [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
                                                   CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
-                                                    SubqueryBroadcast [d_date_sk] #1
-                                                      BroadcastExchange #4
-                                                        WholeStageCodegen (1)
-                                                          CometColumnarToRow
-                                                            InputAdapter
-                                                              CometProject [d_date_sk,d_moy]
-                                                                CometFilter [d_date_sk,d_year,d_moy]
-                                                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                          CometBroadcastExchange [d_date_sk,d_moy] #5
+                                          CometBroadcastExchange [d_date_sk,d_moy] #4
                                             CometProject [d_date_sk,d_moy]
                                               CometFilter [d_date_sk,d_year,d_moy]
                                                 CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                      CometBroadcastExchange [s_store_sk,s_store_name,s_company_name] #6
+                                      CometBroadcastExchange [s_store_sk,s_store_name,s_company_name] #5
                                         CometFilter [s_store_sk,s_store_name,s_company_name]
                                           CometScan [native_iceberg_compat] parquet spark_catalog.default.store [s_store_sk,s_store_name,s_company_name]

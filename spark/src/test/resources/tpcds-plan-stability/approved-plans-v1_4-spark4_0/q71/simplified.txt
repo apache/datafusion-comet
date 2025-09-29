@@ -22,15 +22,7 @@ WholeStageCodegen (2)
                                   CometBroadcastHashJoin [ws_sold_time_sk,ws_item_sk,ws_ext_sales_price,ws_sold_date_sk,d_date_sk]
                                     CometFilter [ws_sold_time_sk,ws_item_sk,ws_ext_sales_price,ws_sold_date_sk]
                                       CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales [ws_sold_time_sk,ws_item_sk,ws_ext_sales_price,ws_sold_date_sk]
-                                        SubqueryBroadcast [d_date_sk] #1
-                                          BroadcastExchange #4
-                                            WholeStageCodegen (1)
-                                              CometColumnarToRow
-                                                InputAdapter
-                                                  CometProject [d_date_sk]
-                                                    CometFilter [d_date_sk,d_year,d_moy]
-                                                      CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-                                    CometBroadcastExchange [d_date_sk] #5
+                                    CometBroadcastExchange [d_date_sk] #4
                                       CometProject [d_date_sk]
                                         CometFilter [d_date_sk,d_year,d_moy]
                                           CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
@@ -38,15 +30,13 @@ WholeStageCodegen (2)
                                   CometBroadcastHashJoin [cs_sold_time_sk,cs_item_sk,cs_ext_sales_price,cs_sold_date_sk,d_date_sk]
                                     CometFilter [cs_sold_time_sk,cs_item_sk,cs_ext_sales_price,cs_sold_date_sk]
                                       CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_sold_time_sk,cs_item_sk,cs_ext_sales_price,cs_sold_date_sk]
-                                        ReusedSubquery [d_date_sk] #1
-                                    ReusedExchange [d_date_sk] #5
+                                    ReusedExchange [d_date_sk] #4
                                 CometProject [ss_ext_sales_price,ss_item_sk,ss_sold_time_sk] [ext_price,sold_item_sk,time_sk]
                                   CometBroadcastHashJoin [ss_sold_time_sk,ss_item_sk,ss_ext_sales_price,ss_sold_date_sk,d_date_sk]
                                     CometFilter [ss_sold_time_sk,ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
                                       CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_sold_time_sk,ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
-                                        ReusedSubquery [d_date_sk] #1
-                                    ReusedExchange [d_date_sk] #5
-                          CometBroadcastExchange [t_time_sk,t_hour,t_minute] #6
+                                    ReusedExchange [d_date_sk] #4
+                          CometBroadcastExchange [t_time_sk,t_hour,t_minute] #5
                             CometProject [t_time_sk,t_hour,t_minute]
                               CometFilter [t_time_sk,t_hour,t_minute,t_meal_time]
                                 CometScan [native_iceberg_compat] parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute,t_meal_time]
