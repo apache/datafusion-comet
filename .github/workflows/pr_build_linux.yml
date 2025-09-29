@@ -94,10 +94,10 @@ jobs:
             maven_opts: "-Pspark-3.5 -Pscala-2.12"
             scan_impl: "native_iceberg_compat"
 
-          - name: "Spark 4.0, JDK 17, auto"
+          - name: "Spark 4.0, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.0"
-            scan_impl: "auto"
+            scan_impl: "native_comet"
         suite:
           - name: "fuzz"
             value: |
