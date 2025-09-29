@@ -101,6 +101,14 @@ class CometExecIterator(
     }
     val protobufSparkConfigs = builder.build().toByteArray
 
+    val memoryLimitPerTask = if (offHeapMode) {
+      // this per-task limit is not used in native code when using unified memory
+      // so we can skip calculating it and avoid logging irrelevant information
+      0
+    } else {
+      getMemoryLimitPerTask(conf)
+    }
+
     // Create keyUnwrapper if encryption is enabled
     val keyUnwrapper = if (encryptedFilePaths.nonEmpty) {
       val unwrapper = new CometFileKeyUnwrapper()
@@ -129,7 +137,7 @@ class CometExecIterator(
       offHeapMode,
       memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
       memoryLimit,
-      memoryLimitPerTask = getMemoryLimitPerTask(conf),
+      memoryLimitPerTask,
       taskAttemptId = TaskContext.get().taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
       explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
