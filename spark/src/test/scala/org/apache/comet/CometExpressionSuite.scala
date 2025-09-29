@@ -2282,21 +2282,22 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           s"create table $table(id int, name1 char(8), name2 varchar(8), len int) using parquet")
         val testData = gen.generateStrings(100, dataChars, 6) ++ Seq(
           "é", // unicode 'e\\u{301}'
-          "é" // unicode '\\u{e9}'
-        )
+          "é", // unicode '\\u{e9}'
+          null)
         testData.zipWithIndex.foreach { x =>
           val len = Random.nextInt(10)
           sql(s"insert into $table values(${x._2}, '${x._1}', '${x._1}', $len)")
         }
         // test 2-arg version
         checkSparkAnswerAndOperator(
-          "SELECT id, rpad(name1, 10), rpad(name2, 10), rpad('111', 10)," +
-            s" rpad('11', len), rpad(name1, len) FROM $table ORDER BY id")
+          "SELECT id, rpad(name1, 10), rpad(name2, 10), rpad('111', 10), rpad('111', null)," +
+            s" rpad('11', len), rpad(name1, len), rpad(name1, null) FROM $table ORDER BY id")
         // test 3-arg version
         for (length <- Seq(2, 10)) {
           checkSparkAnswerAndOperator(
             s"SELECT id, name1, rpad(name1, $length, ' '), rpad('name1', 10, ' ')," +
-              s" rpad(name1, len, name2), rpad('111', 10, name2) FROM $table ORDER BY id")
+              s" rpad(name1, len, name2), rpad('111', 10, name2), rpad(name1, 10, null)," +
+              s" rpad(name1, null, name2) FROM $table ORDER BY id")
           checkSparkAnswerAndOperator(
             s"SELECT id, name2, rpad(name2, $length, ' ') FROM $table ORDER BY id")
         }

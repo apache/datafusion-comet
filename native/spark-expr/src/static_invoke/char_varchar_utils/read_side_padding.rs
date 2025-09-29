@@ -119,10 +119,10 @@ fn spark_read_side_padding_space_internal<T: OffsetSizeTrait>(
     );
 
     for (string, length) in string_array.iter().zip(int_pad_array) {
-        match string {
-            Some(string) => builder.append_value(add_padding_string(
+        match (string, length) {
+            (Some(string), Some(length)) => builder.append_value(add_padding_string(
                 string.parse().unwrap(),
-                length.unwrap() as usize,
+                length as usize,
                 truncate,
                 SPACE,
             )?),
@@ -152,13 +152,15 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait, O: OffsetSizeTrait, S: O
         .zip(int_pad_array)
         .zip(pad_string_array.iter())
     {
-        match string {
-            Some(string) => builder.append_value(add_padding_string(
-                string.parse().unwrap(),
-                length.unwrap() as usize,
-                truncate,
-                pad_string.unwrap_or(SPACE),
-            )?),
+        match (string, length, pad_string) {
+            (Some(string), Some(length), Some(pad_string)) => {
+                builder.append_value(add_padding_string(
+                    string.parse().unwrap(),
+                    length as usize,
+                    truncate,
+                    pad_string,
+                )?)
+            }
             _ => builder.append_null(),
         }
     }
