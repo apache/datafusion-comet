@@ -435,13 +435,6 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
                         expr: Reverse,
                         inputs: Seq[Attribute],
                         binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val inputTypes = expr.children.map(_.dataType).toSet
-    for (dt <- inputTypes) {
-      if (!isTypeSupported(dt)) {
-        withInfo(expr, s"data type not supported: $dt")
-        return None
-      }
-    }
     val reverseExprProto = exprToProto(expr.child, inputs, binding)
     val reverseScalarExpr = scalarFunctionExprToProto("array_reverse", reverseExprProto)
     optExprWithInfo(reverseScalarExpr, expr, expr.children: _*)
