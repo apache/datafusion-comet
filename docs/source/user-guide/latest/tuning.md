@@ -208,14 +208,14 @@ back to Spark for shuffle operations.
 
 #### Native Shuffle
 
-Comet provides a fully native shuffle implementation, which generally provides the best performance. However,
-native shuffle currently only supports `HashPartitioning` and `SinglePartitioning` and has some restrictions on
-supported data types.
+Comet provides a fully native shuffle implementation, which generally provides the best performance. Native shuffle
+supports `HashPartitioning`, `RangePartitioning` and `SinglePartitioning` but currently only supports primitive type
+partitioning keys. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
 
 #### Columnar (JVM) Shuffle
 
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
-`SinglePartitioning`. This shuffle implementation supports more data types than native shuffle.
+`SinglePartitioning`. This shuffle implementation supports complex data types as partitioning keys.
 
 ### Shuffle Compression
 
