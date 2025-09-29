@@ -34,7 +34,7 @@ edition = "2021"
 rust-version = "1.86"
 
 [workspace.dependencies]
-arrow = { version = "56.0.0", features = ["prettyprint", "ffi", "chrono-tz"] }
+arrow = { version = "=56.0.0", features = ["prettyprint", "ffi", "chrono-tz"] }
 async-trait = { version = "0.1" }
 bytes = { version = "1.10.0" }
 parquet = { version = "=56.0.0", default-features = false, features = ["experimental"] }
