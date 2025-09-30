@@ -790,7 +790,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           table.createOrReplaceTempView("t1")
           val fieldNames =
             table.schema.fields
-              .filter(filed => CometArrayReverse.isTypeSupported(filed.dataType))
+              .filter(field => CometArrayReverse.isTypeSupported(field.dataType))
               .map(_.name)
           for (fieldName <- fieldNames) {
             sql(s"SELECT $fieldName as a FROM t1")
