@@ -413,8 +413,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       boolean encryptionEnabled = CometParquetUtils.encryptionEnabled(conf);
 
       // Create keyUnwrapper if encryption is enabled
-      CometFileKeyUnwrapper keyUnwrapper = encryptionEnabled ? new CometFileKeyUnwrapper() : null;
+      CometFileKeyUnwrapper keyUnwrapper = null;
       if (encryptionEnabled) {
+        keyUnwrapper = new CometFileKeyUnwrapper();
         keyUnwrapper.storeDecryptionKeyRetriever(file.filePath().toString(), conf);
       }
 
