@@ -23,24 +23,16 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                             CometBroadcastHashJoin [ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk,d_date_sk]
                                               CometFilter [ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
                                                 CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
-                                                  SubqueryBroadcast [d_date_sk] #1
-                                                    BroadcastExchange #3
-                                                      WholeStageCodegen (1)
-                                                        CometColumnarToRow
-                                                          InputAdapter
-                                                            CometProject [d_date_sk]
-                                                              CometFilter [d_date_sk,d_date]
-                                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]
-                                              CometBroadcastExchange [d_date_sk] #4
+                                              CometBroadcastExchange [d_date_sk] #3
                                                 CometProject [d_date_sk]
                                                   CometFilter [d_date_sk,d_date]
                                                     CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]
-                                          CometBroadcastExchange [s_store_sk] #5
+                                          CometBroadcastExchange [s_store_sk] #4
                                             CometFilter [s_store_sk]
                                               CometScan [native_iceberg_compat] parquet spark_catalog.default.store [s_store_sk]
-                                CometBroadcastExchange [s_store_sk,returns,profit_loss] #6
+                                CometBroadcastExchange [s_store_sk,returns,profit_loss] #5
                                   CometHashAggregate [sum,sum] [s_store_sk,returns,profit_loss,sum(UnscaledValue(sr_return_amt)),sum(UnscaledValue(sr_net_loss))]
-                                    CometExchange [s_store_sk] #7
+                                    CometExchange [s_store_sk] #6
                                       CometHashAggregate [sr_return_amt,sr_net_loss] [s_store_sk,sum,sum]
                                         CometProject [sr_return_amt,sr_net_loss,s_store_sk]
                                           CometBroadcastHashJoin [sr_store_sk,sr_return_amt,sr_net_loss,s_store_sk]
@@ -48,42 +40,39 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                               CometBroadcastHashJoin [sr_store_sk,sr_return_amt,sr_net_loss,sr_returned_date_sk,d_date_sk]
                                                 CometFilter [sr_store_sk,sr_return_amt,sr_net_loss,sr_returned_date_sk]
                                                   CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns [sr_store_sk,sr_return_amt,sr_net_loss,sr_returned_date_sk]
-                                                    ReusedSubquery [d_date_sk] #1
-                                                ReusedExchange [d_date_sk] #4
-                                            ReusedExchange [s_store_sk] #5
+                                                ReusedExchange [d_date_sk] #3
+                                            ReusedExchange [s_store_sk] #4
                       WholeStageCodegen (3)
                         Project [sales,returns,profit,profit_loss,cs_call_center_sk]
                           BroadcastNestedLoopJoin
                             InputAdapter
-                              BroadcastExchange #8
+                              BroadcastExchange #7
                                 WholeStageCodegen (2)
                                   CometColumnarToRow
                                     InputAdapter
                                       CometHashAggregate [sum,sum] [cs_call_center_sk,sales,profit,sum(UnscaledValue(cs_ext_sales_price)),sum(UnscaledValue(cs_net_profit))]
-                                        CometExchange [cs_call_center_sk] #9
+                                        CometExchange [cs_call_center_sk] #8
                                           CometHashAggregate [cs_ext_sales_price,cs_net_profit] [cs_call_center_sk,sum,sum]
                                             CometProject [cs_call_center_sk,cs_ext_sales_price,cs_net_profit]
                                               CometBroadcastHashJoin [cs_call_center_sk,cs_ext_sales_price,cs_net_profit,cs_sold_date_sk,d_date_sk]
                                                 CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_call_center_sk,cs_ext_sales_price,cs_net_profit,cs_sold_date_sk]
-                                                  ReusedSubquery [d_date_sk] #1
-                                                ReusedExchange [d_date_sk] #4
+                                                ReusedExchange [d_date_sk] #3
                             CometColumnarToRow
                               InputAdapter
                                 CometHashAggregate [sum,sum] [returns,profit_loss,sum(UnscaledValue(cr_return_amount)),sum(UnscaledValue(cr_net_loss))]
-                                  CometExchange #10
+                                  CometExchange #9
                                     CometHashAggregate [cr_return_amount,cr_net_loss] [sum,sum]
                                       CometProject [cr_return_amount,cr_net_loss]
                                         CometBroadcastHashJoin [cr_return_amount,cr_net_loss,cr_returned_date_sk,d_date_sk]
                                           CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_returns [cr_return_amount,cr_net_loss,cr_returned_date_sk]
-                                            ReusedSubquery [d_date_sk] #1
-                                          ReusedExchange [d_date_sk] #4
+                                          ReusedExchange [d_date_sk] #3
                       WholeStageCodegen (4)
                         CometColumnarToRow
                           InputAdapter
                             CometProject [returns,profit,profit_loss,wp_web_page_sk] [sales,returns,profit,channel,id]
                               CometBroadcastHashJoin [wp_web_page_sk,sales,profit,wp_web_page_sk,returns,profit_loss]
                                 CometHashAggregate [sum,sum] [wp_web_page_sk,sales,profit,sum(UnscaledValue(ws_ext_sales_price)),sum(UnscaledValue(ws_net_profit))]
-                                  CometExchange [wp_web_page_sk] #11
+                                  CometExchange [wp_web_page_sk] #10
                                     CometHashAggregate [ws_ext_sales_price,ws_net_profit] [wp_web_page_sk,sum,sum]
                                       CometProject [ws_ext_sales_price,ws_net_profit,wp_web_page_sk]
                                         CometBroadcastHashJoin [ws_web_page_sk,ws_ext_sales_price,ws_net_profit,wp_web_page_sk]
@@ -91,14 +80,13 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                             CometBroadcastHashJoin [ws_web_page_sk,ws_ext_sales_price,ws_net_profit,ws_sold_date_sk,d_date_sk]
                                               CometFilter [ws_web_page_sk,ws_ext_sales_price,ws_net_profit,ws_sold_date_sk]
                                                 CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales [ws_web_page_sk,ws_ext_sales_price,ws_net_profit,ws_sold_date_sk]
-                                                  ReusedSubquery [d_date_sk] #1
-                                              ReusedExchange [d_date_sk] #4
-                                          CometBroadcastExchange [wp_web_page_sk] #12
+                                              ReusedExchange [d_date_sk] #3
+                                          CometBroadcastExchange [wp_web_page_sk] #11
                                             CometFilter [wp_web_page_sk]
                                               CometScan [native_iceberg_compat] parquet spark_catalog.default.web_page [wp_web_page_sk]
-                                CometBroadcastExchange [wp_web_page_sk,returns,profit_loss] #13
+                                CometBroadcastExchange [wp_web_page_sk,returns,profit_loss] #12
                                   CometHashAggregate [sum,sum] [wp_web_page_sk,returns,profit_loss,sum(UnscaledValue(wr_return_amt)),sum(UnscaledValue(wr_net_loss))]
-                                    CometExchange [wp_web_page_sk] #14
+                                    CometExchange [wp_web_page_sk] #13
                                       CometHashAggregate [wr_return_amt,wr_net_loss] [wp_web_page_sk,sum,sum]
                                         CometProject [wr_return_amt,wr_net_loss,wp_web_page_sk]
                                           CometBroadcastHashJoin [wr_web_page_sk,wr_return_amt,wr_net_loss,wp_web_page_sk]
@@ -106,6 +94,5 @@ TakeOrderedAndProject [channel,id,sales,returns,profit]
                                               CometBroadcastHashJoin [wr_web_page_sk,wr_return_amt,wr_net_loss,wr_returned_date_sk,d_date_sk]
                                                 CometFilter [wr_web_page_sk,wr_return_amt,wr_net_loss,wr_returned_date_sk]
                                                   CometScan [native_iceberg_compat] parquet spark_catalog.default.web_returns [wr_web_page_sk,wr_return_amt,wr_net_loss,wr_returned_date_sk]
-                                                    ReusedSubquery [d_date_sk] #1
-                                                ReusedExchange [d_date_sk] #4
-                                            ReusedExchange [wp_web_page_sk] #12
+                                                ReusedExchange [d_date_sk] #3
+                                            ReusedExchange [wp_web_page_sk] #11
