@@ -86,13 +86,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     val planStats = new CometCoverageStats()
     val outString = new StringBuilder()
     generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
-    val eligible = planStats.sparkOperators + planStats.cometOperators
-    val converted =
-      if (eligible == 0) 0.0 else planStats.cometOperators.toDouble / eligible * 100.0
-    val summary = s"Comet accelerated ${planStats.cometOperators} out of $eligible " +
-      s"eligible operators (${converted.toInt}%). " +
-      s"Final plan contains ${planStats.transitions} transitions."
-    s"${outString.toString()}\n$summary"
+    s"${outString.toString()}\n$planStats"
   }
 
   /** Get the coverage statistics without the full plan */
@@ -100,12 +94,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     val planStats = new CometCoverageStats()
     val outString = new StringBuilder()
     generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
-    val eligible = planStats.sparkOperators + planStats.cometOperators
-    val converted =
-      if (eligible == 0) 0.0 else planStats.cometOperators.toDouble / eligible * 100.0
-    s"Comet accelerated ${planStats.cometOperators} out of $eligible " +
-      s"eligible operators (${converted.toInt}%). " +
-      s"Final plan contains ${planStats.transitions} transitions between Spark and Comet."
+    planStats.toString()
   }
 
   // Simplified generateTreeString from Spark TreeNode. Appends explain info to the node if any
@@ -199,6 +188,15 @@ class CometCoverageStats {
   var sparkOperators: Int = 0
   var cometOperators: Int = 0
   var transitions: Int = 0
+
+  override def toString(): String = {
+    val eligible = sparkOperators + cometOperators
+    val converted =
+      if (eligible == 0) 0.0 else cometOperators.toDouble / eligible * 100.0
+    s"Comet accelerated $cometOperators out of $eligible " +
+      s"eligible operators (${converted.toInt}%). " +
+      s"Final plan contains $transitions transitions between Spark and Comet."
+  }
 }
 
 object CometExplainInfo {
@@ -213,6 +211,7 @@ object CometExplainInfo {
       case p: ReusedExchangeExec => getActualPlan(p.child)
       case p => p
     }
+
   }
 
 }
