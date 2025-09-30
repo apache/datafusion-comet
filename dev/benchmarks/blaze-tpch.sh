@@ -42,6 +42,8 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.shuffle.manager=org.apache.spark.sql.execution.blaze.shuffle.BlazeShuffleManager \
     --conf spark.blaze.enable=true \
     --conf spark.blaze.forceShuffledHashJoin=true \
+    --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
+    --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
     tpcbench.py \
     --name blaze \
     --benchmark tpch \
