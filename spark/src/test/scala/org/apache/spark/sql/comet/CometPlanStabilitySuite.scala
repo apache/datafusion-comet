@@ -24,6 +24,8 @@ import java.nio.charset.StandardCharsets
 
 import scala.collection.mutable
 
+import org.junit.ComparisonFailure
+
 import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkContext
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE}
@@ -152,35 +154,33 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       FileUtils.writeStringToFile(actualSimplifiedFile, actualSimplified, StandardCharsets.UTF_8)
       FileUtils.writeStringToFile(actualExplainFile, actualExplain, StandardCharsets.UTF_8)
 
-      // compare simplified and explain plans separately
-      if (approvedSimplified != actualSimplified) {
-        fail(s"""
-                |Plans did not match:
-                |last approved simplified plan: ${approvedSimplifiedFile.getAbsolutePath}
-                |
-                |$approvedSimplified
-                |
-                |actual simplified plan: ${actualSimplifiedFile.getAbsolutePath}
-                |
-                |$actualSimplified
-        """.stripMargin)
+      comparePlans(
+        "simplified",
+        approvedSimplified,
+        actualSimplified,
+        approvedSimplifiedFile,
+        actualSimplifiedFile)
 
-      } else if (approvedExplain != actualExplain) {
-        fail(s"""
-                |Plans did not match:
-                |last approved explain plan: ${approvedExplainFile.getAbsolutePath}
-                |
-                |$approvedExplain
-                |
-                |actual explain plan: ${actualExplainFile.getAbsolutePath}
-                |
-                |$actualExplain
-        """.stripMargin)
+      comparePlans(
+        "explain",
+        approvedExplain,
+        actualExplain,
+        approvedExplainFile,
+        actualExplainFile)
+    }
+  }
 
-      } else {
-        // isApproved returned false, so one of the above checks must be triggered
-        fail("unreachable")
-      }
+  private def comparePlans(
+      planType: String,
+      expected: String,
+      actual: String,
+      expectedFile: File,
+      actualFile: File): Unit = {
+    if (expected != actual) {
+      val message =
+        s"Expected $planType plan in ${expectedFile.getAbsolutePath} did not match " +
+          s"actual $planType plan in ${actualFile.getAbsolutePath}"
+      throw new ComparisonFailure(message, expected, actual)
     }
   }
 
