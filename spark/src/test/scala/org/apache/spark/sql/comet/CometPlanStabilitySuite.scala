@@ -181,6 +181,10 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     if (expected != actual) {
       val message =
         s"Expected $planType plan in ${expectedFile.getAbsolutePath} did not match actual $planType plan in ${actualFile.getAbsolutePath}"
+
+      // verbose logging to make it easier to debug issues in CI
+      Console.err.println(s"$message:\nEXPECTED: $expected\nACTUAL: $actual")
+
       throw new ComparisonFailure(message, expected, actual)
     }
   }
