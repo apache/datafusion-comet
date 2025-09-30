@@ -109,67 +109,54 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
    * Serialize and save this SparkPlan. The resulting file is used by [[checkWithApproved]] to
    * check stability.
    *
-   * @param plan
-   *   the SparkPlan
+   * @param dir
+   *   the directory to write to
    * @param name
-   *   the name of the query
+   *   the simplified plan
    * @param explain
    *   the full explain output; this is saved to help debug later as the simplified plan is not
    *   too useful for debugging
    */
-  private def generateGoldenFile(plan: SparkPlan, name: String, explain: String): Unit = {
-    val dir = getDirForTest(name)
-    val simplified = getSimplifiedPlan(plan)
-    val foundMatch = dir.exists() && isApproved(dir, simplified, explain)
-
-    if (!foundMatch) {
-      FileUtils.deleteDirectory(dir)
-      if (!dir.mkdirs()) {
-        fail(s"Could not create dir: $dir")
-      }
-
-      val file = new File(dir, "simplified.txt")
-      FileUtils.writeStringToFile(file, simplified, StandardCharsets.UTF_8)
-      val fileOriginalPlan = new File(dir, "explain.txt")
-      FileUtils.writeStringToFile(fileOriginalPlan, explain, StandardCharsets.UTF_8)
-      logDebug(s"APPROVED: $file $fileOriginalPlan")
+  private def generateGoldenFile(dir: File, simplified: String, explain: String): Unit = {
+    FileUtils.deleteDirectory(dir)
+    if (!dir.mkdirs()) {
+      fail(s"Could not create dir: $dir")
     }
+
+    val file = new File(dir, "simplified.txt")
+    FileUtils.writeStringToFile(file, simplified, StandardCharsets.UTF_8)
+    val fileOriginalPlan = new File(dir, "explain.txt")
+    FileUtils.writeStringToFile(fileOriginalPlan, explain, StandardCharsets.UTF_8)
+    logDebug(s"APPROVED: $file $fileOriginalPlan")
   }
 
-  private def checkWithApproved(plan: SparkPlan, name: String, actualExplain: String): Unit = {
-    val dir = getDirForTest(name)
+  private def checkWithApproved(
+      dir: File,
+      name: String,
+      simplified: String,
+      explain: String): Unit = {
+    // read approved files
+    val approvedSimplifiedFile = new File(dir, "simplified.txt")
+    val approvedExplainFile = new File(dir, "explain.txt")
+    val approvedSimplified =
+      FileUtils.readFileToString(approvedSimplifiedFile, StandardCharsets.UTF_8)
+    val approvedExplain =
+      FileUtils.readFileToString(approvedExplainFile, StandardCharsets.UTF_8)
+
+    // write actual files out for debugging
     val tempDir = FileUtils.getTempDirectory
-    val actualSimplified = getSimplifiedPlan(plan)
-    val foundMatch = isApproved(dir, actualSimplified, actualExplain)
+    val actualSimplifiedFile = new File(tempDir, s"$name.actual.simplified.txt")
+    val actualExplainFile = new File(tempDir, s"$name.actual.explain.txt")
+    FileUtils.writeStringToFile(actualSimplifiedFile, simplified, StandardCharsets.UTF_8)
+    FileUtils.writeStringToFile(actualExplainFile, explain, StandardCharsets.UTF_8)
 
-    if (!foundMatch) {
-      // read approved files
-      val approvedSimplifiedFile = new File(dir, "simplified.txt")
-      val approvedExplainFile = new File(dir, "explain.txt")
-      val approvedSimplified =
-        FileUtils.readFileToString(approvedSimplifiedFile, StandardCharsets.UTF_8)
-      val approvedExplain =
-        FileUtils.readFileToString(approvedExplainFile, StandardCharsets.UTF_8)
-
-      // write actual files out for debugging
-      val actualSimplifiedFile = new File(tempDir, s"$name.actual.simplified.txt")
-      val actualExplainFile = new File(tempDir, s"$name.actual.explain.txt")
-      FileUtils.writeStringToFile(actualSimplifiedFile, actualSimplified, StandardCharsets.UTF_8)
-      FileUtils.writeStringToFile(actualExplainFile, actualExplain, StandardCharsets.UTF_8)
-
-      comparePlans(
-        "simplified",
-        approvedSimplified,
-        actualSimplified,
-        approvedSimplifiedFile,
-        actualSimplifiedFile)
-      comparePlans(
-        "explain",
-        approvedExplain,
-        actualExplain,
-        approvedExplainFile,
-        actualExplainFile)
-    }
+    comparePlans(
+      "simplified",
+      approvedSimplified,
+      simplified,
+      approvedSimplifiedFile,
+      actualSimplifiedFile)
+    comparePlans("explain", approvedExplain, explain, approvedExplainFile, actualExplainFile)
   }
 
   private def comparePlans(
@@ -302,13 +289,19 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       val qe = sql(queryString).queryExecution
       val plan = qe.executedPlan
       val explain = normalizeLocation(normalizeIds(qe.explainString(FormattedMode)))
-
+      val simplified = getSimplifiedPlan(plan)
       assert(ValidateRequirements.validate(plan))
 
-      if (regenerateGoldenFiles) {
-        generateGoldenFile(plan, query + suffix, explain)
-      } else {
-        checkWithApproved(plan, query + suffix, explain)
+      val name = query + suffix
+      val dir = getDirForTest(name)
+      val foundMatch = dir.exists() && isApproved(dir, simplified, explain)
+
+      if (!foundMatch) {
+        if (regenerateGoldenFiles) {
+          generateGoldenFile(dir, simplified, explain)
+        } else {
+          checkWithApproved(dir, name, simplified, explain)
+        }
       }
     }
   }
