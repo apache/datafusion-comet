@@ -1549,10 +1549,7 @@ fn spark_cast_decimal_to_boolean(
             }
             Ok(Arc::new(result.finish()))
         }
-        _ => panic!(
-            "{}",
-            format!("invalid cast from decimal type: {from_type} to boolean type: {to_type}")
-        ),
+        _ => panic!("invalid cast from decimal type: {from_type} to boolean type: {to_type}"),
     }
 }
 fn spark_cast_nonintegral_numeric_to_integral(
