@@ -124,13 +124,9 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       name: String,
       simplified: String,
       explain: String): Unit = {
-    // read approved files
+
     val approvedSimplifiedFile = new File(dir, "simplified.txt")
     val approvedExplainFile = new File(dir, "explain.txt")
-    val approvedSimplified =
-      FileUtils.readFileToString(approvedSimplifiedFile, StandardCharsets.UTF_8)
-    val approvedExplain =
-      FileUtils.readFileToString(approvedExplainFile, StandardCharsets.UTF_8)
 
     // write actual files out for debugging
     val tempDir = FileUtils.getTempDirectory
@@ -139,22 +135,13 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     FileUtils.writeStringToFile(actualSimplifiedFile, simplified, StandardCharsets.UTF_8)
     FileUtils.writeStringToFile(actualExplainFile, explain, StandardCharsets.UTF_8)
 
-    comparePlans(
-      "simplified",
-      approvedSimplified,
-      simplified,
-      approvedSimplifiedFile,
-      actualSimplifiedFile)
-
-    comparePlans("explain", approvedExplain, explain, approvedExplainFile, actualExplainFile)
+    comparePlans("simplified", approvedSimplifiedFile, actualSimplifiedFile)
+    comparePlans("explain", approvedExplainFile, actualExplainFile)
   }
 
-  private def comparePlans(
-      planType: String,
-      expected: String,
-      actual: String,
-      expectedFile: File,
-      actualFile: File): Unit = {
+  private def comparePlans(planType: String, expectedFile: File, actualFile: File): Unit = {
+    val expected = FileUtils.readFileToString(expectedFile, StandardCharsets.UTF_8)
+    val actual = FileUtils.readFileToString(actualFile, StandardCharsets.UTF_8)
     if (expected != actual) {
       val message =
         s"Expected $planType plan in ${expectedFile.getAbsolutePath} did not match actual $planType plan in ${actualFile.getAbsolutePath}"
