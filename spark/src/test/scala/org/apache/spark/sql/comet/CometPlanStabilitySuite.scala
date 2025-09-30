@@ -134,11 +134,11 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     }
   }
 
-  private def checkWithApproved(plan: SparkPlan, name: String, explain: String): Unit = {
+  private def checkWithApproved(plan: SparkPlan, name: String, actualExplain: String): Unit = {
     val dir = getDirForTest(name)
     val tempDir = FileUtils.getTempDirectory
     val actualSimplified = getSimplifiedPlan(plan)
-    val foundMatch = isApproved(dir, actualSimplified, explain)
+    val foundMatch = isApproved(dir, actualSimplified, actualExplain)
 
     if (!foundMatch) {
       // show diff with last approved
@@ -148,24 +148,43 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       val actualSimplifiedFile = new File(tempDir, s"$name.actual.simplified.txt")
       val actualExplainFile = new File(tempDir, s"$name.actual.explain.txt")
 
+      val simplifiedFile = new File(dir, "simplified.txt")
       val approvedSimplified =
-        FileUtils.readFileToString(approvedSimplifiedFile, StandardCharsets.UTF_8)
+        FileUtils.readFileToString(simplifiedFile, StandardCharsets.UTF_8)
+      val explainFile = new File(dir, "explain.txt")
+      val approvedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
+
       // write out for debugging
       FileUtils.writeStringToFile(actualSimplifiedFile, actualSimplified, StandardCharsets.UTF_8)
-      FileUtils.writeStringToFile(actualExplainFile, explain, StandardCharsets.UTF_8)
+      FileUtils.writeStringToFile(actualExplainFile, actualExplain, StandardCharsets.UTF_8)
 
-      fail(s"""
-           |Plans did not match:
-           |last approved simplified plan: ${approvedSimplifiedFile.getAbsolutePath}
-           |last approved explain plan: ${approvedExplainFile.getAbsolutePath}
-           |
-           |$approvedSimplified
-           |
-           |actual simplified plan: ${actualSimplifiedFile.getAbsolutePath}
-           |actual explain plan: ${actualExplainFile.getAbsolutePath}
-           |
-           |$actualSimplified
+      if (approvedSimplified != actualSimplified) {
+        fail(s"""
+                |Plans did not match:
+                |last approved simplified plan: ${approvedSimplifiedFile.getAbsolutePath}
+                |
+                |$approvedSimplified
+                |
+                |actual simplified plan: ${actualSimplifiedFile.getAbsolutePath}
+                |
+                |$actualSimplified
         """.stripMargin)
+
+      } else if (approvedExplain != actualExplain) {
+        fail(s"""
+                |Plans did not match:
+                |last approved explain plan: ${approvedExplainFile.getAbsolutePath}
+                |
+                |$approvedExplain
+                |
+                |actual explain plan: ${actualExplainFile.getAbsolutePath}
+                |
+                |$actualExplain
+        """.stripMargin)
+
+      } else {
+        fail("unreachable")
+      }
     }
   }
 
