@@ -18,7 +18,7 @@
 use crate::utils::make_scalar_function;
 use arrow::array::builder::GenericStringBuilder;
 use arrow::array::types::Int32Type;
-use arrow::array::{Array, AsArray};
+use arrow::array::{as_dictionary_array, make_array, Array, AsArray, DictionaryArray};
 use arrow::array::{ArrayRef, OffsetSizeTrait};
 use arrow::datatypes::DataType;
 use datafusion::common::{cast::as_generic_string_array, DataFusionError};
@@ -93,6 +93,27 @@ fn spark_read_side_padding2(
                         array_int,
                         array_pad_string,
                     )
+                }
+                // Dictionary support required for SPARK-48498
+                (DataType::Dictionary(_, value_type), DataType::Utf8) => {
+                    let dict = as_dictionary_array::<Int32Type>(array);
+                    let values = if value_type.as_ref() == &DataType::Utf8 {
+                        spark_read_side_padding_internal::<i32, i32, i32>(
+                            dict.values(),
+                            truncate,
+                            array_int,
+                            array_pad_string,
+                        )?
+                    } else {
+                        spark_read_side_padding_internal::<i64, i32, i64>(
+                            dict.values(),
+                            truncate,
+                            array_int,
+                            array_pad_string,
+                        )?
+                    };
+                    let result = DictionaryArray::try_new(dict.keys().clone(), values)?;
+                    Ok(make_array(result.into()))
                 }
                 other => Err(DataFusionError::Internal(format!(
                     "Unsupported data type {other:?} for function rpad/read_side_padding",
