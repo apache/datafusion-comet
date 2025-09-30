@@ -123,6 +123,13 @@ jobs:
               org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
+          - name: "tpc-benchmarks"
+            value: |
+              org.apache.spark.sql.CometTPCDSQuerySuite
+              org.apache.spark.sql.CometTPCDSQueryTestSuite
+              org.apache.spark.sql.CometTPCHQuerySuite
+              org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite
+              org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
@@ -140,11 +147,6 @@ jobs:
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsNonOverrideSuite
               org.apache.spark.CometPluginsUnifiedModeOverrideSuite
-              org.apache.spark.sql.CometTPCDSQuerySuite
-              org.apache.spark.sql.CometTPCDSQueryTestSuite
-              org.apache.spark.sql.CometTPCHQuerySuite
-              org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite
-              org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTaskMetricsSuite
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
