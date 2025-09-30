@@ -24,6 +24,8 @@ import java.nio.charset.StandardCharsets
 
 import scala.collection.mutable
 
+import org.junit.ComparisonFailure
+
 import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkContext
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE}
@@ -141,50 +143,45 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     val foundMatch = isApproved(dir, actualSimplified, actualExplain)
 
     if (!foundMatch) {
-      // show diff with last approved
+      // read approved files
       val approvedSimplifiedFile = new File(dir, "simplified.txt")
       val approvedExplainFile = new File(dir, "explain.txt")
+      val approvedSimplified =
+        FileUtils.readFileToString(approvedSimplifiedFile, StandardCharsets.UTF_8)
+      val approvedExplain =
+        FileUtils.readFileToString(approvedExplainFile, StandardCharsets.UTF_8)
 
+      // write actual files out for debugging
       val actualSimplifiedFile = new File(tempDir, s"$name.actual.simplified.txt")
       val actualExplainFile = new File(tempDir, s"$name.actual.explain.txt")
-
-      val simplifiedFile = new File(dir, "simplified.txt")
-      val approvedSimplified =
-        FileUtils.readFileToString(simplifiedFile, StandardCharsets.UTF_8)
-      val explainFile = new File(dir, "explain.txt")
-      val approvedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
-
-      // write out for debugging
       FileUtils.writeStringToFile(actualSimplifiedFile, actualSimplified, StandardCharsets.UTF_8)
       FileUtils.writeStringToFile(actualExplainFile, actualExplain, StandardCharsets.UTF_8)
 
-      if (approvedSimplified != actualSimplified) {
-        fail(s"""
-                |Plans did not match:
-                |last approved simplified plan: ${approvedSimplifiedFile.getAbsolutePath}
-                |
-                |$approvedSimplified
-                |
-                |actual simplified plan: ${actualSimplifiedFile.getAbsolutePath}
-                |
-                |$actualSimplified
-        """.stripMargin)
+      comparePlans(
+        "simplified",
+        approvedSimplified,
+        actualSimplified,
+        approvedSimplifiedFile,
+        actualSimplifiedFile)
+      comparePlans(
+        "explain",
+        approvedExplain,
+        actualExplain,
+        approvedExplainFile,
+        actualExplainFile)
+    }
+  }
 
-      } else if (approvedExplain != actualExplain) {
-        fail(s"""
-                |Plans did not match:
-                |last approved explain plan: ${approvedExplainFile.getAbsolutePath}
-                |
-                |$approvedExplain
-                |
-                |actual explain plan: ${actualExplainFile.getAbsolutePath}
-                |
-                |$actualExplain
-        """.stripMargin)
-
-      } else {
-        fail("unreachable")
-      }
+  private def comparePlans(
+      planType: String,
+      expected: String,
+      actual: String,
+      expectedFile: File,
+      actualFile: File): Unit = {
+    if (expected != actual) {
+      val message =
+        s"Expected $planType plan in ${expectedFile.getAbsolutePath} did not match actual $planType plan in ${actualFile.getAbsolutePath}"
+      throw new ComparisonFailure(message, expected, actual)
     }
   }
 
