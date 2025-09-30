@@ -54,7 +54,7 @@ Run Comet benchmark:
 
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-export COMET_JAR=/opt/comet/comet-spark-spark3.5_2.12-0.9.0.jar
+export COMET_JAR=/opt/comet/comet-spark-spark3.5_2.12-0.10.0.jar
 sudo ./drop-caches.sh
 ./comet-tpch.sh
 ```
