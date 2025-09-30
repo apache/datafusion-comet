@@ -34,6 +34,8 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=16g \
     --conf spark.eventLog.enabled=true \
+    --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
+    --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
     tpcbench.py \
     --name spark \
     --benchmark tpch \
