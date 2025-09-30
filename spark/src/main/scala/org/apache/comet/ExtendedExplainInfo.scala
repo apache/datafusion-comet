@@ -105,7 +105,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       if (eligible == 0) 0.0 else planStats.cometOperators.toDouble / eligible * 100.0
     s"Comet accelerated ${planStats.cometOperators} out of $eligible " +
       s"eligible operators (${converted.toInt}%). " +
-      s"Final plan contains ${planStats.transitions} transitions."
+      s"Final plan contains ${planStats.transitions} transitions between Spark and Comet."
   }
 
   // Simplified generateTreeString from Spark TreeNode. Appends explain info to the node if any
