@@ -94,17 +94,6 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     new File(goldenFilePath, goldenFileName)
   }
 
-  private def isApproved(
-      dir: File,
-      actualSimplifiedPlan: String,
-      actualExplain: String): Boolean = {
-    val simplifiedFile = new File(dir, "simplified.txt")
-    val expectedSimplified = FileUtils.readFileToString(simplifiedFile, StandardCharsets.UTF_8)
-    val explainFile = new File(dir, "explain.txt")
-    val expectedExplain = FileUtils.readFileToString(explainFile, StandardCharsets.UTF_8)
-    expectedSimplified == actualSimplifiedPlan && expectedExplain == actualExplain
-  }
-
   /**
    * Serialize and save this SparkPlan. The resulting file is used by [[checkWithApproved]] to
    * check stability.
@@ -156,6 +145,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       simplified,
       approvedSimplifiedFile,
       actualSimplifiedFile)
+
     comparePlans("explain", approvedExplain, explain, approvedExplainFile, actualExplainFile)
   }
 
@@ -294,15 +284,12 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
 
       val name = query + suffix
       val dir = getDirForTest(name)
-      val foundMatch = dir.exists() && isApproved(dir, simplified, explain)
 
-      if (!foundMatch) {
-        if (regenerateGoldenFiles) {
-          generateGoldenFile(dir, simplified, explain)
-        } else {
-          checkWithApproved(dir, name, simplified, explain)
-        }
+      if (regenerateGoldenFiles) {
+        generateGoldenFile(dir, simplified, explain)
       }
+
+      checkWithApproved(dir, name, simplified, explain)
     }
   }
 
