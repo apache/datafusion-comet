@@ -41,6 +41,7 @@ use datafusion::{
 };
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
+use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::string::char::CharFunc;
@@ -65,7 +66,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
-use datafusion_spark::function::hash::sha1::SparkSha1;
 use tokio::runtime::Runtime;
 
 use crate::execution::memory_pools::{
