@@ -115,16 +115,16 @@ incompatible expressions.
 ## Math Expressions
 
 | Expression     | SQL       | Spark-Compatible? | Compatibility Notes               |
-| -------------- | --------- | ----------------- | --------------------------------- |
+|----------------|-----------|-------------------|-----------------------------------|
 | Acos           | `acos`    | Yes               |                                   |
-| Add            | `+`       | Yes               | ANSI mode is not supported.       |
+| Add            | `+`       | Yes               |                                   |
 | Asin           | `asin`    | Yes               |                                   |
 | Atan           | `atan`    | Yes               |                                   |
 | Atan2          | `atan2`   | Yes               |                                   |
-| BRound         | `bround`  | Yes               | ANSI mode is not supported.       |
+| BRound         | `bround`  | Yes               |                                   |
 | Ceil           | `ceil`    | Yes               |                                   |
 | Cos            | `cos`     | Yes               |                                   |
-| Divide         | `/`       | Yes               | ANSI mode is not supported.       |
+| Divide         | `/`       | Yes               |                                   |
 | Exp            | `exp`     | Yes               |                                   |
 | Expm1          | `expm1`   | Yes               |                                   |
 | Floor          | `floor`   | Yes               |                                   |
@@ -134,7 +134,7 @@ incompatible expressions.
 | Log            | `log`     | Yes               |                                   |
 | Log2           | `log2`    | Yes               |                                   |
 | Log10          | `log10`   | Yes               |                                   |
-| Multiply       | `*`       | Yes               | ANSI mode is not supported.       |
+| Multiply       | `*`       | Yes               |                                   |
 | Pow            | `power`   | Yes               |                                   |
 | Rand           | `rand`    | Yes               |                                   |
 | Randn          | `randn`   | Yes               |                                   |
@@ -143,7 +143,7 @@ incompatible expressions.
 | Signum         | `signum`  | Yes               |                                   |
 | Sin            | `sin`     | Yes               |                                   |
 | Sqrt           | `sqrt`    | Yes               |                                   |
-| Subtract       | `-`       | Yes               | ANSI mode is not supported.       |
+| Subtract       | `-`       | Yes               |                                   |
 | Tan            | `tan`     | Yes               |                                   |
 | TryAdd         | `try_add` | Yes               | Only integer inputs are supported |
 | TryDivide      | `try_div` | Yes               | Only integer inputs are supported |
