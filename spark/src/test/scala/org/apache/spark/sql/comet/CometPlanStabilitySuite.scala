@@ -131,38 +131,56 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     }
   }
 
-  private def checkWithApproved(plan: SparkPlan, name: String, explain: String): Unit = {
+  private def checkWithApproved(plan: SparkPlan, name: String, actualExplain: String): Unit = {
     val dir = getDirForTest(name)
     val tempDir = FileUtils.getTempDirectory
     val actualSimplified = getSimplifiedPlan(plan)
-    val foundMatch = isApproved(dir, actualSimplified, explain)
+    val foundMatch = isApproved(dir, actualSimplified, actualExplain)
 
     if (!foundMatch) {
-      // show diff with last approved
+      // read approved files
       val approvedSimplifiedFile = new File(dir, "simplified.txt")
       val approvedExplainFile = new File(dir, "explain.txt")
-
-      val actualSimplifiedFile = new File(tempDir, s"$name.actual.simplified.txt")
-      val actualExplainFile = new File(tempDir, s"$name.actual.explain.txt")
-
       val approvedSimplified =
         FileUtils.readFileToString(approvedSimplifiedFile, StandardCharsets.UTF_8)
-      // write out for debugging
-      FileUtils.writeStringToFile(actualSimplifiedFile, actualSimplified, StandardCharsets.UTF_8)
-      FileUtils.writeStringToFile(actualExplainFile, explain, StandardCharsets.UTF_8)
+      val approvedExplain =
+        FileUtils.readFileToString(approvedExplainFile, StandardCharsets.UTF_8)
 
-      fail(s"""
-           |Plans did not match:
-           |last approved simplified plan: ${approvedSimplifiedFile.getAbsolutePath}
-           |last approved explain plan: ${approvedExplainFile.getAbsolutePath}
-           |
-           |$approvedSimplified
-           |
-           |actual simplified plan: ${actualSimplifiedFile.getAbsolutePath}
-           |actual explain plan: ${actualExplainFile.getAbsolutePath}
-           |
-           |$actualSimplified
+      // write actual files out for debugging
+      val actualSimplifiedFile = new File(tempDir, s"$name.actual.simplified.txt")
+      val actualExplainFile = new File(tempDir, s"$name.actual.explain.txt")
+      FileUtils.writeStringToFile(actualSimplifiedFile, actualSimplified, StandardCharsets.UTF_8)
+      FileUtils.writeStringToFile(actualExplainFile, actualExplain, StandardCharsets.UTF_8)
+
+      // compare simplified and explain plans separately
+      if (approvedSimplified != actualSimplified) {
+        fail(s"""
+                |Plans did not match:
+                |last approved simplified plan: ${approvedSimplifiedFile.getAbsolutePath}
+                |
+                |$approvedSimplified
+                |
+                |actual simplified plan: ${actualSimplifiedFile.getAbsolutePath}
+                |
+                |$actualSimplified
         """.stripMargin)
+
+      } else if (approvedExplain != actualExplain) {
+        fail(s"""
+                |Plans did not match:
+                |last approved explain plan: ${approvedExplainFile.getAbsolutePath}
+                |
+                |$approvedExplain
+                |
+                |actual explain plan: ${actualExplainFile.getAbsolutePath}
+                |
+                |$actualExplain
+        """.stripMargin)
+
+      } else {
+        // isApproved returned false, so one of the above checks must be triggered
+        fail("unreachable")
+      }
     }
   }
 
