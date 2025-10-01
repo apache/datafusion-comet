@@ -252,7 +252,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           } else {
             assert(sparkErr.get.getMessage.contains("integer overflow"))
           }
-          assert(cometErr.get.getMessage.contains("`NaiveDate + TimeDelta` overflowed"))
+          assert(cometErr.get.getMessage.contains("attempt to add with overflow"))
         }
       }
     }
@@ -296,10 +296,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             checkSparkMaybeThrows(sql(s"SELECT _20 - ${Int.MaxValue} FROM tbl"))
           if (isSpark40Plus) {
             assert(sparkErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
+            assert(cometErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
           } else {
             assert(sparkErr.get.getMessage.contains("integer overflow"))
+            assert(cometErr.get.getMessage.contains("integer overflow"))
           }
-          assert(cometErr.get.getMessage.contains("`NaiveDate - TimeDelta` overflowed"))
         }
       }
     }
