@@ -98,7 +98,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
    *
    * @param dir
    *   the directory to write to
-   * @param name
+   * @param simplified
    *   the simplified plan
    * @param explain
    *   the full explain output; this is saved to help debug later as the simplified plan is not
