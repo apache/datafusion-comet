@@ -176,11 +176,9 @@ class CometExecIterator(
         })
     } catch {
       case e: CometNativeException =>
-
         // it is generally considered bad practice to log and then rethrow an
         // exception, but it really helps debugging to be able to see which task
-        // threw the exception, so we log the exception with taskAttemptId to help
-        // with debugging
+        // threw the exception, so we log the exception with taskAttemptId here
         logError(s"Native execution for task $taskAttemptId failed", e)
 
         val fileNotFoundPattern: Regex =
