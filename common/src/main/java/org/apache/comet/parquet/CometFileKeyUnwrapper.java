@@ -96,11 +96,10 @@ public class CometFileKeyUnwrapper {
   private final ConcurrentHashMap<String, DecryptionKeyRetriever> retrieverCache =
       new ConcurrentHashMap<>();
 
-  // Each hadoopConf yields a unique DecryptionPropertiesFactory. While it's unlikely that
-  // this Comet plan contains more than one hadoopConf, we don't want to assume that. So we'll
-  // provide the ability to cache more than one Factory with a map.
-  private final ConcurrentHashMap<Configuration, DecryptionPropertiesFactory> factoryCache =
-      new ConcurrentHashMap<>();
+  // Cache the factory since we should be using the same hadoopConf for every file in this scan.
+  private DecryptionPropertiesFactory factory = null;
+  // Cache the hadoopConf just to assert the assumption above.
+  private Configuration conf = null;
 
   /**
    * Creates and stores a DecryptionKeyRetriever instance for the given file path.
@@ -111,10 +110,12 @@ public class CometFileKeyUnwrapper {
   public void storeDecryptionKeyRetriever(final String filePath, final Configuration hadoopConf) {
     // Use DecryptionPropertiesFactory.loadFactory to get the factory and then call
     // getFileDecryptionProperties
-    DecryptionPropertiesFactory factory = factoryCache.get(hadoopConf);
     if (factory == null) {
       factory = DecryptionPropertiesFactory.loadFactory(hadoopConf);
-      factoryCache.put(hadoopConf, factory);
+      conf = hadoopConf;
+    } else {
+      // Check the assumption that all files have the same hadoopConf and thus same Factory
+      assert (conf == hadoopConf);
     }
     Path path = new Path(filePath);
     FileDecryptionProperties decryptionProperties =

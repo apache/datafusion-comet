@@ -67,7 +67,8 @@ class CometExecIterator(
     nativeMetrics: CometMetricNode,
     numParts: Int,
     partitionIndex: Int,
-    encryptedFilePaths: Seq[(String, Broadcast[SerializableConfiguration])] = Seq.empty)
+    broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
+    encryptedFilePaths: Seq[String] = Seq.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -112,11 +113,10 @@ class CometExecIterator(
     // Create keyUnwrapper if encryption is enabled
     val keyUnwrapper = if (encryptedFilePaths.nonEmpty) {
       val unwrapper = new CometFileKeyUnwrapper()
+      val hadoopConf: Configuration = broadcastedHadoopConfForEncryption.get.value.value
 
-      encryptedFilePaths.foreach { case (filePath, broadcastedConf) =>
-        val hadoopConf: Configuration = broadcastedConf.value.value
-        unwrapper.storeDecryptionKeyRetriever(filePath, hadoopConf)
-      }
+      encryptedFilePaths.foreach(filePath =>
+        unwrapper.storeDecryptionKeyRetriever(filePath, hadoopConf))
 
       unwrapper
     } else {

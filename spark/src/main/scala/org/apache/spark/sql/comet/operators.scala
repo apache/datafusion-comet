@@ -117,6 +117,7 @@ object CometExec {
       CometMetricNode(Map.empty),
       numParts,
       partitionIdx,
+      broadcastedHadoopConfForEncryption = None,
       encryptedFilePaths = Seq.empty)
   }
 
@@ -127,8 +128,8 @@ object CometExec {
       nativeMetrics: CometMetricNode,
       numParts: Int,
       partitionIdx: Int,
-      encryptedFilePaths: Seq[(String, Broadcast[SerializableConfiguration])])
-      : CometExecIterator = {
+      broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
+      encryptedFilePaths: Seq[String]): CometExecIterator = {
     val outputStream = new ByteArrayOutputStream()
     nativePlan.writeTo(outputStream)
     outputStream.close()
@@ -141,6 +142,7 @@ object CometExec {
       nativeMetrics,
       numParts,
       partitionIdx,
+      broadcastedHadoopConfForEncryption,
       encryptedFilePaths)
   }
 
@@ -213,23 +215,28 @@ abstract class CometNativeExec extends CometExec {
           .collectLeaves()
           .filter(_.isInstanceOf[CometNativeScanExec])
           .map(_.asInstanceOf[CometNativeScanExec])
-        val encryptedFilePaths = cometNativeScans.flatMap { scan =>
-          // This creates a hadoopConf that brings in any SQLConf "spark.hadoop.*" configs and
-          // per-relation configs since different tables might have different decryption
-          // properties.
-          val hadoopConf = scan.relation.sparkSession.sessionState
-            .newHadoopConfWithOptions(scan.relation.options)
-          val encryptionEnabled = CometParquetUtils.encryptionEnabled(hadoopConf)
-          if (encryptionEnabled) {
-            // hadoopConf isn't serializable, so we have to do a broadcasted config.
-            val broadcastedConf =
-              scan.relation.sparkSession.sparkContext
-                .broadcast(new SerializableConfiguration(hadoopConf))
-            scan.relation.inputFiles.map { filePath => (filePath, broadcastedConf) }
-          } else {
-            Seq.empty
+        assert(
+          cometNativeScans.size <= 1,
+          "We expect one native scan in a Comet plan since we will broadcast one hadoopConf.")
+        val (broadcastedHadoopConfForEncryption, encryptedFilePaths) =
+          cometNativeScans.headOption.fold(
+            (None: Option[Broadcast[SerializableConfiguration]], Seq.empty[String])) { scan =>
+            // This creates a hadoopConf that brings in any SQLConf "spark.hadoop.*" configs and
+            // per-relation configs since different tables might have different decryption
+            // properties.
+            val hadoopConf = scan.relation.sparkSession.sessionState
+              .newHadoopConfWithOptions(scan.relation.options)
+            val encryptionEnabled = CometParquetUtils.encryptionEnabled(hadoopConf)
+            if (encryptionEnabled) {
+              // hadoopConf isn't serializable, so we have to do a broadcasted config.
+              val broadcastedConf =
+                scan.relation.sparkSession.sparkContext
+                  .broadcast(new SerializableConfiguration(hadoopConf))
+              (Some(broadcastedConf), scan.relation.inputFiles.toSeq)
+            } else {
+              (None, Seq.empty)
+            }
           }
-        }
 
         def createCometExecIter(
             inputs: Seq[Iterator[ColumnarBatch]],
@@ -243,6 +250,7 @@ abstract class CometNativeExec extends CometExec {
             nativeMetrics,
             numParts,
             partitionIndex,
+            broadcastedHadoopConfForEncryption,
             encryptedFilePaths)
 
           setSubqueries(it.id, this)
