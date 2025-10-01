@@ -158,7 +158,7 @@ fn get_options(
         table_parquet_options.crypto.configure_factory(
             ENCRYPTION_FACTORY_ID,
             &CometEncryptionConfig {
-                url_base: object_store_url.to_string(),
+                uri_base: object_store_url.to_string(),
             },
         );
     }

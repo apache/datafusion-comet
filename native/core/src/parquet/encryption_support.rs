@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use crate::jvm_bridge::JVMClasses;
+use crate::jvm_bridge::{check_exception, JVMClasses};
 use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
 use datafusion::common::extensions_options;
@@ -27,14 +27,16 @@ use jni::objects::{GlobalRef, JMethodID};
 use object_store::path::Path;
 use parquet::encryption::decrypt::{FileDecryptionProperties, KeyRetriever};
 use parquet::encryption::encrypt::FileEncryptionProperties;
+use parquet::errors::ParquetError;
 use std::sync::Arc;
 
 pub const ENCRYPTION_FACTORY_ID: &str = "comet.jni_kms_encryption";
 
-// Options used to configure our example encryption factory
 extensions_options! {
     pub struct CometEncryptionConfig {
-        pub url_base: String, default = "file:///".into()
+        // Native side strips file down to a path (not a URI) but Spark wants the full URI,
+        // so we cache the prefix to stick on the front before calling over JNI
+        pub uri_base: String, default = "file:///".into()
     }
 }
 
@@ -70,7 +72,7 @@ impl EncryptionFactory for CometEncryptionFactory {
     ) -> Result<Option<FileDecryptionProperties>, DataFusionError> {
         let config: CometEncryptionConfig = options.to_extension_options()?;
 
-        let full_path: String = config.url_base + file_path.as_ref();
+        let full_path: String = config.uri_base + file_path.as_ref();
         let key_retriever = CometKeyRetriever::new(&full_path, self.key_unwrapper.clone())
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
         let decryption_properties =
@@ -87,7 +89,6 @@ pub struct CometKeyRetriever {
 
 impl CometKeyRetriever {
     pub fn new(file_path: &str, key_unwrapper: GlobalRef) -> Result<Self, ExecutionError> {
-        // Get JNI environment
         let mut env = JVMClasses::get_env()?;
 
         Ok(CometKeyRetriever {
@@ -99,7 +100,9 @@ impl CometKeyRetriever {
                     "getKey",
                     "(Ljava/lang/String;[B)[B",
                 )
-                .unwrap(),
+                .map_err(|e| {
+                    ExecutionError::GeneralError(format!("Failed to get JNI method ID: {}", e))
+                })?,
         })
     }
 }
@@ -110,8 +113,7 @@ impl KeyRetriever for CometKeyRetriever {
         use jni::{objects::JObject, signature::ReturnType};
 
         // Get JNI environment
-        let mut env = JVMClasses::get_env()
-            .map_err(|e| datafusion::parquet::errors::ParquetError::General(e.to_string()))?;
+        let mut env = JVMClasses::get_env()?;
 
         // Get the key unwrapper instance from GlobalRef
         let unwrapper_instance = self.key_unwrapper.as_obj();
@@ -119,10 +121,14 @@ impl KeyRetriever for CometKeyRetriever {
         let instance: JObject = unsafe { JObject::from_raw(unwrapper_instance.as_raw()) };
 
         // Convert file path to JString
-        let file_path_jstring = env.new_string(&self.file_path).unwrap();
+        let file_path_jstring = env
+            .new_string(&self.file_path)
+            .map_err(|e| ParquetError::General(format!("Failed to create JString: {}", e)))?;
 
         // Convert key_metadata to JByteArray
-        let key_metadata_array = env.byte_array_from_slice(key_metadata).unwrap();
+        let key_metadata_array = env
+            .byte_array_from_slice(key_metadata)
+            .map_err(|e| ParquetError::General(format!("Failed to create byte array: {}", e)))?;
 
         // Call instance method FileKeyUnwrapper.getKey(String, byte[]) -> byte[]
         let result = unsafe {
@@ -137,15 +143,30 @@ impl KeyRetriever for CometKeyRetriever {
             )
         };
 
-        let result = result.unwrap();
+        // Check for Java exceptions first, before processing the result
+        if let Some(exception) = check_exception(&mut env).map_err(|e| {
+            ParquetError::General(format!("Failed to check for Java exception: {}", e))
+        })? {
+            return Err(ParquetError::General(format!(
+                "Java exception during key retrieval: {}",
+                exception
+            )));
+        }
+
+        let result =
+            result.map_err(|e| ParquetError::General(format!("JNI method call failed: {}", e)))?;
 
         // Extract the byte array from the result
-        let result_array = result.l().unwrap();
+        let result_array = result
+            .l()
+            .map_err(|e| ParquetError::General(format!("Failed to extract result: {}", e)))?;
 
         // Convert JObject to JByteArray and then to Vec<u8>
         let byte_array: jni::objects::JByteArray = result_array.into();
 
-        let result_vec = env.convert_byte_array(&byte_array).unwrap();
+        let result_vec = env
+            .convert_byte_array(&byte_array)
+            .map_err(|e| ParquetError::General(format!("Failed to convert byte array: {}", e)))?;
         Ok(result_vec)
     }
 }
