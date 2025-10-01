@@ -274,9 +274,9 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
 
       if (regenerateGoldenFiles) {
         generateGoldenFile(dir, simplified, explain)
+      } else {
+        checkWithApproved(dir, name, simplified, explain)
       }
-
-      checkWithApproved(dir, name, simplified, explain)
     }
   }
 
