@@ -25,7 +25,7 @@ import org.apache.spark.sql.types.{DateType, IntegerType}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde._
 
 private object CometGetDateField extends Enumeration {
   type CometGetDateField = Value
@@ -251,31 +251,9 @@ object CometSecond extends CometExpressionSerde[Second] {
   }
 }
 
-object CometDateAdd extends CometExpressionSerde[DateAdd] {
-  override def convert(
-      expr: DateAdd,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
-    val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
-    val optExpr =
-      scalarFunctionExprToProtoWithReturnType("date_add", DateType, leftExpr, rightExpr)
-    optExprWithInfo(optExpr, expr, expr.left, expr.right)
-  }
-}
+object CometDateAdd extends CometScalarFunction[DateAdd]("date_add")
 
-object CometDateSub extends CometExpressionSerde[DateSub] {
-  override def convert(
-      expr: DateSub,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
-    val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
-    val optExpr =
-      scalarFunctionExprToProtoWithReturnType("date_sub", DateType, leftExpr, rightExpr)
-    optExprWithInfo(optExpr, expr, expr.left, expr.right)
-  }
-}
+object CometDateSub extends CometScalarFunction[DateSub]("date_sub")
 
 object CometTruncDate extends CometExpressionSerde[TruncDate] {
   override def convert(
