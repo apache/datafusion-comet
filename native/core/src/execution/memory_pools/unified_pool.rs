@@ -32,7 +32,7 @@ use datafusion::{
     execution::memory_pool::{MemoryPool, MemoryReservation},
 };
 use jni::objects::GlobalRef;
-use log::{error, info, warn};
+use log::warn;
 
 /// A DataFusion `MemoryPool` implementation for Comet that delegates to
 /// Spark's off-heap executor memory pool via JNI by calling

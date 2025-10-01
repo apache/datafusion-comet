@@ -176,6 +176,13 @@ class CometExecIterator(
         })
     } catch {
       case e: CometNativeException =>
+
+        // it is generally considered bad practice to log and then rethrow an
+        // exception, but it really helps debugging to be able to see which task
+        // threw the exception, so we log the exception with taskAttemptId to help
+        // with debugging
+        logError(s"Native execution for task $taskAttemptId failed", e)
+
         val fileNotFoundPattern: Regex =
           ("""^External: Object at location (.+?) not found: No such file or directory """ +
             """\(os error \d+\)$""").r
@@ -197,8 +204,7 @@ class CometExecIterator(
               messageParameters = Map("message" -> e.getMessage),
               cause = new SparkException("File is not a Parquet file.", e))
           case _ =>
-            // add taskAttemptId to help with debugging
-            throw new CometNativeException(s"[Task $taskAttemptId] ${e.getMessage}")
+            throw e
         }
       case e: Throwable =>
         throw e
