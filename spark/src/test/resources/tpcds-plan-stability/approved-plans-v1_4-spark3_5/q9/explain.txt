@@ -108,20 +108,20 @@ Keys: []
 Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#31)), partial_avg(UnscaledValue(ss_net_paid#32))]
 
 (17) CometExchange
-Input [5]: [count#34, sum#35, count#36, sum#37, count#38]
+Input [5]: [count#34, sum#35, count#36, sum#15, count#37]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 
 (18) CometHashAggregate
-Input [5]: [count#34, sum#35, count#36, sum#37, count#38]
+Input [5]: [count#34, sum#35, count#36, sum#15, count#37]
 Keys: []
 Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#31)), avg(UnscaledValue(ss_net_paid#32))]
 
 (19) CometProject
-Input [3]: [count(1)#39, avg(ss_ext_discount_amt)#40, avg(ss_net_paid)#41]
-Arguments: [mergedValue#42], [named_struct(count(1), count(1)#39, avg(ss_ext_discount_amt), avg(ss_ext_discount_amt)#40, avg(ss_net_paid), avg(ss_net_paid)#41) AS mergedValue#42]
+Input [3]: [count(1)#38, avg(ss_ext_discount_amt)#39, avg(ss_net_paid)#40]
+Arguments: [mergedValue#41], [named_struct(count(1), count(1)#38, avg(ss_ext_discount_amt), avg(ss_ext_discount_amt)#39, avg(ss_net_paid), avg(ss_net_paid)#40) AS mergedValue#41]
 
 (20) CometColumnarToRow [codegen id : 1]
-Input [1]: [mergedValue#42]
+Input [1]: [mergedValue#41]
 
 Subquery:5 Hosting operator id = 4 Hosting Expression = ReusedSubquery Subquery scalar-subquery#5, [id=#6]
 
@@ -139,40 +139,40 @@ Subquery:7 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquery
 
 
 (21) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
-Output [4]: [ss_quantity#43, ss_ext_discount_amt#44, ss_net_paid#45, ss_sold_date_sk#46]
+Output [4]: [ss_quantity#42, ss_ext_discount_amt#43, ss_net_paid#44, ss_sold_date_sk#45]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
 PushedFilters: [IsNotNull(ss_quantity), GreaterThanOrEqual(ss_quantity,41), LessThanOrEqual(ss_quantity,60)]
 ReadSchema: struct<ss_quantity:int,ss_ext_discount_amt:decimal(7,2),ss_net_paid:decimal(7,2)>
 
 (22) CometFilter
-Input [4]: [ss_quantity#43, ss_ext_discount_amt#44, ss_net_paid#45, ss_sold_date_sk#46]
-Condition : ((isnotnull(ss_quantity#43) AND (ss_quantity#43 >= 41)) AND (ss_quantity#43 <= 60))
+Input [4]: [ss_quantity#42, ss_ext_discount_amt#43, ss_net_paid#44, ss_sold_date_sk#45]
+Condition : ((isnotnull(ss_quantity#42) AND (ss_quantity#42 >= 41)) AND (ss_quantity#42 <= 60))
 
 (23) CometProject
-Input [4]: [ss_quantity#43, ss_ext_discount_amt#44, ss_net_paid#45, ss_sold_date_sk#46]
-Arguments: [ss_ext_discount_amt#44, ss_net_paid#45], [ss_ext_discount_amt#44, ss_net_paid#45]
+Input [4]: [ss_quantity#42, ss_ext_discount_amt#43, ss_net_paid#44, ss_sold_date_sk#45]
+Arguments: [ss_ext_discount_amt#43, ss_net_paid#44], [ss_ext_discount_amt#43, ss_net_paid#44]
 
 (24) CometHashAggregate
-Input [2]: [ss_ext_discount_amt#44, ss_net_paid#45]
+Input [2]: [ss_ext_discount_amt#43, ss_net_paid#44]
 Keys: []
-Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#44)), partial_avg(UnscaledValue(ss_net_paid#45))]
+Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#43)), partial_avg(UnscaledValue(ss_net_paid#44))]
 
 (25) CometExchange
-Input [5]: [count#47, sum#48, count#49, sum#50, count#51]
+Input [5]: [count#46, sum#47, count#48, sum#49, count#50]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=3]
 
 (26) CometHashAggregate
-Input [5]: [count#47, sum#48, count#49, sum#50, count#51]
+Input [5]: [count#46, sum#47, count#48, sum#49, count#50]
 Keys: []
-Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#44)), avg(UnscaledValue(ss_net_paid#45))]
+Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#43)), avg(UnscaledValue(ss_net_paid#44))]
 
 (27) CometProject
-Input [3]: [count(1)#52, avg(ss_ext_discount_amt)#53, avg(ss_net_paid)#54]
-Arguments: [mergedValue#55], [named_struct(count(1), count(1)#52, avg(ss_ext_discount_amt), avg(ss_ext_discount_amt)#53, avg(ss_net_paid), avg(ss_net_paid)#54) AS mergedValue#55]
+Input [3]: [count(1)#51, avg(ss_ext_discount_amt)#52, avg(ss_net_paid)#53]
+Arguments: [mergedValue#54], [named_struct(count(1), count(1)#51, avg(ss_ext_discount_amt), avg(ss_ext_discount_amt)#52, avg(ss_net_paid), avg(ss_net_paid)#53) AS mergedValue#54]
 
 (28) CometColumnarToRow [codegen id : 1]
-Input [1]: [mergedValue#55]
+Input [1]: [mergedValue#54]
 
 Subquery:8 Hosting operator id = 4 Hosting Expression = ReusedSubquery Subquery scalar-subquery#8, [id=#9]
 
@@ -190,40 +190,40 @@ Subquery:10 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquer
 
 
 (29) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
-Output [4]: [ss_quantity#56, ss_ext_discount_amt#57, ss_net_paid#58, ss_sold_date_sk#59]
+Output [4]: [ss_quantity#55, ss_ext_discount_amt#56, ss_net_paid#57, ss_sold_date_sk#58]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
 PushedFilters: [IsNotNull(ss_quantity), GreaterThanOrEqual(ss_quantity,61), LessThanOrEqual(ss_quantity,80)]
 ReadSchema: struct<ss_quantity:int,ss_ext_discount_amt:decimal(7,2),ss_net_paid:decimal(7,2)>
 
 (30) CometFilter
-Input [4]: [ss_quantity#56, ss_ext_discount_amt#57, ss_net_paid#58, ss_sold_date_sk#59]
-Condition : ((isnotnull(ss_quantity#56) AND (ss_quantity#56 >= 61)) AND (ss_quantity#56 <= 80))
+Input [4]: [ss_quantity#55, ss_ext_discount_amt#56, ss_net_paid#57, ss_sold_date_sk#58]
+Condition : ((isnotnull(ss_quantity#55) AND (ss_quantity#55 >= 61)) AND (ss_quantity#55 <= 80))
 
 (31) CometProject
-Input [4]: [ss_quantity#56, ss_ext_discount_amt#57, ss_net_paid#58, ss_sold_date_sk#59]
-Arguments: [ss_ext_discount_amt#57, ss_net_paid#58], [ss_ext_discount_amt#57, ss_net_paid#58]
+Input [4]: [ss_quantity#55, ss_ext_discount_amt#56, ss_net_paid#57, ss_sold_date_sk#58]
+Arguments: [ss_ext_discount_amt#56, ss_net_paid#57], [ss_ext_discount_amt#56, ss_net_paid#57]
 
 (32) CometHashAggregate
-Input [2]: [ss_ext_discount_amt#57, ss_net_paid#58]
+Input [2]: [ss_ext_discount_amt#56, ss_net_paid#57]
 Keys: []
-Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#57)), partial_avg(UnscaledValue(ss_net_paid#58))]
+Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#56)), partial_avg(UnscaledValue(ss_net_paid#57))]
 
 (33) CometExchange
-Input [5]: [count#60, sum#61, count#62, sum#63, count#64]
+Input [5]: [count#59, sum#60, count#61, sum#62, count#63]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 
 (34) CometHashAggregate
-Input [5]: [count#60, sum#61, count#62, sum#63, count#64]
+Input [5]: [count#59, sum#60, count#61, sum#62, count#63]
 Keys: []
-Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#57)), avg(UnscaledValue(ss_net_paid#58))]
+Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#56)), avg(UnscaledValue(ss_net_paid#57))]
 
 (35) CometProject
-Input [3]: [count(1)#65, avg(ss_ext_discount_amt)#66, avg(ss_net_paid)#67]
-Arguments: [mergedValue#68], [named_struct(count(1), count(1)#65, avg(ss_ext_discount_amt), avg(ss_ext_discount_amt)#66, avg(ss_net_paid), avg(ss_net_paid)#67) AS mergedValue#68]
+Input [3]: [count(1)#64, avg(ss_ext_discount_amt)#65, avg(ss_net_paid)#66]
+Arguments: [mergedValue#67], [named_struct(count(1), count(1)#64, avg(ss_ext_discount_amt), avg(ss_ext_discount_amt)#65, avg(ss_net_paid), avg(ss_net_paid)#66) AS mergedValue#67]
 
 (36) CometColumnarToRow [codegen id : 1]
-Input [1]: [mergedValue#68]
+Input [1]: [mergedValue#67]
 
 Subquery:11 Hosting operator id = 4 Hosting Expression = ReusedSubquery Subquery scalar-subquery#11, [id=#12]
 
@@ -241,40 +241,40 @@ Subquery:13 Hosting operator id = 4 Hosting Expression = Subquery scalar-subquer
 
 
 (37) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
-Output [4]: [ss_quantity#69, ss_ext_discount_amt#70, ss_net_paid#71, ss_sold_date_sk#72]
+Output [4]: [ss_quantity#68, ss_ext_discount_amt#69, ss_net_paid#70, ss_sold_date_sk#71]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/store_sales]
 PushedFilters: [IsNotNull(ss_quantity), GreaterThanOrEqual(ss_quantity,81), LessThanOrEqual(ss_quantity,100)]
 ReadSchema: struct<ss_quantity:int,ss_ext_discount_amt:decimal(7,2),ss_net_paid:decimal(7,2)>
 
 (38) CometFilter
-Input [4]: [ss_quantity#69, ss_ext_discount_amt#70, ss_net_paid#71, ss_sold_date_sk#72]
-Condition : ((isnotnull(ss_quantity#69) AND (ss_quantity#69 >= 81)) AND (ss_quantity#69 <= 100))
+Input [4]: [ss_quantity#68, ss_ext_discount_amt#69, ss_net_paid#70, ss_sold_date_sk#71]
+Condition : ((isnotnull(ss_quantity#68) AND (ss_quantity#68 >= 81)) AND (ss_quantity#68 <= 100))
 
 (39) CometProject
-Input [4]: [ss_quantity#69, ss_ext_discount_amt#70, ss_net_paid#71, ss_sold_date_sk#72]
-Arguments: [ss_ext_discount_amt#70, ss_net_paid#71], [ss_ext_discount_amt#70, ss_net_paid#71]
+Input [4]: [ss_quantity#68, ss_ext_discount_amt#69, ss_net_paid#70, ss_sold_date_sk#71]
+Arguments: [ss_ext_discount_amt#69, ss_net_paid#70], [ss_ext_discount_amt#69, ss_net_paid#70]
 
 (40) CometHashAggregate
-Input [2]: [ss_ext_discount_amt#70, ss_net_paid#71]
+Input [2]: [ss_ext_discount_amt#69, ss_net_paid#70]
 Keys: []
-Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#70)), partial_avg(UnscaledValue(ss_net_paid#71))]
+Functions [3]: [partial_count(1), partial_avg(UnscaledValue(ss_ext_discount_amt#69)), partial_avg(UnscaledValue(ss_net_paid#70))]
 
 (41) CometExchange
-Input [5]: [count#73, sum#74, count#75, sum#76, count#77]
+Input [5]: [count#72, sum#73, count#74, sum#75, count#76]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
 
 (42) CometHashAggregate
-Input [5]: [count#73, sum#74, count#75, sum#76, count#77]
+Input [5]: [count#72, sum#73, count#74, sum#75, count#76]
 Keys: []
-Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#70)), avg(UnscaledValue(ss_net_paid#71))]
+Functions [3]: [count(1), avg(UnscaledValue(ss_ext_discount_amt#69)), avg(UnscaledValue(ss_net_paid#70))]
 
 (43) CometProject
-Input [3]: [count(1)#78, avg(ss_ext_discount_amt)#79, avg(ss_net_paid)#80]
-Arguments: [mergedValue#81], [named_struct(count(1), count(1)#78, avg(ss_ext_discount_amt), avg(ss_ext_discount_amt)#79, avg(ss_net_paid), avg(ss_net_paid)#80) AS mergedValue#81]
+Input [3]: [count(1)#77, avg(ss_ext_discount_amt)#78, avg(ss_net_paid)#79]
+Arguments: [mergedValue#80], [named_struct(count(1), count(1)#77, avg(ss_ext_discount_amt), avg(ss_ext_discount_amt)#78, avg(ss_net_paid), avg(ss_net_paid)#79) AS mergedValue#80]
 
 (44) CometColumnarToRow [codegen id : 1]
-Input [1]: [mergedValue#81]
+Input [1]: [mergedValue#80]
 
 Subquery:14 Hosting operator id = 4 Hosting Expression = ReusedSubquery Subquery scalar-subquery#14, [id=#15]
 
