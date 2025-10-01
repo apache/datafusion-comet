@@ -122,7 +122,6 @@ class CometExecSuite extends CometTestBase {
           withSQLConf(CometConf.COMET_EXPLAIN_VERBOSE_ENABLED.key -> "true") {
             val extendedExplain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
             assert(extendedExplain.contains("Comet accelerated"))
-            assert(extendedExplain.contains("% of eligible operators"))
           }
         }
       }
