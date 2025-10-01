@@ -327,7 +327,8 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast IntegerType to DecimalType(10,2) overflow check") {
-    val intToDecimal10OverflowValues = Seq(Int.MinValue, -100000000, -100000001, 100000000, 100000001, Int.MaxValue).toDF("a")
+    val intToDecimal10OverflowValues =
+      Seq(Int.MinValue, -100000000, -100000001, 100000000, 100000001, Int.MaxValue).toDF("a")
     castTest(intToDecimal10OverflowValues, DataTypes.createDecimalType(10, 2))
   }
 
