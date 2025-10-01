@@ -36,7 +36,7 @@ pub fn spark_rpad(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionErr
     spark_read_side_padding2(args, true, false)
 }
 
-/// Custom `rpad` because DataFusion's `lpad` has differences in unicode handling
+/// Custom `lpad` because DataFusion's `lpad` has differences in unicode handling
 pub fn spark_lpad(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
     spark_read_side_padding2(args, true, true)
 }
@@ -270,13 +270,15 @@ fn add_padding_string(
             Ok(string)
         }
     } else {
-        let mut result = String::with_capacity(string.len() + pad_string.len());
+        let pad_needed = length - char_len;
+        let pad: String = pad_string.chars().cycle().take(pad_needed).collect();
+        let mut result = String::with_capacity(string.len() + pad.len());
         if is_left_pad {
-            result.push_str(&pad_string);
+            result.push_str(&pad);
             result.push_str(&string);
         } else {
             result.push_str(&string);
-            result.push_str(&pad_string);
+            result.push_str(&pad);
         }
         Ok(result)
     }
