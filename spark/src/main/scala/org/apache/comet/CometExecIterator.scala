@@ -94,6 +94,14 @@ class CometExecIterator(
     }
     val protobufSparkConfigs = builder.build().toByteArray
 
+    val memoryLimitPerTask = if (offHeapMode) {
+      // this per-task limit is not used in native code when using unified memory
+      // so we can skip calculating it and avoid logging irrelevant information
+      0
+    } else {
+      getMemoryLimitPerTask(conf)
+    }
+
     nativeLib.createPlan(
       id,
       cometBatchIterators,
@@ -109,7 +117,7 @@ class CometExecIterator(
       memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
       memoryLimit,
       memoryLimitPerTask = getMemoryLimitPerTask(conf),
-      taskAttemptId = Option(TaskContext.get()).map(_.taskAttemptId).getOrElse(0),
+      taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
       explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
       tracingEnabled)
@@ -163,27 +171,7 @@ class CometExecIterator(
           nativeUtil.getNextBatch(
             numOutputCols,
             (arrayAddrs, schemaAddrs) => {
-              try {
-                nativeLib.executePlan(
-                  ctx.stageId(),
-                  partitionIndex,
-                  plan,
-                  arrayAddrs,
-                  schemaAddrs)
-              } catch {
-                case e: CometNativeException =>
-                  val taskContext = TaskContext.get()
-                  if (taskContext != null) {
-                    val prefix = s"[Task ${taskContext.taskAttemptId()}] "
-                    if (e.getMessage != null && e.getMessage.startsWith(prefix)) {
-                      throw e
-                    } else {
-                      throw new CometNativeException(s"$prefix ${e.getMessage}")
-                    }
-                  } else {
-                    throw e
-                  }
-              }
+              nativeLib.executePlan(ctx.stageId(), partitionIndex, plan, arrayAddrs, schemaAddrs)
             })
         })
     } catch {

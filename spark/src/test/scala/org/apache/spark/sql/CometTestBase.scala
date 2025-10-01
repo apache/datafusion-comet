@@ -213,7 +213,7 @@ abstract class CometTestBase
           assert(
             false,
             s"Expected only Comet native operators, but found ${op.nodeName}.\n" +
-              s"plan: $plan")
+              s"plan: ${new ExtendedExplainInfo().generateVerboseExtendedInfo(plan)}")
         }
     }
   }

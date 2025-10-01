@@ -769,9 +769,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     /**
      * Determine which data types are supported as partition columns in native shuffle.
      *
-     * For Hash Partition this defines the key that determines how data should be collocated for
-     * operations like `groupByKey`, `reduceByKey` or `join`. Native code does not support hashing
-     * complex types, see hash_funcs/utils.rs
+     * For HashPartitioning this defines the key that determines how data should be collocated for
+     * operations like `groupByKey`, `reduceByKey`, or `join`. Native code does not support
+     * hashing complex types, see hash_funcs/utils.rs
      */
     def supportedHashPartitioningDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
@@ -782,6 +782,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         false
     }
 
+    /**
+     * Determine which data types are supported as partition columns in native shuffle.
+     *
+     * For RangePartitioning this defines the key that determines how data should be collocated
+     * for operations like `orderBy`, `repartitionByRange`. Native code does not support sorting
+     * complex types.
+     */
     def supportedRangePartitioningDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
