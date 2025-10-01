@@ -24,8 +24,6 @@ import java.nio.charset.StandardCharsets
 
 import scala.collection.mutable
 
-import org.junit.ComparisonFailure
-
 import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkContext
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE}
@@ -143,13 +141,16 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     val expected = FileUtils.readFileToString(expectedFile, StandardCharsets.UTF_8)
     val actual = FileUtils.readFileToString(actualFile, StandardCharsets.UTF_8)
     if (expected != actual) {
-      val message =
-        s"Expected $planType plan in ${expectedFile.getAbsolutePath} did not match actual $planType plan in ${actualFile.getAbsolutePath}"
-
-      // verbose logging to make it easier to debug issues in CI
-      Console.err.println(s"$message:\nEXPECTED: $expected\nACTUAL: $actual")
-
-      throw new ComparisonFailure(message, expected, actual)
+      fail(s"""
+              |Plans did not match:
+              |last approved $planType plan: ${expectedFile.getAbsolutePath}
+              |
+              |$expected
+              |
+              |actual $planType plan: ${actualFile.getAbsolutePath}
+              |
+              |$actual
+        """.stripMargin)
     }
   }
 
