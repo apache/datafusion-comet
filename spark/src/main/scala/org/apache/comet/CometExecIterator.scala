@@ -116,7 +116,7 @@ class CometExecIterator(
       offHeapMode,
       memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
       memoryLimit,
-      memoryLimitPerTask = getMemoryLimitPerTask(conf),
+      memoryLimitPerTask,
       taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
       explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
@@ -197,7 +197,8 @@ class CometExecIterator(
               messageParameters = Map("message" -> e.getMessage),
               cause = new SparkException("File is not a Parquet file.", e))
           case _ =>
-            throw e
+            // add taskAttemptId to help with debugging
+            throw new CometNativeException(s"[Task $taskAttemptId] ${e.getMessage}")
         }
       case e: Throwable =>
         throw e
