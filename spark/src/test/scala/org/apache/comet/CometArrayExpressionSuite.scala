@@ -175,7 +175,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
-          withTempView("1") {
+          withTempView("t1") {
             val path = new Path(dir.toURI.toString, "test.parquet")
             makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
             spark.read.parquet(path.toString).createOrReplaceTempView("t1");
