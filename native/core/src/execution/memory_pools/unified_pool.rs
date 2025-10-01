@@ -88,7 +88,7 @@ impl Drop for CometUnifiedMemoryPool {
         let used = self.used.load(Relaxed);
         if used != 0 {
             warn!(
-                "Task {} CometUnifiedMemoryPool dropped with {used} bytes still reserved",
+                "Task {} dropped CometUnifiedMemoryPool with {used} bytes still reserved",
                 self.task_attempt_id
             );
         }
@@ -104,12 +104,8 @@ impl MemoryPool for CometUnifiedMemoryPool {
     }
 
     fn shrink(&self, _: &MemoryReservation, size: usize) {
-        info!(
-            "Task {} shrink() release_to_spark({size})",
-            self.task_attempt_id
-        );
         if let Err(e) = self.release_to_spark(size) {
-            error!(
+            panic!(
                 "Task {} failed to return {size} bytes to Spark: {e:?}",
                 self.task_attempt_id
             );
@@ -132,10 +128,6 @@ impl MemoryPool for CometUnifiedMemoryPool {
             // and hopefully will trigger spilling from the caller side.
             if acquired < additional as i64 {
                 // Release the acquired bytes before throwing error
-                info!(
-                    "Task {} try_grow() release_to_spark({acquired})",
-                    self.task_attempt_id
-                );
                 self.release_to_spark(acquired as usize)?;
 
                 return Err(resources_datafusion_err!(
