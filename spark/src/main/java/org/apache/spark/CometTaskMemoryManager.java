@@ -80,7 +80,10 @@ public class CometTaskMemoryManager {
     long newUsed = used.addAndGet(-size);
     if (newUsed < 0) {
       logger.error(
-          "Used memory is negative: " + newUsed + " after releasing memory chunk of: " + size);
+          "Task {} used memory is negative ({}) after releasing {} bytes",
+          taskAttemptId,
+          newUsed,
+          size);
     }
     internal.releaseExecutionMemory(size, nativeMemoryConsumer);
   }
