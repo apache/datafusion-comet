@@ -599,6 +599,9 @@ under the License.
         <parquet.version>1.13.1</parquet.version>
         <slf4j.version>2.0.6</slf4j.version>
         <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
+        <java.version>11</java.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
     </profile>
 
@@ -611,6 +614,9 @@ under the License.
         <parquet.version>1.13.1</parquet.version>
         <slf4j.version>2.0.7</slf4j.version>
         <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
+        <java.version>11</java.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
     </profile>
 
