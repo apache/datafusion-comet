@@ -279,14 +279,6 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 
 object CometRound extends CometExpressionSerde[Round] {
 
-  override def getSupportLevel(expr: Round): SupportLevel = {
-    if (expr.ansiEnabled) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
-
   override def convert(
       r: Round,
       inputs: Seq[Attribute],
