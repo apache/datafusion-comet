@@ -20,8 +20,8 @@ use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mu
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
     spark_array_repeat, spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor,
-    spark_hex, spark_isnan, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad,
-    spark_unhex, spark_unscaled_value, EvalMode, SparkBitwiseCount, SparkBitwiseNot,
+    spark_hex, spark_isnan, spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round,
+    spark_rpad, spark_unhex, spark_unscaled_value, EvalMode, SparkBitwiseCount, SparkBitwiseNot,
     SparkDateTrunc, SparkStringSpace,
 };
 use arrow::datatypes::DataType;
@@ -113,6 +113,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "rpad" => {
             let func = Arc::new(spark_rpad);
             make_comet_scalar_udf!("rpad", func, without data_type)
+        }
+        "lpad" => {
+            let func = Arc::new(spark_lpad);
+            make_comet_scalar_udf!("lpad", func, without data_type)
         }
         "round" => {
             make_comet_scalar_udf!("round", spark_round, data_type)
