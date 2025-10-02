@@ -61,7 +61,7 @@ incompatible expressions.
 ## String Functions
 
 | Expression      | Spark-Compatible? | Compatibility Notes                                                                                        |
-| --------------- | ----------------- | ---------------------------------------------------------------------------------------------------------- |
+|-----------------| ----------------- | ---------------------------------------------------------------------------------------------------------- |
 | Ascii           | Yes               |                                                                                                            |
 | BitLength       | Yes               |                                                                                                            |
 | Chr             | Yes               |                                                                                                            |
@@ -79,6 +79,7 @@ incompatible expressions.
 | StringInstr     | Yes               |                                                                                                            |
 | StringRepeat    | Yes               | Negative argument for number of times to repeat causes exception                                           |
 | StringReplace   | Yes               |                                                                                                            |
+| StringLPad      | Yes               |                                                                                                            |
 | StringRPad      | Yes               |                                                                                                            |
 | StringSpace     | Yes               |                                                                                                            |
 | StringTranslate | Yes               |                                                                                                            |
