@@ -248,6 +248,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO,
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
@@ -283,8 +284,6 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
-    conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
-    conf.set(CometConf.COMET_NATIVE_SCAN_IMPL.key, CometConf.SCAN_AUTO)
     conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
 
@@ -303,11 +302,9 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
   override val goldenFilePath: String =
     new File(baseResourcePath, planName).getAbsolutePath
 
-  if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_AUTO) {
-    tpcdsQueries.foreach { q =>
-      test(s"check simplified (tpcds-v1.4/$q)") {
-        testQuery("tpcds", q)
-      }
+  tpcdsQueries.foreach { q =>
+    test(s"check simplified (tpcds-v1.4/$q)") {
+      testQuery("tpcds", q)
     }
   }
 }
@@ -323,11 +320,9 @@ class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
   override val goldenFilePath: String =
     new File(baseResourcePath, planName).getAbsolutePath
 
-  if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_AUTO) {
-    tpcdsQueriesV2_7_0.foreach { q =>
-      test(s"check simplified (tpcds-v2.7.0/$q)") {
-        testQuery("tpcds-v2.7.0", q)
-      }
+  tpcdsQueriesV2_7_0.foreach { q =>
+    test(s"check simplified (tpcds-v2.7.0/$q)") {
+      testQuery("tpcds-v2.7.0", q)
     }
   }
 }
