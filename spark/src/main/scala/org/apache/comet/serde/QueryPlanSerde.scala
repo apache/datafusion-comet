@@ -845,6 +845,16 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
+      case s: StaticInvoke
+          if s.staticObject == classOf[BitmapExpressionUtils] &&
+            s.dataType.isInstanceOf[BinaryType] &&
+            s.functionName == "bitmapCount" &&
+            s.arguments.size == 1 =>
+        val childProto = exprToProto(s.arguments.head, inputs, binding)
+        val bitmapCountScalarExpr =
+          scalarFunctionExprToProtoWithReturnType("bitmap_count", IntegerType, childProto)
+        optExprWithInfo(bitmapCountScalarExpr, expr, expr.children: _*)
+
       case KnownFloatingPointNormalized(NormalizeNaNAndZero(expr)) =>
         val dataType = serializeDataType(expr.dataType)
         if (dataType.isEmpty) {
