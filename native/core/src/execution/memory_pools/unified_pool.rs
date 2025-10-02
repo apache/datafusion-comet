@@ -40,6 +40,7 @@ use log::warn;
 pub struct CometUnifiedMemoryPool {
     task_memory_manager_handle: Arc<GlobalRef>,
     used: AtomicUsize,
+    task_attempt_id: i64,
 }
 
 impl Debug for CometUnifiedMemoryPool {
@@ -51,9 +52,13 @@ impl Debug for CometUnifiedMemoryPool {
 }
 
 impl CometUnifiedMemoryPool {
-    pub fn new(task_memory_manager_handle: Arc<GlobalRef>) -> CometUnifiedMemoryPool {
+    pub fn new(
+        task_memory_manager_handle: Arc<GlobalRef>,
+        task_attempt_id: i64,
+    ) -> CometUnifiedMemoryPool {
         Self {
             task_memory_manager_handle,
+            task_attempt_id,
             used: AtomicUsize::new(0),
         }
     }
@@ -82,7 +87,10 @@ impl Drop for CometUnifiedMemoryPool {
     fn drop(&mut self) {
         let used = self.used.load(Relaxed);
         if used != 0 {
-            warn!("CometUnifiedMemoryPool dropped with {used} bytes still reserved");
+            warn!(
+                "Task {} dropped CometUnifiedMemoryPool with {used} bytes still reserved",
+                self.task_attempt_id
+            );
         }
     }
 }
@@ -96,13 +104,20 @@ impl MemoryPool for CometUnifiedMemoryPool {
     }
 
     fn shrink(&self, _: &MemoryReservation, size: usize) {
-        self.release_to_spark(size)
-            .unwrap_or_else(|_| panic!("Failed to release {size} bytes"));
+        if let Err(e) = self.release_to_spark(size) {
+            panic!(
+                "Task {} failed to return {size} bytes to Spark: {e:?}",
+                self.task_attempt_id
+            );
+        }
         if let Err(prev) = self
             .used
             .fetch_update(Relaxed, Relaxed, |old| old.checked_sub(size))
         {
-            panic!("overflow when releasing {size} of {prev} bytes");
+            panic!(
+                "Task {} overflow when releasing {size} of {prev} bytes",
+                self.task_attempt_id
+            );
         }
     }
 
@@ -116,7 +131,8 @@ impl MemoryPool for CometUnifiedMemoryPool {
                 self.release_to_spark(acquired as usize)?;
 
                 return Err(resources_datafusion_err!(
-                    "Failed to acquire {} bytes, only got {}. Reserved: {}",
+                    "Task {} failed to acquire {} bytes, only got {}. Reserved: {}",
+                    self.task_attempt_id,
                     additional,
                     acquired,
                     self.reserved()
@@ -127,7 +143,8 @@ impl MemoryPool for CometUnifiedMemoryPool {
                 .fetch_update(Relaxed, Relaxed, |old| old.checked_add(acquired as usize))
             {
                 return Err(resources_datafusion_err!(
-                    "Failed to acquire {} bytes due to overflow. Reserved: {}",
+                    "Task {} failed to acquire {} bytes due to overflow. Reserved: {}",
+                    self.task_attempt_id,
                     additional,
                     prev
                 ));
