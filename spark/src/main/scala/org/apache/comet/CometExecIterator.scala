@@ -30,7 +30,7 @@ import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_METRICS_UPDATE_INTERVAL}
+import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_EXEC_MEMORY_POOL_TYPE, COMET_METRICS_UPDATE_INTERVAL}
 import org.apache.comet.Tracing.withTrace
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.vector.NativeUtil
@@ -87,9 +87,9 @@ class CometExecIterator(
       CometSparkSessionExtensions.getCometMemoryOverhead(conf)
     }
 
-    // serialize Spark conf in protobuf format
+    // serialize Comet related Spark configs in protobuf format
     val builder = ConfigMap.newBuilder()
-    conf.getAll.foreach { case (k, v) =>
+    conf.getAll.filter(_._1.startsWith(CometConf.COMET_PREFIX)).foreach { case (k, v) =>
       builder.putEntries(k, v)
     }
     val protobufSparkConfigs = builder.build().toByteArray
@@ -117,10 +117,7 @@ class CometExecIterator(
       memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
       memoryLimit,
       memoryLimitPerTask,
-      taskAttemptId,
-      debug = COMET_DEBUG_ENABLED.get(),
-      explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
-      tracingEnabled)
+      taskAttemptId)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
