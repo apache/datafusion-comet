@@ -16,7 +16,6 @@
 // under the License.
 
 use datafusion::execution::memory_pool::{MemoryPool, MemoryReservation};
-use log::info;
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -36,7 +35,7 @@ impl LoggingPool {
 
 impl MemoryPool for LoggingPool {
     fn grow(&self, reservation: &MemoryReservation, additional: usize) {
-        info!(
+        println!(
             "[Task {}] MemoryPool[{}].grow({})",
             self.task_attempt_id,
             reservation.consumer().name(),
@@ -46,7 +45,7 @@ impl MemoryPool for LoggingPool {
     }
 
     fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
-        info!(
+        println!(
             "[Task {}] MemoryPool[{}].shrink({})",
             self.task_attempt_id,
             reservation.consumer().name(),
@@ -62,14 +61,14 @@ impl MemoryPool for LoggingPool {
     ) -> datafusion::common::Result<()> {
         let result = self.pool.try_grow(reservation, additional);
         if result.is_ok() {
-            info!(
+            println!(
                 "[Task {}] MemoryPool[{}].try_grow({}) returning Ok",
                 self.task_attempt_id,
                 reservation.consumer().name(),
                 reservation.size()
             );
         } else {
-            info!(
+            println!(
                 "[Task {}] MemoryPool[{}].try_grow({}) returning Err",
                 self.task_attempt_id,
                 reservation.consumer().name(),
