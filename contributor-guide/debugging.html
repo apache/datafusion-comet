@@ -574,8 +574,8 @@ under the License.
   </a>
   <ul class="nav section-nav flex-column">
    <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#exception-details">
-     Exception details
+    <a class="reference internal nav-link" href="#enabling-native-backtraces">
+     Enabling Native Backtraces
     </a>
    </li>
    <li class="toc-h3 nav-item toc-entry">
@@ -707,9 +707,9 @@ Eventually it will be cleaned up when you reboot possibly after a software updat
 </section>
 <section id="verbose-debug">
 <h2>Verbose debug<a class="headerlink" href="#verbose-debug" title="Link to this heading">¶</a></h2>
-<section id="exception-details">
-<h3>Exception details<a class="headerlink" href="#exception-details" title="Link to this heading">¶</a></h3>
-<p>By default, Comet outputs the exception details specific for Comet.</p>
+<section id="enabling-native-backtraces">
+<h3>Enabling Native Backtraces<a class="headerlink" href="#enabling-native-backtraces" title="Link to this heading">¶</a></h3>
+<p>By default, Comet does not show native backtraces when exceptions happen in native code:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;my_failing_query&quot;</span><span class="p">).</span><span class="n">show</span><span class="p">(</span><span class="kc">false</span><span class="p">)</span>
 
 <span class="mi">24</span><span class="o">/</span><span class="mi">03</span><span class="o">/</span><span class="mi">05</span><span class="w"> </span><span class="mi">17</span><span class="p">:</span><span class="mi">00</span><span class="p">:</span><span class="mi">07</span><span class="w"> </span><span class="nc">ERROR</span><span class="w"> </span><span class="nc">Executor</span><span class="p">:</span><span class="w"> </span><span class="nc">Exception</span><span class="w"> </span><span class="n">in</span><span class="w"> </span><span class="n">task</span><span class="w"> </span><span class="mf">0.0</span><span class="w"> </span><span class="n">in</span><span class="w"> </span><span class="n">stage</span><span class="w"> </span><span class="mf">0.0</span><span class="w"> </span><span class="p">(</span><span class="nc">TID</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="o">/</span><span class="w"> </span><span class="mi">1</span><span class="p">]</span>
@@ -721,14 +721,11 @@ Eventually it will be cleaned up when you reboot possibly after a software updat
 <span class="w">        </span><span class="n">at</span><span class="w"> </span><span class="n">org</span><span class="p">.</span><span class="n">apache</span><span class="p">.</span><span class="n">comet</span><span class="p">.</span><span class="nc">CometExecIterator</span><span class="p">.</span><span class="n">hasNext</span><span class="p">(</span><span class="nc">CometExecIterator</span><span class="p">.</span><span class="n">scala</span><span class="p">:</span><span class="mi">126</span><span class="p">)</span>
 </pre></div>
 </div>
-<p>There is a verbose exception option by leveraging DataFusion <a class="reference external" href="https://arrow.apache.org/datafusion/user-guide/example-usage.html#enable-backtraces">backtraces</a>
-This option allows to append native DataFusion stack trace to the original error message.
-To enable this option with Comet it is needed to include <code class="docutils literal notranslate"><span class="pre">backtrace</span></code> feature in <a class="reference external" href="https://github.com/apache/arrow-datafusion-comet/blob/main/core/Cargo.toml">Cargo.toml</a> for DataFusion dependencies</p>
-<div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="n">datafusion-common</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">version</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;36.0.0&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">features</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;backtrace&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
-<span class="n">datafusion</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">default-features</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="n">version</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;36.0.0&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">features</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;unicode_expressions&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;backtrace&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
+<p>Comet can be built with DataFusion’s <a class="reference external" href="https://arrow.apache.org/datafusion/user-guide/example-usage.html#enable-backtraces">backtrace</a> feature enabled, which will include native back traces in <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code>.</p>
+<p>To build Comet with this feature enabled:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>release<span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span>backtrace
 </pre></div>
 </div>
-<p>Then build the Comet as <a class="reference external" href="https://github.com/apache/arrow-datafusion-comet/blob/main/README.md#getting-started">described</a></p>
 <p>Start Comet with <code class="docutils literal notranslate"><span class="pre">RUST_BACKTRACE=1</span></code></p>
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true</span>
 </pre></div>
