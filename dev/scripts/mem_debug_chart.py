@@ -26,10 +26,6 @@ import matplotlib.pyplot as plt
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("csv", help="CSV with columns: name,size")
-    ap.add_argument("--instant", action="store_true",
-                    help="Plot per-step stacked values (not cumulative totals).")
-    ap.add_argument("--bar", action="store_true",
-                    help="Use stacked bars instead of stacked area.")
     ap.add_argument("--title", default=None, help="Optional plot title.")
     args = ap.parse_args()
 
@@ -55,23 +51,20 @@ def main():
         .sort_index()
     )
 
-    # Running totals unless --instant specified
-    plot_data = wide if args.instant else wide.cumsum(axis=0)
+    # Running totals
+    plot_data = wide
+    # plot_data = wide.cumsum(axis=0)
 
     # Plot
-    if args.bar:
-        ax = plot_data.plot(kind="bar", stacked=True, figsize=(12, 6), width=1.0)
-    else:
-        ax = plot_data.plot.area(stacked=True, figsize=(12, 6))
+    ax = plot_data.plot.area(stacked=True, figsize=(12, 6))
 
     ax.set_xlabel("step")
-    ax.set_ylabel("size" if args.instant else "cumulative size")
-    ax.set_title(args.title or ("Stacked running totals by name" if not args.instant
-                                else "Stacked per-step values by name"))
+    ax.set_ylabel("cumulative size")
+    ax.set_title(args.title or ("Stacked running totals by name"))
     ax.legend(title="name", bbox_to_anchor=(1.02, 1), loc="upper left")
     plt.tight_layout()
 
-    out = path.with_suffix(".stacked.png" if args.instant else ".stacked_cumulative.png")
+    out = path.with_suffix(".stacked_cumulative.png")
     plt.savefig(out, dpi=150)
     print(f"Saved plot to {out}")
     plt.show()

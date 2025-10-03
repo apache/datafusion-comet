@@ -56,7 +56,13 @@ def main(file, task_filter):
                             alloc[consumer] = alloc[consumer] + size
                         elif method == "shrink":
                             alloc[consumer] = alloc[consumer] - size
-                    print(consumer, ",", alloc[consumer])
+
+                    if alloc[consumer] >= 0:
+                        print(consumer, ",", alloc[consumer])
+                    else:
+                        print("ignoring negative size ", consumer, ",", alloc[consumer], file=sys.stderr)
+                        print(consumer, ",", 0)
+
                 except:
                     print("error parsing", line, file=sys.stderr)
 
