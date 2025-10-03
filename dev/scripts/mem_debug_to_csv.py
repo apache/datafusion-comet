@@ -35,7 +35,7 @@ def main(file, task_filter):
 
             # example line: [Task 486] MemoryPool[HashJoinInput[6]].shrink(1000)
             # parse consumer name
-            re_match = re.search('\[Task (.*)\] MemoryPool\[(.*)\]\.(.*)\((.*)\)', line, re.IGNORECASE)
+            re_match = re.search('\[Task (.*)\] MemoryPool\[(.*)\]\.(try_grow|grow|shrink)\(([0-9]*)\)', line, re.IGNORECASE)
             if re_match:
                 try:
                     task = int(re_match.group(1))
@@ -46,23 +46,23 @@ def main(file, task_filter):
                     method = re_match.group(3)
                     size = int(re_match.group(4))
 
-                    if method == "try_grow" and "Err" in line:
-                        # do not update allocation if try_grow failed
-                        # annotate this entry so it can be shown in the chart
-                        print(consumer, ",", alloc[consumer], ",ERR")
-                        pass
+                    if alloc.get(consumer) is None:
+                        alloc[consumer] = size
                     else:
-                        if alloc.get(consumer) is None:
-                            alloc[consumer] = size
-                        else:
-                            if method == "grow" or method == "try_grow":
+                        if method == "grow" or method == "try_grow":
+                            if "Err" in line:
+                                # do not update allocation if try_grow failed
+                                # annotate this entry so it can be shown in the chart
+                                print(consumer, ",", alloc[consumer], ",ERR")
+                            else:
                                 alloc[consumer] = alloc[consumer] + size
-                            elif method == "shrink":
-                                alloc[consumer] = alloc[consumer] - size
-                        print(consumer, ",", alloc[consumer])
+                        elif method == "shrink":
+                            alloc[consumer] = alloc[consumer] - size
 
-                except:
-                    print("error parsing", line, file=sys.stderr)
+                    print(consumer, ",", alloc[consumer])
+
+                except Exception as e:
+                    print("error parsing", line, e, file=sys.stderr)
 
 
 if __name__ == "__main__":
