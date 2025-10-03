@@ -322,9 +322,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateInts(), DataTypes.DoubleType)
   }
 
-  ignore("cast IntegerType to DecimalType(10,2)") {
-    // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE] -1117686336 cannot be represented as Decimal(10, 2)
+  test("cast IntegerType to DecimalType(10,2)") {
     castTest(generateInts(), DataTypes.createDecimalType(10, 2))
+  }
+
+  test("cast IntegerType to DecimalType(10,2) overflow check") {
+    val intToDecimal10OverflowValues =
+      Seq(Int.MinValue, -100000000, -100000001, 100000000, 100000001, Int.MaxValue).toDF("a")
+    castTest(intToDecimal10OverflowValues, DataTypes.createDecimalType(10, 2))
   }
 
   test("cast IntegerType to StringType") {
@@ -369,8 +374,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateLongs(), DataTypes.DoubleType)
   }
 
-  ignore("cast LongType to DecimalType(10,2)") {
-    // Comet should have failed with [NUMERIC_VALUE_OUT_OF_RANGE] -1117686336 cannot be represented as Decimal(10, 2)
+  test("cast LongType to DecimalType(10,2)") {
     castTest(generateLongs(), DataTypes.createDecimalType(10, 2))
   }
 

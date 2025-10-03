@@ -169,6 +169,7 @@ The following cast operations are generally compatible with Spark except for the
 | integer | long |  |
 | integer | float |  |
 | integer | double |  |
+| integer | decimal |  |
 | integer | string |  |
 | long | boolean |  |
 | long | byte |  |
@@ -176,6 +177,7 @@ The following cast operations are generally compatible with Spark except for the
 | long | integer |  |
 | long | float |  |
 | long | double |  |
+| long | decimal |  |
 | long | string |  |
 | float | boolean |  |
 | float | byte |  |
@@ -222,8 +224,6 @@ The following cast operations are not compatible with Spark for all inputs and a
 <!--BEGIN:INCOMPAT_CAST_TABLE-->
 | From Type | To Type | Notes |
 |-|-|-|
-| integer | decimal  | No overflow check |
-| long | decimal  | No overflow check |
 | float | decimal  | There can be rounding differences |
 | double | decimal  | There can be rounding differences |
 | string | float  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
