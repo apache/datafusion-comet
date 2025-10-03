@@ -408,7 +408,7 @@
  - [ ] levenshtein
  - [ ] locate
  - [x] lower
- - [ ] lpad
+ - [x] lpad
  - [x] ltrim
  - [ ] mask
  - [x] octet_length
@@ -424,7 +424,7 @@
  - [x] repeat
  - [x] replace
  - [ ] right
- - [ ] rpad
+ - [x] rpad
  - [x] rtrim
  - [ ] sentences
  - [ ] soundex
