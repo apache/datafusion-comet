@@ -120,7 +120,8 @@ class CometExecIterator(
       taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
       explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
-      tracingEnabled)
+      tracingEnabled,
+      maxTempDirectorySize = CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE.get())
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
