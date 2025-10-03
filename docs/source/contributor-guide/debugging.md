@@ -194,6 +194,26 @@ For example, see: [log4rs.yaml](https://github.com/apache/datafusion-comet/blob/
 
 Set `spark.comet.debug.memory=true` to log all calls that grow or shrink memory reservations.
 
+Example log output:
+
+```
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(256232960) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(256375168) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(256899456) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(257296128) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(257820416) returning Err
+[Task 486] MemoryPool[ExternalSorterMerge[6]].shrink(10485760)
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(150464)
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(146688)
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(137856)
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(141952)
+[Task 486] MemoryPool[ExternalSorterMerge[6]].try_grow(0) returning Ok
+[Task 486] MemoryPool[ExternalSorterMerge[6]].try_grow(0) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(524288)
+[Task 486] MemoryPool[ExternalSorterMerge[6]].try_grow(0) returning Ok
+[Task 486] MemoryPool[ExternalSorterMerge[6]].try_grow(68928) returning Ok
+```
+
 There are Python scripts in `dev/scripts` that can be used to produce charts for a particular Spark task.
 
 First, extract the memory logging and write to CSV:
