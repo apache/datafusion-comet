@@ -1389,8 +1389,9 @@ dependencies = [
 
 [[package]]
 name = "datafusion"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4016a135c11820d9c9884a1f7924d5456c563bd3657b7d691a6e7b937a452df7"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -1400,24 +1401,24 @@ dependencies = [
  "chrono",
  "datafusion-catalog",
  "datafusion-catalog-listing",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
  "datafusion-datasource-csv",
  "datafusion-datasource-json",
  "datafusion-datasource-parquet",
- "datafusion-execution 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions-aggregate 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions-nested 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-expr-common",
+ "datafusion-functions",
+ "datafusion-functions-aggregate",
+ "datafusion-functions-nested",
  "datafusion-functions-table",
  "datafusion-functions-window",
  "datafusion-optimizer",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-physical-expr",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-physical-expr-common",
  "datafusion-physical-optimizer",
  "datafusion-physical-plan",
  "datafusion-session",
@@ -1439,18 +1440,19 @@ dependencies = [
 
 [[package]]
 name = "datafusion-catalog"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1721d3973afeb8a0c3f235a79101cc61e4a558dd3f02fdc9ae6c61e882e544d9"
 dependencies = [
  "arrow",
  "async-trait",
  "dashmap",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-physical-expr",
  "datafusion-physical-plan",
  "datafusion-session",
  "datafusion-sql",
@@ -1464,18 +1466,19 @@ dependencies = [
 
 [[package]]
 name = "datafusion-catalog-listing"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44841d3efb0c89c6a5ac6fde5ac61d4f2474a2767f170db6d97300a8b4df8904"
 dependencies = [
  "arrow",
  "async-trait",
  "datafusion-catalog",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
  "datafusion-datasource",
- "datafusion-execution 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -1500,7 +1503,7 @@ dependencies = [
  "datafusion-comet-objectstore-hdfs",
  "datafusion-comet-proto",
  "datafusion-comet-spark-expr",
- "datafusion-functions-nested 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "datafusion-functions-nested",
  "datafusion-spark",
  "futures",
  "hdfs-sys",
@@ -1611,27 +1614,6 @@ dependencies = [
  "indexmap",
  "libc",
  "log",
- "paste",
- "sqlparser",
- "tokio",
- "web-time",
-]
-
-[[package]]
-name = "datafusion-common"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
-dependencies = [
- "ahash",
- "arrow",
- "arrow-ipc",
- "base64",
- "chrono",
- "half",
- "hashbrown 0.14.5",
- "indexmap",
- "libc",
- "log",
  "object_store",
  "parquet",
  "paste",
@@ -1642,8 +1624,9 @@ dependencies = [
 
 [[package]]
 name = "datafusion-common-runtime"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f03fe3936f978fe8e76776d14ad8722e33843b01d81d11707ca72d54d2867787"
 dependencies = [
  "futures",
  "log",
@@ -1652,20 +1635,21 @@ dependencies = [
 
 [[package]]
 name = "datafusion-datasource"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4543216d2f4fc255780a46ae9e062e50c86ac23ecab6718cc1ba3fe4a8d5a8f2"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
  "chrono",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
  "datafusion-common-runtime",
- "datafusion-execution 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-physical-expr",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -1682,20 +1666,21 @@ dependencies = [
 
 [[package]]
 name = "datafusion-datasource-csv"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ab662d4692ca5929ce32eb609c6c8a741772537d98363b3efb3bc68148cd530"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
  "datafusion-catalog",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -1706,20 +1691,21 @@ dependencies = [
 
 [[package]]
 name = "datafusion-datasource-json"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dad4492ba9a2fca417cb211f8f05ffeb7f12a1f0f8e5bdcf548c353ff923779"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
  "datafusion-catalog",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-session",
  "futures",
@@ -1730,22 +1716,23 @@ dependencies = [
 
 [[package]]
 name = "datafusion-datasource-parquet"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2925432ce04847cc09b4789a53fc22b0fdf5f2e73289ad7432759d76c6026e9e"
 dependencies = [
  "arrow",
  "async-trait",
  "bytes",
  "datafusion-catalog",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
  "datafusion-common-runtime",
  "datafusion-datasource",
- "datafusion-execution 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions-aggregate 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-functions-aggregate",
+ "datafusion-physical-expr",
  "datafusion-physical-expr-adapter",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-physical-expr-common",
  "datafusion-physical-optimizer",
  "datafusion-physical-plan",
  "datafusion-pruning",
@@ -1767,11 +1754,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fbf41013cf55c2369b5229594898e8108c8a1beeb49d97feb5e0cce9933eb8f"
 
 [[package]]
-name = "datafusion-doc"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
-
-[[package]]
 name = "datafusion-execution"
 version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1780,27 +1762,8 @@ dependencies = [
  "arrow",
  "async-trait",
  "dashmap",
- "datafusion-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-expr 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "futures",
- "log",
- "object_store",
- "parking_lot",
- "rand",
- "tempfile",
- "url",
-]
-
-[[package]]
-name = "datafusion-execution"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
-dependencies = [
- "arrow",
- "async-trait",
- "dashmap",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-expr",
  "futures",
  "log",
  "object_store",
@@ -1819,32 +1782,12 @@ dependencies = [
  "arrow",
  "async-trait",
  "chrono",
- "datafusion-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-doc 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-expr-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-functions-aggregate-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-functions-window-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-physical-expr-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "indexmap",
- "paste",
- "serde_json",
- "sqlparser",
-]
-
-[[package]]
-name = "datafusion-expr"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
-dependencies = [
- "arrow",
- "async-trait",
- "chrono",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-doc 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions-aggregate-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions-window-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-doc",
+ "datafusion-expr-common",
+ "datafusion-functions-aggregate-common",
+ "datafusion-functions-window-common",
+ "datafusion-physical-expr-common",
  "indexmap",
  "paste",
  "serde_json",
@@ -1858,19 +1801,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a45bee7d2606bfb41ceb1d904ba7cecf69bd5a6f8f3e6c57c3f5a83d84bdd97"
 dependencies = [
  "arrow",
- "datafusion-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "indexmap",
- "itertools 0.14.0",
- "paste",
-]
-
-[[package]]
-name = "datafusion-expr-common"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
-dependencies = [
- "arrow",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
  "indexmap",
  "itertools 0.14.0",
  "paste",
@@ -1885,39 +1816,15 @@ dependencies = [
  "arrow",
  "arrow-buffer",
  "base64",
- "chrono",
- "datafusion-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-doc 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-execution 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-expr 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-expr-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-macros 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "hex",
- "itertools 0.14.0",
- "log",
- "rand",
- "regex",
- "unicode-segmentation",
- "uuid",
-]
-
-[[package]]
-name = "datafusion-functions"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
-dependencies = [
- "arrow",
- "arrow-buffer",
- "base64",
  "blake2",
  "blake3",
  "chrono",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-doc 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-execution 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-macros 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-doc",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-expr-common",
+ "datafusion-macros",
  "hex",
  "itertools 0.14.0",
  "log",
@@ -1937,34 +1844,14 @@ checksum = "b05d47426645aef1e73b1a034c75ab2401bc504175feb191accbe211ec24a342"
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-doc 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-execution 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-expr 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-functions-aggregate-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-macros 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-physical-expr 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-physical-expr-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "half",
- "log",
- "paste",
-]
-
-[[package]]
-name = "datafusion-functions-aggregate"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
-dependencies = [
- "ahash",
- "arrow",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-doc 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-execution 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions-aggregate-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-macros 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-doc",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-functions-aggregate-common",
+ "datafusion-macros",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "half",
  "log",
  "paste",
@@ -1978,21 +1865,9 @@ checksum = "05c99f648b2b1743de0c1c19eef07e8cc5a085237f172b2e20bf6934e0a804e4"
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-expr-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-physical-expr-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "datafusion-functions-aggregate-common"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
-dependencies = [
- "ahash",
- "arrow",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-expr-common",
+ "datafusion-physical-expr-common",
 ]
 
 [[package]]
@@ -2003,36 +1878,15 @@ checksum = "4227782023f4fb68d3d5c5eb190665212f43c9a0b437553e4b938b379aff6cf6"
 dependencies = [
  "arrow",
  "arrow-ord",
- "datafusion-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-doc 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-execution 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-expr 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-functions 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-functions-aggregate 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-functions-aggregate-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-macros 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-physical-expr-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "itertools 0.14.0",
- "log",
- "paste",
-]
-
-[[package]]
-name = "datafusion-functions-nested"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
-dependencies = [
- "arrow",
- "arrow-ord",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-doc 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-execution 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions-aggregate 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions-aggregate-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-macros 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-doc",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-functions",
+ "datafusion-functions-aggregate",
+ "datafusion-functions-aggregate-common",
+ "datafusion-macros",
+ "datafusion-physical-expr-common",
  "itertools 0.14.0",
  "log",
  "paste",
@@ -2040,14 +1894,15 @@ dependencies = [
 
 [[package]]
 name = "datafusion-functions-table"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8ad370763644d6626b15900fe2268e7d55c618fadf5cff3a7f717bb6fb50ec1"
 dependencies = [
  "arrow",
  "async-trait",
  "datafusion-catalog",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-expr",
  "datafusion-physical-plan",
  "parking_lot",
  "paste",
@@ -2055,17 +1910,18 @@ dependencies = [
 
 [[package]]
 name = "datafusion-functions-window"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44b14fc52c77461f359d1697826a4373c7887a6adfca94eedc81c35decd0df9f"
 dependencies = [
  "arrow",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-doc 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions-window-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-macros 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-doc",
+ "datafusion-expr",
+ "datafusion-functions-window-common",
+ "datafusion-macros",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "log",
  "paste",
 ]
@@ -2076,17 +1932,8 @@ version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1e149d36cdd44fb425dc815c5fac55025aa9a592dd65cb3c421881096292c02"
 dependencies = [
- "datafusion-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-physical-expr-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "datafusion-functions-window-common"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
-dependencies = [
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-physical-expr-common",
 ]
 
 [[package]]
@@ -2095,32 +1942,23 @@ version = "50.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07c9faa0cdefb6e6e756482b846397b5c2d84d369e30b009472b9ab9b1430fbd"
 dependencies = [
- "datafusion-expr 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "quote",
- "syn 2.0.106",
-]
-
-[[package]]
-name = "datafusion-macros"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
-dependencies = [
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-expr",
  "quote",
  "syn 2.0.106",
 ]
 
 [[package]]
 name = "datafusion-optimizer"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b20ff1cec8c23fbab8523e2937790fb374b92d3b273306a64b7d8889ff3b8614"
 dependencies = [
  "arrow",
  "chrono",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-expr-common",
+ "datafusion-physical-expr",
  "indexmap",
  "itertools 0.14.0",
  "log",
@@ -2136,33 +1974,11 @@ checksum = "10bb87a605d8ce9672d5347c0293c12211b0c03923fc12fbdc665fe76e6f9e01"
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-expr 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-expr-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-functions-aggregate-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-physical-expr-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "half",
- "hashbrown 0.14.5",
- "indexmap",
- "itertools 0.14.0",
- "log",
- "parking_lot",
- "paste",
- "petgraph 0.8.2",
-]
-
-[[package]]
-name = "datafusion-physical-expr"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
-dependencies = [
- "ahash",
- "arrow",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions-aggregate-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-expr-common",
+ "datafusion-functions-aggregate-common",
+ "datafusion-physical-expr-common",
  "half",
  "hashbrown 0.14.5",
  "indexmap",
@@ -2176,14 +1992,15 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-adapter"
 version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2da3a7429a555dd5ff0bec4d24bd5532ec43876764088da635cad55b2f178dc2"
 dependencies = [
  "arrow",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-expr",
+ "datafusion-functions",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "itertools 0.14.0",
 ]
 
@@ -2195,37 +2012,25 @@ checksum = "845eb44ef1e04d2a15c6d955cb146b40a41814a7be4377f0a541857d3e257d6f"
 dependencies = [
  "ahash",
  "arrow",
- "datafusion-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "datafusion-expr-common 50.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
- "hashbrown 0.14.5",
- "itertools 0.14.0",
-]
-
-[[package]]
-name = "datafusion-physical-expr-common"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
-dependencies = [
- "ahash",
- "arrow",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-expr-common",
  "hashbrown 0.14.5",
  "itertools 0.14.0",
 ]
 
 [[package]]
 name = "datafusion-physical-optimizer"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f96a93ebfd35cc52595e85c3100730a5baa6def39ff5390d6f90d2f3f89ce53f"
 dependencies = [
  "arrow",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-execution 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-expr-common",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "datafusion-pruning",
  "itertools 0.14.0",
@@ -2234,8 +2039,9 @@ dependencies = [
 
 [[package]]
 name = "datafusion-physical-plan"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6516a95911f763f05ec29bddd6fe987a0aa987409c213eac12faa5db7f3c9c"
 dependencies = [
  "ahash",
  "arrow",
@@ -2243,14 +2049,14 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "chrono",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
  "datafusion-common-runtime",
- "datafusion-execution 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions-aggregate-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions-window-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-functions-aggregate-common",
+ "datafusion-functions-window-common",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "futures",
  "half",
  "hashbrown 0.14.5",
@@ -2264,16 +2070,17 @@ dependencies = [
 
 [[package]]
 name = "datafusion-pruning"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40befe63ab3bd9f3b05d02d13466055aa81876ad580247b10bdde1ba3782cebb"
 dependencies = [
  "arrow",
  "arrow-schema",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
  "datafusion-datasource",
- "datafusion-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-expr-common",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
  "datafusion-physical-plan",
  "itertools 0.14.0",
  "log",
@@ -2281,17 +2088,18 @@ dependencies = [
 
 [[package]]
 name = "datafusion-session"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26aa059f478e6fa31158e80e4685226490b39f67c2e357401e26da84914be8b2"
 dependencies = [
  "arrow",
  "async-trait",
  "dashmap",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
  "datafusion-common-runtime",
- "datafusion-execution 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-physical-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-physical-expr",
  "datafusion-physical-plan",
  "datafusion-sql",
  "futures",
@@ -2304,18 +2112,19 @@ dependencies = [
 
 [[package]]
 name = "datafusion-spark"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c11689184beea6390a30da81b1098487027bc9c8fcaa779a943c12c91520ac4"
 dependencies = [
  "arrow",
  "chrono",
  "crc32fast",
  "datafusion-catalog",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-execution 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-functions 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-macros 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-functions",
+ "datafusion-macros",
  "log",
  "sha1",
  "url",
@@ -2324,13 +2133,14 @@ dependencies = [
 
 [[package]]
 name = "datafusion-sql"
-version = "50.0.0"
-source = "git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5#720b55a24918ac60a04dd377d7d9ab594741e7c5"
+version = "50.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea3ce7cb3c31bfc6162026f6f4b11eb5a3a83c8a6b88d8b9c529ddbe97d53525"
 dependencies = [
  "arrow",
  "bigdecimal",
- "datafusion-common 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
- "datafusion-expr 50.0.0 (git+https://github.com/andygrove/datafusion?rev=720b55a24918ac60a04dd377d7d9ab594741e7c5)",
+ "datafusion-common",
+ "datafusion-expr",
  "indexmap",
  "log",
  "regex",
