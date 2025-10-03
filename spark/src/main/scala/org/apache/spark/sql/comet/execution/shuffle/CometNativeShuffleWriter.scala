@@ -103,7 +103,9 @@ class CometNativeShuffleWriter[K, V](
       nativePlan,
       nativeMetrics,
       numParts,
-      context.partitionId())
+      context.partitionId(),
+      broadcastedHadoopConfForEncryption = None,
+      encryptedFilePaths = Seq.empty)
 
     while (cometIter.hasNext) {
       cometIter.next()

@@ -20,9 +20,14 @@
 package org.apache.spark.sql.benchmark
 
 import java.io.File
+import java.nio.charset.StandardCharsets
+import java.util.Base64
 
 import scala.util.Random
 
+import org.apache.parquet.crypto.DecryptionPropertiesFactory
+import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFactory}
+import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, DataFrameWriter, Row, SparkSession}
@@ -118,6 +123,41 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
   protected def saveAsParquetV1Table(df: DataFrameWriter[Row], dir: String): Unit = {
     df.mode("overwrite").option("compression", "snappy").parquet(dir)
     spark.read.parquet(dir).createOrReplaceTempView("parquetV1Table")
+  }
+
+  protected def prepareEncryptedTable(
+      dir: File,
+      df: DataFrame,
+      partition: Option[String] = None): Unit = {
+    val testDf = if (partition.isDefined) {
+      df.write.partitionBy(partition.get)
+    } else {
+      df.write
+    }
+
+    saveAsEncryptedParquetV1Table(testDf, dir.getCanonicalPath + "/parquetV1")
+  }
+
+  protected def saveAsEncryptedParquetV1Table(df: DataFrameWriter[Row], dir: String): Unit = {
+    val encoder = Base64.getEncoder
+    val footerKey =
+      encoder.encodeToString("0123456789012345".getBytes(StandardCharsets.UTF_8))
+    val key1 = encoder.encodeToString("1234567890123450".getBytes(StandardCharsets.UTF_8))
+    val cryptoFactoryClass =
+      "org.apache.parquet.crypto.keytools.PropertiesDrivenCryptoFactory"
+    withSQLConf(
+      DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
+      KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
+        "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
+      InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
+        s"footerKey: ${footerKey}, key1: ${key1}") {
+      df.mode("overwrite")
+        .option("compression", "snappy")
+        .option(PropertiesDrivenCryptoFactory.COLUMN_KEYS_PROPERTY_NAME, "key1: id")
+        .option(PropertiesDrivenCryptoFactory.FOOTER_KEY_PROPERTY_NAME, "footerKey")
+        .parquet(dir)
+      spark.read.parquet(dir).createOrReplaceTempView("parquetV1Table")
+    }
   }
 
   protected def makeDecimalDataFrame(

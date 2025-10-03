@@ -185,6 +185,15 @@ impl From<CometError> for DataFusionError {
     }
 }
 
+impl From<CometError> for ParquetError {
+    fn from(value: CometError) -> Self {
+        match value {
+            CometError::Parquet { source } => source,
+            _ => ParquetError::General(value.to_string()),
+        }
+    }
+}
+
 impl From<CometError> for ExecutionError {
     fn from(value: CometError) -> Self {
         match value {
