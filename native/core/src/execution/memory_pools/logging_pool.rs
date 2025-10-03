@@ -60,23 +60,26 @@ impl MemoryPool for LoggingPool {
         reservation: &MemoryReservation,
         additional: usize,
     ) -> datafusion::common::Result<()> {
-        let result = self.pool.try_grow(reservation, additional);
-        if result.is_ok() {
-            info!(
-                "[Task {}] MemoryPool[{}].try_grow({}) returning Ok",
-                self.task_attempt_id,
-                reservation.consumer().name(),
-                additional
-            );
-        } else {
-            info!(
-                "[Task {}] MemoryPool[{}].try_grow({}) returning Err",
-                self.task_attempt_id,
-                reservation.consumer().name(),
-                additional
-            );
+        match self.pool.try_grow(reservation, additional) {
+            Ok(_) => {
+                info!(
+                    "[Task {}] MemoryPool[{}].try_grow({}) returning Ok",
+                    self.task_attempt_id,
+                    reservation.consumer().name(),
+                    additional
+                );
+                Ok(())
+            }
+            Err(e) => {
+                info!(
+                    "[Task {}] MemoryPool[{}].try_grow({}) returning Err: {:?}",
+                    self.task_attempt_id,
+                    reservation.consumer().name(),
+                    additional
+                );
+                Err(e)
+            }
         }
-        result
     }
 
     fn reserved(&self) -> usize {
