@@ -34,15 +34,14 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.cores.max=8 \
     --conf spark.executor.memory=16g \
     --conf spark.memory.offHeap.enabled=true \
-    --conf spark.memory.offHeap.size=2g \
+    --conf spark.memory.offHeap.size=16g \
     --conf spark.eventLog.enabled=true \
     --conf spark.driver.extraClassPath=$COMET_JAR \
     --conf spark.executor.extraClassPath=$COMET_JAR \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.comet.exec.replaceSortMergeJoin=false \
+    --conf spark.comet.exec.replaceSortMergeJoin=true \
     --conf spark.comet.expression.allowIncompatible=true \
-    --conf spark.comet.debug.memory=true \
     --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
     --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
     tpcbench.py \
