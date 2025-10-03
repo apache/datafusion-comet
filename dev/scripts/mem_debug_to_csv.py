@@ -29,7 +29,7 @@ def main(file, task_filter):
     # open file
     with open(file) as f:
         # iterate over lines in file
-        print("name,size")
+        print("name,size,label")
         for line in f:
             # print(line, file=sys.stderr)
 
@@ -45,23 +45,21 @@ def main(file, task_filter):
                     consumer = re_match.group(2)
                     method = re_match.group(3)
                     size = int(re_match.group(4))
-                    if method == "try_grow":
-                        if "Err" in line:
-                            continue
 
-                    if alloc.get(consumer) is None:
-                        alloc[consumer] = size
+                    if method == "try_grow" and "Err" in line:
+                        # do not update allocation if try_grow failed
+                        # annotate this entry so it can be shown in the chart
+                        print(consumer, ",", alloc[consumer], ",ERR")
+                        pass
                     else:
-                        if method == "grow" or method == "try_grow":
-                            alloc[consumer] = alloc[consumer] + size
-                        elif method == "shrink":
-                            alloc[consumer] = alloc[consumer] - size
-
-                    if alloc[consumer] >= 0:
+                        if alloc.get(consumer) is None:
+                            alloc[consumer] = size
+                        else:
+                            if method == "grow" or method == "try_grow":
+                                alloc[consumer] = alloc[consumer] + size
+                            elif method == "shrink":
+                                alloc[consumer] = alloc[consumer] - size
                         print(consumer, ",", alloc[consumer])
-                    else:
-                        print("ignoring negative size ", consumer, ",", alloc[consumer], file=sys.stderr)
-                        print(consumer, ",", 0)
 
                 except:
                     print("error parsing", line, file=sys.stderr)

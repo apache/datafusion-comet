@@ -15,7 +15,7 @@ def plot_memory_usage(csv_file):
     pivot_df = pivot_df.fillna(method='ffill').fillna(0)
 
     # Create stacked area chart
-    plt.figure(figsize=(12, 6))
+    plt.figure(figsize=(8, 4))
     plt.stackplot(pivot_df.index,
                   [pivot_df[col] for col in pivot_df.columns],
                   labels=pivot_df.columns,
