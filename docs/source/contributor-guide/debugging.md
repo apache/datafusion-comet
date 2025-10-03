@@ -189,3 +189,21 @@ This produces output like the following:
 
 Additionally, you can place a `log4rs.yaml` configuration file inside the Comet configuration directory specified by the `COMET_CONF_DIR` environment variable to enable more advanced logging configurations. This file uses the [log4rs YAML configuration format](https://docs.rs/log4rs/latest/log4rs/#configuration-via-a-yaml-file).
 For example, see: [log4rs.yaml](https://github.com/apache/datafusion-comet/blob/main/conf/log4rs.yaml).
+
+### Debugging Memory Reservations
+
+Set `spark.comet.debug.memory=true` to log all calls that grow or shrink memory reservations.
+
+There are Python scripts in `dev/scripts` that can be used to produce charts for a particular Spark task.
+
+First, extract the memory logging and write to CSV:
+
+```shell
+python3 dev/scripts/mem_debug_to_csv.py /path/to/executor/log > /tmp/mem.csv
+```
+
+Next, generate a chart from the CSV file for a specific Spark task:
+
+```shell
+python3 dev/scripts/plot_memory_usage.py /tmp/mem.csv --task 1234
+```
