@@ -38,10 +38,12 @@ on:
 
 env:
   RUST_VERSION: stable
+  SKIP_CI: ${{ contains(github.event.pull_request.title, '[skip-ci]') }}
 
 jobs:
 
   macos-aarch64-test:
+    if: env.SKIP_CI != 'true'
     strategy:
       matrix:
         os: [macos-14]

@@ -44,9 +44,11 @@ on:
 
 env:
   RUST_VERSION: stable
+  SKIP_CI: ${{ contains(github.event.pull_request.title, '[skip-ci]') }}
 
 jobs:
   spark-sql-auto-scan:
+    if: env.SKIP_CI != 'true'
     strategy:
       matrix:
         os: [ubuntu-24.04]
@@ -96,6 +98,7 @@ jobs:
           path: "**/fallback.log"
 
   spark-sql-native-native-comet:
+    if: env.SKIP_CI != 'true'
     strategy:
       matrix:
         os: [ ubuntu-24.04 ]
@@ -145,6 +148,7 @@ jobs:
           path: "**/fallback.log"
 
   spark-sql-native-iceberg-compat:
+    if: env.SKIP_CI != 'true'
     strategy:
       matrix:
         os: [ubuntu-24.04]
@@ -194,7 +198,7 @@ jobs:
           path: "**/fallback.log"
 
   merge-fallback-logs:
-    if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
+    if: ${{ env.SKIP_CI != 'true' && github.event.inputs.collect-fallback-logs == 'true' }}
     name: merge-fallback-logs
     needs: [ spark-sql-auto-scan, spark-sql-native-native-comet, spark-sql-native-iceberg-compat ]
     runs-on: ubuntu-24.04

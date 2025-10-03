@@ -32,8 +32,12 @@ on:
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
 
+env:
+  SKIP_CI: ${{ contains(github.event.pull_request.title, '[skip-ci]') }}
+
 jobs:
   miri:
+    if: env.SKIP_CI != 'true'
     name: "Miri"
     runs-on: ubuntu-latest
     steps:

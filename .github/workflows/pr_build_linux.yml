@@ -38,11 +38,13 @@ on:
 
 env:
   RUST_VERSION: stable
+  SKIP_CI: ${{ contains(github.event.pull_request.title, '[skip-ci]') }}
 
 jobs:
   
   # Run Rust tests once per JDK version
   linux-test-rust:
+    if: env.SKIP_CI != 'true'
     strategy:
       matrix:
         os: [ubuntu-latest]
@@ -63,6 +65,7 @@ jobs:
         uses: ./.github/actions/rust-test
   
   linux-test:
+    if: env.SKIP_CI != 'true'
     strategy:
       matrix:
         os: [ubuntu-latest]

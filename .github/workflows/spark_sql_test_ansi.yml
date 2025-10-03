@@ -36,9 +36,11 @@ on:
 
 env:
   RUST_VERSION: stable
+  SKIP_CI: ${{ contains(github.event.pull_request.title, '[skip-ci]') }}
 
 jobs:
   spark-sql-catalyst:
+    if: env.SKIP_CI != 'true'
     strategy:
       matrix:
         os: [ubuntu-24.04]

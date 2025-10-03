@@ -38,9 +38,11 @@ on:
 
 env:
   RUST_VERSION: stable
+  SKIP_CI: ${{ contains(github.event.pull_request.title, '[skip-ci]') }}
 
 jobs:
   prepare:
+    if: env.SKIP_CI != 'true'
     name: Build native and prepare data
     runs-on: ubuntu-latest
     container:
@@ -91,6 +93,7 @@ jobs:
           cd ..
 
   benchmark:
+    if: env.SKIP_CI != 'true'
     name: Run TPCDSQuerySuite
     runs-on: ubuntu-latest
     needs: [prepare]
