@@ -21,19 +21,24 @@ use std::sync::Arc;
 
 #[derive(Debug)]
 pub(crate) struct LoggingPool {
+    task_attempt_id: u64,
     pool: Arc<dyn MemoryPool>,
 }
 
 impl LoggingPool {
-    pub fn new(pool: Arc<dyn MemoryPool>) -> Self {
-        Self { pool }
+    pub fn new(task_attempt_id: u64, pool: Arc<dyn MemoryPool>) -> Self {
+        Self {
+            task_attempt_id,
+            pool,
+        }
     }
 }
 
 impl MemoryPool for LoggingPool {
     fn grow(&self, reservation: &MemoryReservation, additional: usize) {
         info!(
-            "MemoryPool[{}].grow({})",
+            "[Task {}] MemoryPool[{}].grow({})",
+            self.task_attempt_id,
             reservation.consumer().name(),
             reservation.size()
         );
@@ -42,7 +47,8 @@ impl MemoryPool for LoggingPool {
 
     fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
         info!(
-            "MemoryPool[{}].shrink({})",
+            "[Task {}] MemoryPool[{}].shrink({})",
+            self.task_attempt_id,
             reservation.consumer().name(),
             reservation.size()
         );
@@ -57,13 +63,15 @@ impl MemoryPool for LoggingPool {
         let result = self.pool.try_grow(reservation, additional);
         if result.is_ok() {
             info!(
-                "MemoryPool[{}].try_grow({}) returning Ok",
+                "[Task {}] MemoryPool[{}].try_grow({}) returning Ok",
+                self.task_attempt_id,
                 reservation.consumer().name(),
                 reservation.size()
             );
         } else {
             info!(
-                "MemoryPool[{}].try_grow({}) returning Err",
+                "[Task {}] MemoryPool[{}].try_grow({}) returning Err",
+                self.task_attempt_id,
                 reservation.consumer().name(),
                 reservation.size()
             );
