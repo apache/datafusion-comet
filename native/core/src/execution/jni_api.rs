@@ -78,6 +78,7 @@ use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
 
+use crate::execution::memory_pools::logging_pool::LoggingPool;
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
 use once_cell::sync::Lazy;
@@ -217,6 +218,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             )?;
             let memory_pool =
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
+
+            // TODO only if debug option set
+            let memory_pool = Arc::new(LoggingPool::new(memory_pool));
 
             // Get local directories for storing spill files
             let local_dirs_array = JObjectArray::from_raw(local_dirs);
