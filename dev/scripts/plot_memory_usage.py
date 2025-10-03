@@ -21,6 +21,14 @@ def plot_memory_usage(csv_file):
                   labels=pivot_df.columns,
                   alpha=0.8)
 
+    # Add annotations for ERR labels
+    if 'label' in df.columns:
+        err_points = df[df['label'].str.contains('ERR', na=False)]
+        for _, row in err_points.iterrows():
+            plt.axvline(x=row['time'], color='red', linestyle='--', alpha=0.7, linewidth=1.5)
+            plt.text(row['time'], plt.ylim()[1] * 0.95, 'ERR',
+                    ha='center', va='top', color='red', fontweight='bold')
+
     plt.xlabel('Time')
     plt.ylabel('Memory Usage')
     plt.title('Memory Usage Over Time by Consumer')
