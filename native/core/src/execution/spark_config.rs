@@ -15,27 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! PoC of vectorization execution through JNI to Rust.
-pub mod expressions;
-pub mod jni_api;
-mod metrics;
-pub mod operators;
-pub(crate) mod planner;
-pub mod serde;
-pub mod shuffle;
-pub(crate) mod sort;
-pub(crate) mod spark_plan;
-pub use datafusion_comet_spark_expr::timezone;
-mod memory_pools;
-pub(crate) mod spark_config;
-pub(crate) mod tracing;
-pub(crate) mod utils;
+use std::collections::HashMap;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
+pub(crate) const COMET_TRACING_ENABLED: &str = "spark.comet.tracing.enabled";
+pub(crate) const COMET_DEBUG_ENABLED: &str = "spark.comet.debug.enabled";
+pub(crate) const COMET_EXPLAIN_NATIVE_ENABLED: &str = "spark.comet.explain.native.enabled";
+
+pub(crate) trait SparkConfig {
+    fn get_bool(&self, name: &str) -> bool;
+}
+
+impl SparkConfig for HashMap<String, String> {
+    fn get_bool(&self, name: &str) -> bool {
+        self.get(name)
+            .and_then(|str_val| str_val.parse::<bool>().ok())
+            .unwrap_or(false)
     }
 }
