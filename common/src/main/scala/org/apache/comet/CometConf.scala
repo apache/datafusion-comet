@@ -63,9 +63,11 @@ object CometConf extends ShimCometConf {
 
   def conf(key: String): ConfigBuilder = ConfigBuilder(key)
 
-  val COMET_EXEC_CONFIG_PREFIX = "spark.comet.exec";
+  val COMET_PREFIX = "spark.comet";
 
-  val COMET_EXPR_CONFIG_PREFIX = "spark.comet.expression";
+  val COMET_EXEC_CONFIG_PREFIX = s"$COMET_PREFIX.exec";
+
+  val COMET_EXPR_CONFIG_PREFIX = s"$COMET_PREFIX.expression";
 
   val COMET_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.enabled")
     .doc(
@@ -451,6 +453,13 @@ object CometConf extends ShimCometConf {
           "validating array when importing arrays from JVM at native side. Note that these " +
           "checks may be expensive in performance and should only be enabled for debugging " +
           "purpose.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_DEBUG_MEMORY_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.debug.memory")
+      .doc("TBD")
+      .internal()
       .booleanConf
       .createWithDefault(false)
 
