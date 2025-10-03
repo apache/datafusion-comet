@@ -79,6 +79,14 @@ done
 
 echo "Building binaries from $REPO/$BRANCH"
 
+# Check Java version
+JAVA_VERSION=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}' | awk -F '.' '{print $1}')
+if [ "$JAVA_VERSION" -lt 17 ]; then
+  echo "Error: Java version must be at least 17. Current version: $(java -version 2>&1 | head -n 1)"
+  exit 1
+fi
+echo "Java version check passed: $JAVA_VERSION"
+
 WORKING_DIR="$SCRIPT_DIR/comet-rm/workdir"
 cp $SCRIPT_DIR/../cargo.config $WORKING_DIR
 
@@ -194,6 +202,7 @@ LOCAL_REPO=$(mktemp -d /tmp/comet-staging-repo-XXXXX)
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.4 -P scala-2.13  -DskipTests install
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.5 -P scala-2.12  -DskipTests install
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.5 -P scala-2.13  -DskipTests install
+./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-4.0 -P scala-2.13  -DskipTests install
 
 echo "Installed to local repo: ${LOCAL_REPO}"
 
