@@ -457,7 +457,7 @@ object CometConf extends ShimCometConf {
       .createWithDefault(false)
 
   val COMET_DEBUG_MEMORY_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.debug.memory")
+    conf(s"$COMET_PREFIX.debug.memory")
       .doc("When enabled, log all native memory pool interactions to stdout.")
       .internal()
       .booleanConf
