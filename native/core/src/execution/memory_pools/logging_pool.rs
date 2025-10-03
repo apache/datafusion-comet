@@ -72,7 +72,7 @@ impl MemoryPool for LoggingPool {
             }
             Err(e) => {
                 info!(
-                    "[Task {}] MemoryPool[{}].try_grow({}) returning Err: {:?}",
+                    "[Task {}] MemoryPool[{}].try_grow({}) returning Err: {e:?}",
                     self.task_attempt_id,
                     reservation.consumer().name(),
                     additional
