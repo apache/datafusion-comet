@@ -44,7 +44,7 @@ vars:
 
 jobs:
   prepare:
-    if: env.SKIP_CI != 'true'
+    if: vars.SKIP_CI != 'true'
     name: Build native and prepare data
     runs-on: ubuntu-latest
     container:
