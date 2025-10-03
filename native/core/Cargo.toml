@@ -94,6 +94,7 @@ hex = "0.4.3"
 datafusion-functions-nested = { version = "50.0.0" }
 
 [features]
+backtrace = ["datafusion/backtrace"]
 default = []
 hdfs = ["datafusion-comet-objectstore-hdfs"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]

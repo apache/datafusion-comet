@@ -101,9 +101,9 @@ Detecting the debugger
 
 ## Verbose debug
 
-### Exception details
+### Enabling Native Backtraces
 
-By default, Comet outputs the exception details specific for Comet.
+By default, Comet does not show native backtraces when exceptions happen in native code:
 
 ```scala
 scala> spark.sql("my_failing_query").show(false)
@@ -118,16 +118,15 @@ This was likely caused by a bug in DataFusion's code and we would welcome that y
 
 ```
 
-There is a verbose exception option by leveraging DataFusion [backtraces](https://arrow.apache.org/datafusion/user-guide/example-usage.html#enable-backtraces)
-This option allows to append native DataFusion stack trace to the original error message.
-To enable this option with Comet it is needed to include `backtrace` feature in [Cargo.toml](https://github.com/apache/arrow-datafusion-comet/blob/main/core/Cargo.toml) for DataFusion dependencies
+Comet can be built with DataFusion's [backtrace] feature enabled, which will include native back traces in `CometNativeException`.
 
-```toml
-datafusion-common = { version = "36.0.0", features = ["backtrace"] }
-datafusion = { default-features = false, version = "36.0.0", features = ["unicode_expressions", "backtrace"] }
+[backtrace]: https://arrow.apache.org/datafusion/user-guide/example-usage.html#enable-backtraces
+
+To build Comet with this feature enabled:
+
+```shell
+make release COMET_FEATURES=backtrace
 ```
-
-Then build the Comet as [described](https://github.com/apache/arrow-datafusion-comet/blob/main/README.md#getting-started)
 
 Start Comet with `RUST_BACKTRACE=1`
 
