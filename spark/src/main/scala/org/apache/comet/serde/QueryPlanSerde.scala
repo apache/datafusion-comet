@@ -28,7 +28,6 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
-import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
@@ -230,7 +229,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Coalesce] -> CometCoalesce,
     classOf[Literal] -> CometLiteral,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
-    classOf[SparkPartitionID] -> CometSparkPartitionId)
+    classOf[SparkPartitionID] -> CometSparkPartitionId,
+    classOf[StaticInvoke] -> CometStaticInvoke)
 
   /**
    * Mapping of Spark expression class to Comet expression handler.
@@ -820,40 +820,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             withInfo(expr, "Comet only supports regexp_replace with an offset of 1 (no offset).")
             None
         }
-
-      // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
-      // char types.
-      // See https://github.com/apache/spark/pull/38151
-      case s: StaticInvoke
-          // classOf gets ther runtime class of T, which lets us compare directly
-          // Otherwise isInstanceOf[Class[T]] will always evaluate to true for Class[_]
-          if s.staticObject == classOf[CharVarcharCodegenUtils] &&
-            s.dataType.isInstanceOf[StringType] &&
-            s.functionName == "readSidePadding" &&
-            s.arguments.size == 2 &&
-            s.propagateNull &&
-            !s.returnNullable &&
-            s.isDeterministic =>
-        val argsExpr = Seq(
-          exprToProtoInternal(Cast(s.arguments(0), StringType), inputs, binding),
-          exprToProtoInternal(s.arguments(1), inputs, binding))
-
-        if (argsExpr.forall(_.isDefined)) {
-          scalarFunctionExprToProto("read_side_padding", argsExpr: _*)
-        } else {
-          withInfo(expr, s.arguments: _*)
-          None
-        }
-
-      case s: StaticInvoke
-          if s.staticObject == classOf[BitmapExpressionUtils] &&
-            s.dataType.isInstanceOf[BinaryType] &&
-            s.functionName == "bitmapCount" &&
-            s.arguments.size == 1 =>
-        val childProto = exprToProto(s.arguments.head, inputs, binding)
-        val bitmapCountScalarExpr =
-          scalarFunctionExprToProtoWithReturnType("bitmap_count", IntegerType, childProto)
-        optExprWithInfo(bitmapCountScalarExpr, expr, expr.children: _*)
 
       case KnownFloatingPointNormalized(NormalizeNaNAndZero(expr)) =>
         val dataType = serializeDataType(expr.dataType)

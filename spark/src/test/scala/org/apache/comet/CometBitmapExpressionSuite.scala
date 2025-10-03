@@ -52,8 +52,21 @@ class CometBitmapExpressionSuite extends CometTestBase with AdaptiveSparkPlanHel
       val table = spark.read.parquet(filename)
       table.createOrReplaceTempView("t1")
       val df = sql("SELECT bitmap_count(c13) FROM t1")
-      df.explain(true)
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("readSidePadding") {
+    // https://stackoverflow.com/a/46290728
+    val table = "test"
+    withTable(table) {
+      sql(s"create table $table(col1 CHAR(2)) using parquet")
+      sql(s"insert into $table values('é')") // unicode 'e\\u{301}'
+      sql(s"insert into $table values('é')") // unicode '\\u{e9}'
+      sql(s"insert into $table values('')")
+      sql(s"insert into $table values('ab')")
+
+      checkSparkAnswerAndOperator(s"SELECT * FROM $table")
     }
   }
 }

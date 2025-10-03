@@ -1,0 +1,51 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.comet.serde
+
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BitmapExpressionUtils, Expression}
+import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
+import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
+
+import org.apache.comet.CometSparkSessionExtensions.withInfo
+
+object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
+
+  private val staticInvokeExpressions: Map[(Class[_], String), CometScalarFunction[_]] =
+    Map(
+      (classOf[BitmapExpressionUtils], "bitmapCount") -> CometScalarFunction("bitmap_count"),
+      (classOf[CharVarcharCodegenUtils], "read_side_padding") -> CometScalarFunction(
+        "read_side_padding"))
+
+  override def convert(
+      expr: StaticInvoke,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    staticInvokeExpressions.get((expr.staticObject, expr.functionName)) match {
+      case Some(handler) =>
+        handler.convert(expr.asInstanceOf[Expression], inputs, binding)
+      case None =>
+        withInfo(
+          expr,
+          s"Static invoke expression: ${expr.functionName} is not supported",
+          expr.children: _*)
+        None
+    }
+  }
+}
