@@ -177,11 +177,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let spark_configs = serde::deserialize_config(bytes.as_slice())?;
         let spark_config: HashMap<String, String> = spark_configs.entries.into_iter().collect();
 
+        for (k, v) in &spark_config {
+            println!("CONF: {k} = {v}");
+        }
+
         // Access Spark configs
         let debug_native = spark_config.get_bool(COMET_DEBUG_ENABLED);
         let explain_native = spark_config.get_bool(COMET_EXPLAIN_NATIVE_ENABLED);
         let tracing_enabled = spark_config.get_bool(COMET_TRACING_ENABLED);
         let logging_memory_pool = spark_config.get_bool(COMET_DEBUG_MEMORY);
+
+        println!("logging_memory_pool = {logging_memory_pool}");
 
         with_trace("createPlan", tracing_enabled, || {
             // Init JVM classes

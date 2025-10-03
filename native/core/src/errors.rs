@@ -42,7 +42,6 @@ use datafusion_comet_spark_expr::SparkError;
 use jni::objects::{GlobalRef, JThrowable, JValue};
 use jni::JNIEnv;
 use lazy_static::lazy_static;
-use log::error;
 use parquet::errors::ParquetError;
 use thiserror::Error;
 
@@ -147,11 +146,9 @@ pub enum CometError {
 
 pub fn init() {
     std::panic::set_hook(Box::new(|_panic_info| {
-        let x = std::backtrace::Backtrace::force_capture().to_string();
-        error!("PANIC: {x}");
-
         // Capture the backtrace for a panic
-        *PANIC_BACKTRACE.lock().unwrap() = Some(x);
+        *PANIC_BACKTRACE.lock().unwrap() =
+            Some(std::backtrace::Backtrace::force_capture().to_string());
     }));
 }
 
@@ -362,7 +359,6 @@ pub fn unwrap_or_throw_default<T: JNIDefault>(
                 CometError::Panic { msg: _ } => PANIC_BACKTRACE.lock().unwrap().take(),
                 _ => None,
             };
-            error!("Comet native call failed: {err:?} {backtrace:?}");
             throw_exception(env, &err, backtrace);
             T::default()
         }
