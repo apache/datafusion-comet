@@ -32,7 +32,7 @@ def plot_memory_usage(csv_file):
     plt.xlabel('Time')
     plt.ylabel('Memory Usage')
     plt.title('Memory Usage Over Time by Consumer')
-    plt.legend(loc='upper left')
+    plt.legend(loc='upper left', bbox_to_anchor=(1.05, 1), borderaxespad=0, fontsize='small')
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
 
