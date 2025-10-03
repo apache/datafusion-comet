@@ -38,6 +38,8 @@ on:
 
 env:
   RUST_VERSION: stable
+
+vars:
   SKIP_CI: ${{ contains(github.event.pull_request.title, '[skip-ci]') }}
 
 jobs:
