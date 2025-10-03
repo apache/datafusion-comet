@@ -325,7 +325,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
 
   private def canCastFromDecimal(toType: DataType): SupportLevel = toType match {
     case DataTypes.FloatType | DataTypes.DoubleType | DataTypes.ByteType | DataTypes.ShortType |
-        DataTypes.IntegerType | DataTypes.LongType =>
+        DataTypes.IntegerType | DataTypes.LongType | DataTypes.BooleanType =>
       Compatible()
     case _ => Unsupported(Some(s"Cast from DecimalType to $toType is not supported"))
   }
