@@ -40,7 +40,7 @@ impl MemoryPool for LoggingPool {
             "[Task {}] MemoryPool[{}].grow({})",
             self.task_attempt_id,
             reservation.consumer().name(),
-            reservation.size()
+            additional
         );
         self.pool.grow(reservation, additional);
     }
@@ -50,7 +50,7 @@ impl MemoryPool for LoggingPool {
             "[Task {}] MemoryPool[{}].shrink({})",
             self.task_attempt_id,
             reservation.consumer().name(),
-            reservation.size()
+            shrink
         );
         self.pool.shrink(reservation, shrink);
     }
@@ -66,14 +66,14 @@ impl MemoryPool for LoggingPool {
                 "[Task {}] MemoryPool[{}].try_grow({}) returning Ok",
                 self.task_attempt_id,
                 reservation.consumer().name(),
-                reservation.size()
+                additional
             );
         } else {
             info!(
                 "[Task {}] MemoryPool[{}].try_grow({}) returning Err",
                 self.task_attempt_id,
                 reservation.consumer().name(),
-                reservation.size()
+                additional
             );
         }
         result
