@@ -137,13 +137,14 @@ pub fn create_comet_physical_fun_with_eval_mode(
             make_comet_scalar_udf!("unhex", func, without data_type)
         }
         "decimal_div" => {
-            make_comet_scalar_udf!("decimal_div", spark_decimal_div, data_type)
+            make_comet_scalar_udf!("decimal_div", spark_decimal_div, data_type, eval_mode)
         }
         "decimal_integral_div" => {
             make_comet_scalar_udf!(
                 "decimal_integral_div",
                 spark_decimal_integral_div,
-                data_type
+                data_type,
+                eval_mode
             )
         }
         "checked_add" => {
