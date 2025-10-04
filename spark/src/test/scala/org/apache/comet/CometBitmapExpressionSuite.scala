@@ -23,12 +23,11 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 
-class CometBitmapExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+class CometBitmapExpressionSuite extends CometTestBase {
 
   test("bitmap_count") {
     assume(isSpark35Plus)
