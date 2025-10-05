@@ -317,7 +317,12 @@ object CometRound extends CometExpressionSerde[Round] {
         // `scale` must be Int64 type in DataFusion
         val scaleExpr = exprToProtoInternal(Literal(_scale.toLong, LongType), inputs, binding)
         val optExpr =
-          scalarFunctionExprToProtoWithReturnType("round", r.dataType, childExpr, scaleExpr)
+          scalarFunctionExprToProtoWithReturnType(
+            "round",
+            r.dataType,
+            r.ansiEnabled,
+            childExpr,
+            scaleExpr)
         optExprWithInfo(optExpr, r, r.child)
     }
 
