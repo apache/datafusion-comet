@@ -119,7 +119,8 @@ pub fn create_comet_physical_fun_with_eval_mode(
             make_comet_scalar_udf!("lpad", func, without data_type)
         }
         "round" => {
-            make_comet_scalar_udf!("round", spark_round, data_type)
+            let fail_on_error_s = fail_on_error.unwrap_or(false);
+            make_comet_scalar_udf!("round", spark_round, data_type, fail_on_error_s)
         }
         "unscaled_value" => {
             let func = Arc::new(spark_unscaled_value);
