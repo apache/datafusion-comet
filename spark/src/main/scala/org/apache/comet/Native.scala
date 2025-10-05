@@ -20,10 +20,12 @@
 package org.apache.comet
 
 import java.nio.ByteBuffer
+import scala.annotation.nowarn
 
 import org.apache.spark.CometTaskMemoryManager
 import org.apache.spark.sql.comet.CometMetricNode
 
+@nowarn("msg=never used")
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 
 class Native extends NativeBase {
