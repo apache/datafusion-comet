@@ -62,7 +62,9 @@ pub(crate) fn parse_memory_pool_config(
     let pool_size = memory_limit as usize;
     let memory_pool_config = if off_heap_mode {
         match memory_pool_type.as_str() {
-            "default" | "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size),
+            "default" | "fair_unified" => {
+                MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size)
+            }
             "greedy_unified" => {
                 // the `unified` memory pool interacts with Spark's memory pool to allocate
                 // memory therefore does not need a size to be explicitly set. The pool size
