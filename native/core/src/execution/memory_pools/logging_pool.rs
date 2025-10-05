@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::execution::memory_pool::{MemoryPool, MemoryReservation};
+use datafusion::execution::memory_pool::{MemoryConsumer, MemoryLimit, MemoryPool, MemoryReservation};
 use log::info;
 use std::sync::Arc;
 
@@ -35,6 +35,14 @@ impl LoggingPool {
 }
 
 impl MemoryPool for LoggingPool {
+    fn register(&self, consumer: &MemoryConsumer) {
+        self.pool.register(consumer)
+    }
+
+    fn unregister(&self, consumer: &MemoryConsumer) {
+        self.pool.unregister(consumer)
+    }
+
     fn grow(&self, reservation: &MemoryReservation, additional: usize) {
         info!(
             "[Task {}] MemoryPool[{}].grow({})",
@@ -84,5 +92,9 @@ impl MemoryPool for LoggingPool {
 
     fn reserved(&self) -> usize {
         self.pool.reserved()
+    }
+
+    fn memory_limit(&self) -> MemoryLimit {
+        self.pool.memory_limit()
     }
 }

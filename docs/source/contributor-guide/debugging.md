@@ -128,7 +128,7 @@ To build Comet with this feature enabled:
 make release COMET_FEATURES=backtrace
 ```
 
-Start Comet with `RUST_BACKTRACE=1`
+Set `RUST_BACKTRACE=1` for the Spark worker/executor process, or for `spark-submit` if running in local mode.
 
 ```console
 RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true
@@ -213,6 +213,8 @@ Example log output:
 [Task 486] MemoryPool[ExternalSorterMerge[6]].try_grow(0) returning Ok
 [Task 486] MemoryPool[ExternalSorterMerge[6]].try_grow(68928) returning Ok
 ```
+
+When backtraces are enabled (see earlier section) then backtraces will be included for failed allocations. 
 
 There are Python scripts in `dev/scripts` that can be used to produce charts for a particular Spark task.
 
