@@ -17,7 +17,7 @@
 
 //! temporal kernels
 
-use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ use arrow::array::{
     downcast_dictionary_array, downcast_temporal_array,
     temporal_conversions::*,
     timezone::Tz,
-    types::{ArrowDictionaryKeyType, ArrowTemporalType, Date32Type, TimestampMicrosecondType},
+    types::{ArrowDictionaryKeyType, ArrowTemporalType, TimestampMicrosecondType},
     ArrowNumericType,
 };
 use arrow::{
@@ -40,53 +40,6 @@ macro_rules! return_compute_error_with {
     ($msg:expr, $param:expr) => {
         return { Err(SparkError::Internal(format!("{}: {:?}", $msg, $param))) }
     };
-}
-
-// The number of days between the beginning of the proleptic gregorian calendar (0001-01-01)
-// and the beginning of the Unix Epoch (1970-01-01)
-const DAYS_TO_UNIX_EPOCH: i32 = 719_163;
-
-// Copied from arrow_arith/temporal.rs with modification to the output datatype
-// Transforms a array of NaiveDate to an array of Date32 after applying an operation
-fn as_datetime_with_op<A: ArrayAccessor<Item = T::Native>, T: ArrowTemporalType, F>(
-    iter: ArrayIter<A>,
-    mut builder: PrimitiveBuilder<Date32Type>,
-    op: F,
-) -> Date32Array
-where
-    F: Fn(NaiveDateTime) -> i32,
-    i64: From<T::Native>,
-{
-    iter.into_iter().for_each(|value| {
-        if let Some(value) = value {
-            match as_datetime::<T>(i64::from(value)) {
-                Some(dt) => builder.append_value(op(dt)),
-                None => builder.append_null(),
-            }
-        } else {
-            builder.append_null();
-        }
-    });
-
-    builder.finish()
-}
-
-#[inline]
-fn as_datetime_with_op_single<F>(
-    value: Option<i32>,
-    builder: &mut PrimitiveBuilder<Date32Type>,
-    op: F,
-) where
-    F: Fn(NaiveDateTime) -> i32,
-{
-    if let Some(value) = value {
-        match as_datetime::<Date32Type>(i64::from(value)) {
-            Some(dt) => builder.append_value(op(dt)),
-            None => builder.append_null(),
-        }
-    } else {
-        builder.append_null();
-    }
 }
 
 // Based on arrow_arith/temporal.rs:extract_component_from_datetime_array
@@ -141,11 +94,6 @@ where
         None => builder.append_null(),
     }
     Ok(())
-}
-
-#[inline]
-fn as_days_from_unix_epoch(dt: Option<NaiveDateTime>) -> i32 {
-    dt.unwrap().num_days_from_ce() - DAYS_TO_UNIX_EPOCH
 }
 
 // Apply the Tz to the Naive Date Time,,convert to UTC, and return as microseconds in Unix epoch
@@ -242,250 +190,6 @@ fn trunc_date_to_ms<T: Timelike>(dt: T) -> Option<T> {
 #[inline]
 fn trunc_date_to_microsec<T: Timelike>(dt: T) -> Option<T> {
     Some(dt).and_then(|d| d.with_nanosecond(1_000 * (d.nanosecond() / 1_000)))
-}
-
-///
-/// Implements the spark [TRUNC](https://spark.apache.org/docs/latest/api/sql/index.html#trunc)
-/// function where the specified format is a scalar value
-///
-///   array is an array of Date32 values. The array may be a dictionary array.
-///
-///   format is a scalar string specifying the format to apply to the timestamp value.
-pub(crate) fn date_trunc_dyn(array: &dyn Array, format: String) -> Result<ArrayRef, SparkError> {
-    match array.data_type().clone() {
-        DataType::Dictionary(_, _) => {
-            downcast_dictionary_array!(
-                array => {
-                    let truncated_values = date_trunc_dyn(array.values(), format)?;
-                    Ok(Arc::new(array.with_values(truncated_values)))
-                }
-                dt => return_compute_error_with!("date_trunc does not support", dt),
-            )
-        }
-        _ => {
-            downcast_temporal_array!(
-                array => {
-                   date_trunc(array, format)
-                    .map(|a| Arc::new(a) as ArrayRef)
-                }
-                dt => return_compute_error_with!("date_trunc does not support", dt),
-            )
-        }
-    }
-}
-
-pub(crate) fn date_trunc<T>(
-    array: &PrimitiveArray<T>,
-    format: String,
-) -> Result<Date32Array, SparkError>
-where
-    T: ArrowTemporalType + ArrowNumericType,
-    i64: From<T::Native>,
-{
-    let builder = Date32Builder::with_capacity(array.len());
-    let iter = ArrayIter::new(array);
-    match array.data_type() {
-        DataType::Date32 => match format.to_uppercase().as_str() {
-            "YEAR" | "YYYY" | "YY" => Ok(as_datetime_with_op::<&PrimitiveArray<T>, T, _>(
-                iter,
-                builder,
-                |dt| as_days_from_unix_epoch(trunc_date_to_year(dt)),
-            )),
-            "QUARTER" => Ok(as_datetime_with_op::<&PrimitiveArray<T>, T, _>(
-                iter,
-                builder,
-                |dt| as_days_from_unix_epoch(trunc_date_to_quarter(dt)),
-            )),
-            "MONTH" | "MON" | "MM" => Ok(as_datetime_with_op::<&PrimitiveArray<T>, T, _>(
-                iter,
-                builder,
-                |dt| as_days_from_unix_epoch(trunc_date_to_month(dt)),
-            )),
-            "WEEK" => Ok(as_datetime_with_op::<&PrimitiveArray<T>, T, _>(
-                iter,
-                builder,
-                |dt| as_days_from_unix_epoch(trunc_date_to_week(dt)),
-            )),
-            _ => Err(SparkError::Internal(format!(
-                "Unsupported format: {format:?} for function 'date_trunc'"
-            ))),
-        },
-        dt => return_compute_error_with!(
-            "Unsupported input type '{:?}' for function 'date_trunc'",
-            dt
-        ),
-    }
-}
-
-///
-/// Implements the spark [TRUNC](https://spark.apache.org/docs/latest/api/sql/index.html#trunc)
-/// function where the specified format may be an array
-///
-///   array is an array of Date32 values. The array may be a dictionary array.
-///
-///   format is an array of strings specifying the format to apply to the corresponding date value.
-///             The array may be a dictionary array.
-pub(crate) fn date_trunc_array_fmt_dyn(
-    array: &dyn Array,
-    formats: &dyn Array,
-) -> Result<ArrayRef, SparkError> {
-    match (array.data_type().clone(), formats.data_type().clone()) {
-        (DataType::Dictionary(_, v), DataType::Dictionary(_, f)) => {
-            if !matches!(*v, DataType::Date32) {
-                return_compute_error_with!("date_trunc does not support", v)
-            }
-            if !matches!(*f, DataType::Utf8) {
-                return_compute_error_with!("date_trunc does not support format type ", f)
-            }
-            downcast_dictionary_array!(
-                formats => {
-                    downcast_dictionary_array!(
-                        array => {
-                            date_trunc_array_fmt_dict_dict(
-                                    &array.downcast_dict::<Date32Array>().unwrap(),
-                                    &formats.downcast_dict::<StringArray>().unwrap())
-                            .map(|a| Arc::new(a) as ArrayRef)
-                        }
-                        dt => return_compute_error_with!("date_trunc does not support", dt)
-                    )
-                }
-                fmt => return_compute_error_with!("date_trunc does not support format type", fmt),
-            )
-        }
-        (DataType::Dictionary(_, v), DataType::Utf8) => {
-            if !matches!(*v, DataType::Date32) {
-                return_compute_error_with!("date_trunc does not support", v)
-            }
-            downcast_dictionary_array!(
-                array => {
-                  date_trunc_array_fmt_dict_plain(
-                        &array.downcast_dict::<Date32Array>().unwrap(),
-                        formats.as_any().downcast_ref::<StringArray>()
-                            .expect("Unexpected value type in formats"))
-                  .map(|a| Arc::new(a) as ArrayRef)
-                }
-                dt => return_compute_error_with!("date_trunc does not support", dt),
-            )
-        }
-        (DataType::Date32, DataType::Dictionary(_, f)) => {
-            if !matches!(*f, DataType::Utf8) {
-                return_compute_error_with!("date_trunc does not support format type ", f)
-            }
-            downcast_dictionary_array!(
-                formats => {
-                downcast_temporal_array!(array => {
-                        date_trunc_array_fmt_plain_dict(
-                            array.as_any().downcast_ref::<Date32Array>()
-                                .expect("Unexpected error in casting date array"),
-                            &formats.downcast_dict::<StringArray>().unwrap())
-                        .map(|a| Arc::new(a) as ArrayRef)
-                    }
-                    dt => return_compute_error_with!("date_trunc does not support", dt),
-                    )
-                }
-                fmt => return_compute_error_with!("date_trunc does not support format type", fmt),
-            )
-        }
-        (DataType::Date32, DataType::Utf8) => date_trunc_array_fmt_plain_plain(
-            array
-                .as_any()
-                .downcast_ref::<Date32Array>()
-                .expect("Unexpected error in casting date array"),
-            formats
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .expect("Unexpected value type in formats"),
-        )
-        .map(|a| Arc::new(a) as ArrayRef),
-        (dt, fmt) => Err(SparkError::Internal(format!(
-            "Unsupported datatype: {dt:}, format: {fmt:?} for function 'date_trunc'"
-        ))),
-    }
-}
-
-macro_rules! date_trunc_array_fmt_helper {
-    ($array: ident, $formats: ident, $datatype: ident) => {{
-        let mut builder = Date32Builder::with_capacity($array.len());
-        let iter = $array.into_iter();
-        match $datatype {
-            DataType::Date32 => {
-                for (index, val) in iter.enumerate() {
-                    let op_result = match $formats.value(index).to_uppercase().as_str() {
-                        "YEAR" | "YYYY" | "YY" => {
-                            Ok(as_datetime_with_op_single(val, &mut builder, |dt| {
-                                as_days_from_unix_epoch(trunc_date_to_year(dt))
-                            }))
-                        }
-                        "QUARTER" => Ok(as_datetime_with_op_single(val, &mut builder, |dt| {
-                            as_days_from_unix_epoch(trunc_date_to_quarter(dt))
-                        })),
-                        "MONTH" | "MON" | "MM" => {
-                            Ok(as_datetime_with_op_single(val, &mut builder, |dt| {
-                                as_days_from_unix_epoch(trunc_date_to_month(dt))
-                            }))
-                        }
-                        "WEEK" => Ok(as_datetime_with_op_single(val, &mut builder, |dt| {
-                            as_days_from_unix_epoch(trunc_date_to_week(dt))
-                        })),
-                        _ => Err(SparkError::Internal(format!(
-                            "Unsupported format: {:?} for function 'date_trunc'",
-                            $formats.value(index)
-                        ))),
-                    };
-                    op_result?
-                }
-                Ok(builder.finish())
-            }
-            dt => return_compute_error_with!(
-                "Unsupported input type '{:?}' for function 'date_trunc'",
-                dt
-            ),
-        }
-    }};
-}
-
-fn date_trunc_array_fmt_plain_plain(
-    array: &Date32Array,
-    formats: &StringArray,
-) -> Result<Date32Array, SparkError>
-where
-{
-    let data_type = array.data_type();
-    date_trunc_array_fmt_helper!(array, formats, data_type)
-}
-
-fn date_trunc_array_fmt_plain_dict<K>(
-    array: &Date32Array,
-    formats: &TypedDictionaryArray<K, StringArray>,
-) -> Result<Date32Array, SparkError>
-where
-    K: ArrowDictionaryKeyType,
-{
-    let data_type = array.data_type();
-    date_trunc_array_fmt_helper!(array, formats, data_type)
-}
-
-fn date_trunc_array_fmt_dict_plain<K>(
-    array: &TypedDictionaryArray<K, Date32Array>,
-    formats: &StringArray,
-) -> Result<Date32Array, SparkError>
-where
-    K: ArrowDictionaryKeyType,
-{
-    let data_type = array.values().data_type();
-    date_trunc_array_fmt_helper!(array, formats, data_type)
-}
-
-fn date_trunc_array_fmt_dict_dict<K, F>(
-    array: &TypedDictionaryArray<K, Date32Array>,
-    formats: &TypedDictionaryArray<F, StringArray>,
-) -> Result<Date32Array, SparkError>
-where
-    K: ArrowDictionaryKeyType,
-    F: ArrowDictionaryKeyType,
-{
-    let data_type = array.values().data_type();
-    date_trunc_array_fmt_helper!(array, formats, data_type)
 }
 
 ///
