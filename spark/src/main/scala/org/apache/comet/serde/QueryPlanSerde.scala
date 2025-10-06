@@ -1226,6 +1226,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
         // Extract FileScanTasks from the InputPartitions in the RDD
         // Group tasks by Spark partition (similar to how NativeScan groups PartitionedFiles)
+        //
+        // Reflection Strategy (for Iceberg 1.5.x - 1.10.x compatibility):
+        // - SparkInputPartition: package-private Spark class, use getDeclaredMethod + setAccessible
+        // - Iceberg API methods: use Class.forName() on public interfaces, then getMethod()
+        //   (avoids IllegalAccessException on package-private implementation classes like
+        //   BaseFileScanTask$SplitScanTask in Iceberg 1.5.x)
         var actualNumPartitions = 0
         try {
           scan.originalPlan.inputRDD match {
@@ -1247,7 +1253,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
                   // Get the task group and extract tasks
                   try {
-                    // Call taskGroup() to get ScanTaskGroup
+                    // SparkInputPartition is package-private, so we need getDeclaredMethod + setAccessible
+                    // This is different from Iceberg API classes which have public interfaces
                     val taskGroupMethod = inputPartClass.getDeclaredMethod("taskGroup")
                     taskGroupMethod.setAccessible(true)
                     val taskGroup = taskGroupMethod.invoke(inputPartition)
@@ -1261,258 +1268,231 @@ object QueryPlanSerde extends Logging with CometExprShim {
                     // Convert to Scala and serialize each task
                     import scala.jdk.CollectionConverters._
                     tasksCollection.asScala.foreach { task =>
-                      // Serialize this FileScanTask to protobuf
-                      val taskBuilder = OperatorOuterClass.IcebergFileScanTask.newBuilder()
-
-                      // Extract task properties using reflection
-                      val taskClass = task.getClass
-
-                      // Get file() -> DataFile
-                      val fileMethod = taskClass.getDeclaredMethod("file")
-                      fileMethod.setAccessible(true)
-                      val dataFile = fileMethod.invoke(task)
-
-                      // Get path from DataFile using location() (added in Iceberg 1.7.0)
-                      val dataFileClass = dataFile.getClass
-                      val locationMethod = dataFileClass.getMethod("location")
-                      val filePath = locationMethod.invoke(dataFile).asInstanceOf[String]
-                      taskBuilder.setDataFilePath(filePath)
-
-                      // Get start offset
-                      val startMethod = taskClass.getDeclaredMethod("start")
-                      startMethod.setAccessible(true)
-                      val start = startMethod.invoke(task).asInstanceOf[Long]
-                      taskBuilder.setStart(start)
-
-                      // Get length
-                      val lengthMethod = taskClass.getDeclaredMethod("length")
-                      lengthMethod.setAccessible(true)
-                      val length = lengthMethod.invoke(task).asInstanceOf[Long]
-                      taskBuilder.setLength(length)
-
-                      // Get schema and serialize to JSON
                       try {
-                        val schemaMethod = taskClass.getMethod("schema")
-                        schemaMethod.setAccessible(true)
-                        val schema = schemaMethod.invoke(task)
+                        val taskBuilder = OperatorOuterClass.IcebergFileScanTask.newBuilder()
 
-                        // Use Iceberg's SchemaParser.toJson(schema)
+                        // Load interface classes to avoid IllegalAccessException on package-private implementations
                         // scalastyle:off classforname
-                        // Cannot use Utils.classForName as it's not accessible outside Spark
-                        val schemaParserClass = Class.forName("org.apache.iceberg.SchemaParser")
-                        val schemaClass = Class.forName("org.apache.iceberg.Schema")
+                        val contentScanTaskClass =
+                          Class.forName("org.apache.iceberg.ContentScanTask")
+                        val fileScanTaskClass = Class.forName("org.apache.iceberg.FileScanTask")
+                        val contentFileClass = Class.forName("org.apache.iceberg.ContentFile")
                         // scalastyle:on classforname
-                        val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
-                        toJsonMethod.setAccessible(true)
-                        val schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
-                        taskBuilder.setSchemaJson(schemaJson)
 
-                        // Extract field IDs from the REQUIRED output schema,
-                        // not the full task schema.
-                        // This ensures we only project the columns actually needed by the query
-                        val columnsMethod = schema.getClass.getMethod("columns")
-                        columnsMethod.setAccessible(true)
-                        val columns =
-                          columnsMethod.invoke(schema).asInstanceOf[java.util.List[_]]
+                        val fileMethod = contentScanTaskClass.getMethod("file")
+                        val dataFile = fileMethod.invoke(task)
 
-                        // Build a map of column name -> field ID from the task schema
-                        val nameToFieldId = scala.collection.mutable.Map[String, Int]()
-                        columns.forEach { column =>
+                        val filePath =
                           try {
-                            val nameMethod = column.getClass.getMethod("name")
-                            nameMethod.setAccessible(true)
-                            val name = nameMethod.invoke(column).asInstanceOf[String]
-
-                            val fieldIdMethod = column.getClass.getMethod("fieldId")
-                            fieldIdMethod.setAccessible(true)
-                            val fieldId = fieldIdMethod.invoke(column).asInstanceOf[Int]
-
-                            nameToFieldId(name) = fieldId
+                            // Try location() first (1.7.0+)
+                            val locationMethod = contentFileClass.getMethod("location")
+                            locationMethod.invoke(dataFile).asInstanceOf[String]
                           } catch {
-                            case _: Exception => // Skip if can't get field ID
+                            case _: NoSuchMethodException =>
+                              // Fall back to path() (pre-1.7.0, returns CharSequence)
+                              val pathMethod = contentFileClass.getMethod("path")
+                              pathMethod.invoke(dataFile).asInstanceOf[CharSequence].toString
                           }
-                        }
+                        taskBuilder.setDataFilePath(filePath)
 
-                        // Now add field IDs ONLY for columns in scan.output (the required schema)
-                        scan.output.foreach { attr =>
-                          nameToFieldId.get(attr.name) match {
-                            case Some(fieldId) =>
-                              taskBuilder.addProjectFieldIds(fieldId)
-                            case None =>
-                          }
-                        }
-                      } catch {
-                        case e: Exception =>
-                          // Could not extract schema from task
-                          logWarning(
-                            s"Failed to extract schema from FileScanTask: ${e.getMessage}")
-                      }
+                        val startMethod = contentScanTaskClass.getMethod("start")
+                        val start = startMethod.invoke(task).asInstanceOf[Long]
+                        taskBuilder.setStart(start)
 
-                      // Get file format
-                      try {
-                        val formatMethod = dataFileClass.getMethod("format")
-                        formatMethod.setAccessible(true)
-                        val format = formatMethod.invoke(dataFile)
-                        taskBuilder.setDataFileFormat(format.toString)
-                      } catch {
-                        case e: Exception =>
-                          // Could not extract file format, defaulting to Parquet
-                          logWarning(
-                            "Failed to extract file format from FileScanTask," +
-                              s"defaulting to PARQUET: ${e.getMessage}")
-                          taskBuilder.setDataFileFormat("PARQUET") // Default to Parquet
-                      }
+                        val lengthMethod = contentScanTaskClass.getMethod("length")
+                        val length = lengthMethod.invoke(task).asInstanceOf[Long]
+                        taskBuilder.setLength(length)
 
-                      // Extract delete files from FileScanTask for MOR (Merge-On-Read) tables.
-                      // When present, these are serialized to protobuf and passed to
-                      // iceberg-rust, which automatically applies deletes during reading.
-                      try {
-                        val deletesMethod = taskClass.getDeclaredMethod("deletes")
-                        deletesMethod.setAccessible(true)
-                        val deletes = deletesMethod
-                          .invoke(task)
-                          .asInstanceOf[java.util.List[_]]
+                        try {
+                          val schemaMethod = fileScanTaskClass.getMethod("schema")
+                          val schema = schemaMethod.invoke(task)
 
-                        // Serialize delete files if present
-                        deletes.asScala.foreach { deleteFile =>
-                          try {
-                            val deleteFileClass = deleteFile.getClass
+                          // scalastyle:off classforname
+                          val schemaParserClass = Class.forName("org.apache.iceberg.SchemaParser")
+                          val schemaClass = Class.forName("org.apache.iceberg.Schema")
+                          // scalastyle:on classforname
+                          val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
+                          toJsonMethod.setAccessible(true)
+                          val schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
+                          taskBuilder.setSchemaJson(schemaJson)
 
-                            // Get file path - try location() first, then path()
-                            val deletePath =
-                              try {
-                                val locationMethod = deleteFileClass.getMethod("location")
-                                locationMethod.setAccessible(true)
-                                locationMethod.invoke(deleteFile).asInstanceOf[String]
-                              } catch {
-                                case _: NoSuchMethodException =>
-                                  // Fall back to path()
-                                  val pathMethod = deleteFileClass.getDeclaredMethod("path")
-                                  pathMethod.setAccessible(true)
-                                  pathMethod
-                                    .invoke(deleteFile)
-                                    .asInstanceOf[CharSequence]
-                                    .toString
-                              }
+                          // Extract field IDs from the REQUIRED output schema, not the full task schema.
+                          // This ensures we only project the columns actually needed by the query
+                          val columnsMethod = schema.getClass.getMethod("columns")
+                          val columns =
+                            columnsMethod.invoke(schema).asInstanceOf[java.util.List[_]]
 
-                            val deleteBuilder =
-                              OperatorOuterClass.IcebergDeleteFile.newBuilder()
-                            deleteBuilder.setFilePath(deletePath)
-
-                            // Get content type (POSITION_DELETES or EQUALITY_DELETES)
-                            val contentType =
-                              try {
-                                val contentMethod = deleteFileClass.getMethod("content")
-                                contentMethod.setAccessible(true)
-                                val content = contentMethod.invoke(deleteFile)
-                                content.toString match {
-                                  case "POSITION_DELETES" => "POSITION_DELETES"
-                                  case "EQUALITY_DELETES" => "EQUALITY_DELETES"
-                                  case other => other
-                                }
-                              } catch {
-                                case _: Exception =>
-                                  // Default to POSITION_DELETES if can't determine
-                                  "POSITION_DELETES"
-                              }
-                            deleteBuilder.setContentType(contentType)
-
-                            // Get partition spec ID
-                            val specId =
-                              try {
-                                val specIdMethod = deleteFileClass.getMethod("specId")
-                                specIdMethod.setAccessible(true)
-                                specIdMethod.invoke(deleteFile).asInstanceOf[Int]
-                              } catch {
-                                case _: Exception =>
-                                  // Default to 0 if can't get spec ID
-                                  0
-                              }
-                            deleteBuilder.setPartitionSpecId(specId)
-
-                            // Get equality field IDs (for equality deletes)
+                          val nameToFieldId = scala.collection.mutable.Map[String, Int]()
+                          columns.forEach { column =>
                             try {
-                              val equalityIdsMethod =
-                                deleteFileClass.getMethod("equalityFieldIds")
-                              equalityIdsMethod.setAccessible(true)
-                              val equalityIds = equalityIdsMethod
-                                .invoke(deleteFile)
-                                .asInstanceOf[java.util.List[Integer]]
-                              equalityIds.forEach(id => deleteBuilder.addEqualityIds(id))
+                              val nameMethod = column.getClass.getMethod("name")
+                              val name = nameMethod.invoke(column).asInstanceOf[String]
+
+                              val fieldIdMethod = column.getClass.getMethod("fieldId")
+                              val fieldId = fieldIdMethod.invoke(column).asInstanceOf[Int]
+
+                              nameToFieldId(name) = fieldId
                             } catch {
-                              case _: Exception =>
-                              // No equality IDs (likely positional deletes)
+                              case e: Exception =>
+                                logWarning(
+                                  s"Failed to extract field ID from column: ${e.getMessage}")
                             }
-
-                            taskBuilder.addDeleteFiles(deleteBuilder.build())
-                          } catch {
-                            case e: Exception =>
-                              // Failed to serialize delete file - log and continue
-                              logWarning(s"Failed to serialize delete file: ${e.getMessage}")
                           }
+
+                          scan.output.foreach { attr =>
+                            nameToFieldId.get(attr.name) match {
+                              case Some(fieldId) =>
+                                taskBuilder.addProjectFieldIds(fieldId)
+                              case None =>
+                            }
+                          }
+                        } catch {
+                          case e: Exception =>
+                            logWarning(
+                              s"Failed to extract schema from FileScanTask: ${e.getMessage}")
                         }
-                      } catch {
-                        case _: NoSuchMethodException =>
-                        // FileScanTask doesn't have deletes() method
-                        case _: Exception =>
-                        // Failed to extract deletes
-                      }
 
-                      // Extract residual expression for row-group level filtering
-                      //
-                      // The residual is created by Iceberg's ResidualEvaluator which partially
-                      // evaluates the scan filter against this file's partition values.
-                      // Different files may have different residuals based on their partitions.
-                      //
-                      // For example:
-                      // - Original filter: date >= '2024-01-01' AND status = 'active'
-                      // - File partition: date = '2024-06-15'
-                      // - Residual: status = 'active' (date condition proven true by partition)
-                      //
-                      // This residual is what should be applied during Parquet row-group
-                      // scanning.
-                      try {
-                        val residualMethod = taskClass.getMethod("residual")
-                        residualMethod.setAccessible(true)
-                        val residualExpr = residualMethod.invoke(task)
+                        try {
+                          val formatMethod = contentFileClass.getMethod("format")
+                          val format = formatMethod.invoke(dataFile)
+                          taskBuilder.setDataFileFormat(format.toString)
+                        } catch {
+                          case e: Exception =>
+                            logWarning(
+                              "Failed to extract file format from FileScanTask," +
+                                s"defaulting to PARQUET: ${e.getMessage}")
+                            taskBuilder.setDataFileFormat("PARQUET")
+                        }
 
-                        // Convert Iceberg Expression to Catalyst Expression
-                        // The residual is an org.apache.iceberg.expressions.Expression
-                        val catalystExpr = convertIcebergExpression(residualExpr, scan.output)
+                        // Extract delete files from FileScanTask for MOR (Merge-On-Read) tables.
+                        // When present, these are serialized to protobuf and passed to
+                        // iceberg-rust, which automatically applies deletes during reading.
+                        try {
+                          val deletesMethod = fileScanTaskClass.getMethod("deletes")
+                          val deletes = deletesMethod
+                            .invoke(task)
+                            .asInstanceOf[java.util.List[_]]
 
-                        // Serialize to protobuf WITHOUT binding to indices
-                        // Iceberg residuals are already unbound (name-based), so we keep them
-                        // unbound in the protobuf to avoid unnecessary index->name resolution
-                        // in Rust
-                        catalystExpr
-                          .flatMap { expr =>
-                            exprToProto(expr, scan.output, binding = false)
+                          deletes.asScala.foreach { deleteFile =>
+                            try {
+                              // scalastyle:off classforname
+                              val deleteFileClass = Class.forName("org.apache.iceberg.DeleteFile")
+                              // scalastyle:on classforname
+
+                              val deletePath =
+                                try {
+                                  // Try location() first (1.7.0+)
+                                  val locationMethod = contentFileClass.getMethod("location")
+                                  locationMethod.invoke(deleteFile).asInstanceOf[String]
+                                } catch {
+                                  case _: NoSuchMethodException =>
+                                    val pathMethod = contentFileClass.getMethod("path")
+                                    pathMethod
+                                      .invoke(deleteFile)
+                                      .asInstanceOf[CharSequence]
+                                      .toString
+                                }
+
+                              val deleteBuilder =
+                                OperatorOuterClass.IcebergDeleteFile.newBuilder()
+                              deleteBuilder.setFilePath(deletePath)
+
+                              val contentType =
+                                try {
+                                  val contentMethod = deleteFileClass.getMethod("content")
+                                  val content = contentMethod.invoke(deleteFile)
+                                  content.toString match {
+                                    case "POSITION_DELETES" => "POSITION_DELETES"
+                                    case "EQUALITY_DELETES" => "EQUALITY_DELETES"
+                                    case other => other
+                                  }
+                                } catch {
+                                  case _: Exception =>
+                                    "POSITION_DELETES"
+                                }
+                              deleteBuilder.setContentType(contentType)
+
+                              val specId =
+                                try {
+                                  val specIdMethod = deleteFileClass.getMethod("specId")
+                                  specIdMethod.invoke(deleteFile).asInstanceOf[Int]
+                                } catch {
+                                  case _: Exception =>
+                                    0
+                                }
+                              deleteBuilder.setPartitionSpecId(specId)
+
+                              try {
+                                val equalityIdsMethod =
+                                  deleteFileClass.getMethod("equalityFieldIds")
+                                val equalityIds = equalityIdsMethod
+                                  .invoke(deleteFile)
+                                  .asInstanceOf[java.util.List[Integer]]
+                                equalityIds.forEach(id => deleteBuilder.addEqualityIds(id))
+                              } catch {
+                                case _: Exception =>
+                              }
+
+                              taskBuilder.addDeleteFiles(deleteBuilder.build())
+                            } catch {
+                              case e: Exception =>
+                                logWarning(s"Failed to serialize delete file: ${e.getMessage}")
+                            }
                           }
-                          .foreach { protoExpr =>
-                            taskBuilder.setResidual(protoExpr)
-                          }
+                        } catch {
+                          case e: Exception =>
+                            logWarning(
+                              s"Failed to extract deletes from FileScanTask: ${e.getMessage}")
+                        }
+
+                        // Extract residual expression for row-group level filtering.
+                        //
+                        // The residual is created by Iceberg's ResidualEvaluator which partially
+                        // evaluates the scan filter against this file's partition values.
+                        // Different files may have different residuals based on their partitions.
+                        //
+                        // For example:
+                        // - Original filter: date >= '2024-01-01' AND status = 'active'
+                        // - File partition: date = '2024-06-15'
+                        // - Residual: status = 'active' (date condition proven true by partition)
+                        //
+                        // This residual is what should be applied during Parquet row-group scanning.
+                        try {
+                          val residualMethod = contentScanTaskClass.getMethod("residual")
+                          val residualExpr = residualMethod.invoke(task)
+
+                          val catalystExpr = convertIcebergExpression(residualExpr, scan.output)
+
+                          // Serialize to protobuf WITHOUT binding to indices.
+                          // Iceberg residuals are already unbound (name-based), so we keep them
+                          // unbound in the protobuf to avoid unnecessary index->name resolution in Rust
+                          catalystExpr
+                            .flatMap { expr =>
+                              exprToProto(expr, scan.output, binding = false)
+                            }
+                            .foreach { protoExpr =>
+                              taskBuilder.setResidual(protoExpr)
+                            }
+                        } catch {
+                          case e: Exception =>
+                            logWarning(
+                              "Failed to extract residual expression from FileScanTask: " +
+                                s"${e.getMessage}")
+                        }
+
+                        partitionBuilder.addFileScanTasks(taskBuilder.build())
                       } catch {
-                        case _: NoSuchMethodException =>
-                        // residual() method not available, skip
                         case e: Exception =>
-                          // Failed to extract/convert residual, continue without it
-                          logWarning(
-                            "Failed to extract residual expression from FileScanTask: " +
-                              s"${e.getMessage}")
+                          logWarning(s"Failed to serialize FileScanTask: ${e.getMessage}")
                       }
-
-                      // Add task to THIS partition's builder
-                      partitionBuilder.addFileScanTasks(taskBuilder.build())
                     }
                   } catch {
                     case e: Exception =>
-                      // Could not extract tasks from this InputPartition
                       logWarning(
                         s"Failed to extract FileScanTasks from InputPartition: ${e.getMessage}")
                   }
                 }
 
-                // Add this partition to the scan builder
                 val builtPartition = partitionBuilder.build()
                 icebergScanBuilder.addFilePartitions(builtPartition)
                 actualNumPartitions += 1
@@ -2317,24 +2297,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * Converts an Iceberg Literal to a Spark Literal
    */
   private def convertIcebergLiteral(icebergLiteral: Any, sparkType: DataType): Literal = {
-    // Find value() method in class hierarchy (may be in parent class)
-    def findValueMethod(clazz: Class[_]): Option[java.lang.reflect.Method] = {
-      try {
-        val method = clazz.getDeclaredMethod("value")
-        method.setAccessible(true)
-        Some(method)
-      } catch {
-        case _: NoSuchMethodException =>
-          if (clazz.getSuperclass != null) {
-            findValueMethod(clazz.getSuperclass)
-          } else {
-            None
-          }
-      }
-    }
-
-    val valueMethod = findValueMethod(icebergLiteral.getClass).getOrElse(
-      throw new RuntimeException(s"Could not find value() method on ${icebergLiteral.getClass}"))
+    // Load Literal interface to get value() method (use interface to avoid package-private issues)
+    // scalastyle:off classforname
+    val literalClass = Class.forName("org.apache.iceberg.expressions.Literal")
+    // scalastyle:on classforname
+    val valueMethod = literalClass.getMethod("value")
     val value = valueMethod.invoke(icebergLiteral)
 
     // Convert Java types to Spark internal types
