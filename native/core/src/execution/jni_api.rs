@@ -41,9 +41,9 @@ use datafusion::{
 };
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
-use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
 use datafusion_spark::function::datetime::date_sub::SparkDateSub;
+use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::string::char::CharFunc;
