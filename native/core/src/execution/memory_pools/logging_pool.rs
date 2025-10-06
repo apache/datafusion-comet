@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion::execution::memory_pool::{MemoryConsumer, MemoryLimit, MemoryPool, MemoryReservation};
+use datafusion::execution::memory_pool::{
+    MemoryConsumer, MemoryLimit, MemoryPool, MemoryReservation,
+};
 use log::info;
 use std::sync::Arc;
 
