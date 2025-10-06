@@ -218,6 +218,10 @@ abstract class CometNativeExec extends CometExec {
         assert(
           cometNativeScans.size <= 1,
           "We expect one native scan in a Comet plan since we will broadcast one hadoopConf.")
+        // If this assumption changes in the future, you can look at the commit history of #2447
+        // to see how there used to be a map of relations to broadcasted confs in case multiple
+        // relations in a single plan. The example that came up was UNION. See discussion at:
+        // https://github.com/apache/datafusion-comet/pull/2447#discussion_r2406118264
         val (broadcastedHadoopConfForEncryption, encryptedFilePaths) =
           cometNativeScans.headOption.fold(
             (None: Option[Broadcast[SerializableConfiguration]], Seq.empty[String])) { scan =>
