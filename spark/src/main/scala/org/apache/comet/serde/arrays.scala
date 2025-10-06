@@ -508,10 +508,9 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
 object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
 
   override def getSupportLevel(expr: ArrayFilter): SupportLevel = {
-    if (expr.function.children.head.isInstanceOf[IsNotNull]) {
-      Compatible()
-    } else {
-      Unsupported()
+    expr.function.children.headOption match {
+      case Some(_: IsNotNull) => Compatible()
+      case _ => Unsupported()
     }
   }
 
