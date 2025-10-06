@@ -1272,19 +1272,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
                       fileMethod.setAccessible(true)
                       val dataFile = fileMethod.invoke(task)
 
-                      // Get path from DataFile - use location() (or path())
+                      // Get path from DataFile using location() (added in Iceberg 1.7.0)
                       val dataFileClass = dataFile.getClass
-                      val filePath =
-                        try {
-                          // Try location() first (newer API)
-                          val locationMethod = dataFileClass.getMethod("location")
-                          locationMethod.invoke(dataFile).asInstanceOf[String]
-                        } catch {
-                          case _: NoSuchMethodException =>
-                            // Fall back to path() (older API, returns CharSequence)
-                            val pathMethod = dataFileClass.getMethod("path")
-                            pathMethod.invoke(dataFile).asInstanceOf[CharSequence].toString
-                        }
+                      val locationMethod = dataFileClass.getMethod("location")
+                      val filePath = locationMethod.invoke(dataFile).asInstanceOf[String]
                       taskBuilder.setDataFilePath(filePath)
 
                       // Get start offset
