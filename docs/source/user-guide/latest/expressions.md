@@ -61,7 +61,7 @@ incompatible expressions.
 ## String Functions
 
 | Expression      | Spark-Compatible? | Compatibility Notes                                                                                        |
-|-----------------| ----------------- | ---------------------------------------------------------------------------------------------------------- |
+| --------------- | ----------------- | ---------------------------------------------------------------------------------------------------------- |
 | Ascii           | Yes               |                                                                                                            |
 | BitLength       | Yes               |                                                                                                            |
 | Chr             | Yes               |                                                                                                            |
@@ -93,7 +93,7 @@ incompatible expressions.
 ## Date/Time Functions
 
 | Expression     | SQL                          | Spark-Compatible? | Compatibility Notes                                                                                                  |
-|----------------|------------------------------| ----------------- |----------------------------------------------------------------------------------------------------------------------|
+| -------------- | ---------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------- |
 | DateAdd        | `date_add`                   | Yes               |                                                                                                                      |
 | DateSub        | `date_sub`                   | Yes               |                                                                                                                      |
 | DatePart       | `date_part(field, source)`   | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
@@ -116,7 +116,7 @@ incompatible expressions.
 ## Math Expressions
 
 | Expression     | SQL       | Spark-Compatible? | Compatibility Notes               |
-|----------------|-----------|-------------------|-----------------------------------|
+| -------------- | --------- | ----------------- | --------------------------------- |
 | Acos           | `acos`    | Yes               |                                   |
 | Add            | `+`       | Yes               |                                   |
 | Asin           | `asin`    | Yes               |                                   |
@@ -208,6 +208,7 @@ incompatible expressions.
 | ArrayContains  | Yes               |                                                                                                                                                                                           |
 | ArrayDistinct  | No                | Behaves differently than spark. Comet first sorts then removes duplicates while Spark preserves the original order.                                                                       |
 | ArrayExcept    | No                |                                                                                                                                                                                           |
+| ArrayFilter    | Yes               | Only supports case where function is `IsNotNull`                                                                                                                                          |
 | ArrayInsert    | No                |                                                                                                                                                                                           |
 | ArrayIntersect | No                |                                                                                                                                                                                           |
 | ArrayJoin      | No                |                                                                                                                                                                                           |
