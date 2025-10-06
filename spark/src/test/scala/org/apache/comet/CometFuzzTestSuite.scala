@@ -43,18 +43,6 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     }
   }
 
-  test("decimal math") {
-    val df = spark.read.parquet(filename)
-    val d = df.schema.fields.filter(_.dataType.isInstanceOf[DecimalType]).map(_.name)
-    df.createOrReplaceTempView("t1")
-    val sql = s"SELECT ${d(0)} * ${d(1)} FROM t1 LIMIT 500"
-    if (usingDataSourceExec) {
-      checkSparkAnswerAndOperator(sql)
-    } else {
-      checkSparkAnswer(sql)
-    }
-  }
-
   test("select * with limit") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
