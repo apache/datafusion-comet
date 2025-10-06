@@ -71,6 +71,7 @@ class Native extends NativeBase {
       debug: Boolean,
       explain: Boolean,
       tracingEnabled: Boolean,
+      maxTempDirectorySize: Long,
       keyUnwrapper: CometFileKeyUnwrapper): Long
   // scalastyle:on
 

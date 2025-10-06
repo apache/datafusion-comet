@@ -252,7 +252,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           } else {
             assert(sparkErr.get.getMessage.contains("integer overflow"))
           }
-          assert(cometErr.get.getMessage.contains("`NaiveDate + TimeDelta` overflowed"))
+          assert(cometErr.get.getMessage.contains("attempt to add with overflow"))
         }
       }
     }
@@ -296,10 +296,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             checkSparkMaybeThrows(sql(s"SELECT _20 - ${Int.MaxValue} FROM tbl"))
           if (isSpark40Plus) {
             assert(sparkErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
+            assert(cometErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
           } else {
             assert(sparkErr.get.getMessage.contains("integer overflow"))
+            assert(cometErr.get.getMessage.contains("integer overflow"))
           }
-          assert(cometErr.get.getMessage.contains("`NaiveDate - TimeDelta` overflowed"))
         }
       }
     }
@@ -425,6 +426,24 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withParquetTable(data, "t1") {
       val res = sql(
         """ select rpad(_1,_2,'?'), rpad(_1,_2,'??') , rpad(_1,2, '??'), hex(rpad(unhex('aabb'), 5)),
+          rpad(_1, 5, '??') from t1 order by _1 """.stripMargin)
+      checkSparkAnswerAndOperator(res)
+    }
+  }
+
+  test("test lpad expression support") {
+    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("తెలుగు", 2))
+    withParquetTable(data, "t1") {
+      val res = sql("select lpad(_1,_2) , lpad(_1,2) from t1 order by _1")
+      checkSparkAnswerAndOperator(res)
+    }
+  }
+
+  test("LPAD with character support other than default space") {
+    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("hi", 2))
+    withParquetTable(data, "t1") {
+      val res = sql(
+        """ select lpad(_1,_2,'?'), lpad(_1,_2,'??') , lpad(_1,2, '??'), hex(lpad(unhex('aabb'), 5)),
           rpad(_1, 5, '??') from t1 order by _1 """.stripMargin)
       checkSparkAnswerAndOperator(res)
     }

@@ -76,7 +76,8 @@ class CometExecIterator(
   private val memoryMXBean = ManagementFactory.getMemoryMXBean
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
-  private val cometTaskMemoryManager = new CometTaskMemoryManager(id)
+  private val taskAttemptId = TaskContext.get().taskAttemptId
+  private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
   private val cometBatchIterators = inputs.map { iterator =>
     new CometBatchIterator(iterator, nativeUtil)
   }.toArray
@@ -138,10 +139,11 @@ class CometExecIterator(
       memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
       memoryLimit,
       memoryLimitPerTask,
-      taskAttemptId = TaskContext.get().taskAttemptId,
+      taskAttemptId,
       debug = COMET_DEBUG_ENABLED.get(),
       explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
       tracingEnabled,
+      maxTempDirectorySize = CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE.get()),
       keyUnwrapper)
   }
 
@@ -199,6 +201,11 @@ class CometExecIterator(
         })
     } catch {
       case e: CometNativeException =>
+        // it is generally considered bad practice to log and then rethrow an
+        // exception, but it really helps debugging to be able to see which task
+        // threw the exception, so we log the exception with taskAttemptId here
+        logError(s"Native execution for task $taskAttemptId failed", e)
+
         val fileNotFoundPattern: Regex =
           ("""^External: Object at location (.+?) not found: No such file or directory """ +
             """\(os error \d+\)$""").r

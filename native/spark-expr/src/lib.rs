@@ -68,10 +68,7 @@ pub use comet_scalar_funcs::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode,
     register_all_comet_functions,
 };
-pub use datetime_funcs::{
-    spark_date_add, spark_date_sub, SparkDateTrunc, SparkHour, SparkMinute, SparkSecond,
-    TimestampTruncExpr,
-};
+pub use datetime_funcs::{SparkDateTrunc, SparkHour, SparkMinute, SparkSecond, TimestampTruncExpr};
 pub use error::{SparkError, SparkResult};
 pub use hash_funcs::*;
 pub use json_funcs::ToJson;

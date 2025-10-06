@@ -71,7 +71,7 @@ object_store = { workspace = true }
 url = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
-parking_lot = "0.12.3"
+parking_lot = "0.12.5"
 datafusion-comet-objectstore-hdfs = { path = "../hdfs", optional = true, default-features = false, features = ["hdfs"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
 object_store_opendal = {version = "0.54.0", optional = true}
@@ -94,6 +94,7 @@ hex = "0.4.3"
 datafusion-functions-nested = { version = "50.0.0" }
 
 [features]
+backtrace = ["datafusion/backtrace"]
 default = []
 hdfs = ["datafusion-comet-objectstore-hdfs"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]

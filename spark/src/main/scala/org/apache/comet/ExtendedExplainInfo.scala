@@ -23,8 +23,9 @@ import scala.collection.mutable
 
 import org.apache.spark.sql.ExtendedExplainGenerator
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
-import org.apache.spark.sql.execution.{InputAdapter, SparkPlan, WholeStageCodegenExec}
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 import org.apache.comet.CometExplainInfo.getActualPlan
@@ -82,9 +83,18 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
   // generates the extended info in a verbose manner, printing each node along with the
   // extended information in a tree display
   def generateVerboseExtendedInfo(plan: SparkPlan): String = {
+    val planStats = new CometCoverageStats()
     val outString = new StringBuilder()
-    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString)
-    outString.toString()
+    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
+    s"${outString.toString()}\n$planStats"
+  }
+
+  /** Get the coverage statistics without the full plan */
+  def generateCoverageInfo(plan: SparkPlan): String = {
+    val planStats = new CometCoverageStats()
+    val outString = new StringBuilder()
+    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
+    planStats.toString()
   }
 
   // Simplified generateTreeString from Spark TreeNode. Appends explain info to the node if any
@@ -93,7 +103,22 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       depth: Int,
       lastChildren: Seq[Boolean],
       indent: Int,
-      outString: StringBuilder): Unit = {
+      outString: StringBuilder,
+      planStats: CometCoverageStats): Unit = {
+
+    node match {
+      case _: AdaptiveSparkPlanExec | _: InputAdapter | _: QueryStageExec |
+          _: WholeStageCodegenExec | _: ReusedExchangeExec | _: AQEShuffleReadExec =>
+      // ignore
+      case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
+          _: CometSparkToColumnarExec =>
+        planStats.transitions += 1
+      case _: CometPlan =>
+        planStats.cometOperators += 1
+      case _ =>
+        planStats.sparkOperators += 1
+    }
+
     outString.append("   " * indent)
     if (depth > 0) {
       lastChildren.init.foreach { isLast =>
@@ -120,7 +145,8 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
             depth + 2,
             lastChildren :+ node.children.isEmpty :+ false,
             indent,
-            outString)
+            outString,
+            planStats)
         case _ =>
       }
       generateTreeString(
@@ -128,7 +154,8 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
         depth + 2,
         lastChildren :+ node.children.isEmpty :+ true,
         indent,
-        outString)
+        outString,
+        planStats)
     }
     if (node.children.nonEmpty) {
       node.children.init.foreach {
@@ -138,15 +165,37 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
             depth + 1,
             lastChildren :+ false,
             indent,
-            outString)
+            outString,
+            planStats)
         case _ =>
       }
       node.children.last match {
         case c @ (_: TreeNode[_]) =>
-          generateTreeString(getActualPlan(c), depth + 1, lastChildren :+ true, indent, outString)
+          generateTreeString(
+            getActualPlan(c),
+            depth + 1,
+            lastChildren :+ true,
+            indent,
+            outString,
+            planStats)
         case _ =>
       }
     }
+  }
+}
+
+class CometCoverageStats {
+  var sparkOperators: Int = 0
+  var cometOperators: Int = 0
+  var transitions: Int = 0
+
+  override def toString(): String = {
+    val eligible = sparkOperators + cometOperators
+    val converted =
+      if (eligible == 0) 0.0 else cometOperators.toDouble / eligible * 100.0
+    s"Comet accelerated $cometOperators out of $eligible " +
+      s"eligible operators (${converted.toInt}%). " +
+      s"Final plan contains $transitions transitions between Spark and Comet."
   }
 }
 
@@ -162,6 +211,7 @@ object CometExplainInfo {
       case p: ReusedExchangeExec => getActualPlan(p.child)
       case p => p
     }
+
   }
 
 }

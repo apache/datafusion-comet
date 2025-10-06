@@ -59,6 +59,7 @@ def main(benchmark: str, data_path: str, query_path: str, iterations: int, outpu
 
     for iteration in range(0, iterations):
         print(f"Starting iteration {iteration} of {iterations}")
+        iter_start_time = time.time()
 
         # Determine which queries to run
         if query_num is not None:
