@@ -19,11 +19,11 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Atan2, Attribute, Ceil, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Unhex}
+import org.apache.spark.sql.catalyst.expressions.{Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Unhex}
 import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
 object CometAtan2 extends CometExpressionSerde[Atan2] {
   override def convert(
@@ -141,5 +141,33 @@ sealed trait MathExprBase {
   protected def nullIfNegative(expression: Expression): Expression = {
     val zero = Literal.default(expression.dataType)
     If(LessThanOrEqual(expression, zero), Literal.create(null, expression.dataType), expression)
+  }
+}
+
+object CometCheckOverflow extends CometExpressionSerde[CheckOverflow] {
+  override def convert(
+      expr: CheckOverflow,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+
+    if (childExpr.isDefined) {
+      val builder = ExprOuterClass.CheckOverflow.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setFailOnError(!expr.nullOnOverflow)
+
+      // `dataType` must be decimal type
+      val dataType = serializeDataType(expr.dataType)
+      builder.setDatatype(dataType.get)
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCheckOverflow(builder)
+          .build())
+    } else {
+      withInfo(expr, expr.child)
+      None
+    }
   }
 }
