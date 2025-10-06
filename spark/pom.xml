@@ -173,6 +173,13 @@ under the License.
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>s3</artifactId>
     </dependency>
+    <!-- Iceberg dependencies for testing native Iceberg scan -->
+    <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>iceberg-spark-runtime-3.5_2.12</artifactId>
+      <version>1.8.1</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>

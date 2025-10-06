@@ -160,6 +160,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         val nativeOp = QueryPlanSerde.operator2Proto(scan).get
         CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
 
+      // CometIcebergNativeScanExec is already a CometNativeExec and will be serialized
+      // during convertBlock(). Don't wrap it in CometScanWrapper.
+      case scan: CometIcebergNativeScanExec =>
+        scan
+
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
         val nativeOp = QueryPlanSerde.operator2Proto(op)

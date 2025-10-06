@@ -18,6 +18,7 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 use crate::execution::operators::CopyMode;
+use crate::execution::operators::IcebergScanExec;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -66,6 +67,7 @@ use datafusion_comet_spark_expr::{
     create_negate_expr, BinaryOutputStyle, BloomFilterAgg, BloomFilterMightContain, EvalMode,
     SparkHour, SparkMinute, SparkSecond,
 };
+use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
@@ -1396,6 +1398,77 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
                 ))
             }
+            OpStruct::IcebergScan(scan) => {
+                // Convert schema
+                let required_schema: SchemaRef =
+                    convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
+
+                // No projection needed - Spark already projects columns before the scan.
+                // The required_schema contains exactly the columns we need to read.
+                // Passing None tells iceberg-rust to use the full required_schema,
+                // which is the same as passing Some([0, 1, 2, ...]).
+
+                // Extract catalog configuration
+                let catalog_properties: HashMap<String, String> = scan
+                    .catalog_properties
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+
+                // Extract metadata_location from catalog_properties (required)
+                let metadata_location = catalog_properties
+                    .get("metadata_location")
+                    .ok_or_else(|| {
+                        ExecutionError::GeneralError(
+                            "metadata_location not found in catalog_properties".to_string(),
+                        )
+                    })?
+                    .clone();
+
+                // Parse pre-planned FileScanTasks if provided (grouped by partition)
+                //
+                // NOTE: We no longer convert scan-level data_filters to predicates here.
+                // Instead, each FileScanTask contains its own residual expression, which is
+                // the result of Iceberg's ResidualEvaluator partially evaluating the scan
+                // filter against that file's partition data. This per-file residual is what
+                // gets used for row-group level filtering in the Parquet reader.
+                let file_task_groups = if !scan.file_partitions.is_empty() {
+                    let mut task_groups: Vec<Vec<iceberg::scan::FileScanTask>> =
+                        Vec::with_capacity(scan.file_partitions.len());
+                    for partition in &scan.file_partitions {
+                        let tasks = parse_file_scan_tasks(&partition.file_scan_tasks)?;
+                        task_groups.push(tasks);
+                    }
+                    Some(task_groups)
+                } else {
+                    None
+                };
+
+                // Get num_partitions (default to 1 if not specified)
+                let num_partitions = if scan.num_partitions > 0 {
+                    scan.num_partitions as usize
+                } else {
+                    1
+                };
+
+                // Create IcebergScanExec
+                let iceberg_scan = IcebergScanExec::new(
+                    metadata_location,
+                    required_schema,
+                    catalog_properties,
+                    file_task_groups,
+                    num_partitions,
+                )?;
+
+                Ok((
+                    vec![],
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        Arc::new(iceberg_scan),
+                        vec![],
+                    )),
+                ))
+            }
             OpStruct::ShuffleWriter(writer) => {
                 assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
@@ -2697,6 +2770,128 @@ fn convert_spark_types_to_arrow_schema(
     arrow_schema
 }
 
+/// Parse protobuf FileScanTasks into iceberg-rust FileScanTask objects.
+///
+/// This converts the protobuf representation of Iceberg file scan tasks (passed from Scala)
+/// into native iceberg-rust FileScanTask objects that can be executed directly.
+///
+/// Each task contains a residual expression which is the result of Iceberg's ResidualEvaluator
+/// partially evaluating the scan filter against that file's partition data. This residual is
+/// used for row-group level filtering during Parquet scanning.
+fn parse_file_scan_tasks(
+    proto_tasks: &[spark_operator::IcebergFileScanTask],
+) -> Result<Vec<iceberg::scan::FileScanTask>, ExecutionError> {
+    let results: Result<Vec<_>, _> = proto_tasks
+        .iter()
+        .map(|proto_task| {
+            // Parse schema from JSON using iceberg's built-in parser
+            let schema: iceberg::spec::Schema = serde_json::from_str(&proto_task.schema_json)
+                .map_err(|e| {
+                    ExecutionError::GeneralError(format!("Failed to parse schema JSON: {}", e))
+                })?;
+            let schema_ref = Arc::new(schema);
+
+            // Parse file format
+            let data_file_format = match proto_task.data_file_format.as_str() {
+                "PARQUET" => iceberg::spec::DataFileFormat::Parquet,
+                "AVRO" => iceberg::spec::DataFileFormat::Avro,
+                "ORC" => iceberg::spec::DataFileFormat::Orc,
+                other => {
+                    return Err(ExecutionError::GeneralError(format!(
+                        "Unsupported file format: {}",
+                        other
+                    )));
+                }
+            };
+
+            // Parse delete files for MOR (Merge-On-Read) table support
+            // Delete files allow Iceberg to track deletions separately from data files:
+            // - Positional deletes: Specify exact row positions to skip in data files
+            // - Equality deletes: Specify column values that should be filtered out
+            // These deletes are automatically applied by iceberg-rust's ArrowReader during scanning.
+            //
+            // NOTE: Spark's DataSource V2 API does not expose delete files through InputPartitions.
+            // Spark applies MOR deletes during query planning before creating FileScanTasks, so
+            // task.deletes() typically returns empty even for MOR tables. This is expected.
+
+            let deletes: Vec<iceberg::scan::FileScanTaskDeleteFile> = proto_task
+                .delete_files
+                .iter()
+                .map(|del| {
+                    let file_type = match del.content_type.as_str() {
+                        "POSITION_DELETES" => iceberg::spec::DataContentType::PositionDeletes,
+                        "EQUALITY_DELETES" => iceberg::spec::DataContentType::EqualityDeletes,
+                        other => {
+                            return Err(ExecutionError::GeneralError(format!(
+                                "Unsupported delete content type: {}",
+                                other
+                            )))
+                        }
+                    };
+
+                    Ok(iceberg::scan::FileScanTaskDeleteFile {
+                        file_path: del.file_path.clone(),
+                        file_type,
+                        partition_spec_id: del.partition_spec_id,
+                        equality_ids: if del.equality_ids.is_empty() {
+                            None
+                        } else {
+                            Some(del.equality_ids.clone())
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>, ExecutionError>>()?;
+
+            // Extract and convert residual expression from this task
+            //
+            // The residual is a Spark expression that represents the remaining filter
+            // conditions after partition pruning. Iceberg's ResidualEvaluator creates
+            // these by partially evaluating the scan filter against each file's partition data.
+            //
+            // Process:
+            // 1. Residuals are serialized from Scala with binding=false, so we receive
+            //    UnboundReference (name-based) expressions rather than BoundReference (index-based)
+            // 2. Convert Spark expression to Iceberg predicate (name-based)
+            // 3. Bind the predicate to this file's schema for row-group filtering
+            let bound_predicate = proto_task
+                .residual
+                .as_ref()
+                .and_then(|residual_expr| {
+                    // Convert Spark expression to Iceberg predicate
+                    convert_spark_expr_to_predicate(residual_expr)
+                })
+                .map(
+                    |pred| -> Result<iceberg::expr::BoundPredicate, ExecutionError> {
+                        let bound = pred.bind(Arc::clone(&schema_ref), true).map_err(|e| {
+                            ExecutionError::GeneralError(format!(
+                                "Failed to bind predicate to schema: {}",
+                                e
+                            ))
+                        })?;
+
+                        Ok(bound)
+                    },
+                )
+                .transpose()?;
+
+            // Build FileScanTask matching iceberg-rust's structure
+            Ok(iceberg::scan::FileScanTask {
+                data_file_path: proto_task.data_file_path.clone(),
+                start: proto_task.start,
+                length: proto_task.length,
+                record_count: proto_task.record_count,
+                data_file_format,
+                schema: schema_ref,
+                project_field_ids: proto_task.project_field_ids.clone(),
+                predicate: bound_predicate,
+                deletes,
+            })
+        })
+        .collect();
+
+    results
+}
+
 /// Create CASE WHEN expression and add casting as needed
 fn create_case_expr(
     when_then_pairs: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
@@ -2933,6 +3128,286 @@ fn literal_to_array_ref(
         dt => Err(GeneralError(format!(
             "DataType::List literal does not support {dt:?} type"
         ))),
+    }
+}
+
+// ============================================================================
+// Spark Expression to Iceberg Predicate Conversion
+// ============================================================================
+//
+// Predicate Pushdown Design:
+// ===========================
+// For row-group level filtering in Parquet files, predicates follow this conversion path:
+//
+// 1. Iceberg Expression (Java) - extracted from Spark's Iceberg scan planning
+//       | [~100 lines: Scala convertIcebergExpression() in QueryPlanSerde.scala]
+//       v
+// 2. Spark Catalyst Expression - standard Spark filter representation
+//       | [~3000 lines: existing exprToProto() infrastructure in QueryPlanSerde.scala]
+//       v
+// 3. Protobuf Spark Expr - serialized for Rust communication (data_filters field)
+//       | [~200 lines: convert_spark_filters_to_iceberg_predicate() below]
+//       v
+// 4. Iceberg Predicate (Rust) - bound to each file's schema for row-group pruning
+//
+// This design leverages Comet's existing expression serialization infrastructure
+// (which handles hundreds of expression types) rather than implementing a separate
+// Iceberg Java -> Iceberg Rust serialization path. Any new expression types added
+// to Comet automatically flow through to Iceberg predicate pushdown.
+//
+// Supported predicates: =, !=, <, <=, >, >=, IS NULL, IS NOT NULL, IN, AND, OR, NOT
+//
+// Note: NOT IN predicates are intentionally skipped here because iceberg-rust's
+// RowGroupMetricsEvaluator::not_in() always returns MIGHT_MATCH (never prunes).
+// These are handled by post-scan CometFilter instead.
+//
+// Example: For query "SELECT * FROM table WHERE id > 10 AND status = 'active'"
+//   1. Iceberg planning extracts: [GreaterThan(id, 10), EqualTo(status, "active")]
+//   2. Converted to Catalyst: [GreaterThan(AttributeRef("id"), Literal(10)), ...]
+//   3. Serialized to protobuf: [Expr{gt: BinaryExpr{left: ..., right: ...}}, ...]
+//   4. Converted here to: Predicate::And(Predicate::Binary(...), Predicate::Binary(...))
+//   5. Bound to schema and passed to iceberg-rust's ArrowReader for row-group filtering
+//
+// Performance improvement from predicate pushdown:
+//   - Fewer row groups read (Parquet statistics used for pruning)
+//   - Reduced I/O (skip row groups that can't match)
+//   - Faster query execution
+
+/// Converts a protobuf Spark expression to an Iceberg predicate for row-group filtering.
+/// This allows predicate pushdown into Parquet readers.
+///
+/// Residuals are serialized with binding=false, so they contain UnboundReference (name-based)
+/// rather than BoundReference (index-based), which makes conversion straightforward.
+fn convert_spark_expr_to_predicate(
+    expr: &spark_expression::Expr,
+) -> Option<iceberg::expr::Predicate> {
+    use spark_expression::expr::ExprStruct;
+
+    match &expr.expr_struct {
+        Some(ExprStruct::Eq(binary)) => convert_binary_to_predicate(
+            &binary.left,
+            &binary.right,
+            iceberg::expr::PredicateOperator::Eq,
+        ),
+        Some(ExprStruct::Neq(binary)) => convert_binary_to_predicate(
+            &binary.left,
+            &binary.right,
+            iceberg::expr::PredicateOperator::NotEq,
+        ),
+        Some(ExprStruct::Lt(binary)) => convert_binary_to_predicate(
+            &binary.left,
+            &binary.right,
+            iceberg::expr::PredicateOperator::LessThan,
+        ),
+        Some(ExprStruct::LtEq(binary)) => convert_binary_to_predicate(
+            &binary.left,
+            &binary.right,
+            iceberg::expr::PredicateOperator::LessThanOrEq,
+        ),
+        Some(ExprStruct::Gt(binary)) => convert_binary_to_predicate(
+            &binary.left,
+            &binary.right,
+            iceberg::expr::PredicateOperator::GreaterThan,
+        ),
+        Some(ExprStruct::GtEq(binary)) => convert_binary_to_predicate(
+            &binary.left,
+            &binary.right,
+            iceberg::expr::PredicateOperator::GreaterThanOrEq,
+        ),
+        Some(ExprStruct::IsNull(unary)) => {
+            if let Some(ref child) = unary.child {
+                extract_column_reference(child).map(|column| {
+                    iceberg::expr::Predicate::Unary(iceberg::expr::UnaryExpression::new(
+                        iceberg::expr::PredicateOperator::IsNull,
+                        iceberg::expr::Reference::new(column),
+                    ))
+                })
+            } else {
+                None
+            }
+        }
+        Some(ExprStruct::IsNotNull(unary)) => {
+            if let Some(ref child) = unary.child {
+                extract_column_reference(child).map(|column| {
+                    iceberg::expr::Predicate::Unary(iceberg::expr::UnaryExpression::new(
+                        iceberg::expr::PredicateOperator::NotNull,
+                        iceberg::expr::Reference::new(column),
+                    ))
+                })
+            } else {
+                None
+            }
+        }
+        Some(ExprStruct::And(binary)) => {
+            let left = binary
+                .left
+                .as_ref()
+                .and_then(|e| convert_spark_expr_to_predicate(e));
+            let right = binary
+                .right
+                .as_ref()
+                .and_then(|e| convert_spark_expr_to_predicate(e));
+            match (left, right) {
+                (Some(l), Some(r)) => Some(l.and(r)),
+                (Some(l), None) => Some(l),
+                (None, Some(r)) => Some(r),
+                _ => None,
+            }
+        }
+        Some(ExprStruct::Or(binary)) => {
+            let left = binary
+                .left
+                .as_ref()
+                .and_then(|e| convert_spark_expr_to_predicate(e));
+            let right = binary
+                .right
+                .as_ref()
+                .and_then(|e| convert_spark_expr_to_predicate(e));
+            match (left, right) {
+                (Some(l), Some(r)) => Some(l.or(r)),
+                _ => None, // OR requires both sides to be valid
+            }
+        }
+        Some(ExprStruct::Not(unary)) => unary
+            .child
+            .as_ref()
+            .and_then(|child| convert_spark_expr_to_predicate(child))
+            .map(|p| !p),
+        Some(ExprStruct::In(in_expr)) => {
+            // NOT IN predicates don't work correctly with iceberg-rust's row-group filtering.
+            // The iceberg-rust RowGroupMetricsEvaluator::not_in() always returns MIGHT_MATCH
+            // (never prunes row groups), even in cases where pruning is possible (e.g., when
+            // min == max == value and value is in the NOT IN set).
+            //
+            // Workaround: Skip NOT IN in predicate pushdown and let CometFilter handle it
+            // post-scan. This sacrifices row-group pruning for NOT IN but ensures correctness.
+            if in_expr.negated {
+                return None;
+            }
+
+            if let Some(ref value) = in_expr.in_value {
+                if let Some(column) = extract_column_reference(value) {
+                    let datums: Vec<iceberg::spec::Datum> = in_expr
+                        .lists
+                        .iter()
+                        .filter_map(extract_literal_as_datum)
+                        .collect();
+
+                    if datums.len() == in_expr.lists.len() {
+                        Some(iceberg::expr::Reference::new(column).is_in(datums))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        _ => None, // Unsupported expression
+    }
+}
+
+fn convert_binary_to_predicate(
+    left: &Option<Box<spark_expression::Expr>>,
+    right: &Option<Box<spark_expression::Expr>>,
+    op: iceberg::expr::PredicateOperator,
+) -> Option<iceberg::expr::Predicate> {
+    let left_ref = left.as_ref()?;
+    let right_ref = right.as_ref()?;
+
+    // Try left as column, right as literal
+    if let (Some(column), Some(datum)) = (
+        extract_column_reference(left_ref),
+        extract_literal_as_datum(right_ref),
+    ) {
+        return Some(iceberg::expr::Predicate::Binary(
+            iceberg::expr::BinaryExpression::new(op, iceberg::expr::Reference::new(column), datum),
+        ));
+    }
+
+    // Try right as column, left as literal (reverse operator)
+    if let (Some(datum), Some(column)) = (
+        extract_literal_as_datum(left_ref),
+        extract_column_reference(right_ref),
+    ) {
+        let reversed_op = match op {
+            iceberg::expr::PredicateOperator::LessThan => {
+                iceberg::expr::PredicateOperator::GreaterThan
+            }
+            iceberg::expr::PredicateOperator::LessThanOrEq => {
+                iceberg::expr::PredicateOperator::GreaterThanOrEq
+            }
+            iceberg::expr::PredicateOperator::GreaterThan => {
+                iceberg::expr::PredicateOperator::LessThan
+            }
+            iceberg::expr::PredicateOperator::GreaterThanOrEq => {
+                iceberg::expr::PredicateOperator::LessThanOrEq
+            }
+            _ => op, // Eq and NotEq are symmetric
+        };
+        return Some(iceberg::expr::Predicate::Binary(
+            iceberg::expr::BinaryExpression::new(
+                reversed_op,
+                iceberg::expr::Reference::new(column),
+                datum,
+            ),
+        ));
+    }
+
+    None
+}
+
+fn extract_column_reference(expr: &spark_expression::Expr) -> Option<String> {
+    use spark_expression::expr::ExprStruct;
+
+    match &expr.expr_struct {
+        Some(ExprStruct::Unbound(unbound_ref)) => Some(unbound_ref.name.clone()),
+        _ => None,
+    }
+}
+
+fn extract_literal_as_datum(expr: &spark_expression::Expr) -> Option<iceberg::spec::Datum> {
+    use spark_expression::expr::ExprStruct;
+
+    match &expr.expr_struct {
+        Some(ExprStruct::Literal(literal)) => {
+            // Check for null literals
+            if literal.is_null {
+                return None;
+            }
+
+            // Match on the oneof value field
+            match &literal.value {
+                Some(spark_expression::literal::Value::IntVal(v)) => {
+                    Some(iceberg::spec::Datum::int(*v))
+                }
+                Some(spark_expression::literal::Value::LongVal(v)) => {
+                    Some(iceberg::spec::Datum::long(*v))
+                }
+                Some(spark_expression::literal::Value::FloatVal(v)) => {
+                    Some(iceberg::spec::Datum::double(*v as f64))
+                }
+                Some(spark_expression::literal::Value::DoubleVal(v)) => {
+                    Some(iceberg::spec::Datum::double(*v))
+                }
+                Some(spark_expression::literal::Value::StringVal(v)) => {
+                    Some(iceberg::spec::Datum::string(v.clone()))
+                }
+                Some(spark_expression::literal::Value::BoolVal(v)) => {
+                    Some(iceberg::spec::Datum::bool(*v))
+                }
+                Some(spark_expression::literal::Value::ByteVal(v)) => {
+                    Some(iceberg::spec::Datum::int(*v))
+                }
+                Some(spark_expression::literal::Value::ShortVal(v)) => {
+                    Some(iceberg::spec::Datum::int(*v))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 

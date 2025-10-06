@@ -1,0 +1,1058 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.comet
+
+import java.io.File
+import java.nio.file.Files
+
+import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.CometIcebergNativeScanExec
+import org.apache.spark.sql.execution.SparkPlan
+
+/**
+ * Test suite for native Iceberg scan with catalog support.
+ *
+ * Tests the end-to-end flow:
+ *   1. Create Iceberg table with Hadoop catalog 2. Enable native Iceberg execution 3. Query table
+ *      via Comet 4. Verify data correctness
+ *
+ * Note: Requires Iceberg dependencies to be added to pom.xml
+ */
+class CometIcebergNativeSuite extends CometTestBase {
+
+  // Skip these tests if Iceberg is not available in classpath
+  private def icebergAvailable: Boolean = {
+    try {
+      Class.forName("org.apache.iceberg.catalog.Catalog")
+      true
+    } catch {
+      case _: ClassNotFoundException => false
+    }
+  }
+
+  /** Collects all CometIcebergNativeScanExec nodes from a plan */
+  private def collectIcebergNativeScans(plan: SparkPlan): Seq[CometIcebergNativeScanExec] = {
+    collect(plan) { case scan: CometIcebergNativeScanExec =>
+      scan
+    }
+  }
+
+  /**
+   * Helper to verify query correctness and that exactly one CometIcebergNativeScanExec is used.
+   * This ensures both correct results and that the native Iceberg scan operator is being used.
+   */
+  private def checkIcebergNativeScan(query: String): Unit = {
+    val (_, cometPlan) = checkSparkAnswer(query)
+    val icebergScans = collectIcebergNativeScans(cometPlan)
+    assert(
+      icebergScans.length == 1,
+      s"Expected exactly 1 CometIcebergNativeScanExec but found ${icebergScans.length}. Plan:\n$cometPlan")
+  }
+
+  test("create and query simple Iceberg table with Hadoop catalog") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.hadoop_catalog" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.hadoop_catalog.type" -> "hadoop",
+        "spark.sql.catalog.hadoop_catalog.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        // Create Iceberg table
+        spark.sql("""
+          CREATE TABLE hadoop_catalog.db.test_table (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        // Insert test data
+        spark.sql("""
+          INSERT INTO hadoop_catalog.db.test_table
+          VALUES (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)
+        """)
+
+        // Query with Comet native Iceberg scan and verify results + operator
+        checkIcebergNativeScan("SELECT * FROM hadoop_catalog.db.test_table ORDER BY id")
+
+        // Cleanup
+        spark.sql("DROP TABLE hadoop_catalog.db.test_table")
+      }
+    }
+  }
+
+  test("verify catalog info extraction") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.my_catalog" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.my_catalog.type" -> "hadoop",
+        "spark.sql.catalog.my_catalog.warehouse" -> warehouseDir.getAbsolutePath,
+        "spark.sql.catalog.my_catalog.custom.prop" -> "test_value",
+        "spark.comet.enabled" -> "true",
+        "spark.comet.exec.enabled" -> "true",
+        "spark.comet.scan.icebergNative.enabled" -> "true") {
+
+        // Create simple table
+        spark.sql("""
+          CREATE TABLE my_catalog.namespace.table1 (
+            id INT,
+            data STRING
+          ) USING iceberg
+        """)
+
+        spark.sql("INSERT INTO my_catalog.namespace.table1 VALUES (1, 'test')")
+
+        // Execute query and verify results + operator
+        checkIcebergNativeScan("SELECT * FROM my_catalog.namespace.table1")
+
+        // Cleanup
+        spark.sql("DROP TABLE my_catalog.namespace.table1")
+      }
+    }
+  }
+
+  test("verify native scan is actually used in plan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        "spark.comet.enabled" -> "true",
+        "spark.comet.exec.enabled" -> "true",
+        "spark.comet.scan.icebergNative.enabled" -> "true") {
+
+        // Create table
+        spark.sql("""
+          CREATE TABLE test_cat.db.verify_table (
+            x INT,
+            y DOUBLE
+          ) USING iceberg
+        """)
+
+        spark.sql("INSERT INTO test_cat.db.verify_table VALUES (42, 3.14)")
+
+        // Query and verify results + operator
+        checkIcebergNativeScan("SELECT x, y FROM test_cat.db.verify_table WHERE x = 42")
+
+        // Cleanup
+        spark.sql("DROP TABLE test_cat.db.verify_table")
+      }
+    }
+  }
+
+  test("filter pushdown - equality predicates") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.filter_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.filter_cat.type" -> "hadoop",
+        "spark.sql.catalog.filter_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table with multiple rows
+        spark.sql("""
+          CREATE TABLE filter_cat.db.filter_test (
+            id INT,
+            name STRING,
+            value DOUBLE,
+            active BOOLEAN
+          ) USING iceberg
+        """)
+
+        // Insert test data
+        spark.sql("""
+          INSERT INTO filter_cat.db.filter_test VALUES
+          (1, 'Alice', 10.5, true),
+          (2, 'Bob', 20.3, false),
+          (3, 'Charlie', 30.7, true),
+          (4, 'Diana', 15.2, false),
+          (5, 'Eve', 25.8, true)
+        """)
+
+        // Test: WHERE id = 3
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.filter_test WHERE id = 3")
+
+        // Test: WHERE name = 'Bob'
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.filter_test WHERE name = 'Bob'")
+
+        // Test: WHERE active = true
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.filter_test WHERE active = true")
+
+        spark.sql("DROP TABLE filter_cat.db.filter_test")
+      }
+    }
+  }
+
+  test("filter pushdown - comparison operators") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.filter_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.filter_cat.type" -> "hadoop",
+        "spark.sql.catalog.filter_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE filter_cat.db.comparison_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO filter_cat.db.comparison_test VALUES
+          (1, 10.5), (2, 20.3), (3, 30.7), (4, 15.2), (5, 25.8)
+        """)
+
+        // Test: WHERE value > 20.0
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value > 20.0")
+
+        // Test: WHERE value >= 20.3
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value >= 20.3")
+
+        // Test: WHERE value < 20.0
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value < 20.0")
+
+        // Test: WHERE value <= 20.3
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value <= 20.3")
+
+        // Test: WHERE id != 3
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE id != 3")
+
+        spark.sql("DROP TABLE filter_cat.db.comparison_test")
+      }
+    }
+  }
+
+  test("filter pushdown - AND/OR combinations") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.filter_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.filter_cat.type" -> "hadoop",
+        "spark.sql.catalog.filter_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE filter_cat.db.logical_test (
+            id INT,
+            category STRING,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO filter_cat.db.logical_test VALUES
+          (1, 'A', 10.5), (2, 'B', 20.3), (3, 'A', 30.7),
+          (4, 'B', 15.2), (5, 'A', 25.8), (6, 'C', 35.0)
+        """)
+
+        // Test: WHERE category = 'A' AND value > 20.0
+        checkIcebergNativeScan(
+          "SELECT * FROM filter_cat.db.logical_test WHERE category = 'A' AND value > 20.0")
+
+        // Test: WHERE category = 'B' OR value > 30.0
+        checkIcebergNativeScan(
+          "SELECT * FROM filter_cat.db.logical_test WHERE category = 'B' OR value > 30.0")
+
+        // Test: WHERE (category = 'A' AND value > 20.0) OR category = 'C'
+        checkIcebergNativeScan("""SELECT * FROM filter_cat.db.logical_test
+             WHERE (category = 'A' AND value > 20.0) OR category = 'C'""")
+
+        spark.sql("DROP TABLE filter_cat.db.logical_test")
+      }
+    }
+  }
+
+  test("filter pushdown - NULL checks") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.filter_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.filter_cat.type" -> "hadoop",
+        "spark.sql.catalog.filter_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE filter_cat.db.null_test (
+            id INT,
+            optional_value DOUBLE
+          ) USING iceberg
+        """)
+
+        // Insert data with some NULLs
+        spark.sql("""
+          INSERT INTO filter_cat.db.null_test VALUES
+          (1, 10.5), (2, NULL), (3, 30.7), (4, NULL), (5, 25.8)
+        """)
+
+        // Test: WHERE optional_value IS NULL
+        checkIcebergNativeScan(
+          "SELECT * FROM filter_cat.db.null_test WHERE optional_value IS NULL")
+
+        // Test: WHERE optional_value IS NOT NULL
+        checkIcebergNativeScan(
+          "SELECT * FROM filter_cat.db.null_test WHERE optional_value IS NOT NULL")
+
+        spark.sql("DROP TABLE filter_cat.db.null_test")
+      }
+    }
+  }
+
+  test("filter pushdown - IN list") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.filter_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.filter_cat.type" -> "hadoop",
+        "spark.sql.catalog.filter_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE filter_cat.db.in_test (
+            id INT,
+            name STRING
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO filter_cat.db.in_test VALUES
+          (1, 'Alice'), (2, 'Bob'), (3, 'Charlie'),
+          (4, 'Diana'), (5, 'Eve'), (6, 'Frank')
+        """)
+
+        // Test: WHERE id IN (2, 4, 6)
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.in_test WHERE id IN (2, 4, 6)")
+
+        // Test: WHERE name IN ('Alice', 'Charlie', 'Eve')
+        checkIcebergNativeScan(
+          "SELECT * FROM filter_cat.db.in_test WHERE name IN ('Alice', 'Charlie', 'Eve')")
+
+        // Test: WHERE id IS NOT NULL (should return all 6 rows)
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.in_test WHERE id IS NOT NULL")
+
+        // Test: WHERE id NOT IN (1, 3, 5)
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.in_test WHERE id NOT IN (1, 3, 5)")
+
+        spark.sql("DROP TABLE filter_cat.db.in_test")
+      }
+    }
+  }
+
+  test("verify filters are pushed to native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.filter_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.filter_cat.type" -> "hadoop",
+        "spark.sql.catalog.filter_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE filter_cat.db.filter_debug (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO filter_cat.db.filter_debug VALUES
+          (1, 10.5), (2, 20.3), (3, 30.7), (4, 15.2), (5, 25.8)
+        """)
+
+        // Query with a filter and verify results match Spark
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.filter_debug WHERE id > 2")
+
+        // Also verify the plan contains native Iceberg scan
+        val df = spark.sql("SELECT * FROM filter_cat.db.filter_debug WHERE id > 2")
+        val plan = df.queryExecution.executedPlan.toString()
+        assert(plan.contains("CometIcebergNativeScan"), "Should use native Iceberg scan")
+
+        spark.sql("DROP TABLE filter_cat.db.filter_debug")
+      }
+    }
+  }
+
+  test("small table - verify no duplicate rows (1 file)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.small_table (
+            id INT,
+            name STRING
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.small_table
+          VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
+        """)
+
+        // Verify results match Spark native (catches duplicates and correctness issues)
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.small_table ORDER BY id")
+        checkIcebergNativeScan("SELECT COUNT(DISTINCT id) FROM test_cat.db.small_table")
+
+        spark.sql("DROP TABLE test_cat.db.small_table")
+      }
+    }
+  }
+
+  test("medium table - verify correct partition count (multiple files)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        // Force smaller file size to create multiple files
+        "spark.sql.files.maxRecordsPerFile" -> "10") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.medium_table (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        // Insert 100 rows - should create multiple files with maxRecordsPerFile=10
+        spark.sql("""
+          INSERT INTO test_cat.db.medium_table
+          SELECT id, CAST(id * 1.5 AS DOUBLE) as value
+          FROM range(100)
+        """)
+
+        // Verify results match Spark native (catches duplicates across partitions)
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.medium_table ORDER BY id")
+        checkIcebergNativeScan("SELECT COUNT(DISTINCT id) FROM test_cat.db.medium_table")
+        checkIcebergNativeScan("SELECT SUM(value) FROM test_cat.db.medium_table")
+
+        spark.sql("DROP TABLE test_cat.db.medium_table")
+      }
+    }
+  }
+
+  test("large table - verify no duplicates with many files") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        "spark.sql.files.maxRecordsPerFile" -> "100") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.large_table (
+            id BIGINT,
+            category STRING,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        // Insert 10,000 rows - with maxRecordsPerFile=100, creates ~100 files
+        spark.sql("""
+          INSERT INTO test_cat.db.large_table
+          SELECT
+            id,
+            CASE WHEN id % 3 = 0 THEN 'A' WHEN id % 3 = 1 THEN 'B' ELSE 'C' END as category,
+            CAST(id * 2.5 AS DOUBLE) as value
+          FROM range(10000)
+        """)
+
+        // Critical tests - if partitioning is broken, COUNT(*) will be N times too large
+        checkIcebergNativeScan("SELECT COUNT(DISTINCT id) FROM test_cat.db.large_table")
+        checkIcebergNativeScan("SELECT SUM(value) FROM test_cat.db.large_table")
+        checkIcebergNativeScan(
+          "SELECT category, COUNT(*) FROM test_cat.db.large_table GROUP BY category ORDER BY category")
+
+        spark.sql("DROP TABLE test_cat.db.large_table")
+      }
+    }
+  }
+
+  test("partitioned table - verify key-grouped partitioning") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.partitioned_table (
+            id INT,
+            category STRING,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (category)
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.partitioned_table VALUES
+          (1, 'A', 10.5), (2, 'B', 20.3), (3, 'C', 30.7),
+          (4, 'A', 15.2), (5, 'B', 25.8), (6, 'C', 35.0),
+          (7, 'A', 12.1), (8, 'B', 22.5), (9, 'C', 32.9)
+        """)
+
+        // Verify all queries match Spark native
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.partitioned_table ORDER BY id")
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.partitioned_table WHERE category = 'A' ORDER BY id")
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.partitioned_table WHERE category = 'B' ORDER BY id")
+        checkIcebergNativeScan(
+          "SELECT category, COUNT(*) FROM test_cat.db.partitioned_table GROUP BY category ORDER BY category")
+
+        spark.sql("DROP TABLE test_cat.db.partitioned_table")
+      }
+    }
+  }
+
+  test("empty table - verify graceful handling") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.empty_table (
+            id INT,
+            name STRING
+          ) USING iceberg
+        """)
+
+        // Empty table should work correctly with all queries
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.empty_table")
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.empty_table WHERE id > 0")
+
+        spark.sql("DROP TABLE test_cat.db.empty_table")
+      }
+    }
+  }
+
+  // MOR (Merge-On-Read) delete file tests.
+  // Delete files are extracted from FileScanTasks and handled by iceberg-rust's ArrowReader,
+  // which automatically applies both positional and equality deletes during scan execution.
+  test("MOR table with POSITIONAL deletes - verify deletes are applied") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.positional_delete_test (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
+
+        // Insert initial data
+        spark.sql("""
+          INSERT INTO test_cat.db.positional_delete_test
+          VALUES
+            (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7),
+            (4, 'Diana', 15.2), (5, 'Eve', 25.8), (6, 'Frank', 35.0),
+            (7, 'Grace', 12.1), (8, 'Hank', 22.5)
+        """)
+
+        // Delete specific rows (creates positional delete files)
+        spark.sql("DELETE FROM test_cat.db.positional_delete_test WHERE id IN (2, 4, 6)")
+
+        // Query and verify results match Spark (both apply MOR deletes at read time)
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.positional_delete_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.positional_delete_test")
+      }
+    }
+  }
+
+  test("MOR table with EQUALITY deletes - verify deletes are applied") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table with equality delete columns specified
+        // This forces Spark to use equality deletes instead of positional deletes
+        spark.sql("""
+          CREATE TABLE test_cat.db.equality_delete_test (
+            id INT,
+            category STRING,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read',
+            'write.delete.equality-delete-columns' = 'id'
+          )
+        """)
+
+        // Insert initial data
+        spark.sql("""
+          INSERT INTO test_cat.db.equality_delete_test
+          VALUES
+            (1, 'A', 10.5), (2, 'B', 20.3), (3, 'A', 30.7),
+            (4, 'B', 15.2), (5, 'A', 25.8), (6, 'C', 35.0)
+        """)
+
+        // Delete rows using equality delete (matches on id column)
+        spark.sql("DELETE FROM test_cat.db.equality_delete_test WHERE id IN (2, 4)")
+
+        // Query and verify results match Spark (both apply MOR deletes at read time)
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.equality_delete_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.equality_delete_test")
+      }
+    }
+  }
+
+  test("MOR table with multiple delete operations - mixed delete types") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.multi_delete_test (
+            id INT,
+            data STRING
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
+
+        // Insert data in batches
+        spark.sql("""
+          INSERT INTO test_cat.db.multi_delete_test
+          SELECT id, CONCAT('data_', CAST(id AS STRING)) as data
+          FROM range(100)
+        """)
+
+        // Perform multiple deletes
+        spark.sql("DELETE FROM test_cat.db.multi_delete_test WHERE id < 10")
+        spark.sql("DELETE FROM test_cat.db.multi_delete_test WHERE id > 90")
+        spark.sql("DELETE FROM test_cat.db.multi_delete_test WHERE id % 10 = 5")
+
+        // Query and verify results match Spark (both apply MOR deletes at read time)
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.multi_delete_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.multi_delete_test")
+      }
+    }
+  }
+
+  test("verify no duplicate rows across multiple partitions") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        // Create multiple files to ensure multiple partitions
+        "spark.sql.files.maxRecordsPerFile" -> "50") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.multipart_test (
+            id INT,
+            data STRING
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.multipart_test
+          SELECT id, CONCAT('data_', CAST(id AS STRING)) as data
+          FROM range(500)
+        """)
+
+        // Critical: COUNT(*) vs COUNT(DISTINCT id) catches duplicates across partitions
+        checkIcebergNativeScan("SELECT COUNT(DISTINCT id) FROM test_cat.db.multipart_test")
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.multipart_test WHERE id < 10 ORDER BY id")
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.multipart_test WHERE id >= 490 ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.multipart_test")
+      }
+    }
+  }
+
+  test("filter pushdown with multi-partition table") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        "spark.sql.files.maxRecordsPerFile" -> "20") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.filter_multipart (
+            id INT,
+            category STRING,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.filter_multipart
+          SELECT
+            id,
+            CASE WHEN id % 2 = 0 THEN 'even' ELSE 'odd' END as category,
+            CAST(id * 1.5 AS DOUBLE) as value
+          FROM range(200)
+        """)
+
+        // Test various filters with multi-partition scan
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.filter_multipart WHERE id > 150 ORDER BY id")
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.filter_multipart WHERE category = 'even' AND id < 50 ORDER BY id")
+        checkIcebergNativeScan(
+          "SELECT COUNT(DISTINCT id) FROM test_cat.db.filter_multipart WHERE id BETWEEN 50 AND 100")
+        checkIcebergNativeScan(
+          "SELECT SUM(value) FROM test_cat.db.filter_multipart WHERE category = 'odd'")
+
+        spark.sql("DROP TABLE test_cat.db.filter_multipart")
+      }
+    }
+  }
+
+  test("date partitioned table with date range queries") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.date_partitioned (
+            id INT,
+            event_date DATE,
+            value STRING
+          ) USING iceberg
+          PARTITIONED BY (days(event_date))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.date_partitioned VALUES
+          (1, DATE '2024-01-01', 'a'), (2, DATE '2024-01-02', 'b'),
+          (3, DATE '2024-01-03', 'c'), (4, DATE '2024-01-15', 'd'),
+          (5, DATE '2024-01-16', 'e'), (6, DATE '2024-02-01', 'f')
+        """)
+
+        // Test date range queries with partition pruning
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.date_partitioned ORDER BY id")
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.date_partitioned WHERE event_date = DATE '2024-01-01'")
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.date_partitioned WHERE event_date BETWEEN DATE '2024-01-01' AND DATE '2024-01-03' ORDER BY id")
+        checkIcebergNativeScan(
+          "SELECT event_date, COUNT(*) FROM test_cat.db.date_partitioned GROUP BY event_date ORDER BY event_date")
+
+        spark.sql("DROP TABLE test_cat.db.date_partitioned")
+      }
+    }
+  }
+
+  test("bucket partitioned table") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.bucket_partitioned (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (bucket(4, id))
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.bucket_partitioned
+          SELECT id, CAST(id * 1.5 AS DOUBLE) as value
+          FROM range(100)
+        """)
+
+        // Test bucket partitioning correctness
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.bucket_partitioned ORDER BY id")
+        checkIcebergNativeScan("SELECT COUNT(DISTINCT id) FROM test_cat.db.bucket_partitioned")
+        checkIcebergNativeScan("SELECT SUM(value) FROM test_cat.db.bucket_partitioned")
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.bucket_partitioned WHERE id < 20 ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.bucket_partitioned")
+      }
+    }
+  }
+
+  // TODO: Re-enable when iceberg-rust supports schema evolution in projections
+  // Currently iceberg-rust errors when projecting columns that don't exist in old files.
+  // See: https://github.com/apache/iceberg-rust/blob/main/crates/iceberg/src/arrow/reader.rs#L586-L601
+  // The strict validation at line 586: `if column_map.len() != leaf_field_ids.len()`
+  // prevents reading new columns from evolved schemas as NULL values.
+  ignore("schema evolution - add column") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.schema_evolution (
+            id INT,
+            name STRING
+          ) USING iceberg
+        """)
+
+        // Insert data with original schema
+        spark.sql("""
+          INSERT INTO test_cat.db.schema_evolution VALUES (1, 'Alice'), (2, 'Bob')
+        """)
+
+        // Add a new column
+        spark.sql("ALTER TABLE test_cat.db.schema_evolution ADD COLUMN age INT")
+
+        // Insert data with new schema
+        spark.sql("""
+          INSERT INTO test_cat.db.schema_evolution VALUES (3, 'Charlie', 30), (4, 'Diana', 25)
+        """)
+
+        // Query should handle both old and new schemas
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.schema_evolution ORDER BY id")
+        checkIcebergNativeScan("SELECT id, name FROM test_cat.db.schema_evolution ORDER BY id")
+        checkIcebergNativeScan(
+          "SELECT id, age FROM test_cat.db.schema_evolution WHERE age IS NOT NULL ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.schema_evolution")
+      }
+    }
+  }
+
+  test("very large file count - scalability") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        // Create many small files
+        "spark.sql.files.maxRecordsPerFile" -> "10") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.scalability_test (
+            id INT,
+            data STRING
+          ) USING iceberg
+        """)
+
+        // Insert 1000 rows with maxRecordsPerFile=10 creates ~100 files
+        spark.sql("""
+          INSERT INTO test_cat.db.scalability_test
+          SELECT id, CONCAT('data_', CAST(id AS STRING)) as data
+          FROM range(1000)
+        """)
+
+        // Test scalability with many files
+        checkIcebergNativeScan("SELECT COUNT(DISTINCT id) FROM test_cat.db.scalability_test")
+        checkIcebergNativeScan("SELECT SUM(id) FROM test_cat.db.scalability_test")
+
+        spark.sql("DROP TABLE test_cat.db.scalability_test")
+      }
+    }
+  }
+
+  test("projection - column subset, reordering, and duplication") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table with multiple columns
+        spark.sql("""
+          CREATE TABLE test_cat.db.proj_test (
+            id INT,
+            name STRING,
+            value DOUBLE,
+            flag BOOLEAN
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.proj_test
+          VALUES (1, 'Alice', 10.5, true),
+                 (2, 'Bob', 20.3, false),
+                 (3, 'Charlie', 30.7, true)
+        """)
+
+        // Test 1: Column subset (only 2 of 4 columns)
+        checkIcebergNativeScan("SELECT name, value FROM test_cat.db.proj_test ORDER BY id")
+
+        // Test 2: Reordered columns (reverse order)
+        checkIcebergNativeScan("SELECT value, name, id FROM test_cat.db.proj_test ORDER BY id")
+
+        // Test 3: Duplicate columns
+        checkIcebergNativeScan(
+          "SELECT id, name, id AS id2 FROM test_cat.db.proj_test ORDER BY id")
+
+        // Test 4: Single column
+        checkIcebergNativeScan("SELECT name FROM test_cat.db.proj_test ORDER BY name")
+
+        // Test 5: Different ordering with subset
+        checkIcebergNativeScan("SELECT flag, id FROM test_cat.db.proj_test ORDER BY id")
+
+        // Test 6: Multiple duplicates
+        checkIcebergNativeScan(
+          "SELECT name, value, name AS name2, value AS value2 FROM test_cat.db.proj_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.proj_test")
+      }
+    }
+  }
+
+  // Helper to create temp directory
+  def withTempIcebergDir(f: File => Unit): Unit = {
+    val dir = Files.createTempDirectory("comet-iceberg-test").toFile
+    try {
+      f(dir)
+    } finally {
+      // Cleanup
+      def deleteRecursively(file: File): Unit = {
+        if (file.isDirectory) {
+          file.listFiles().foreach(deleteRecursively)
+        }
+        file.delete()
+      }
+      deleteRecursively(dir)
+    }
+  }
+}

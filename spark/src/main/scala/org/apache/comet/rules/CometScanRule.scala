@@ -32,7 +32,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Generic
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometIcebergNativeScanExec, CometScanExec, SerializedPlan}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
@@ -45,7 +45,7 @@ import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
+import org.apache.comet.parquet.{CometParquetScan, Native}
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -268,14 +268,11 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           withInfos(scanExec, fallbackReasons.toSet)
         }
 
-      // Iceberg scan
-      case s: SupportsComet =>
+      // Iceberg scan - detected by class name (works with unpatched Iceberg)
+      case _
+          if scanExec.scan.getClass.getName ==
+            "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
         val fallbackReasons = new ListBuffer[String]()
-
-        if (!s.isCometEnabled) {
-          fallbackReasons += "Comet extension is not enabled for " +
-            s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side"
-        }
 
         val schemaSupported =
           CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
@@ -285,12 +282,60 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
         }
 
-        if (s.isCometEnabled && schemaSupported) {
-          // When reading from Iceberg, we automatically enable type promotion
-          SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
-          CometBatchScanExec(
-            scanExec.clone().asInstanceOf[BatchScanExec],
-            runtimeFilters = scanExec.runtimeFilters)
+        if (schemaSupported) {
+          // Check if native Iceberg execution is enabled
+          if (CometConf.COMET_ICEBERG_NATIVE_ENABLED.get() &&
+            CometConf.COMET_EXEC_ENABLED.get()) {
+
+            // Try to extract catalog info for native execution
+            CometIcebergNativeScanExec.extractCatalogInfo(scanExec, session) match {
+              case Some(catalogInfo) =>
+                // Create native Iceberg scan exec with IcebergScan operator (without tasks)
+                // Tasks will be extracted per-partition during execution in doExecuteColumnar()
+                // First create a temporary exec to serialize
+                val tempExec = CometIcebergNativeScanExec(
+                  org.apache.comet.serde.OperatorOuterClass.Operator.newBuilder().build(),
+                  scanExec.output,
+                  scanExec,
+                  SerializedPlan(None),
+                  catalogInfo.catalogType,
+                  catalogInfo.properties,
+                  catalogInfo.namespace,
+                  catalogInfo.tableName,
+                  1)
+
+                // Now serialize it to get the IcebergScan operator (without tasks)
+                val nativeOp =
+                  org.apache.comet.serde.QueryPlanSerde.operator2Proto(tempExec).getOrElse {
+                    // If serialization fails, fall back to Spark
+                    return scanExec
+                  }
+
+                val nativeScan =
+                  CometIcebergNativeScanExec(nativeOp, scanExec, session, catalogInfo)
+
+                // When reading from Iceberg, automatically enable type promotion
+                SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
+
+                nativeScan
+
+              case None =>
+                // Catalog not supported, fall back to normal Comet batch scan
+                fallbackReasons +=
+                  "Native Iceberg execution enabled but catalog type not supported " +
+                    s"(${scanExec.table.name()})"
+                SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
+                CometBatchScanExec(
+                  scanExec.clone().asInstanceOf[BatchScanExec],
+                  runtimeFilters = scanExec.runtimeFilters)
+            }
+          } else {
+            // Use regular Comet batch scan (Spark's Iceberg reader with Comet vectors)
+            SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
+            CometBatchScanExec(
+              scanExec.clone().asInstanceOf[BatchScanExec],
+              runtimeFilters = scanExec.runtimeFilters)
+          }
         } else {
           withInfos(scanExec, fallbackReasons.toSet)
         }

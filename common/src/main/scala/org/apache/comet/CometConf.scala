@@ -108,6 +108,16 @@ object CometConf extends ShimCometConf {
       .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
       .toLowerCase(Locale.ROOT))
 
+  val COMET_ICEBERG_NATIVE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.enabled")
+      .doc(
+        "Whether to enable native Iceberg scan using iceberg-rust. When enabled, Comet will " +
+          "replace Spark's Iceberg BatchScanExec with CometIcebergNativeScanExec. Iceberg " +
+          "planning is performed by Spark, and the resulting FileScanTasks are serialized " +
+          "and passed to the native execution layer for reading data files.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.respectFilterPushdown")
       .doc(
