@@ -323,6 +323,9 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
           .option(PropertiesDrivenCryptoFactory.FOOTER_KEY_PROPERTY_NAME, "footerKey")
           .parquet(parquetDir2)
 
+        verifyParquetEncrypted(parquetDir1)
+        verifyParquetEncrypted(parquetDir2)
+
         // Now perform a join between the two files with different encryption keys
         // This tests that hadoopConf properties propagate correctly to each scan
         val parquetDF1 = spark.read.parquet(parquetDir1).alias("f1")
@@ -340,6 +343,62 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
           checkSparkAnswerAndOperator(joinedDF)
         } else {
           checkSparkAnswer(joinedDF)
+        }
+      }
+    }
+  }
+
+  // Union ends up with two scans in the same plan, so this ensures that Comet can distinguish
+  // between the hadoopConfs for each relation
+  test("Union between files with different encryption keys") {
+    import testImplicits._
+
+    withTempDir { dir =>
+      withSQLConf(
+        DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
+        KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
+          "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
+        InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
+          s"footerKey: ${footerKey}, key1: ${key1}, key2: ${key2}") {
+
+        // Write first file with key1
+        val inputDF1 = spark
+          .range(0, 100)
+          .map(i => (i, s"file1_${i}", i.toFloat))
+          .toDF("id", "name", "value")
+        val parquetDir1 = new File(dir, "parquet1").getCanonicalPath
+        inputDF1.write
+          .option(
+            PropertiesDrivenCryptoFactory.COLUMN_KEYS_PROPERTY_NAME,
+            "key1: id, name, value")
+          .option(PropertiesDrivenCryptoFactory.FOOTER_KEY_PROPERTY_NAME, "footerKey")
+          .parquet(parquetDir1)
+
+        // Write second file with key2 - same schema, different encryption key
+        val inputDF2 = spark
+          .range(100, 200)
+          .map(i => (i, s"file2_${i}", i.toFloat))
+          .toDF("id", "name", "value")
+        val parquetDir2 = new File(dir, "parquet2").getCanonicalPath
+        inputDF2.write
+          .option(
+            PropertiesDrivenCryptoFactory.COLUMN_KEYS_PROPERTY_NAME,
+            "key2: id, name, value")
+          .option(PropertiesDrivenCryptoFactory.FOOTER_KEY_PROPERTY_NAME, "footerKey")
+          .parquet(parquetDir2)
+
+        verifyParquetEncrypted(parquetDir1)
+        verifyParquetEncrypted(parquetDir2)
+
+        val parquetDF1 = spark.read.parquet(parquetDir1)
+        val parquetDF2 = spark.read.parquet(parquetDir2)
+
+        val unionDF = parquetDF1.union(parquetDF2)
+
+        if (CometConf.COMET_ENABLED.get(conf)) {
+          checkSparkAnswerAndOperator(unionDF)
+        } else {
+          checkSparkAnswer(unionDF)
         }
       }
     }
