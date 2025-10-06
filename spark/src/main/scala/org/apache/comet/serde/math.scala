@@ -166,6 +166,7 @@ object CometCheckOverflow extends CometExpressionSerde[CheckOverflow] {
       builder.setFailOnError(!expr.nullOnOverflow)
 
       // `dataType` must be decimal type
+      assert(expr.dataType.isInstanceOf[DecimalType])
       val dataType = serializeDataType(expr.dataType)
       builder.setDatatype(dataType.get)
 
