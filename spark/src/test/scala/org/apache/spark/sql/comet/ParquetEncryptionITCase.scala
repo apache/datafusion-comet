@@ -237,7 +237,7 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
         val readDataset = parquetDF.select("a", "b", "c")
 
         // native_datafusion and native_iceberg_compat fall back due to Arrow-rs
-        // https://github.com/apache/arrow-rs/blob/main/parquet/src/file/metadata/parser.rs#L414
+        // https://github.com/apache/arrow-rs/blob/da9829728e2a9dffb8d4f47ffe7b103793851724/parquet/src/file/metadata/parser.rs#L494
         if (CometConf.COMET_ENABLED.get(conf) && CometConf.COMET_NATIVE_SCAN_IMPL.get(
             conf) == SCAN_NATIVE_COMET) {
           checkSparkAnswerAndOperator(readDataset)
@@ -512,12 +512,19 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
       val byteArray = new Array[Byte](magicStringLength)
       val randomAccessFile = new RandomAccessFile(parquetFile, "r")
       try {
+        // Check first 4 bytes
         randomAccessFile.read(byteArray, 0, magicStringLength)
+        val firstMagicString = new String(byteArray, StandardCharsets.UTF_8)
+        assert(magicString == firstMagicString)
+
+        // Check last 4 bytes
+        randomAccessFile.seek(randomAccessFile.length() - magicStringLength)
+        randomAccessFile.read(byteArray, 0, magicStringLength)
+        val lastMagicString = new String(byteArray, StandardCharsets.UTF_8)
+        assert(magicString == lastMagicString)
       } finally {
         randomAccessFile.close()
       }
-      val stringRead = new String(byteArray, StandardCharsets.UTF_8)
-      assert(magicString == stringRead)
     }
   }
 
@@ -536,12 +543,19 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
       val byteArray = new Array[Byte](magicStringLength)
       val randomAccessFile = new RandomAccessFile(parquetFile, "r")
       try {
+        // Check first 4 bytes
         randomAccessFile.read(byteArray, 0, magicStringLength)
+        val firstMagicString = new String(byteArray, StandardCharsets.UTF_8)
+        assert(magicString == firstMagicString)
+
+        // Check last 4 bytes
+        randomAccessFile.seek(randomAccessFile.length() - magicStringLength)
+        randomAccessFile.read(byteArray, 0, magicStringLength)
+        val lastMagicString = new String(byteArray, StandardCharsets.UTF_8)
+        assert(magicString == lastMagicString)
       } finally {
         randomAccessFile.close()
       }
-      val stringRead = new String(byteArray, StandardCharsets.UTF_8)
-      assert(magicString == stringRead)
     }
   }
 
