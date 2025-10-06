@@ -145,6 +145,15 @@ sealed trait MathExprBase {
 }
 
 object CometCheckOverflow extends CometExpressionSerde[CheckOverflow] {
+
+  override def getSupportLevel(expr: CheckOverflow): SupportLevel = {
+    if (expr.dataType.isInstanceOf[DecimalType]) {
+      Compatible()
+    } else {
+      Unsupported(Some("dataType must be DecimalType"))
+    }
+  }
+
   override def convert(
       expr: CheckOverflow,
       inputs: Seq[Attribute],
