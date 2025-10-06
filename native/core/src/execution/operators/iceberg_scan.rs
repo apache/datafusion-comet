@@ -39,8 +39,8 @@ use crate::execution::operators::ExecutionError;
 
 /// Native Iceberg scan operator that uses iceberg-rust to read Iceberg tables.
 ///
-/// This operator completely bypasses Spark's DataSource V2 API and uses iceberg-rust
-/// for all table metadata loading, file discovery, and data reading.
+/// This operator completely bypasses Spark's DataSource V2 API and uses iceberg-rust by using
+/// pre-planned FileScanTasks to read data.
 #[derive(Debug)]
 pub struct IcebergScanExec {
     /// Path to Iceberg table metadata file or directory (used for FileIO creation)
