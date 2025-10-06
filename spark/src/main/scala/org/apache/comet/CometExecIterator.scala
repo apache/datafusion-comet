@@ -143,7 +143,7 @@ class CometExecIterator(
       debug = COMET_DEBUG_ENABLED.get(),
       explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
       tracingEnabled,
-      maxTempDirectorySize = CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE.get()),
+      maxTempDirectorySize = CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE.get(),
       keyUnwrapper)
   }
 
