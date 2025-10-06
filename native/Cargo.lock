@@ -2112,9 +2112,9 @@ dependencies = [
 
 [[package]]
 name = "datafusion-spark"
-version = "50.0.0"
+version = "50.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b217679a4f1bbfae8ec97143950c42940eebba7c566b4141184fa8f81d296db1"
+checksum = "9c11689184beea6390a30da81b1098487027bc9c8fcaa779a943c12c91520ac4"
 dependencies = [
  "arrow",
  "chrono",
