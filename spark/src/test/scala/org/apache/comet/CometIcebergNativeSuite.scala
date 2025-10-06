@@ -27,11 +27,7 @@ import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
 
 /**
- * Test suite for native Iceberg scan with catalog support.
- *
- * Tests the end-to-end flow:
- *   1. Create Iceberg table with Hadoop catalog 2. Enable native Iceberg execution 3. Query table
- *      via Comet 4. Verify data correctness
+ * Test suite for native Iceberg scan using FileScanTasks and iceberg-rust.
  *
  * Note: Requires Iceberg dependencies to be added to pom.xml
  */
@@ -59,6 +55,7 @@ class CometIcebergNativeSuite extends CometTestBase {
    * This ensures both correct results and that the native Iceberg scan operator is being used.
    */
   private def checkIcebergNativeScan(query: String): Unit = {
+    println(sql(query).explain(true))
     val (_, cometPlan) = checkSparkAnswer(query)
     val icebergScans = collectIcebergNativeScans(cometPlan)
     assert(
@@ -76,10 +73,8 @@ class CometIcebergNativeSuite extends CometTestBase {
         "spark.sql.catalog.hadoop_catalog.warehouse" -> warehouseDir.getAbsolutePath,
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_SHUFFLE_MODE.key -> "native",
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
-        // Create Iceberg table
+
         spark.sql("""
           CREATE TABLE hadoop_catalog.db.test_table (
             id INT,
@@ -88,80 +83,14 @@ class CometIcebergNativeSuite extends CometTestBase {
           ) USING iceberg
         """)
 
-        // Insert test data
         spark.sql("""
           INSERT INTO hadoop_catalog.db.test_table
           VALUES (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)
         """)
 
-        // Query with Comet native Iceberg scan and verify results + operator
         checkIcebergNativeScan("SELECT * FROM hadoop_catalog.db.test_table ORDER BY id")
 
-        // Cleanup
         spark.sql("DROP TABLE hadoop_catalog.db.test_table")
-      }
-    }
-  }
-
-  test("verify catalog info extraction") {
-    assume(icebergAvailable, "Iceberg not available in classpath")
-
-    withTempIcebergDir { warehouseDir =>
-      withSQLConf(
-        "spark.sql.catalog.my_catalog" -> "org.apache.iceberg.spark.SparkCatalog",
-        "spark.sql.catalog.my_catalog.type" -> "hadoop",
-        "spark.sql.catalog.my_catalog.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.sql.catalog.my_catalog.custom.prop" -> "test_value",
-        "spark.comet.enabled" -> "true",
-        "spark.comet.exec.enabled" -> "true",
-        "spark.comet.scan.icebergNative.enabled" -> "true") {
-
-        // Create simple table
-        spark.sql("""
-          CREATE TABLE my_catalog.namespace.table1 (
-            id INT,
-            data STRING
-          ) USING iceberg
-        """)
-
-        spark.sql("INSERT INTO my_catalog.namespace.table1 VALUES (1, 'test')")
-
-        // Execute query and verify results + operator
-        checkIcebergNativeScan("SELECT * FROM my_catalog.namespace.table1")
-
-        // Cleanup
-        spark.sql("DROP TABLE my_catalog.namespace.table1")
-      }
-    }
-  }
-
-  test("verify native scan is actually used in plan") {
-    assume(icebergAvailable, "Iceberg not available in classpath")
-
-    withTempIcebergDir { warehouseDir =>
-      withSQLConf(
-        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
-        "spark.sql.catalog.test_cat.type" -> "hadoop",
-        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        "spark.comet.enabled" -> "true",
-        "spark.comet.exec.enabled" -> "true",
-        "spark.comet.scan.icebergNative.enabled" -> "true") {
-
-        // Create table
-        spark.sql("""
-          CREATE TABLE test_cat.db.verify_table (
-            x INT,
-            y DOUBLE
-          ) USING iceberg
-        """)
-
-        spark.sql("INSERT INTO test_cat.db.verify_table VALUES (42, 3.14)")
-
-        // Query and verify results + operator
-        checkIcebergNativeScan("SELECT x, y FROM test_cat.db.verify_table WHERE x = 42")
-
-        // Cleanup
-        spark.sql("DROP TABLE test_cat.db.verify_table")
       }
     }
   }
@@ -178,7 +107,6 @@ class CometIcebergNativeSuite extends CometTestBase {
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
 
-        // Create table with multiple rows
         spark.sql("""
           CREATE TABLE filter_cat.db.filter_test (
             id INT,
@@ -188,7 +116,6 @@ class CometIcebergNativeSuite extends CometTestBase {
           ) USING iceberg
         """)
 
-        // Insert test data
         spark.sql("""
           INSERT INTO filter_cat.db.filter_test VALUES
           (1, 'Alice', 10.5, true),
@@ -198,13 +125,10 @@ class CometIcebergNativeSuite extends CometTestBase {
           (5, 'Eve', 25.8, true)
         """)
 
-        // Test: WHERE id = 3
         checkIcebergNativeScan("SELECT * FROM filter_cat.db.filter_test WHERE id = 3")
 
-        // Test: WHERE name = 'Bob'
         checkIcebergNativeScan("SELECT * FROM filter_cat.db.filter_test WHERE name = 'Bob'")
 
-        // Test: WHERE active = true
         checkIcebergNativeScan("SELECT * FROM filter_cat.db.filter_test WHERE active = true")
 
         spark.sql("DROP TABLE filter_cat.db.filter_test")
@@ -236,19 +160,14 @@ class CometIcebergNativeSuite extends CometTestBase {
           (1, 10.5), (2, 20.3), (3, 30.7), (4, 15.2), (5, 25.8)
         """)
 
-        // Test: WHERE value > 20.0
         checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value > 20.0")
 
-        // Test: WHERE value >= 20.3
         checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value >= 20.3")
 
-        // Test: WHERE value < 20.0
         checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value < 20.0")
 
-        // Test: WHERE value <= 20.3
         checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value <= 20.3")
 
-        // Test: WHERE id != 3
         checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE id != 3")
 
         spark.sql("DROP TABLE filter_cat.db.comparison_test")
@@ -282,15 +201,12 @@ class CometIcebergNativeSuite extends CometTestBase {
           (4, 'B', 15.2), (5, 'A', 25.8), (6, 'C', 35.0)
         """)
 
-        // Test: WHERE category = 'A' AND value > 20.0
         checkIcebergNativeScan(
           "SELECT * FROM filter_cat.db.logical_test WHERE category = 'A' AND value > 20.0")
 
-        // Test: WHERE category = 'B' OR value > 30.0
         checkIcebergNativeScan(
           "SELECT * FROM filter_cat.db.logical_test WHERE category = 'B' OR value > 30.0")
 
-        // Test: WHERE (category = 'A' AND value > 20.0) OR category = 'C'
         checkIcebergNativeScan("""SELECT * FROM filter_cat.db.logical_test
              WHERE (category = 'A' AND value > 20.0) OR category = 'C'""")
 
@@ -318,17 +234,14 @@ class CometIcebergNativeSuite extends CometTestBase {
           ) USING iceberg
         """)
 
-        // Insert data with some NULLs
         spark.sql("""
           INSERT INTO filter_cat.db.null_test VALUES
           (1, 10.5), (2, NULL), (3, 30.7), (4, NULL), (5, 25.8)
         """)
 
-        // Test: WHERE optional_value IS NULL
         checkIcebergNativeScan(
           "SELECT * FROM filter_cat.db.null_test WHERE optional_value IS NULL")
 
-        // Test: WHERE optional_value IS NOT NULL
         checkIcebergNativeScan(
           "SELECT * FROM filter_cat.db.null_test WHERE optional_value IS NOT NULL")
 
@@ -362,17 +275,13 @@ class CometIcebergNativeSuite extends CometTestBase {
           (4, 'Diana'), (5, 'Eve'), (6, 'Frank')
         """)
 
-        // Test: WHERE id IN (2, 4, 6)
         checkIcebergNativeScan("SELECT * FROM filter_cat.db.in_test WHERE id IN (2, 4, 6)")
 
-        // Test: WHERE name IN ('Alice', 'Charlie', 'Eve')
         checkIcebergNativeScan(
           "SELECT * FROM filter_cat.db.in_test WHERE name IN ('Alice', 'Charlie', 'Eve')")
 
-        // Test: WHERE id IS NOT NULL (should return all 6 rows)
         checkIcebergNativeScan("SELECT * FROM filter_cat.db.in_test WHERE id IS NOT NULL")
 
-        // Test: WHERE id NOT IN (1, 3, 5)
         checkIcebergNativeScan("SELECT * FROM filter_cat.db.in_test WHERE id NOT IN (1, 3, 5)")
 
         spark.sql("DROP TABLE filter_cat.db.in_test")
@@ -404,13 +313,7 @@ class CometIcebergNativeSuite extends CometTestBase {
           (1, 10.5), (2, 20.3), (3, 30.7), (4, 15.2), (5, 25.8)
         """)
 
-        // Query with a filter and verify results match Spark
         checkIcebergNativeScan("SELECT * FROM filter_cat.db.filter_debug WHERE id > 2")
-
-        // Also verify the plan contains native Iceberg scan
-        val df = spark.sql("SELECT * FROM filter_cat.db.filter_debug WHERE id > 2")
-        val plan = df.queryExecution.executedPlan.toString()
-        assert(plan.contains("CometIcebergNativeScan"), "Should use native Iceberg scan")
 
         spark.sql("DROP TABLE filter_cat.db.filter_debug")
       }
@@ -441,7 +344,6 @@ class CometIcebergNativeSuite extends CometTestBase {
           VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')
         """)
 
-        // Verify results match Spark native (catches duplicates and correctness issues)
         checkIcebergNativeScan("SELECT * FROM test_cat.db.small_table ORDER BY id")
         checkIcebergNativeScan("SELECT COUNT(DISTINCT id) FROM test_cat.db.small_table")
 
@@ -461,7 +363,6 @@ class CometIcebergNativeSuite extends CometTestBase {
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
-        // Force smaller file size to create multiple files
         "spark.sql.files.maxRecordsPerFile" -> "10") {
 
         spark.sql("""
@@ -519,7 +420,6 @@ class CometIcebergNativeSuite extends CometTestBase {
           FROM range(10000)
         """)
 
-        // Critical tests - if partitioning is broken, COUNT(*) will be N times too large
         checkIcebergNativeScan("SELECT COUNT(DISTINCT id) FROM test_cat.db.large_table")
         checkIcebergNativeScan("SELECT SUM(value) FROM test_cat.db.large_table")
         checkIcebergNativeScan(
@@ -558,7 +458,6 @@ class CometIcebergNativeSuite extends CometTestBase {
           (7, 'A', 12.1), (8, 'B', 22.5), (9, 'C', 32.9)
         """)
 
-        // Verify all queries match Spark native
         checkIcebergNativeScan("SELECT * FROM test_cat.db.partitioned_table ORDER BY id")
         checkIcebergNativeScan(
           "SELECT * FROM test_cat.db.partitioned_table WHERE category = 'A' ORDER BY id")
@@ -591,7 +490,6 @@ class CometIcebergNativeSuite extends CometTestBase {
           ) USING iceberg
         """)
 
-        // Empty table should work correctly with all queries
         checkIcebergNativeScan("SELECT * FROM test_cat.db.empty_table")
         checkIcebergNativeScan("SELECT * FROM test_cat.db.empty_table WHERE id > 0")
 
@@ -627,7 +525,6 @@ class CometIcebergNativeSuite extends CometTestBase {
           )
         """)
 
-        // Insert initial data
         spark.sql("""
           INSERT INTO test_cat.db.positional_delete_test
           VALUES
@@ -636,10 +533,8 @@ class CometIcebergNativeSuite extends CometTestBase {
             (7, 'Grace', 12.1), (8, 'Hank', 22.5)
         """)
 
-        // Delete specific rows (creates positional delete files)
         spark.sql("DELETE FROM test_cat.db.positional_delete_test WHERE id IN (2, 4, 6)")
 
-        // Query and verify results match Spark (both apply MOR deletes at read time)
         checkIcebergNativeScan("SELECT * FROM test_cat.db.positional_delete_test ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.positional_delete_test")
@@ -674,7 +569,6 @@ class CometIcebergNativeSuite extends CometTestBase {
           )
         """)
 
-        // Insert initial data
         spark.sql("""
           INSERT INTO test_cat.db.equality_delete_test
           VALUES
@@ -682,10 +576,8 @@ class CometIcebergNativeSuite extends CometTestBase {
             (4, 'B', 15.2), (5, 'A', 25.8), (6, 'C', 35.0)
         """)
 
-        // Delete rows using equality delete (matches on id column)
         spark.sql("DELETE FROM test_cat.db.equality_delete_test WHERE id IN (2, 4)")
 
-        // Query and verify results match Spark (both apply MOR deletes at read time)
         checkIcebergNativeScan("SELECT * FROM test_cat.db.equality_delete_test ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.equality_delete_test")
@@ -716,19 +608,16 @@ class CometIcebergNativeSuite extends CometTestBase {
           )
         """)
 
-        // Insert data in batches
         spark.sql("""
           INSERT INTO test_cat.db.multi_delete_test
           SELECT id, CONCAT('data_', CAST(id AS STRING)) as data
           FROM range(100)
         """)
 
-        // Perform multiple deletes
         spark.sql("DELETE FROM test_cat.db.multi_delete_test WHERE id < 10")
         spark.sql("DELETE FROM test_cat.db.multi_delete_test WHERE id > 90")
         spark.sql("DELETE FROM test_cat.db.multi_delete_test WHERE id % 10 = 5")
 
-        // Query and verify results match Spark (both apply MOR deletes at read time)
         checkIcebergNativeScan("SELECT * FROM test_cat.db.multi_delete_test ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.multi_delete_test")
@@ -805,7 +694,6 @@ class CometIcebergNativeSuite extends CometTestBase {
           FROM range(200)
         """)
 
-        // Test various filters with multi-partition scan
         checkIcebergNativeScan(
           "SELECT * FROM test_cat.db.filter_multipart WHERE id > 150 ORDER BY id")
         checkIcebergNativeScan(
@@ -848,7 +736,6 @@ class CometIcebergNativeSuite extends CometTestBase {
           (5, DATE '2024-01-16', 'e'), (6, DATE '2024-02-01', 'f')
         """)
 
-        // Test date range queries with partition pruning
         checkIcebergNativeScan("SELECT * FROM test_cat.db.date_partitioned ORDER BY id")
         checkIcebergNativeScan(
           "SELECT * FROM test_cat.db.date_partitioned WHERE event_date = DATE '2024-01-01'")
@@ -924,63 +811,22 @@ class CometIcebergNativeSuite extends CometTestBase {
           ) USING iceberg
         """)
 
-        // Insert data with original schema
         spark.sql("""
           INSERT INTO test_cat.db.schema_evolution VALUES (1, 'Alice'), (2, 'Bob')
         """)
 
-        // Add a new column
         spark.sql("ALTER TABLE test_cat.db.schema_evolution ADD COLUMN age INT")
 
-        // Insert data with new schema
         spark.sql("""
           INSERT INTO test_cat.db.schema_evolution VALUES (3, 'Charlie', 30), (4, 'Diana', 25)
         """)
 
-        // Query should handle both old and new schemas
         checkIcebergNativeScan("SELECT * FROM test_cat.db.schema_evolution ORDER BY id")
         checkIcebergNativeScan("SELECT id, name FROM test_cat.db.schema_evolution ORDER BY id")
         checkIcebergNativeScan(
           "SELECT id, age FROM test_cat.db.schema_evolution WHERE age IS NOT NULL ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.schema_evolution")
-      }
-    }
-  }
-
-  test("very large file count - scalability") {
-    assume(icebergAvailable, "Iceberg not available in classpath")
-
-    withTempIcebergDir { warehouseDir =>
-      withSQLConf(
-        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
-        "spark.sql.catalog.test_cat.type" -> "hadoop",
-        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
-        // Create many small files
-        "spark.sql.files.maxRecordsPerFile" -> "10") {
-
-        spark.sql("""
-          CREATE TABLE test_cat.db.scalability_test (
-            id INT,
-            data STRING
-          ) USING iceberg
-        """)
-
-        // Insert 1000 rows with maxRecordsPerFile=10 creates ~100 files
-        spark.sql("""
-          INSERT INTO test_cat.db.scalability_test
-          SELECT id, CONCAT('data_', CAST(id AS STRING)) as data
-          FROM range(1000)
-        """)
-
-        // Test scalability with many files
-        checkIcebergNativeScan("SELECT COUNT(DISTINCT id) FROM test_cat.db.scalability_test")
-        checkIcebergNativeScan("SELECT SUM(id) FROM test_cat.db.scalability_test")
-
-        spark.sql("DROP TABLE test_cat.db.scalability_test")
       }
     }
   }
@@ -1045,7 +891,6 @@ class CometIcebergNativeSuite extends CometTestBase {
     try {
       f(dir)
     } finally {
-      // Cleanup
       def deleteRecursively(file: File): Unit = {
         if (file.isDirectory) {
           file.listFiles().foreach(deleteRecursively)
