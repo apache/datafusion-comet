@@ -176,6 +176,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[StringRepeat] -> CometStringRepeat,
     classOf[StringReplace] -> CometScalarFunction("replace"),
     classOf[StringRPad] -> CometStringRPad,
+    classOf[StringLPad] -> CometStringLPad,
     classOf[StringSpace] -> CometScalarFunction("string_space"),
     classOf[StringTranslate] -> CometScalarFunction("translate"),
     classOf[StringTrim] -> CometScalarFunction("trim"),
@@ -916,6 +917,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case l @ Length(child) if child.dataType == BinaryType =>
         withInfo(l, "Length on BinaryType is not supported")
         None
+      case r @ Reverse(child) if child.dataType.isInstanceOf[ArrayType] =>
+        convert(r, CometArrayReverse)
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) =>

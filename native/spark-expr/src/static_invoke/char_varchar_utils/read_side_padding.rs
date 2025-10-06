@@ -28,17 +28,23 @@ use std::sync::Arc;
 const SPACE: &str = " ";
 /// Similar to DataFusion `rpad`, but not to truncate when the string is already longer than length
 pub fn spark_read_side_padding(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
-    spark_read_side_padding2(args, false)
+    spark_read_side_padding2(args, false, false)
 }
 
 /// Custom `rpad` because DataFusion's `rpad` has differences in unicode handling
 pub fn spark_rpad(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
-    spark_read_side_padding2(args, true)
+    spark_read_side_padding2(args, true, false)
+}
+
+/// Custom `lpad` because DataFusion's `lpad` has differences in unicode handling
+pub fn spark_lpad(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
+    spark_read_side_padding2(args, true, true)
 }
 
 fn spark_read_side_padding2(
     args: &[ColumnarValue],
     truncate: bool,
+    is_left_pad: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
     match args {
         [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(Some(length)))] => {
@@ -48,12 +54,14 @@ fn spark_read_side_padding2(
                     truncate,
                     ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
                     SPACE,
+                    is_left_pad,
                 ),
                 DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(
                     array,
                     truncate,
                     ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
                     SPACE,
+                    is_left_pad,
                 ),
                 // Dictionary support required for SPARK-48498
                 DataType::Dictionary(_, value_type) => {
@@ -64,6 +72,7 @@ fn spark_read_side_padding2(
                             truncate,
                             ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
                             SPACE,
+                            is_left_pad,
                         )?
                     } else {
                         spark_read_side_padding_internal::<i64>(
@@ -71,6 +80,7 @@ fn spark_read_side_padding2(
                             truncate,
                             ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
                             SPACE,
+                            is_left_pad,
                         )?
                     };
                     // col consists of an array, so arg of to_array() is not used. Can be anything
@@ -91,12 +101,14 @@ fn spark_read_side_padding2(
                     truncate,
                     ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
                     string,
+                    is_left_pad,
                 ),
                 DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(
                     array,
                     truncate,
                     ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
                     string,
+                    is_left_pad,
                 ),
                 // Dictionary support required for SPARK-48498
                 DataType::Dictionary(_, value_type) => {
@@ -107,6 +119,7 @@ fn spark_read_side_padding2(
                             truncate,
                             ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
                             SPACE,
+                            is_left_pad,
                         )?
                     } else {
                         spark_read_side_padding_internal::<i64>(
@@ -114,6 +127,7 @@ fn spark_read_side_padding2(
                             truncate,
                             ColumnarValue::Scalar(ScalarValue::Int32(Some(*length))),
                             SPACE,
+                            is_left_pad,
                         )?
                     };
                     // col consists of an array, so arg of to_array() is not used. Can be anything
@@ -122,7 +136,7 @@ fn spark_read_side_padding2(
                     Ok(ColumnarValue::Array(make_array(result.into())))
                 }
                 other => Err(DataFusionError::Internal(format!(
-                    "Unsupported data type {other:?} for function rpad/read_side_padding",
+                    "Unsupported data type {other:?} for function rpad/lpad/read_side_padding",
                 ))),
             }
         }
@@ -132,15 +146,17 @@ fn spark_read_side_padding2(
                 truncate,
                 ColumnarValue::Array(Arc::<dyn Array>::clone(array_int)),
                 SPACE,
+                is_left_pad,
             ),
             DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(
                 array,
                 truncate,
                 ColumnarValue::Array(Arc::<dyn Array>::clone(array_int)),
                 SPACE,
+                is_left_pad,
             ),
             other => Err(DataFusionError::Internal(format!(
-                "Unsupported data type {other:?} for function rpad/read_side_padding",
+                "Unsupported data type {other:?} for function rpad/lpad/read_side_padding",
             ))),
         },
         [ColumnarValue::Array(array), ColumnarValue::Array(array_int), ColumnarValue::Scalar(ScalarValue::Utf8(Some(string)))] => {
@@ -150,12 +166,14 @@ fn spark_read_side_padding2(
                     truncate,
                     ColumnarValue::Array(Arc::<dyn Array>::clone(array_int)),
                     string,
+                    is_left_pad,
                 ),
                 DataType::LargeUtf8 => spark_read_side_padding_internal::<i64>(
                     array,
                     truncate,
                     ColumnarValue::Array(Arc::<dyn Array>::clone(array_int)),
                     string,
+                    is_left_pad,
                 ),
                 other => Err(DataFusionError::Internal(format!(
                     "Unsupported data type {other:?} for function rpad/read_side_padding",
@@ -163,7 +181,7 @@ fn spark_read_side_padding2(
             }
         }
         other => Err(DataFusionError::Internal(format!(
-            "Unsupported arguments {other:?} for function rpad/read_side_padding",
+            "Unsupported arguments {other:?} for function rpad/lpad/read_side_padding",
         ))),
     }
 }
@@ -173,6 +191,7 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     truncate: bool,
     pad_type: ColumnarValue,
     pad_string: &str,
+    is_left_pad: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
     let string_array = as_generic_string_array::<T>(array)?;
     match pad_type {
@@ -191,6 +210,7 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
                         length.unwrap() as usize,
                         truncate,
                         pad_string,
+                        is_left_pad,
                     )?),
                     _ => builder.append_null(),
                 }
@@ -212,6 +232,7 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
                         length,
                         truncate,
                         pad_string,
+                        is_left_pad,
                     )?),
                     _ => builder.append_null(),
                 }
@@ -226,6 +247,7 @@ fn add_padding_string(
     length: usize,
     truncate: bool,
     pad_string: &str,
+    is_left_pad: bool,
 ) -> Result<String, DataFusionError> {
     // It looks Spark's UTF8String is closer to chars rather than graphemes
     // https://stackoverflow.com/a/46290728
@@ -250,6 +272,14 @@ fn add_padding_string(
     } else {
         let pad_needed = length - char_len;
         let pad: String = pad_string.chars().cycle().take(pad_needed).collect();
-        Ok(string + &pad)
+        let mut result = String::with_capacity(string.len() + pad.len());
+        if is_left_pad {
+            result.push_str(&pad);
+            result.push_str(&string);
+        } else {
+            result.push_str(&string);
+            result.push_str(&pad);
+        }
+        Ok(result)
     }
 }

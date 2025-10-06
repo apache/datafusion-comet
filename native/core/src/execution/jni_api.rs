@@ -42,6 +42,8 @@ use datafusion::{
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::hash::sha1::SparkSha1;
+use datafusion_spark::function::datetime::date_add::SparkDateAdd;
+use datafusion_spark::function::datetime::date_sub::SparkDateSub;
 use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::string::char::CharFunc;
@@ -304,6 +306,8 @@ fn prepare_datafusion_session_context(
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(CharFunc::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitGet::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateAdd::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
 
     // Must be the last one to override existing functions with the same name
