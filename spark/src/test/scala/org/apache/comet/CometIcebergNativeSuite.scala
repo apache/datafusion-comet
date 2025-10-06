@@ -55,7 +55,6 @@ class CometIcebergNativeSuite extends CometTestBase {
    * This ensures both correct results and that the native Iceberg scan operator is being used.
    */
   private def checkIcebergNativeScan(query: String): Unit = {
-    println(sql(query).explain(true))
     val (_, cometPlan) = checkSparkAnswer(query)
     val icebergScans = collectIcebergNativeScans(cometPlan)
     assert(
