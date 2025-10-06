@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, Literal}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -432,6 +432,22 @@ object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
   }
 }
 
+object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
+  override def convert(
+      expr: Reverse,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (!isTypeSupported(expr.child.dataType)) {
+      withInfo(expr, s"child data type not supported: ${expr.child.dataType}")
+      return None
+    }
+    val reverseExprProto = exprToProto(expr.child, inputs, binding)
+    val reverseScalarExpr = scalarFunctionExprToProto("array_reverse", reverseExprProto)
+    optExprWithInfo(reverseScalarExpr, expr, expr.children: _*)
+  }
+
+}
+
 object CometElementAt extends CometExpressionSerde[ElementAt] {
 
   override def convert(
@@ -486,6 +502,23 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
     val flattenExprProto = exprToProto(expr.child, inputs, binding)
     val flattenScalarExpr = scalarFunctionExprToProto("flatten", flattenExprProto)
     optExprWithInfo(flattenScalarExpr, expr, expr.children: _*)
+  }
+}
+
+object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
+
+  override def getSupportLevel(expr: ArrayFilter): SupportLevel = {
+    expr.function.children.headOption match {
+      case Some(_: IsNotNull) => Compatible()
+      case _ => Unsupported()
+    }
+  }
+
+  override def convert(
+      expr: ArrayFilter,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    CometArrayCompact.convert(expr, inputs, binding)
   }
 }
 

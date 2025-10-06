@@ -69,10 +69,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
-    // TODO ArrayCompact
+    classOf[ArrayCompact] -> CometArrayCompact,
     classOf[ArrayContains] -> CometArrayContains,
     classOf[ArrayDistinct] -> CometArrayDistinct,
     classOf[ArrayExcept] -> CometArrayExcept,
+    classOf[ArrayFilter] -> CometArrayFilter,
     classOf[ArrayInsert] -> CometArrayInsert,
     classOf[ArrayIntersect] -> CometArrayIntersect,
     classOf[ArrayJoin] -> CometArrayJoin,
@@ -911,11 +912,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, bloomFilter, value)
           None
         }
-      case af @ ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
-        convert(af, CometArrayCompact)
       case l @ Length(child) if child.dataType == BinaryType =>
         withInfo(l, "Length on BinaryType is not supported")
         None
+      case r @ Reverse(child) if child.dataType.isInstanceOf[ArrayType] =>
+        convert(r, CometArrayReverse)
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) =>

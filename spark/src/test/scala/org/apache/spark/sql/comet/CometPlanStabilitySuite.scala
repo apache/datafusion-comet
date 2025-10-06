@@ -62,6 +62,9 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plu
  * }}}
  */
 trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBase {
+  protected val scanImpls: Seq[String] =
+    Seq(CometConf.SCAN_AUTO, CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+
   protected val baseResourcePath: File = {
     getWorkspaceFilePath("spark", "src", "test", "resources", "tpcds-plan-stability").toFile
   }
@@ -248,7 +251,6 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO,
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
@@ -302,9 +304,13 @@ class CometTPCDSV1_4_PlanStabilitySuite extends CometPlanStabilitySuite {
   override val goldenFilePath: String =
     new File(baseResourcePath, planName).getAbsolutePath
 
-  tpcdsQueries.foreach { q =>
-    test(s"check simplified (tpcds-v1.4/$q)") {
-      testQuery("tpcds", q)
+  scanImpls.foreach { scan =>
+    tpcdsQueries.foreach { q =>
+      test(s"check simplified (tpcds-v1.4/$q) - $scan") {
+        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
+          testQuery("tpcds", q)
+        }
+      }
     }
   }
 }
@@ -320,9 +326,13 @@ class CometTPCDSV2_7_PlanStabilitySuite extends CometPlanStabilitySuite {
   override val goldenFilePath: String =
     new File(baseResourcePath, planName).getAbsolutePath
 
-  tpcdsQueriesV2_7_0.foreach { q =>
-    test(s"check simplified (tpcds-v2.7.0/$q)") {
-      testQuery("tpcds-v2.7.0", q)
+  scanImpls.foreach { scan =>
+    tpcdsQueriesV2_7_0.foreach { q =>
+      test(s"check simplified (tpcds-v2.7.0/$q) - $scan") {
+        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
+          testQuery("tpcds-v2.7.0", q)
+        }
+      }
     }
   }
 }

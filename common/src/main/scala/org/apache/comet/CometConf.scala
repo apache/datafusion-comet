@@ -520,12 +520,13 @@ object CometConf extends ShimCometConf {
       .createWithDefault(false)
 
   val COMET_EXEC_MEMORY_POOL_TYPE: ConfigEntry[String] = conf("spark.comet.exec.memoryPool")
-    .doc("The type of memory pool to be used for Comet native execution. " +
-      "When running Spark in on-heap mode, available pool types are 'greedy', 'fair_spill', " +
-      "'greedy_task_shared', 'fair_spill_task_shared', 'greedy_global', 'fair_spill_global', " +
-      "and `unbounded`. When running Spark in off-heap mode, available pool types are " +
-      "'unified' and `fair_unified`. The default pool type is `greedy_task_shared` for on-heap " +
-      s"mode and `unified` for off-heap mode. $TUNING_GUIDE.")
+    .doc(
+      "The type of memory pool to be used for Comet native execution. " +
+        "When running Spark in on-heap mode, available pool types are 'greedy', 'fair_spill', " +
+        "'greedy_task_shared', 'fair_spill_task_shared', 'greedy_global', 'fair_spill_global', " +
+        "and `unbounded`. When running Spark in off-heap mode, available pool types are " +
+        "'greedy_unified' and `fair_unified`. The default pool type is `greedy_task_shared` " +
+        s"for on-heap mode and `unified` for off-heap mode. $TUNING_GUIDE.")
     .stringConf
     .createWithDefault("default")
 
@@ -660,6 +661,12 @@ object CometConf extends ShimCometConf {
           "via libhdfs, separated by commas. Valid only when built with hdfs feature enabled.")
       .stringConf
       .createOptional
+
+  val COMET_MAX_TEMP_DIRECTORY_SIZE: ConfigEntry[Long] =
+    conf("spark.comet.maxTempDirectorySize")
+      .doc("The maximum amount of data (in bytes) stored inside the temporary directories.")
+      .bytesConf(ByteUnit.BYTE)
+      .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
 
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(

@@ -79,10 +79,7 @@ use crate::execution::spark_plan::SparkPlan;
 use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
 
 use crate::execution::memory_pools::logging_pool::LoggingPool;
-use crate::execution::spark_config::{
-    SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
-    COMET_TRACING_ENABLED,
-};
+use crate::execution::spark_config::{SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_TRACING_ENABLED};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
 use once_cell::sync::Lazy;
@@ -184,6 +181,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let debug_native = spark_config.get_bool(COMET_DEBUG_ENABLED);
         let explain_native = spark_config.get_bool(COMET_EXPLAIN_NATIVE_ENABLED);
         let tracing_enabled = spark_config.get_bool(COMET_TRACING_ENABLED);
+        let max_temp_directory_size = spark_config.get_u64(COMET_MAX_TEMP_DIRECTORY_SIZE);
         let logging_memory_pool = spark_config.get_bool(COMET_DEBUG_MEMORY);
 
         with_trace("createPlan", tracing_enabled, || {
@@ -242,8 +240,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             // We need to keep the session context alive. Some session state like temporary
             // dictionaries are stored in session context. If it is dropped, the temporary
             // dictionaries will be dropped as well.
-            let session =
-                prepare_datafusion_session_context(batch_size as usize, memory_pool, local_dirs)?;
+            let session = prepare_datafusion_session_context(
+                batch_size as usize,
+                memory_pool,
+                local_dirs,
+                max_temp_directory_size,
+            )?;
 
             let plan_creation_time = start.elapsed();
 
@@ -283,9 +285,12 @@ fn prepare_datafusion_session_context(
     batch_size: usize,
     memory_pool: Arc<dyn MemoryPool>,
     local_dirs: Vec<String>,
+    max_temp_directory_size: u64,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
-    let disk_manager = DiskManagerBuilder::default().with_mode(DiskManagerMode::Directories(paths));
+    let disk_manager = DiskManagerBuilder::default()
+        .with_mode(DiskManagerMode::Directories(paths))
+        .with_max_temp_directory_size(max_temp_directory_size);
     let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager_builder(disk_manager);
     rt_config = rt_config.with_memory_pool(memory_pool);
 
