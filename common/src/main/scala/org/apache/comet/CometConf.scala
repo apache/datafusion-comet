@@ -651,6 +651,12 @@ object CometConf extends ShimCometConf {
       .stringConf
       .createOptional
 
+  val COMET_MAX_TEMP_DIRECTORY_SIZE: ConfigEntry[Long] =
+    conf("spark.comet.maxTempDirectorySize")
+      .doc("The maximum amount of data (in bytes) stored inside the temporary directories.")
+      .bytesConf(ByteUnit.BYTE)
+      .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
+
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
       exec: String,

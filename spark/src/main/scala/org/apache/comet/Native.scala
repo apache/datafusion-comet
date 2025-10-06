@@ -68,7 +68,8 @@ class Native extends NativeBase {
       taskAttemptId: Long,
       debug: Boolean,
       explain: Boolean,
-      tracingEnabled: Boolean): Long
+      tracingEnabled: Boolean,
+      maxTempDirectorySize: Long): Long
   // scalastyle:on
 
   /**
