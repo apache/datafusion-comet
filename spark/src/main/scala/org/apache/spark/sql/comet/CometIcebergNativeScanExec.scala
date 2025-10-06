@@ -291,7 +291,7 @@ object CometIcebergNativeScanExec {
               namespace = namespaceParts,
               tableName = tableNamePart))
         } catch {
-          case e: Exception =>
+          case _: Exception =>
             // If reflection fails, fall back to returning None
             return None
         }

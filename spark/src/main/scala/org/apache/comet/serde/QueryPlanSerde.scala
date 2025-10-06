@@ -2317,7 +2317,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         None
       }
     } catch {
-      case e: Exception =>
+      case _: Exception =>
         None
     }
   }
