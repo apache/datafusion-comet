@@ -151,9 +151,6 @@ impl ExecutionPlan for IcebergScanExec {
 }
 
 impl IcebergScanExec {
-    /// Execute with pre-planned tasks (fast path)
-    /// This avoids re-planning the scan and directly reads the assigned files.
-    ///
     /// **MOR (Merge-On-Read) Table Support:**
     ///
     /// If the FileScanTasks include delete files (for MOR tables), iceberg-rust's ArrowReader
