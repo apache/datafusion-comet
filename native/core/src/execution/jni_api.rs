@@ -79,7 +79,10 @@ use crate::execution::spark_plan::SparkPlan;
 use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
 
 use crate::execution::memory_pools::logging_pool::LoggingPool;
-use crate::execution::spark_config::{SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_TRACING_ENABLED};
+use crate::execution::spark_config::{
+    SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
+    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_TRACING_ENABLED,
+};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
 use once_cell::sync::Lazy;
