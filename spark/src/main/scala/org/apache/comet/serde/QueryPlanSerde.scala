@@ -1229,7 +1229,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         //
         // Reflection Strategy (for Iceberg 1.5.x - 1.10.x compatibility):
         // - SparkInputPartition: package-private Spark class, use getDeclaredMethod + setAccessible
-        // - Iceberg API methods: use Class.forName() on public interfaces, then getMethod()
+        // - Iceberg API methods: load public interfaces by name, then use getMethod()
         //   (avoids IllegalAccessException on package-private implementation classes like
         //   BaseFileScanTask$SplitScanTask in Iceberg 1.5.x)
         var actualNumPartitions = 0
@@ -1253,8 +1253,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
                   // Get the task group and extract tasks
                   try {
-                    // SparkInputPartition is package-private, so we need getDeclaredMethod + setAccessible
-                    // This is different from Iceberg API classes which have public interfaces
+                    // SparkInputPartition is package-private, so we need
+                    // getDeclaredMethod + setAccessible. This is different from
+                    // Iceberg API classes which have public interfaces
                     val taskGroupMethod = inputPartClass.getDeclaredMethod("taskGroup")
                     taskGroupMethod.setAccessible(true)
                     val taskGroup = taskGroupMethod.invoke(inputPartition)
@@ -1271,7 +1272,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
                       try {
                         val taskBuilder = OperatorOuterClass.IcebergFileScanTask.newBuilder()
 
-                        // Load interface classes to avoid IllegalAccessException on package-private implementations
+                        // Load interface classes to avoid IllegalAccessException on
+                        // package-private implementations
                         // scalastyle:off classforname
                         val contentScanTaskClass =
                           Class.forName("org.apache.iceberg.ContentScanTask")
@@ -1316,8 +1318,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
                           val schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
                           taskBuilder.setSchemaJson(schemaJson)
 
-                          // Extract field IDs from the REQUIRED output schema, not the full task schema.
-                          // This ensures we only project the columns actually needed by the query
+                          // Extract field IDs from the REQUIRED output schema, not the full
+                          // task schema. This ensures we only project the columns actually
+                          // needed by the query
                           val columnsMethod = schema.getClass.getMethod("columns")
                           val columns =
                             columnsMethod.invoke(schema).asInstanceOf[java.util.List[_]]
@@ -1456,7 +1459,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
                         // - File partition: date = '2024-06-15'
                         // - Residual: status = 'active' (date condition proven true by partition)
                         //
-                        // This residual is what should be applied during Parquet row-group scanning.
+                        // This residual is what should be applied during Parquet row-group
+                        // scanning.
                         try {
                           val residualMethod = contentScanTaskClass.getMethod("residual")
                           val residualExpr = residualMethod.invoke(task)
@@ -1464,8 +1468,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
                           val catalystExpr = convertIcebergExpression(residualExpr, scan.output)
 
                           // Serialize to protobuf WITHOUT binding to indices.
-                          // Iceberg residuals are already unbound (name-based), so we keep them
-                          // unbound in the protobuf to avoid unnecessary index->name resolution in Rust
+                          // Iceberg residuals are already unbound (name-based), so we keep
+                          // them unbound in the protobuf to avoid unnecessary index->name
+                          // resolution in Rust
                           catalystExpr
                             .flatMap { expr =>
                               exprToProto(expr, scan.output, binding = false)
