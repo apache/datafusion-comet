@@ -1872,9 +1872,9 @@ dependencies = [
 
 [[package]]
 name = "datafusion-functions-nested"
-version = "50.0.0"
+version = "50.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4227782023f4fb68d3d5c5eb190665212f43c9a0b437553e4b938b379aff6cf6"
+checksum = "6cbc3ecce122389530af091444e923f2f19153c38731893f5b798e19a46fbf86"
 dependencies = [
  "arrow",
  "arrow-ord",
