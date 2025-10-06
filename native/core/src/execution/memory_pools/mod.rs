@@ -40,7 +40,7 @@ pub(crate) fn create_memory_pool(
 ) -> Arc<dyn MemoryPool> {
     const NUM_TRACKED_CONSUMERS: usize = 10;
     match memory_pool_config.pool_type {
-        MemoryPoolType::Unified => {
+        MemoryPoolType::GreedyUnified => {
             // Set Comet memory pool for native
             let memory_pool = CometMemoryPool::new(comet_task_memory_manager);
             Arc::new(TrackConsumersPool::new(
