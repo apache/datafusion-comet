@@ -39,25 +39,22 @@ use crate::execution::operators::ExecutionError;
 
 /// Native Iceberg scan operator that uses iceberg-rust to read Iceberg tables.
 ///
-/// This operator completely bypasses Spark's DataSource V2 API and uses iceberg-rust by using
-/// pre-planned FileScanTasks to read data.
+/// Bypasses Spark's DataSource V2 API by reading pre-planned FileScanTasks directly.
 #[derive(Debug)]
 pub struct IcebergScanExec {
-    /// Path to Iceberg table metadata file or directory (used for FileIO creation)
+    /// Iceberg table metadata location for FileIO initialization
     metadata_location: String,
     /// Output schema after projection
     output_schema: SchemaRef,
     /// Cached execution plan properties
     plan_properties: PlanProperties,
-    /// Catalog-specific configuration properties (used to build FileIO for reading files)
+    /// Catalog-specific configuration for FileIO
     catalog_properties: HashMap<String, String>,
-    /// Pre-planned file scan tasks from Scala, grouped by partition.
-    /// Each inner Vec contains tasks for one Spark partition.
+    /// Pre-planned file scan tasks from Scala, grouped by Spark partition
     file_task_groups: Option<Vec<Vec<iceberg::scan::FileScanTask>>>,
 }
 
 impl IcebergScanExec {
-    /// Creates a new IcebergScanExec
     pub fn new(
         metadata_location: String,
         schema: SchemaRef,
@@ -67,7 +64,6 @@ impl IcebergScanExec {
     ) -> Result<Self, ExecutionError> {
         let output_schema = schema;
 
-        // Compute plan properties with actual partition count
         let plan_properties = Self::compute_properties(Arc::clone(&output_schema), num_partitions);
 
         Ok(Self {
@@ -79,10 +75,8 @@ impl IcebergScanExec {
         })
     }
 
-    /// Computes execution plan properties with actual partition count
     fn compute_properties(schema: SchemaRef, num_partitions: usize) -> PlanProperties {
-        // Use the actual partition count from Iceberg's planning
-        // This matches the number of Spark partitions and ensures proper parallelism
+        // Matches Spark partition count to ensure proper parallelism
         PlanProperties::new(
             EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(num_partitions),
@@ -125,8 +119,7 @@ impl ExecutionPlan for IcebergScanExec {
         partition: usize,
         _context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
-        // Use pre-planned tasks from Scala
-        // All planning happens on the Scala side using Iceberg's Java API
+        // Execute pre-planned tasks from Scala (planning happens via Iceberg's Java API)
         if let Some(ref task_groups) = self.file_task_groups {
             if partition < task_groups.len() {
                 let tasks = &task_groups[partition];
@@ -141,7 +134,6 @@ impl ExecutionPlan for IcebergScanExec {
             }
         }
 
-        // If no tasks were provided, this is an error
         Err(DataFusionError::Execution(format!(
             "IcebergScanExec: No FileScanTasks provided for partition {}. \
              All scan planning must happen on the Scala side.",
@@ -151,14 +143,8 @@ impl ExecutionPlan for IcebergScanExec {
 }
 
 impl IcebergScanExec {
-    /// **MOR (Merge-On-Read) Table Support:**
-    ///
-    /// If the FileScanTasks include delete files (for MOR tables), iceberg-rust's ArrowReader
-    /// automatically applies the deletes during reading:
-    /// - Positional deletes: Skips rows at specified positions
-    /// - Equality deletes: Filters out rows matching delete predicates
-    ///
-    /// This ensures that deleted rows are not included in the query results.
+    /// Handles MOR (Merge-On-Read) tables by automatically applying positional and equality
+    /// deletes via iceberg-rust's ArrowReader.
     fn execute_with_tasks(
         &self,
         tasks: Vec<iceberg::scan::FileScanTask>,
@@ -168,22 +154,17 @@ impl IcebergScanExec {
         let metadata_location = self.metadata_location.clone();
 
         let fut = async move {
-            // Build FileIO from catalog properties
             let file_io = Self::load_file_io(&catalog_properties, &metadata_location)?;
 
-            // Convert Vec<FileScanTask> to a stream
             let task_stream = futures::stream::iter(tasks.into_iter().map(Ok)).boxed();
 
-            // Use iceberg-rust's ArrowReader to read the tasks
             let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io).build();
 
-            // Read the tasks - this returns Result<ArrowRecordBatchStream>
-            // No await needed - read() is synchronous
+            // read() is synchronous and returns Result<ArrowRecordBatchStream>
             let stream = reader.read(task_stream).map_err(|e| {
                 DataFusionError::Execution(format!("Failed to read Iceberg tasks: {}", e))
             })?;
 
-            // Stream already has correct error type mapping
             let mapped_stream = stream
                 .map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)));
 
@@ -201,16 +182,13 @@ impl IcebergScanExec {
         )))
     }
 
-    /// Build FileIO from catalog properties
     fn load_file_io(
         catalog_properties: &HashMap<String, String>,
         metadata_location: &str,
     ) -> Result<FileIO, DataFusionError> {
-        // Create a FileIO builder
         let mut file_io_builder = FileIO::from_path(metadata_location)
             .map_err(|e| DataFusionError::Execution(format!("Failed to create FileIO: {}", e)))?;
 
-        // Add catalog properties as configuration
         for (key, value) in catalog_properties {
             file_io_builder = file_io_builder.with_prop(key, value);
         }

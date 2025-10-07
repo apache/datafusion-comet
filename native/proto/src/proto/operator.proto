@@ -112,97 +112,68 @@ message IcebergScan {
   // Schema to read
   repeated SparkStructField required_schema = 1;
 
-  // Catalog-specific configuration properties used to build FileIO for reading files
-  // TODO: Extract credentials, S3/GCS config, etc. for authentication
-  // Currently empty - metadata_location is in separate field below
+  // Catalog-specific configuration for FileIO (credentials, S3/GCS config, etc.)
   map<string, string> catalog_properties = 2;
 
   // Pre-planned file scan tasks grouped by Spark partition
-  // Each IcebergFilePartition contains tasks for one Spark partition.
-  // This structure mirrors SparkFilePartition used by NativeScan.
-  // NOTE: Each task contains its own residual filter expression for row-group pruning.
   repeated IcebergFilePartition file_partitions = 3;
 
-  // Total number of Spark partitions
-  // Used to set up proper partitioning in DataFusion execution plan
+  // Number of Spark partitions for DataFusion parallelism
   int32 num_partitions = 4;
 
-  // Path to the table metadata file (e.g., s3://bucket/warehouse/db.db/table/metadata/v1.metadata.json)
-  // Required for FileIO initialization
+  // Table metadata file path for FileIO initialization
   string metadata_location = 5;
 }
 
 // Groups FileScanTasks for a single Spark partition
-// This mirrors SparkFilePartition structure used by NativeScan
 message IcebergFilePartition {
   repeated IcebergFileScanTask file_scan_tasks = 1;
 }
 
-// Represents a single Iceberg FileScanTask from iceberg-rust
-// This maps directly to iceberg::scan::FileScanTask
+// Iceberg FileScanTask containing data file, delete files, and residual filter
 message IcebergFileScanTask {
-  // Path to the data file (e.g., s3://bucket/warehouse/db/table/data/00000-0-abc.parquet)
+  // Data file path (e.g., s3://bucket/warehouse/db/table/data/00000-0-abc.parquet)
   string data_file_path = 1;
 
-  // Byte range within the file to read (for split files)
+  // Byte range to read (for split files)
   uint64 start = 2;
   uint64 length = 3;
 
-  // Optional: Record count if reading entire file
+  // Record count if reading entire file
   optional uint64 record_count = 4;
 
-  // File format: "PARQUET", "AVRO", "ORC"
+  // File format (PARQUET, AVRO, or ORC)
   string data_file_format = 5;
 
-  // Iceberg schema for this file (JSON serialized)
-  // Each file may have a different schema due to schema evolution
+  // File schema as JSON (may differ due to schema evolution)
   string schema_json = 6;
 
-  // Field IDs to project from the file (subset of schema)
+  // Field IDs to project
   repeated int32 project_field_ids = 7;
 
-  // Delete files that apply to this data file (for Merge-On-Read tables)
+  // Delete files for MOR tables
   repeated IcebergDeleteFile delete_files = 8;
 
-  // Residual filter expression for this specific file
-  //
-  // This is NOT the same as the scan-level data_filters in IcebergScan!
-  //
-  // The residual is created by Iceberg's ResidualEvaluator which partially evaluates
-  // the scan filter against this file's partition values. For example:
-  // - Original filter: date >= '2024-01-01' AND status = 'active'
-  // - File partition: date = '2024-06-15'
-  // - Residual for this file: status = 'active' (date filter proven true by partition)
-  //
-  // Different files can have different residuals based on their partition values.
-  // This allows optimal row-group level filtering in the Parquet reader.
-  //
-  // If empty, no filtering is needed for this file (all rows match).
+  // Residual filter after partition pruning (applied at row-group level)
+  // Example: if scan filter is "date >= '2024-01-01' AND status = 'active'"
+  // and file partition is date='2024-06-15', residual is "status = 'active'"
   optional spark.spark_expression.Expr residual = 9;
 }
 
-// Represents an Iceberg delete file (equality or positional deletes)
-// Used for MOR (Merge-On-Read) tables where deletes are tracked separately from data files.
-//
-// Iceberg supports two delete strategies:
-// 1. Positional deletes: Delete files contain (file_path, row_position) pairs
-//   indicating specific rows to skip when reading data files.
-// 2. Equality deletes: Delete files contain values for specific columns (identified by
-//   equality_ids). Any row in the data file matching those values should be filtered out.
-//
-// The Rust side (iceberg-rust ArrowReader) applies these deletes automatically during scanning.
+// Iceberg delete file for MOR tables (positional or equality deletes)
+// Positional: (file_path, row_position) pairs to skip
+// Equality: Column values to filter out (specified by equality_ids)
 message IcebergDeleteFile {
-  // Path to the delete file
+  // Delete file path
   string file_path = 1;
 
-  // Content type: "POSITION_DELETES" or "EQUALITY_DELETES"
+  // POSITION_DELETES or EQUALITY_DELETES
   string content_type = 2;
 
   // Partition spec ID
   int32 partition_spec_id = 3;
 
-  // Equality field IDs (for equality deletes only, empty for positional deletes)
-  // These IDs identify which columns to use for matching when applying equality deletes
+  // Equality field IDs (empty for positional deletes)
   repeated int32 equality_ids = 4;
 }
 
