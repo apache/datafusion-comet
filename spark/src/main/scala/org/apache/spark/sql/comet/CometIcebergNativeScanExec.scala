@@ -74,19 +74,16 @@ case class CometIcebergNativeScanExec(
     override val output: Seq[Attribute],
     @transient override val originalPlan: BatchScanExec,
     override val serializedPlanOpt: SerializedPlan,
-    catalogType: String,
-    catalogProperties: Map[String, String],
-    namespace: Seq[String],
-    tableName: String,
-    numPartitions: Int) // Number of Spark partitions for proper parallelism
+    metadataLocation: String,
+    catalogProperties: Map[String, String], // TODO: Extract for authentication
+    numPartitions: Int)
     extends CometLeafExec {
 
   override val supportsColumnar: Boolean = true
 
   // FileScanTasks are serialized at planning time in QueryPlanSerde.operator2Proto()
 
-  override val nodeName: String =
-    s"CometIcebergNativeScan ${namespace.mkString(".")}.$tableName ($catalogType)"
+  override val nodeName: String = "CometIcebergNativeScan"
 
   // FileScanTasks are serialized at planning time and grouped by partition.
   // Rust uses the partition index to select the correct task group.
@@ -101,23 +98,19 @@ case class CometIcebergNativeScanExec(
       output.map(QueryPlan.normalizeExpressions(_, output)),
       originalPlan.doCanonicalize(),
       SerializedPlan(None),
-      catalogType,
+      metadataLocation,
       catalogProperties,
-      namespace,
-      tableName,
       numPartitions)
   }
 
   override def stringArgs: Iterator[Any] =
-    Iterator(output, catalogType, namespace, tableName, numPartitions)
+    Iterator(output, metadataLocation, numPartitions)
 
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometIcebergNativeScanExec =>
-        this.catalogType == other.catalogType &&
+        this.metadataLocation == other.metadataLocation &&
         this.catalogProperties == other.catalogProperties &&
-        this.namespace == other.namespace &&
-        this.tableName == other.tableName &&
         this.output == other.output &&
         this.serializedPlanOpt == other.serializedPlanOpt &&
         this.numPartitions == other.numPartitions
@@ -128,9 +121,7 @@ case class CometIcebergNativeScanExec(
 
   override def hashCode(): Int =
     Objects.hashCode(
-      catalogType,
-      namespace.asJava,
-      tableName,
+      metadataLocation,
       output.asJava,
       serializedPlanOpt,
       numPartitions: java.lang.Integer)
@@ -166,157 +157,43 @@ case class CometIcebergNativeScanExec(
 object CometIcebergNativeScanExec {
 
   /**
-   * Configuration extracted from Spark catalog for FileIO setup and identification.
-   */
-  case class IcebergCatalogInfo(
-      catalogType: String,
-      properties: Map[String, String],
-      namespace: Seq[String],
-      tableName: String)
-
-  /**
-   * Extracts Iceberg catalog configuration from a Spark BatchScanExec.
+   * Extracts metadata location from Iceberg table.
    *
-   * Gets the catalog name from the table identifier and extracts configuration from Spark
-   * session.
+   * TODO: Also extract catalog properties (credentials, S3 config, etc.) for authentication
    *
    * @param scanExec
    *   The Spark BatchScanExec containing an Iceberg scan
-   * @param session
-   *   The SparkSession to extract catalog config from
    * @return
-   *   Some(IcebergCatalogInfo) if catalog is supported, None otherwise
+   *   Path to the table metadata file
    */
-  def extractCatalogInfo(
-      scanExec: BatchScanExec,
-      session: SparkSession): Option[IcebergCatalogInfo] = {
-    try {
-      // Get the full table name from Spark's table identifier
-      // Format: "catalog_name.namespace.table_name" or "namespace.table_name"
-      val fullTableName = scanExec.table.name()
-      val parts = fullTableName.split('.')
+  def extractMetadataLocation(scanExec: BatchScanExec): String = {
+    val scan = scanExec.scan
 
-      if (parts.length < 2) {
-        return None // Need at least namespace.table
+    // Get table via reflection (table() is protected in SparkScan, need to search up hierarchy)
+    var clazz: Class[_] = scan.getClass
+    var tableMethod: java.lang.reflect.Method = null
+    while (clazz != null && tableMethod == null) {
+      try {
+        tableMethod = clazz.getDeclaredMethod("table")
+        tableMethod.setAccessible(true)
+      } catch {
+        case _: NoSuchMethodException => clazz = clazz.getSuperclass
       }
-
-      // Determine catalog name and table path
-      // If 3+ parts: parts(0) is catalog, parts(1..-2) is namespace, parts(-1) is table
-      // If 2 parts: default catalog, parts(0) is namespace, parts(1) is table
-      val (catalogName, namespaceParts, tableNamePart) = if (parts.length >= 3) {
-        (parts.head, parts.slice(1, parts.length - 1).toSeq, parts.last)
-      } else {
-        // Try to get default catalog from config
-        val defaultCatalog = session.conf
-          .getOption("spark.sql.catalog.spark_catalog")
-          .map(_ => "spark_catalog")
-          .getOrElse(return None)
-        (defaultCatalog, Seq(parts.head), parts.last)
-      }
-
-      // Get catalog properties from Spark session config
-      val catalogPrefix = s"spark.sql.catalog.$catalogName"
-
-      // Check both catalog-impl and type properties
-      val catalogImpl = session.conf.getOption(s"$catalogPrefix.catalog-impl")
-      val catalogType = session.conf.getOption(s"$catalogPrefix.type")
-
-      // Handle Hadoop catalog specially - it uses direct metadata file access
-      if (catalogType.contains("hadoop") ||
-        catalogImpl.exists(impl => impl.contains("HadoopCatalog"))) {
-
-        // Hadoop catalog is filesystem-based, need to extract metadata location
-        // Try to get it from the table object via reflection
-        try {
-          val scan = scanExec.scan
-          val scanClass = scan.getClass
-
-          // Try to get the table via reflection
-          // Iceberg's SparkBatchQueryScan extends SparkScan which has protected table() method
-          // Need to search up the class hierarchy
-          def findTableMethod(clazz: Class[_]): Option[java.lang.reflect.Method] = {
-            if (clazz == null || clazz == classOf[Object]) {
-              None
-            } else {
-              try {
-                val method = clazz.getDeclaredMethod("table")
-                method.setAccessible(true)
-                Some(method)
-              } catch {
-                case _: NoSuchMethodException =>
-                  // Try superclass
-                  findTableMethod(clazz.getSuperclass)
-              }
-            }
-          }
-
-          val tableMethod = findTableMethod(scanClass).getOrElse {
-            throw new NoSuchMethodException("Could not find table() method in class hierarchy")
-          }
-
-          val table = tableMethod.invoke(scan)
-
-          // Get the metadata location from table.operations().current().metadataFileLocation()
-          val tableClass = table.getClass
-          val operationsMethod = tableClass.getMethod("operations")
-          val operations = operationsMethod.invoke(table)
-
-          val operationsClass = operations.getClass
-          val currentMethod = operationsClass.getMethod("current")
-          val metadata = currentMethod.invoke(operations)
-
-          val metadataClass = metadata.getClass
-          val metadataFileLocationMethod = metadataClass.getMethod("metadataFileLocation")
-          val metadataLocation = metadataFileLocationMethod.invoke(metadata).asInstanceOf[String]
-
-          // Return catalog info with actual metadata file location
-          return Some(
-            IcebergCatalogInfo(
-              catalogType = "hadoop",
-              properties = Map("metadata_location" -> metadataLocation),
-              namespace = namespaceParts,
-              tableName = tableNamePart))
-        } catch {
-          case _: Exception =>
-            // If reflection fails, fall back to returning None
-            return None
-        }
-      }
-
-      // Get the catalog implementation class
-      val implClass = catalogImpl.getOrElse(return None)
-
-      // Identify catalog type for UI/debugging
-      val icebergCatalogType = implClass match {
-        case impl if impl.contains("RESTCatalog") || impl.contains("rest") => "rest"
-        case impl if impl.contains("GlueCatalog") || impl.contains("glue") => "glue"
-        case impl if impl.contains("HiveCatalog") || impl.contains("hive") => "hms"
-        case impl if impl.contains("JdbcCatalog") || impl.contains("jdbc") => "sql"
-        case _ => return None // Unsupported catalog type
-      }
-
-      // Extract all catalog properties with the prefix
-      val catalogProps = session.conf.getAll
-        .filter { case (k, _) => k.startsWith(catalogPrefix + ".") }
-        .map { case (k, v) =>
-          // Remove prefix: "spark.sql.catalog.mycatalog.uri" -> "uri"
-          val key = k.stripPrefix(catalogPrefix + ".")
-          // Skip the catalog-impl property itself
-          if (key == "catalog-impl" || key == "type") None else Some((key, v))
-        }
-        .flatten
-        .toMap
-
-      Some(
-        IcebergCatalogInfo(
-          catalogType = icebergCatalogType,
-          properties = catalogProps,
-          namespace = namespaceParts,
-          tableName = tableNamePart))
-    } catch {
-      case _: Exception =>
-        None
     }
+    if (tableMethod == null) {
+      throw new NoSuchMethodException("Could not find table() method in class hierarchy")
+    }
+
+    val table = tableMethod.invoke(scan)
+
+    val operationsMethod = table.getClass.getMethod("operations")
+    val operations = operationsMethod.invoke(table)
+
+    val currentMethod = operations.getClass.getMethod("current")
+    val metadata = currentMethod.invoke(operations)
+
+    val metadataFileLocationMethod = metadata.getClass.getMethod("metadataFileLocation")
+    metadataFileLocationMethod.invoke(metadata).asInstanceOf[String]
   }
 
   /**
@@ -332,8 +209,8 @@ object CometIcebergNativeScanExec {
    *   The original Spark BatchScanExec
    * @param session
    *   The SparkSession
-   * @param catalogInfo
-   *   The extracted catalog information
+   * @param metadataLocation
+   *   Path to table metadata file from extractMetadataLocation
    * @return
    *   A new CometIcebergNativeScanExec
    */
@@ -341,17 +218,13 @@ object CometIcebergNativeScanExec {
       nativeOp: Operator,
       scanExec: BatchScanExec,
       session: SparkSession,
-      catalogInfo: IcebergCatalogInfo): CometIcebergNativeScanExec = {
+      metadataLocation: String): CometIcebergNativeScanExec = {
 
     // Determine number of partitions from Iceberg's output partitioning
-    // KeyGroupedPartitioning means Iceberg grouped data by partition keys
-    // Otherwise, use the number of InputPartitions that Iceberg created
     val numParts = scanExec.outputPartitioning match {
       case p: KeyGroupedPartitioning =>
-        // Use Iceberg's key-grouped partition count
         p.numPartitions
       case _ =>
-        // Use the number of InputPartitions from inputRDD
         scanExec.inputRDD.getNumPartitions
     }
 
@@ -360,10 +233,8 @@ object CometIcebergNativeScanExec {
       scanExec.output,
       scanExec,
       SerializedPlan(None),
-      catalogInfo.catalogType,
-      catalogInfo.properties,
-      catalogInfo.namespace,
-      catalogInfo.tableName,
+      metadataLocation,
+      Map.empty, // TODO: Extract catalog properties for authentication
       numParts)
 
     scanExec.logicalLink.foreach(exec.setLogicalLink)

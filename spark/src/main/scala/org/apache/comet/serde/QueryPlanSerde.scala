@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
+import org.apache.spark.sql.catalyst.plans.physical.KeyGroupedPartitioning
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet._
@@ -1183,32 +1184,43 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      // Fully native Iceberg scan for V2 using iceberg-rust
-      //
-      // IMPORTANT: This serialization happens on the Spark worker, not the driver!
-      // Each worker receives a specific InputPartition via Spark's RDD distribution.
-      // We extract the FileScanTasks from the InputPartition and serialize them to protobuf.
-      //
-      // Flow:
-      // 1. Driver: Iceberg's planInputPartitions() creates InputPartition[]
-      // (each contains ScanTaskGroup<FileScanTask>)
-      // 2. Driver: Spark creates BatchScanExec.inputRDD with these InputPartitions
-      // 3. Spark distributes RDD partitions to workers
-      // 4. Worker: This code runs and extracts FileScanTasks from the worker's
-      // specific InputPartition
-      // 5. Worker: FileScanTasks are serialized to protobuf and sent to Rust
-      // 6. Rust: Reads only the files specified in those tasks
-      case scan: CometIcebergNativeScanExec =>
+      // Iceberg scan with native execution enabled -
+      // detected by CometBatchScanExec wrapping SparkBatchQueryScan
+      case scan: CometBatchScanExec
+          if CometConf.COMET_ICEBERG_NATIVE_ENABLED.get() &&
+            CometConf.COMET_EXEC_ENABLED.get() &&
+            scan.wrapped.scan.getClass.getName ==
+            "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
         val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
 
-        // Serialize catalog properties (contains metadata_location, credentials, S3 config, etc.)
-        // The native side will extract metadata_location from this map
-        scan.catalogProperties.foreach { case (key, value) =>
-          icebergScanBuilder.putCatalogProperties(key, value)
+        // Extract metadata location for native execution
+        val metadataLocation =
+          try {
+            CometIcebergNativeScanExec.extractMetadataLocation(scan.wrapped)
+          } catch {
+            case e: Exception =>
+              logWarning(
+                s"Failed to extract metadata location from Iceberg scan: ${e.getMessage}")
+              return None
+          }
+
+        // Set metadata location
+        icebergScanBuilder.setMetadataLocation(metadataLocation)
+
+        // Serialize catalog properties (for authentication - currently empty)
+        // TODO: Extract credentials, S3 config, etc.
+
+        // Determine number of partitions from Iceberg's output partitioning
+        // TODO: Add a test case for both partitioning schemes
+        val numParts = scan.wrapped.outputPartitioning match {
+          case p: KeyGroupedPartitioning =>
+            p.numPartitions
+          case _ =>
+            scan.wrapped.inputRDD.getNumPartitions
         }
 
         // Set number of partitions
-        icebergScanBuilder.setNumPartitions(scan.numPartitions)
+        icebergScanBuilder.setNumPartitions(numParts)
 
         // Set required_schema from output
         scan.output.foreach { attr =>
@@ -1219,29 +1231,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
           icebergScanBuilder.addRequiredSchema(field.build())
         }
 
-        // No need to serialize projection_vector - scan.output already contains only
-        // the projected columns from Spark's optimization. The native side will use
-        // None for projection, which tells iceberg-rust to use the full schema.
-
-        // No need to serialize scan-level data_filters - each FileScanTask already contains
-        // its own residual expression which is the optimized per-file filter from Iceberg's
-        // ResidualEvaluator. The residuals are used for row-group level filtering.
-
         // Extract FileScanTasks from the InputPartitions in the RDD
-        // Group tasks by Spark partition (similar to how NativeScan groups PartitionedFiles)
-        //
-        // Reflection Strategy (for Iceberg 1.5.x - 1.10.x compatibility):
-        // - SparkInputPartition: package-private Spark class, use getDeclaredMethod + setAccessible
-        // - Iceberg API methods: load public interfaces by name, then use getMethod()
-        //   (avoids IllegalAccessException on package-private implementation classes like
-        //   BaseFileScanTask$SplitScanTask in Iceberg 1.5.x)
+        // (Same logic as the previous CometIcebergNativeScanExec case)
         var actualNumPartitions = 0
         try {
-          scan.originalPlan.inputRDD match {
+          scan.wrapped.inputRDD match {
             case rdd: org.apache.spark.sql.execution.datasources.v2.DataSourceRDD =>
               val partitions = rdd.partitions
               partitions.foreach { partition =>
-                // Create a partition builder for this Spark partition
                 val partitionBuilder = OperatorOuterClass.IcebergFilePartition.newBuilder()
 
                 val inputPartitions = partition
@@ -1250,33 +1247,23 @@ object QueryPlanSerde extends Logging with CometExprShim {
                   .inputPartitions
 
                 inputPartitions.foreach { inputPartition =>
-                  // Extract FileScanTasks from this InputPartition using reflection
-                  // InputPartition is SparkInputPartition containing ScanTaskGroup<FileScanTask>
                   val inputPartClass = inputPartition.getClass
 
-                  // Get the task group and extract tasks
                   try {
-                    // SparkInputPartition is package-private, so we need
-                    // getDeclaredMethod + setAccessible. This is different from
-                    // Iceberg API classes which have public interfaces
                     val taskGroupMethod = inputPartClass.getDeclaredMethod("taskGroup")
                     taskGroupMethod.setAccessible(true)
                     val taskGroup = taskGroupMethod.invoke(inputPartition)
 
-                    // Call tasks() on ScanTaskGroup to get Collection<FileScanTask>
                     val taskGroupClass = taskGroup.getClass
                     val tasksMethod = taskGroupClass.getMethod("tasks")
                     val tasksCollection =
                       tasksMethod.invoke(taskGroup).asInstanceOf[java.util.Collection[_]]
 
-                    // Convert to Scala and serialize each task
                     import scala.jdk.CollectionConverters._
                     tasksCollection.asScala.foreach { task =>
                       try {
                         val taskBuilder = OperatorOuterClass.IcebergFileScanTask.newBuilder()
 
-                        // Load interface classes to avoid IllegalAccessException on
-                        // package-private implementations
                         // scalastyle:off classforname
                         val contentScanTaskClass =
                           Class.forName("org.apache.iceberg.ContentScanTask")
@@ -1289,12 +1276,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
                         val filePath =
                           try {
-                            // Try location() first (1.7.0+)
                             val locationMethod = contentFileClass.getMethod("location")
                             locationMethod.invoke(dataFile).asInstanceOf[String]
                           } catch {
                             case _: NoSuchMethodException =>
-                              // Fall back to path() (pre-1.7.0, returns CharSequence)
                               val pathMethod = contentFileClass.getMethod("path")
                               pathMethod.invoke(dataFile).asInstanceOf[CharSequence].toString
                           }
@@ -1321,9 +1306,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
                           val schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
                           taskBuilder.setSchemaJson(schemaJson)
 
-                          // Extract field IDs from the REQUIRED output schema, not the full
-                          // task schema. This ensures we only project the columns actually
-                          // needed by the query
                           val columnsMethod = schema.getClass.getMethod("columns")
                           val columns =
                             columnsMethod.invoke(schema).asInstanceOf[java.util.List[_]]
@@ -1370,9 +1352,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
                             taskBuilder.setDataFileFormat("PARQUET")
                         }
 
-                        // Extract delete files from FileScanTask for MOR (Merge-On-Read) tables.
-                        // When present, these are serialized to protobuf and passed to
-                        // iceberg-rust, which automatically applies deletes during reading.
                         try {
                           val deletesMethod = fileScanTaskClass.getMethod("deletes")
                           val deletes = deletesMethod
@@ -1387,7 +1366,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
                               val deletePath =
                                 try {
-                                  // Try location() first (1.7.0+)
                                   val locationMethod = contentFileClass.getMethod("location")
                                   locationMethod.invoke(deleteFile).asInstanceOf[String]
                                 } catch {
@@ -1451,29 +1429,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
                               s"Failed to extract deletes from FileScanTask: ${e.getMessage}")
                         }
 
-                        // Extract residual expression for row-group level filtering.
-                        //
-                        // The residual is created by Iceberg's ResidualEvaluator which partially
-                        // evaluates the scan filter against this file's partition values.
-                        // Different files may have different residuals based on their partitions.
-                        //
-                        // For example:
-                        // - Original filter: date >= '2024-01-01' AND status = 'active'
-                        // - File partition: date = '2024-06-15'
-                        // - Residual: status = 'active' (date condition proven true by partition)
-                        //
-                        // This residual is what should be applied during Parquet row-group
-                        // scanning.
                         try {
                           val residualMethod = contentScanTaskClass.getMethod("residual")
                           val residualExpr = residualMethod.invoke(task)
 
                           val catalystExpr = convertIcebergExpression(residualExpr, scan.output)
 
-                          // Serialize to protobuf WITHOUT binding to indices.
-                          // Iceberg residuals are already unbound (name-based), so we keep
-                          // them unbound in the protobuf to avoid unnecessary index->name
-                          // resolution in Rust
                           catalystExpr
                             .flatMap { expr =>
                               exprToProto(expr, scan.output, binding = false)
@@ -1513,15 +1474,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
             logWarning(s"Failed to extract FileScanTasks from Iceberg scan RDD: ${e.getMessage}")
         }
 
-        // Set number of partitions for proper data distribution
-        // Use the actual count of partitions we serialized, not scan.numPartitions
         val numPartitions =
-          if (actualNumPartitions > 0) actualNumPartitions else scan.numPartitions
+          if (actualNumPartitions > 0) actualNumPartitions else numParts
         icebergScanBuilder.setNumPartitions(numPartitions)
 
-        // Iceberg scans don't have children
         builder.clearChildren()
-
         Some(builder.setIcebergScan(icebergScanBuilder).build())
 
       case FilterExec(condition, child) if CometConf.COMET_EXEC_FILTER_ENABLED.get(conf) =>

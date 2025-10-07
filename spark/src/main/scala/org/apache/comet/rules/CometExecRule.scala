@@ -160,10 +160,31 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         val nativeOp = QueryPlanSerde.operator2Proto(scan).get
         CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
 
-      // CometIcebergNativeScanExec is already a CometNativeExec and will be serialized
-      // during convertBlock(). Don't wrap it in CometScanWrapper.
-      case scan: CometIcebergNativeScanExec =>
-        scan
+      // Fully native Iceberg scan for V2 - convert CometBatchScanExec to CometIcebergNativeScanExec
+      case scan: CometBatchScanExec
+          if CometConf.COMET_ICEBERG_NATIVE_ENABLED.get(conf) &&
+            CometConf.COMET_EXEC_ENABLED.get(conf) &&
+            scan.wrapped.scan.getClass.getName ==
+            "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
+        // Extract metadata location for CometIcebergNativeScanExec
+        try {
+          val metadataLocation = CometIcebergNativeScanExec.extractMetadataLocation(scan.wrapped)
+
+          // Serialize CometBatchScanExec to extract FileScanTasks and get proto
+          QueryPlanSerde.operator2Proto(scan) match {
+            case Some(nativeOp) =>
+              // Create native Iceberg scan exec with the serialized proto
+              CometIcebergNativeScanExec(nativeOp, scan.wrapped, session, metadataLocation)
+            case None =>
+              // Serialization failed, fall back to CometBatchScanExec
+              scan
+          }
+        } catch {
+          case e: Exception =>
+            // If we can't extract metadata, fall back to keeping CometBatchScanExec
+            withInfo(scan, s"Failed to extract Iceberg metadata location: ${e.getMessage}")
+            scan
+        }
 
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>

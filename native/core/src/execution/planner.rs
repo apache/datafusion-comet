@@ -1417,15 +1417,8 @@ impl PhysicalPlanner {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
 
-                // Extract metadata_location from catalog_properties (required)
-                let metadata_location = catalog_properties
-                    .get("metadata_location")
-                    .ok_or_else(|| {
-                        ExecutionError::GeneralError(
-                            "metadata_location not found in catalog_properties".to_string(),
-                        )
-                    })?
-                    .clone();
+                // Get metadata location from separate field
+                let metadata_location = scan.metadata_location.clone();
 
                 // Parse pre-planned FileScanTasks if provided (grouped by partition)
                 //

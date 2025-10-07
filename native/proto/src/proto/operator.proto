@@ -113,8 +113,8 @@ message IcebergScan {
   repeated SparkStructField required_schema = 1;
 
   // Catalog-specific configuration properties used to build FileIO for reading files
-  // MUST contain "metadata_location" key for the table metadata file/directory
-  // Examples: S3 credentials, warehouse location, metadata_location, etc.
+  // TODO: Extract credentials, S3/GCS config, etc. for authentication
+  // Currently empty - metadata_location is in separate field below
   map<string, string> catalog_properties = 2;
 
   // Pre-planned file scan tasks grouped by Spark partition
@@ -126,6 +126,10 @@ message IcebergScan {
   // Total number of Spark partitions
   // Used to set up proper partitioning in DataFusion execution plan
   int32 num_partitions = 4;
+
+  // Path to the table metadata file (e.g., s3://bucket/warehouse/db.db/table/metadata/v1.metadata.json)
+  // Required for FileIO initialization
+  string metadata_location = 5;
 }
 
 // Groups FileScanTasks for a single Spark partition
