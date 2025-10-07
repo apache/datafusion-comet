@@ -58,7 +58,7 @@ object NativeConfig {
   def extractObjectStoreOptions(hadoopConf: Configuration, uri: URI): Map[String, String] = {
     val scheme = uri.getScheme.toLowerCase(Locale.ROOT)
 
-    import scala.collection.JavaConverters._
+    import scala.jdk.CollectionConverters._
     val options = scala.collection.mutable.Map[String, String]()
 
     // The schemes will use libhdfs
