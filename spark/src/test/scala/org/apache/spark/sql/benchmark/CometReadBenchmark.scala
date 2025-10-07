@@ -20,11 +20,16 @@
 package org.apache.spark.sql.benchmark
 
 import java.io.File
+import java.nio.charset.StandardCharsets
+import java.util.Base64
 
 import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
+import org.apache.parquet.crypto.DecryptionPropertiesFactory
+import org.apache.parquet.crypto.keytools.KeyToolkit
+import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
 import org.apache.spark.TestUtils
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, SparkSession}
@@ -84,6 +89,94 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT) {
+            spark.sql(s"select $query from parquetV1Table").noop()
+          }
+        }
+
+        sqlBenchmark.run()
+      }
+    }
+  }
+
+  def encryptedScanBenchmark(values: Int, dataType: DataType): Unit = {
+    // Benchmarks running through spark sql.
+    val sqlBenchmark =
+      new Benchmark(s"SQL Single ${dataType.sql} Encrypted Column Scan", values, output = output)
+
+    val encoder = Base64.getEncoder
+    val footerKey =
+      encoder.encodeToString("0123456789012345".getBytes(StandardCharsets.UTF_8))
+    val key1 = encoder.encodeToString("1234567890123450".getBytes(StandardCharsets.UTF_8))
+    val cryptoFactoryClass =
+      "org.apache.parquet.crypto.keytools.PropertiesDrivenCryptoFactory"
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareEncryptedTable(
+          dir,
+          spark.sql(s"SELECT CAST(value as ${dataType.sql}) id FROM $tbl"))
+
+        val query = dataType match {
+          case BooleanType => "sum(cast(id as bigint))"
+          case _ => "sum(id)"
+        }
+
+        sqlBenchmark.addCase("SQL Parquet - Spark") { _ =>
+          withSQLConf(
+            "spark.memory.offHeap.enabled" -> "true",
+            "spark.memory.offHeap.size" -> "10g",
+            DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
+            KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
+              "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
+            InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
+              s"footerKey: ${footerKey}, key1: ${key1}") {
+            spark.sql(s"select $query from parquetV1Table").noop()
+          }
+        }
+
+        sqlBenchmark.addCase("SQL Parquet - Comet") { _ =>
+          withSQLConf(
+            "spark.memory.offHeap.enabled" -> "true",
+            "spark.memory.offHeap.size" -> "10g",
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_COMET,
+            DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
+            KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
+              "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
+            InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
+              s"footerKey: ${footerKey}, key1: ${key1}") {
+            spark.sql(s"select $query from parquetV1Table").noop()
+          }
+        }
+
+        sqlBenchmark.addCase("SQL Parquet - Comet Native DataFusion") { _ =>
+          withSQLConf(
+            "spark.memory.offHeap.enabled" -> "true",
+            "spark.memory.offHeap.size" -> "10g",
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_DATAFUSION,
+            DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
+            KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
+              "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
+            InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
+              s"footerKey: ${footerKey}, key1: ${key1}") {
+            spark.sql(s"select $query from parquetV1Table").noop()
+          }
+        }
+
+        sqlBenchmark.addCase("SQL Parquet - Comet Native Iceberg Compat") { _ =>
+          withSQLConf(
+            "spark.memory.offHeap.enabled" -> "true",
+            "spark.memory.offHeap.size" -> "10g",
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> SCAN_NATIVE_ICEBERG_COMPAT,
+            DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
+            KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
+              "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
+            InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
+              s"footerKey: ${footerKey}, key1: ${key1}") {
             spark.sql(s"select $query from parquetV1Table").noop()
           }
         }
@@ -552,10 +645,17 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
       }
     }
 
-    runBenchmarkWithTable("SQL Single Numeric Column Scan", 1024 * 1024 * 15) { v =>
+    runBenchmarkWithTable("SQL Single Numeric Column Scan", 1024 * 1024 * 128) { v =>
       Seq(BooleanType, ByteType, ShortType, IntegerType, LongType, FloatType, DoubleType)
         .foreach { dataType =>
           numericScanBenchmark(v, dataType)
+        }
+    }
+
+    runBenchmarkWithTable("SQL Single Numeric Encrypted Column Scan", 1024 * 1024 * 128) { v =>
+      Seq(BooleanType, ByteType, ShortType, IntegerType, LongType, FloatType, DoubleType)
+        .foreach { dataType =>
+          encryptedScanBenchmark(v, dataType)
         }
     }
 
@@ -639,6 +739,7 @@ object CometReadHdfsBenchmark extends CometReadBaseBenchmark with WithHdfsCluste
       finally getFileSystem.delete(tempHdfsPath, true)
     }
   }
+
   override protected def prepareTable(
       dir: File,
       df: DataFrame,
