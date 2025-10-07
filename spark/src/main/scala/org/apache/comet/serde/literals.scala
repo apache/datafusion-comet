@@ -72,8 +72,8 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
       exprBuilder.setIsNull(false)
       dataType match {
         case _: BooleanType => exprBuilder.setBoolVal(value.asInstanceOf[Boolean])
-        case _: ByteType => exprBuilder.setByteVal(value.asInstanceOf[Byte])
-        case _: ShortType => exprBuilder.setShortVal(value.asInstanceOf[Short])
+        case _: ByteType => exprBuilder.setByteVal(value.asInstanceOf[Byte].toInt)
+        case _: ShortType => exprBuilder.setShortVal(value.asInstanceOf[Short].toInt)
         case _: IntegerType | _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
         case _: LongType | _: TimestampType | _: TimestampNTZType =>
           exprBuilder.setLongVal(value.asInstanceOf[Long])
