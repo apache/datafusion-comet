@@ -33,13 +33,13 @@ import com.google.common.base.Objects
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
- * Comet fully native Iceberg scan node for DataSource V2 that delegates to iceberg-rust.
+ * Comet fully native Iceberg scan node for DataSource V2.
  *
- * This replaces Spark's Iceberg BatchScanExec with a native implementation that:
- *   1. Extracts catalog configuration from Spark session 2. Serializes catalog info (type,
- *      properties, namespace, table name) to protobuf 3. Extracts FileScanTasks from Iceberg's
- *      InputPartitions during planning (on driver) 4. Uses iceberg-rust's catalog implementations
- *      to load the table and read data natively
+ * Replaces Spark's Iceberg BatchScanExec by extracting FileScanTasks from Iceberg's planning and
+ * serializing them to protobuf for native execution. All catalog access and planning happens in
+ * Spark's Iceberg integration; the Rust side uses iceberg-rust's FileIO and ArrowReader to read
+ * data files based on the pre-planned FileScanTasks. Catalog properties are used to configure the
+ * FileIO (for credentials, regions, etc.)
  *
  * **How FileScanTask Serialization Works:**
  *
@@ -63,19 +63,11 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  *   - Rust receives IcebergScan operator with FileScanTasks for ALL partitions
  *   - Each worker reads only the tasks for its partition index
  *
- * **Key Insight:** Unlike the initial approach which tried to extract tasks per-partition at
- * execution time, this approach extracts ALL tasks at planning time (just like PartitionedFiles).
- * This works because:
- *   - The RDD and its partitions exist on the driver
- *   - We don't need TaskContext to access InputPartitions
- *   - Iceberg has already done the planning and assigned tasks to partitions
- *   - We just need to serialize this information into the protobuf plan
+ * All tasks are extracted at planning time because the RDD and partitions exist on the driver,
+ * and Iceberg has already assigned tasks to partitions.
  *
- * **Why This Works With Filters:** When a filter is on top of CometIcebergNativeScanExec:
- *   - Filter's convertBlock() serializes both filter and scan together
- *   - The scan's nativeOp (created by operator2Proto) already contains all FileScanTasks
- *   - The combined filter+scan native plan is executed as one unit
- *   - No special RDD or per-partition logic needed
+ * **Filters:** When a filter is on top of this scan, both are serialized together and executed as
+ * one unit. No special RDD or per-partition logic needed.
  */
 case class CometIcebergNativeScanExec(
     override val nativeOp: Operator,
@@ -91,17 +83,13 @@ case class CometIcebergNativeScanExec(
 
   override val supportsColumnar: Boolean = true
 
-  // No need to override doExecuteColumnar - parent CometLeafExec handles it
   // FileScanTasks are serialized at planning time in QueryPlanSerde.operator2Proto()
-  // just like PartitionedFiles are for CometNativeScanExec
 
   override val nodeName: String =
     s"CometIcebergNativeScan ${namespace.mkString(".")}.$tableName ($catalogType)"
 
-  // Use the actual number of partitions from Iceberg's planning.
-  // FileScanTasks are extracted and serialized at planning time (in QueryPlanSerde.operator2Proto),
-  // grouped by partition. Each partition receives only its assigned tasks via the protobuf message.
-  // The Rust side uses the partition index to select the correct task group.
+  // FileScanTasks are serialized at planning time and grouped by partition.
+  // Rust uses the partition index to select the correct task group.
   override lazy val outputPartitioning: Partitioning =
     UnknownPartitioning(numPartitions)
 
@@ -153,7 +141,7 @@ case class CometIcebergNativeScanExec(
       "time_elapsed_opening" ->
         SQLMetrics.createNanoTimingMetric(
           sparkContext,
-          "Wall clock time elapsed for catalog loading and table opening"),
+          "Wall clock time elapsed for FileIO initialization"),
       "time_elapsed_scanning_until_data" ->
         SQLMetrics.createNanoTimingMetric(
           sparkContext,
@@ -178,7 +166,7 @@ case class CometIcebergNativeScanExec(
 object CometIcebergNativeScanExec {
 
   /**
-   * Information extracted from an Iceberg table scan for native execution.
+   * Configuration extracted from Spark catalog for FileIO setup and identification.
    */
   case class IcebergCatalogInfo(
       catalogType: String,
@@ -189,10 +177,8 @@ object CometIcebergNativeScanExec {
   /**
    * Extracts Iceberg catalog configuration from a Spark BatchScanExec.
    *
-   * This method:
-   *   1. Gets the catalog name from the table identifier 2. Extracts catalog configuration from
-   *      Spark session config 3. Maps Spark's catalog implementation class to iceberg-rust
-   *      catalog types 4. Returns catalog info ready for serialization
+   * Gets the catalog name from the table identifier and extracts configuration from Spark
+   * session.
    *
    * @param scanExec
    *   The Spark BatchScanExec containing an Iceberg scan
@@ -300,7 +286,7 @@ object CometIcebergNativeScanExec {
       // Get the catalog implementation class
       val implClass = catalogImpl.getOrElse(return None)
 
-      // Map Spark's catalog implementation to iceberg-rust catalog type
+      // Identify catalog type for UI/debugging
       val icebergCatalogType = implClass match {
         case impl if impl.contains("RESTCatalog") || impl.contains("rest") => "rest"
         case impl if impl.contains("GlueCatalog") || impl.contains("glue") => "glue"
@@ -336,22 +322,9 @@ object CometIcebergNativeScanExec {
   /**
    * Creates a CometIcebergNativeScanExec from a Spark BatchScanExec.
    *
-   * This method is called on the driver to create the Comet operator. The key step is determining
-   * the number of partitions to use, which affects parallelism.
-   *
-   * **Partition Count Strategy:**
-   *   - For KeyGroupedPartitioning: Use Iceberg's partition count (data is grouped by partition
-   *     keys)
-   *   - For other cases: Use the number of partitions in inputRDD, which Spark computes based on
-   *     the number of InputPartition objects returned by Iceberg's planInputPartitions()
-   *
-   * **How FileScanTasks Flow to Workers:**
-   *   1. Iceberg's planInputPartitions() creates InputPartition[] (each contains ScanTaskGroup)
-   *      2. Spark creates BatchScanExec.inputRDD with these InputPartitions 3. Each RDD partition
-   *      wraps one InputPartition 4. Spark ships RDD partitions to workers 5. On worker:
-   *      QueryPlanSerde extracts FileScanTasks from the InputPartition 6. FileScanTasks are
-   *      serialized to protobuf and sent to Rust 7. Rust reads only the files specified in those
-   *      tasks
+   * Determines the number of partitions from Iceberg's output partitioning:
+   *   - KeyGroupedPartitioning: Use Iceberg's partition count
+   *   - Other cases: Use the number of InputPartitions from Iceberg's planning
    *
    * @param nativeOp
    *   The serialized native operator
@@ -378,9 +351,7 @@ object CometIcebergNativeScanExec {
         // Use Iceberg's key-grouped partition count
         p.numPartitions
       case _ =>
-        // For unpartitioned tables or other partitioning schemes,
-        // use the InputPartition count from inputRDD
-        // This is already computed by Spark based on Iceberg's file planning
+        // Use the number of InputPartitions from inputRDD
         scanExec.inputRDD.getNumPartitions
     }
 
@@ -388,7 +359,7 @@ object CometIcebergNativeScanExec {
       nativeOp,
       scanExec.output,
       scanExec,
-      SerializedPlan(None), // Will be serialized per-partition during execution
+      SerializedPlan(None),
       catalogInfo.catalogType,
       catalogInfo.properties,
       catalogInfo.namespace,
