@@ -78,6 +78,7 @@ use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
 
+use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
 use once_cell::sync::Lazy;
@@ -170,6 +171,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     debug_native: jboolean,
     explain_native: jboolean,
     tracing_enabled: jboolean,
+    max_temp_directory_size: jlong,
+    key_unwrapper_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         with_trace("createPlan", tracing_enabled != JNI_FALSE, || {
@@ -231,8 +234,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             // We need to keep the session context alive. Some session state like temporary
             // dictionaries are stored in session context. If it is dropped, the temporary
             // dictionaries will be dropped as well.
-            let session =
-                prepare_datafusion_session_context(batch_size as usize, memory_pool, local_dirs)?;
+            let session = prepare_datafusion_session_context(
+                batch_size as usize,
+                memory_pool,
+                local_dirs,
+                max_temp_directory_size as u64,
+            )?;
 
             let plan_creation_time = start.elapsed();
 
@@ -241,6 +248,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             } else {
                 None
             };
+
+            // Handle key unwrapper for encrypted files
+            if !key_unwrapper_obj.is_null() {
+                let encryption_factory = CometEncryptionFactory {
+                    key_unwrapper: jni_new_global_ref!(env, key_unwrapper_obj)?,
+                };
+                session.runtime_env().register_parquet_encryption_factory(
+                    ENCRYPTION_FACTORY_ID,
+                    Arc::new(encryption_factory),
+                );
+            }
 
             let exec_context = Box::new(ExecutionContext {
                 id,
@@ -272,9 +290,12 @@ fn prepare_datafusion_session_context(
     batch_size: usize,
     memory_pool: Arc<dyn MemoryPool>,
     local_dirs: Vec<String>,
+    max_temp_directory_size: u64,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
-    let disk_manager = DiskManagerBuilder::default().with_mode(DiskManagerMode::Directories(paths));
+    let disk_manager = DiskManagerBuilder::default()
+        .with_mode(DiskManagerMode::Directories(paths))
+        .with_max_temp_directory_size(max_temp_directory_size);
     let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager_builder(disk_manager);
     rt_config = rt_config.with_memory_pool(memory_pool);
 
