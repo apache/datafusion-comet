@@ -83,6 +83,7 @@ use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
     COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_TRACING_ENABLED,
 };
+use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
 use once_cell::sync::Lazy;
@@ -172,6 +173,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     memory_limit: jlong,
     memory_limit_per_task: jlong,
     task_attempt_id: jlong,
+    key_unwrapper_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Deserialize Spark configs
@@ -257,6 +259,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             } else {
                 None
             };
+
+            // Handle key unwrapper for encrypted files
+            if !key_unwrapper_obj.is_null() {
+                let encryption_factory = CometEncryptionFactory {
+                    key_unwrapper: jni_new_global_ref!(env, key_unwrapper_obj)?,
+                };
+                session.runtime_env().register_parquet_encryption_factory(
+                    ENCRYPTION_FACTORY_ID,
+                    Arc::new(encryption_factory),
+                );
+            }
 
             let exec_context = Box::new(ExecutionContext {
                 id,

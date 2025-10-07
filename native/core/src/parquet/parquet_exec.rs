@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
+use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
@@ -28,6 +29,7 @@ use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_expr::expressions::BinaryExpr;
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::EvalMode;
 use itertools::Itertools;
@@ -66,9 +68,16 @@ pub(crate) fn init_datasource_exec(
     default_values: Option<HashMap<usize, ScalarValue>>,
     session_timezone: &str,
     case_sensitive: bool,
+    session_ctx: &Arc<SessionContext>,
+    encryption_enabled: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    let (table_parquet_options, spark_parquet_options) =
-        get_options(session_timezone, case_sensitive);
+    let (table_parquet_options, spark_parquet_options) = get_options(
+        session_timezone,
+        case_sensitive,
+        &object_store_url,
+        encryption_enabled,
+    );
+
     let mut parquet_source = ParquetSource::new(table_parquet_options);
 
     // Create a conjunctive form of the vector because ParquetExecBuilder takes
@@ -85,6 +94,14 @@ pub(crate) fn init_datasource_exec(
         if let Some(filter) = cnf_data_filters {
             parquet_source = parquet_source.with_predicate(filter);
         }
+    }
+
+    if encryption_enabled {
+        parquet_source = parquet_source.with_encryption_factory(
+            session_ctx
+                .runtime_env()
+                .parquet_encryption_factory(ENCRYPTION_FACTORY_ID)?,
+        );
     }
 
     let file_source = parquet_source.with_schema_adapter_factory(Arc::new(
@@ -125,6 +142,8 @@ pub(crate) fn init_datasource_exec(
 fn get_options(
     session_timezone: &str,
     case_sensitive: bool,
+    object_store_url: &ObjectStoreUrl,
+    encryption_enabled: bool,
 ) -> (TableParquetOptions, SparkParquetOptions) {
     let mut table_parquet_options = TableParquetOptions::new();
     table_parquet_options.global.pushdown_filters = true;
@@ -134,6 +153,16 @@ fn get_options(
         SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
     spark_parquet_options.allow_cast_unsigned_ints = true;
     spark_parquet_options.case_sensitive = case_sensitive;
+
+    if encryption_enabled {
+        table_parquet_options.crypto.configure_factory(
+            ENCRYPTION_FACTORY_ID,
+            &CometEncryptionConfig {
+                uri_base: object_store_url.to_string(),
+            },
+        );
+    }
+
     (table_parquet_options, spark_parquet_options)
 }
 
