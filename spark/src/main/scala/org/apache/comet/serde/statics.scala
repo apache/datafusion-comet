@@ -19,26 +19,23 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, BitmapExpressionUtils}
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
-import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 
 object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
 
-  private val staticInvokeExpressions
-      : Map[(Class[_], String), CometExpressionSerde[StaticInvoke]] =
+  private val staticInvokeExpressions: Map[String, CometExpressionSerde[StaticInvoke]] =
     Map(
-      (classOf[BitmapExpressionUtils], "bitmapCount") -> CometScalarFunction("bitmap_count"),
-      (classOf[CharVarcharCodegenUtils], "readSidePadding") -> CometScalarFunction(
-        "read_side_padding"))
+      "bitmapCount" -> CometScalarFunction("bitmap_count"),
+      "readSidePadding" -> CometScalarFunction("read_side_padding"))
 
   override def convert(
       expr: StaticInvoke,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    staticInvokeExpressions.get((expr.staticObject, expr.functionName)) match {
+    staticInvokeExpressions.get(expr.functionName) match {
       case Some(handler) =>
         handler.convert(expr, inputs, binding)
       case None =>
