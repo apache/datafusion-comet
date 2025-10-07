@@ -186,7 +186,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         let debug_native = spark_config.get_bool(COMET_DEBUG_ENABLED);
         let explain_native = spark_config.get_bool(COMET_EXPLAIN_NATIVE_ENABLED);
         let tracing_enabled = spark_config.get_bool(COMET_TRACING_ENABLED);
-        let max_temp_directory_size = spark_config.get_u64(COMET_MAX_TEMP_DIRECTORY_SIZE);
+        let max_temp_directory_size =
+            spark_config.get_u64(COMET_MAX_TEMP_DIRECTORY_SIZE, 100 * 1024 * 1024 * 1024);
         let logging_memory_pool = spark_config.get_bool(COMET_DEBUG_MEMORY);
 
         with_trace("createPlan", tracing_enabled, || {
