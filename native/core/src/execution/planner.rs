@@ -883,27 +883,36 @@ impl PhysicalPlanner {
     /// Create a DataFusion physical sort expression from Spark physical expression
     fn create_sort_expr<'a>(
         &'a self,
-        spark_expr: &'a Expr,
+        spark_expr: &'a spark_expression::Expr,
         input_schema: SchemaRef,
     ) -> Result<PhysicalSortExpr, ExecutionError> {
         match spark_expr.expr_struct.as_ref().unwrap() {
             ExprStruct::SortOrder(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                let descending = expr.direction == 1;
-                let nulls_first = expr.null_ordering == 0;
-
-                let options = SortOptions {
-                    descending,
-                    nulls_first,
-                };
-
-                Ok(PhysicalSortExpr {
-                    expr: child,
-                    options,
-                })
+                self.sort_order_to_physical_sort_expr(expr, input_schema)
             }
             expr => Err(GeneralError(format!("{expr:?} isn't a SortOrder"))),
         }
+    }
+
+    /// Create a DataFusion physical sort expression from Spark physical Sort Order
+    fn sort_order_to_physical_sort_expr<'a>(
+        &'a self,
+        spark_sort_order: &'a spark_expression::SortOrder,
+        input_schema: SchemaRef,
+    ) -> Result<PhysicalSortExpr, ExecutionError> {
+        let child = self.create_expr(spark_sort_order.child.as_ref().unwrap(), input_schema)?;
+        let descending = spark_sort_order.direction == 1;
+        let nulls_first = spark_sort_order.null_ordering == 0;
+
+        let options = SortOptions {
+            descending,
+            nulls_first,
+        };
+
+        Ok(PhysicalSortExpr {
+            expr: child,
+            options,
+        })
     }
 
     fn create_binary_expr(
@@ -1384,14 +1393,27 @@ impl PhysicalPlanner {
                         Some(inputs.remove(0))
                     };
 
+                let input_ordering = scan.input_ordering.clone();
+
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan = ScanExec::new(
+                let mut scan = ScanExec::new(
                     self.exec_context_id,
                     input_source,
                     &scan.source,
                     data_types,
                     scan.arrow_ffi_safe,
                 )?;
+
+                if !input_ordering.is_empty() {
+                    let sort_exprs: Vec<PhysicalSortExpr> = input_ordering
+                        .iter()
+                        .map(|expr| {
+                            self.sort_order_to_physical_sort_expr(expr, Arc::clone(&scan.schema()))
+                        })
+                        .collect::<Result<_, ExecutionError>>()?;
+
+                    scan = scan.with_ordering(sort_exprs)
+                }
 
                 Ok((
                     vec![scan.clone()],
@@ -2987,6 +3009,7 @@ mod tests {
                 }],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                input_ordering: vec![],
             })),
         };
 
@@ -3061,6 +3084,7 @@ mod tests {
                 }],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                input_ordering: vec![],
             })),
         };
 
@@ -3272,6 +3296,7 @@ mod tests {
                 fields: vec![create_proto_datatype()],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                input_ordering: vec![],
             })),
         }
     }
@@ -3315,6 +3340,7 @@ mod tests {
                 ],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                input_ordering: vec![],
             })),
         };
 
@@ -3430,6 +3456,7 @@ mod tests {
                 ],
                 source: "".to_string(),
                 arrow_ffi_safe: false,
+                input_ordering: vec![],
             })),
         };
 
