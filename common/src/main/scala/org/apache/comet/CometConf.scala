@@ -520,7 +520,7 @@ object CometConf extends ShimCometConf {
     .createWithDefault("default")
 
   val COMET_EXEC_MEMORY_POOL_FRACTION: ConfigEntry[Double] =
-    conf("spark.comet.exec.memoryPool.limit")
+    conf("spark.comet.exec.memoryPool.fraction")
       .doc("Fraction of pool that is available to Comet. Only applies to off-heap mode. " +
         s"$TUNING_GUIDE.")
       .internal()
