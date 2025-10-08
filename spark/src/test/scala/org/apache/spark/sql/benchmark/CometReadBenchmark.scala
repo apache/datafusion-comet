@@ -98,6 +98,47 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
     }
   }
 
+  def icebergScanBenchmark(values: Int, dataType: DataType): Unit = {
+    // Benchmarks running through spark sql.
+    val sqlBenchmark =
+      new Benchmark(s"SQL Single ${dataType.sql} Iceberg Column Scan", values, output = output)
+
+    withTempPath { dir =>
+      withTempTable("icebergTable") {
+        prepareIcebergTable(
+          dir,
+          spark.sql(s"SELECT CAST(value as ${dataType.sql}) id FROM $tbl"),
+          "icebergTable")
+
+        val query = dataType match {
+          case BooleanType => "sum(cast(id as bigint))"
+          case _ => "sum(id)"
+        }
+
+        sqlBenchmark.addCase("SQL Iceberg - Spark") { _ =>
+          withSQLConf(
+            "spark.memory.offHeap.enabled" -> "true",
+            "spark.memory.offHeap.size" -> "10g") {
+            spark.sql(s"select $query from icebergTable").noop()
+          }
+        }
+
+        sqlBenchmark.addCase("SQL Iceberg - Comet Iceberg-Rust") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            "spark.memory.offHeap.enabled" -> "true",
+            "spark.memory.offHeap.size" -> "10g",
+            CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+            spark.sql(s"select $query from icebergTable").noop()
+          }
+        }
+
+        sqlBenchmark.run()
+      }
+    }
+  }
+
   def encryptedScanBenchmark(values: Int, dataType: DataType): Unit = {
     // Benchmarks running through spark sql.
     val sqlBenchmark =
@@ -631,78 +672,85 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    runBenchmarkWithTable("Parquet Reader", 1024 * 1024 * 15) { v =>
-      Seq(
-        BooleanType,
-        ByteType,
-        ShortType,
-        IntegerType,
-        LongType,
-        FloatType,
-        DoubleType,
-        StringType).foreach { dataType =>
-        readerBenchmark(v, dataType)
-      }
-    }
+//    runBenchmarkWithTable("Parquet Reader", 1024 * 1024 * 15) { v =>
+//      Seq(
+//        BooleanType,
+//        ByteType,
+//        ShortType,
+//        IntegerType,
+//        LongType,
+//        FloatType,
+//        DoubleType,
+//        StringType).foreach { dataType =>
+//        readerBenchmark(v, dataType)
+//      }
+//    }
+//
+//    runBenchmarkWithTable("SQL Single Numeric Column Scan", 1024 * 1024 * 128) { v =>
+//      Seq(BooleanType, ByteType, ShortType, IntegerType, LongType, FloatType, DoubleType)
+//        .foreach { dataType =>
+//          numericScanBenchmark(v, dataType)
+//        }
+//    }
 
-    runBenchmarkWithTable("SQL Single Numeric Column Scan", 1024 * 1024 * 128) { v =>
+    runBenchmarkWithTable("SQL Single Numeric Iceberg Column Scan", 1024 * 1024 * 128) { v =>
       Seq(BooleanType, ByteType, ShortType, IntegerType, LongType, FloatType, DoubleType)
         .foreach { dataType =>
-          numericScanBenchmark(v, dataType)
+          icebergScanBenchmark(v, dataType)
         }
     }
 
-    runBenchmarkWithTable("SQL Single Numeric Encrypted Column Scan", 1024 * 1024 * 128) { v =>
-      Seq(BooleanType, ByteType, ShortType, IntegerType, LongType, FloatType, DoubleType)
-        .foreach { dataType =>
-          encryptedScanBenchmark(v, dataType)
-        }
-    }
-
-    runBenchmark("SQL Decimal Column Scan") {
-      withTempTable(tbl) {
-        import spark.implicits._
-        spark.range(1024 * 1024 * 15).map(_ => Random.nextInt).createOrReplaceTempView(tbl)
-
-        Seq((5, 2), (18, 4), (20, 8)).foreach { case (precision, scale) =>
-          decimalScanBenchmark(1024 * 1024 * 15, precision, scale)
-        }
-      }
-    }
-
-    runBenchmarkWithTable("String Scan with Dictionary", 1024 * 1024 * 15) { v =>
-      stringWithDictionaryScanBenchmark(v)
-    }
-
-    runBenchmarkWithTable("Numeric Filter Scan", 1024 * 1024 * 10) { v =>
-      for (fractionOfZeros <- List(0.0, 0.50, 0.95)) {
-        numericFilterScanBenchmark(v, fractionOfZeros)
-      }
-    }
-
-    runBenchmarkWithTable("String with Nulls Scan", 1024 * 1024 * 10) { v =>
-      for (fractionOfNulls <- List(0.0, 0.50, 0.95)) {
-        stringWithNullsScanBenchmark(v, fractionOfNulls)
-      }
-    }
-
-    runBenchmarkWithTable("Single Column Scan From Wide Columns", 1024 * 1024 * 1) { v =>
-      for (columnWidth <- List(10, 50, 100)) {
-        columnsBenchmark(v, columnWidth)
-      }
-    }
-
-    runBenchmarkWithTable("Large String Filter Scan", 1024 * 1024) { v =>
-      for (fractionOfZeros <- List(0.0, 0.50, 0.999)) {
-        largeStringFilterScanBenchmark(v, fractionOfZeros)
-      }
-    }
-
-    runBenchmarkWithTable("Sorted Lg Str Filter Scan", 1024 * 1024) { v =>
-      for (fractionOfZeros <- List(0.0, 0.50, 0.999)) {
-        sortedLgStrFilterScanBenchmark(v, fractionOfZeros)
-      }
-    }
+//    runBenchmarkWithTable("SQL Single Numeric Encrypted Column Scan", 1024 * 1024 * 128) { v =>
+//      Seq(BooleanType, ByteType, ShortType, IntegerType, LongType, FloatType, DoubleType)
+//        .foreach { dataType =>
+//          encryptedScanBenchmark(v, dataType)
+//        }
+//    }
+//
+//    runBenchmark("SQL Decimal Column Scan") {
+//      withTempTable(tbl) {
+//        import spark.implicits._
+//        spark.range(1024 * 1024 * 15).map(_ => Random.nextInt).createOrReplaceTempView(tbl)
+//
+//        Seq((5, 2), (18, 4), (20, 8)).foreach { case (precision, scale) =>
+//          decimalScanBenchmark(1024 * 1024 * 15, precision, scale)
+//        }
+//      }
+//    }
+//
+//    runBenchmarkWithTable("String Scan with Dictionary", 1024 * 1024 * 15) { v =>
+//      stringWithDictionaryScanBenchmark(v)
+//    }
+//
+//    runBenchmarkWithTable("Numeric Filter Scan", 1024 * 1024 * 10) { v =>
+//      for (fractionOfZeros <- List(0.0, 0.50, 0.95)) {
+//        numericFilterScanBenchmark(v, fractionOfZeros)
+//      }
+//    }
+//
+//    runBenchmarkWithTable("String with Nulls Scan", 1024 * 1024 * 10) { v =>
+//      for (fractionOfNulls <- List(0.0, 0.50, 0.95)) {
+//        stringWithNullsScanBenchmark(v, fractionOfNulls)
+//      }
+//    }
+//
+//    runBenchmarkWithTable("Single Column Scan From Wide Columns", 1024 * 1024 * 1) { v =>
+//      for (columnWidth <- List(10, 50, 100)) {
+//        columnsBenchmark(v, columnWidth)
+//      }
+//    }
+//
+//    runBenchmarkWithTable("Large String Filter Scan", 1024 * 1024) { v =>
+//      for (fractionOfZeros <- List(0.0, 0.50, 0.999)) {
+//        largeStringFilterScanBenchmark(v, fractionOfZeros)
+//      }
+//    }
+//
+//    runBenchmarkWithTable("Sorted Lg Str Filter Scan", 1024 * 1024) { v =>
+//      for (fractionOfZeros <- List(0.0, 0.50, 0.999)) {
+//        sortedLgStrFilterScanBenchmark(v, fractionOfZeros)
+//      }
+//    }
   }
 }
 
