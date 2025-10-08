@@ -107,7 +107,6 @@ class CometExecIterator(
     }
 
     val memoryConfig = CometExecIterator.getMemoryConfig(conf)
-    logInfo(s"Comet memory configuration: $memoryConfig")
 
     nativeLib.createPlan(
       id,
