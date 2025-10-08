@@ -36,7 +36,7 @@ use parking_lot::Mutex;
 
 /// A DataFusion fair `MemoryPool` implementation for Comet. Internally this is
 /// implemented via delegating calls to [`crate::jvm_bridge::CometTaskMemoryManager`].
-pub struct CometFairMemoryPool {
+pub struct CometFairUnifiedMemoryPool {
     task_memory_manager_handle: Arc<GlobalRef>,
     pool_size: usize,
     state: Mutex<CometFairPoolState>,
@@ -47,7 +47,7 @@ struct CometFairPoolState {
     num: usize,
 }
 
-impl Debug for CometFairMemoryPool {
+impl Debug for CometFairUnifiedMemoryPool {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         let state = self.state.lock();
         f.debug_struct("CometFairMemoryPool")
@@ -58,11 +58,11 @@ impl Debug for CometFairMemoryPool {
     }
 }
 
-impl CometFairMemoryPool {
+impl CometFairUnifiedMemoryPool {
     pub fn new(
         task_memory_manager_handle: Arc<GlobalRef>,
         pool_size: usize,
-    ) -> CometFairMemoryPool {
+    ) -> CometFairUnifiedMemoryPool {
         Self {
             task_memory_manager_handle,
             pool_size,
@@ -70,7 +70,7 @@ impl CometFairMemoryPool {
         }
     }
 
-    fn acquire(&self, additional: usize) -> CometResult<i64> {
+    fn acquire_from_spark(&self, additional: usize) -> CometResult<i64> {
         let mut env = JVMClasses::get_env()?;
         let handle = self.task_memory_manager_handle.as_obj();
         unsafe {
@@ -79,7 +79,7 @@ impl CometFairMemoryPool {
         }
     }
 
-    fn release(&self, size: usize) -> CometResult<()> {
+    fn release_to_spark(&self, size: usize) -> CometResult<()> {
         let mut env = JVMClasses::get_env()?;
         let handle = self.task_memory_manager_handle.as_obj();
         unsafe {
@@ -88,10 +88,10 @@ impl CometFairMemoryPool {
     }
 }
 
-unsafe impl Send for CometFairMemoryPool {}
-unsafe impl Sync for CometFairMemoryPool {}
+unsafe impl Send for CometFairUnifiedMemoryPool {}
+unsafe impl Sync for CometFairUnifiedMemoryPool {}
 
-impl MemoryPool for CometFairMemoryPool {
+impl MemoryPool for CometFairUnifiedMemoryPool {
     fn register(&self, _: &MemoryConsumer) {
         let mut state = self.state.lock();
         state.num = state
@@ -119,7 +119,7 @@ impl MemoryPool for CometFairMemoryPool {
             if size < subtractive {
                 panic!("Failed to release {subtractive} bytes where only {size} bytes reserved")
             }
-            self.release(subtractive)
+            self.release_to_spark(subtractive)
                 .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
             state.used = state.used.checked_sub(subtractive).unwrap();
         }
@@ -133,7 +133,10 @@ impl MemoryPool for CometFairMemoryPool {
         if additional > 0 {
             let mut state = self.state.lock();
             let num = state.num;
-            let limit = self.pool_size.checked_div(num).unwrap();
+            let limit = self
+                .pool_size
+                .checked_div(num)
+                .expect("overflow in checked_div");
             let size = reservation.size();
             if limit < size + additional {
                 return resources_err!(
@@ -141,12 +144,12 @@ impl MemoryPool for CometFairMemoryPool {
                 );
             }
 
-            let acquired = self.acquire(additional)?;
+            let acquired = self.acquire_from_spark(additional)?;
             // If the number of bytes we acquired is less than the requested, return an error,
             // and hopefully will trigger spilling from the caller side.
             if acquired < additional as i64 {
                 // Release the acquired bytes before throwing error
-                self.release(acquired as usize)?;
+                self.release_to_spark(acquired as usize)?;
 
                 return resources_err!(
                     "Failed to acquire {} bytes, only got {} bytes. Reserved: {} bytes",
@@ -155,7 +158,10 @@ impl MemoryPool for CometFairMemoryPool {
                     state.used
                 );
             }
-            state.used = state.used.checked_add(additional).unwrap();
+            state.used = state
+                .used
+                .checked_add(additional)
+                .expect("overflow in checked_add");
         }
         Ok(())
     }
