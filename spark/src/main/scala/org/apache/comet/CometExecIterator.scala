@@ -279,14 +279,18 @@ object CometExecIterator extends Logging {
     val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
     if (offHeapMode) {
       // in off-heap mode, Comet uses unified memory management to share off-heap memory with Spark
-      val memoryLimit = ByteUnit.MiB.toBytes(conf.getSizeAsMb("spark.memory.offHeap.size"))
-      val maxMemory = memoryLimit * CometConf.COMET_EXEC_MEMORY_POOL_FRACTION.get()
-      val memoryLimitPerTask = (maxMemory.toFloat * coresPerTask / numCores).toLong
-      MemoryConfig(
-        offHeapMode,
-        memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
-        memoryLimit,
-        memoryLimitPerTask)
+      val offHeapSize = ByteUnit.MiB.toBytes(conf.getSizeAsMb("spark.memory.offHeap.size"))
+      val memoryFraction = CometConf.COMET_EXEC_MEMORY_POOL_FRACTION.get()
+      val memoryLimit = (offHeapSize * memoryFraction).toLong
+      val memoryLimitPerTask = (memoryLimit.toFloat * coresPerTask / numCores).toLong
+      val memoryPoolType = getMemoryPoolType(defaultValue = "fair_unified")
+      logInfo(
+        s"memoryPoolType=$memoryPoolType, " +
+          s"offHeapSize=${toMB(offHeapSize)}, " +
+          s"memoryFraction=$memoryFraction, " +
+          s"memoryLimit=${toMB(memoryLimit)}, " +
+          s"memoryLimitPerTask=${toMB(memoryLimitPerTask)}")
+      MemoryConfig(offHeapMode, memoryPoolType = memoryPoolType, memoryLimit, memoryLimitPerTask)
     } else {
       // we'll use the built-in memory pool from DF, and initializes with `memory_limit`
       // and `memory_fraction` below.
@@ -294,11 +298,19 @@ object CometExecIterator extends Logging {
       // example 16GB maxMemory * 16 cores with 4 cores per task results
       // in memory_limit_per_task = 16 GB * 4 / 16 = 16 GB / 4 = 4GB
       val memoryLimitPerTask = (memoryLimit.toFloat * coresPerTask / numCores).toLong
-      MemoryConfig(
-        offHeapMode,
-        memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
-        memoryLimit,
-        memoryLimitPerTask)
+      val memoryPoolType = getMemoryPoolType(defaultValue = "greedy_task_shared")
+      logInfo(
+        s"memoryPoolType=$memoryPoolType, " +
+          s"memoryLimit=${toMB(memoryLimit)}, " +
+          s"memoryLimitPerTask=${toMB(memoryLimitPerTask)}")
+      MemoryConfig(offHeapMode, memoryPoolType = memoryPoolType, memoryLimit, memoryLimitPerTask)
+    }
+  }
+
+  private def getMemoryPoolType(defaultValue: String): String = {
+    COMET_EXEC_MEMORY_POOL_TYPE.get() match {
+      case "default" => defaultValue
+      case other => other
     }
   }
 
@@ -306,6 +318,7 @@ object CometExecIterator extends Logging {
     def convertToInt(threads: String): Int = {
       if (threads == "*") Runtime.getRuntime.availableProcessors() else threads.toInt
     }
+
     val LOCAL_N_REGEX = """local\[([0-9]+|\*)\]""".r
     val LOCAL_N_FAILURES_REGEX = """local\[([0-9]+|\*)\s*,\s*([0-9]+)\]""".r
     val master = conf.get("spark.master")
@@ -316,15 +329,14 @@ object CometExecIterator extends Logging {
       case _ => conf.get("spark.executor.cores", "1").toInt
     }
   }
+
+  private def toMB(n: Long): String = {
+    s"${(n.toDouble / 1024.0 / 1024.0).toLong} MB"
+  }
 }
 
 case class MemoryConfig(
     offHeapMode: Boolean,
     memoryPoolType: String,
     memoryLimit: Long,
-    memoryLimitPerTask: Long) {
-  override def toString: String = {
-    s"memoryPoolType=$memoryPoolType, memoryLimit=$memoryLimit, " +
-      s"memoryLimitPerTask=$memoryLimitPerTask"
-  }
-}
+    memoryLimitPerTask: Long)

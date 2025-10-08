@@ -63,7 +63,7 @@ pub(crate) fn parse_memory_pool_config(
     let pool_size_per_task = memory_limit_per_task as usize;
     let memory_pool_config = if off_heap_mode {
         match memory_pool_type.as_str() {
-            "default" | "fair_unified" => {
+            "fair_unified" => {
                 MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size_per_task)
             }
             "greedy_unified" => {
@@ -84,7 +84,7 @@ pub(crate) fn parse_memory_pool_config(
             "fair_spill_task_shared" => {
                 MemoryPoolConfig::new(MemoryPoolType::FairSpillTaskShared, pool_size_per_task)
             }
-            "default" | "greedy_task_shared" => {
+            "greedy_task_shared" => {
                 MemoryPoolConfig::new(MemoryPoolType::GreedyTaskShared, pool_size_per_task)
             }
             "fair_spill_global" => {
