@@ -519,6 +519,14 @@ object CometConf extends ShimCometConf {
     .stringConf
     .createWithDefault("default")
 
+  val COMET_EXEC_MEMORY_POOL_FRACTION: ConfigEntry[Double] =
+    conf("spark.comet.exec.memoryPool.limit")
+      .doc("Fraction of pool that is available to Comet. Only applies to off-heap mode. " +
+        s"$TUNING_GUIDE.")
+      .internal()
+      .doubleConf
+      .createWithDefault(0.9)
+
   val COMET_SCAN_PREFETCH_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.preFetch.enabled")
       .doc("Whether to enable pre-fetching feature of CometScan.")
