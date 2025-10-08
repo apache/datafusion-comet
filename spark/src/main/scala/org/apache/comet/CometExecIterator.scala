@@ -107,6 +107,7 @@ class CometExecIterator(
     }
 
     val memoryConfig = CometExecIterator.getMemoryConfig(conf)
+    logInfo(s"Comet memory configuration: $memoryConfig")
 
     nativeLib.createPlan(
       id,
@@ -290,13 +291,9 @@ object CometExecIterator extends Logging {
       // we'll use the built-in memory pool from DF, and initializes with `memory_limit`
       // and `memory_fraction` below.
       val memoryLimit = CometSparkSessionExtensions.getCometMemoryOverhead(conf)
-      val maxMemory = CometSparkSessionExtensions.getCometMemoryOverhead(conf)
       // example 16GB maxMemory * 16 cores with 4 cores per task results
       // in memory_limit_per_task = 16 GB * 4 / 16 = 16 GB / 4 = 4GB
-      val memoryLimitPerTask = (maxMemory.toFloat * coresPerTask / numCores).toLong
-      logInfo(
-        s"Calculated per-task memory limit of $memoryLimitPerTask " +
-          s"($maxMemory * $coresPerTask / $numCores)")
+      val memoryLimitPerTask = (memoryLimit.toFloat * coresPerTask / numCores).toLong
       MemoryConfig(
         offHeapMode,
         memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
@@ -325,4 +322,9 @@ case class MemoryConfig(
     offHeapMode: Boolean,
     memoryPoolType: String,
     memoryLimit: Long,
-    memoryLimitPerTask: Long)
+    memoryLimitPerTask: Long) {
+  override def toString: String = {
+    s"memoryPoolType=$memoryPoolType, memoryLimit=$memoryLimit, " +
+      s"memoryLimitPerTask=$memoryLimitPerTask"
+  }
+}
