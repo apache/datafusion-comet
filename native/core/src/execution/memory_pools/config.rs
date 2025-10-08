@@ -21,6 +21,7 @@ use crate::errors::{CometError, CometResult};
 pub(crate) enum MemoryPoolType {
     GreedyUnified,
     FairUnified,
+    FairUnifiedGlobal,
     Greedy,
     FairSpill,
     GreedyTaskShared,
@@ -63,6 +64,9 @@ pub(crate) fn parse_memory_pool_config(
     let pool_size_per_task = memory_limit_per_task as usize;
     let memory_pool_config = if off_heap_mode {
         match memory_pool_type.as_str() {
+            "fair_unified_global" => {
+                MemoryPoolConfig::new(MemoryPoolType::FairUnifiedGlobal, pool_size_global)
+            }
             "fair_unified" => {
                 MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size_per_task)
             }
