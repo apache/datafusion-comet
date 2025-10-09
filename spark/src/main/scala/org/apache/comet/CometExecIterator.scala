@@ -207,7 +207,7 @@ class CometExecIterator(
 
     nextBatch = getNextBatch
 
-    logInfo(
+    logTrace(
       s"Task $taskAttemptId memory pool usage is " +
         s"${(cometTaskMemoryManager.getUsed / 1024.0 / 1024.0).toLong} MB")
 
