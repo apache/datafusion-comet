@@ -385,7 +385,7 @@ object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
         // end up being almost the same regardless of the index. substantially scrambling the
         // seed by hashing will help. Refer to SPARK-21782 for more details.
         val partitionId = TaskContext.get().partitionId()
-        var position = new XORShiftRandom(partitionId).nextInt(numPartitions).toLong
+        var position = new XORShiftRandom(partitionId.toLong).nextInt(numPartitions).toLong
         (_: InternalRow) => {
           // The HashPartitioner will handle the `mod` by the number of partitions
           position += 1

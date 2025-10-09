@@ -25,6 +25,8 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleExchangeExec, S
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.types.{StructField, StructType}
 
+import scala.annotation.nowarn
+
 trait ShimCometShuffleExchangeExec {
   // TODO: remove after dropping Spark 3.4 support
   def apply(s: ShuffleExchangeExec, shuffleType: ShuffleType): CometShuffleExchangeExec = {
@@ -46,5 +48,6 @@ trait ShimCometShuffleExchangeExec {
     StructType(attributes.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
 
   // TODO: remove after dropping Spark 3.x support
+  @nowarn // Suppress parameter neve used warning.
   protected def getShuffleId(shuffleDependency: ShuffleDependency[Int, _, _]): Int = 0
 }

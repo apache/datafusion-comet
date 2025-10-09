@@ -26,8 +26,8 @@ class RowPartition(initialSize: Int) {
   private var rowSizes: ArrayBuffer[Int] = new ArrayBuffer[Int](initialSize)
 
   def addRow(addr: Long, size: Int): Unit = {
-    rowAddresses += addr
-    rowSizes += size
+    rowAddresses.append(addr)
+    rowSizes.append(size)
   }
 
   def getNumRows: Int = if (rowAddresses == null) {
