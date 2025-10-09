@@ -82,7 +82,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
       val toUnsafe = UnsafeProjection.create(localOutput, localOutput)
       batches.flatMap { batch =>
         numInputBatches += 1
-        numOutputRows += batch.numRows()
+        numOutputRows += batch.numRows().toLong
         batch.rowIterator().asScala.map(toUnsafe)
       }
     }
@@ -120,7 +120,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
           .flatMap(CometUtils.decodeBatches(_, this.getClass.getSimpleName))
           .flatMap { batch =>
             numInputBatches += 1
-            numOutputRows += batch.numRows()
+            numOutputRows += batch.numRows().toLong
             batch.rowIterator().asScala.map(toUnsafe)
           }
 

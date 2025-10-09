@@ -96,7 +96,7 @@ case class CometTakeOrderedAndProjectExec(
           outputPartitioning,
           serializer,
           metrics)
-        metrics("numPartitions").set(dep.partitioner.numPartitions)
+        metrics("numPartitions").set(dep.partitioner.numPartitions.toDouble)
 
         new CometShuffledBatchRDD(dep, readMetrics)
       }

@@ -445,7 +445,7 @@ object CometScanRule extends Logging {
             val reason = "Object store config not supported by " +
               s"$SCAN_NATIVE_ICEBERG_COMPAT: ${e.getMessage}"
             fallbackReasons += reason
-            configValidityMap.put(cacheKey, Some(reason))
+            configValidityMap.update(cacheKey, Some(reason))
         }
     }
 
