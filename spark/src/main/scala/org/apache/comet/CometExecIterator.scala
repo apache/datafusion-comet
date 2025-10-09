@@ -207,6 +207,10 @@ class CometExecIterator(
 
     nextBatch = getNextBatch
 
+    logInfo(
+      s"Task $taskAttemptId memory pool usage is " +
+        s"${(cometTaskMemoryManager.getUsed / 1024.0 / 1024.0).toLong} MB")
+
     if (nextBatch.isEmpty) {
       close()
       false
@@ -262,10 +266,6 @@ class CometExecIterator(
     val threadId = Thread.currentThread().getId
     nativeLib.logMemoryUsage(s"task_memory_comet_$threadId", cometTaskMemory)
     nativeLib.logMemoryUsage(s"task_memory_spark_$threadId", sparkTaskMemory)
-
-    logInfo(
-      s"Task $taskAttemptId is using $totalTaskMemory bytes of memory " +
-        s"(Comet: $cometTaskMemory, Spark: $sparkTaskMemory)")
   }
 }
 
