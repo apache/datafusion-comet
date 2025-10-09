@@ -41,8 +41,10 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Run Cargo build
+    - name: Run Cargo release build
       shell: bash
+      # it is important that we run the Scala tests against a release build rather than a debug build
+      # to make sure that no tests are relying on overflow checks that are present only in debug builds
       run: |
         cd native
         cargo build --release
