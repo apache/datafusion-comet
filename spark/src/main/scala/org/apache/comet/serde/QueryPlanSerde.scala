@@ -221,7 +221,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
   private val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // TODO SortOrder (?)
     // TODO PromotePrecision
-    // TODO CheckOverflow
     // TODO KnownFloatingPointNormalized
     // TODO ScalarSubquery
     // TODO UnscaledValue
@@ -230,6 +229,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     // TODO RegExpReplace
     classOf[Alias] -> CometAlias,
     classOf[AttributeReference] -> CometAttributeReference,
+    classOf[CheckOverflow] -> CometCheckOverflow,
     classOf[Coalesce] -> CometCoalesce,
     classOf[Literal] -> CometLiteral,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
@@ -771,28 +771,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
         // `PromotePrecision` is just a wrapper, don't need to serialize it.
         exprToProtoInternal(child, inputs, binding)
-
-      case CheckOverflow(child, dt, nullOnOverflow) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-
-        if (childExpr.isDefined) {
-          val builder = ExprOuterClass.CheckOverflow.newBuilder()
-          builder.setChild(childExpr.get)
-          builder.setFailOnError(!nullOnOverflow)
-
-          // `dataType` must be decimal type
-          val dataType = serializeDataType(dt)
-          builder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setCheckOverflow(builder)
-              .build())
-        } else {
-          withInfo(expr, child)
-          None
-        }
 
       case RegExpReplace(subject, pattern, replacement, startPosition) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
