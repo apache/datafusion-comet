@@ -332,6 +332,14 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(intToDecimal10OverflowValues, DataTypes.createDecimalType(10, 2))
   }
 
+  test("cast IntegerType to DecimalType check arbitrary scale and precision") {
+    Seq(DecimalType.MAX_PRECISION, DecimalType.MAX_SCALE, 0, 10, 15)
+      .combinations(2)
+      .map({ c =>
+        castTest(generateInts(), DataTypes.createDecimalType(c.head, c.last))
+      })
+  }
+
   test("cast IntegerType to StringType") {
     castTest(generateInts(), DataTypes.StringType)
   }
@@ -1236,7 +1244,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             case (None, None) =>
             // neither system threw an exception
             case (None, Some(e)) =>
-              // Spark succeeded but Comet failed
               throw e
             case (Some(e), None) =>
               // Spark failed but Comet succeeded

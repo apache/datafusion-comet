@@ -1501,13 +1501,16 @@ where
                         builder.append_value(scaled);
                     }
                 }
-                _ => {
-                    return Err(SparkError::NumericValueOutOfRange {
-                        value: v.to_string(),
-                        precision,
-                        scale,
-                    })
-                }
+                _ => match eval_mode {
+                    EvalMode::Ansi => {
+                        return Err(SparkError::NumericValueOutOfRange {
+                            value: v.to_string(),
+                            precision,
+                            scale,
+                        })
+                    }
+                    EvalMode::Legacy | EvalMode::Try => builder.append_null(),
+                },
             }
         }
     }
@@ -1515,6 +1518,7 @@ where
         builder.with_precision_and_scale(precision, scale)?.finish(),
     ))
 }
+
 fn cast_int_to_decimal128(
     array: &dyn Array,
     eval_mode: EvalMode,
