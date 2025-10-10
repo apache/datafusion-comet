@@ -71,10 +71,6 @@ suite. See the [Gluten Compatibility Guide] for more information.
 
 [Gluten Compatibility Guide]: https://apache.github.io/incubator-gluten-site/archives/v1.3.0/velox-backend/limitations/
 
-## ANSI Support
-
-Comet supports ANSI mode, which is important now that ANSI mode is enabled by default in Spark 4.0.0 and later.
-
 ## Performance
 
 When running a benchmark derived from TPC-H on a single node against local Parquet files, we see that both Comet
