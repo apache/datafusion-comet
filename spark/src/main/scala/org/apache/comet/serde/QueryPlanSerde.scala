@@ -862,7 +862,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case UnscaledValue(child) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
         val optExpr =
-          scalarFunctionExprToProtoWithReturnType("unscaled_value", LongType, childExpr)
+          scalarFunctionExprToProtoWithReturnType("unscaled_value", LongType, false, childExpr)
         optExprWithInfo(optExpr, expr, child)
 
       case MakeDecimal(child, precision, scale, true) =>
@@ -870,6 +870,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val optExpr = scalarFunctionExprToProtoWithReturnType(
           "make_decimal",
           DecimalType(precision, scale),
+          false,
           childExpr)
         optExprWithInfo(optExpr, expr, child)
 
@@ -981,9 +982,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
   def scalarFunctionExprToProtoWithReturnType(
       funcName: String,
       returnType: DataType,
+      failOnError: Boolean,
       args: Option[Expr]*): Option[Expr] = {
     val builder = ExprOuterClass.ScalarFunc.newBuilder()
     builder.setFunc(funcName)
+    builder.setFailOnError(failOnError)
     serializeDataType(returnType).flatMap { t =>
       builder.setReturnType(t)
       scalarFunctionExprToProto0(builder, args: _*)
@@ -993,6 +996,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   def scalarFunctionExprToProto(funcName: String, args: Option[Expr]*): Option[Expr] = {
     val builder = ExprOuterClass.ScalarFunc.newBuilder()
     builder.setFunc(funcName)
+    builder.setFailOnError(false)
     scalarFunctionExprToProto0(builder, args: _*)
   }
 

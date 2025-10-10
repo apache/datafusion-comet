@@ -22,41 +22,73 @@ use arrow::datatypes::DataType;
 use datafusion::common::{exec_err, internal_err, DataFusionError, ScalarValue};
 use datafusion::{functions::math::round::round, physical_plan::ColumnarValue};
 use std::{cmp::min, sync::Arc};
+use arrow::error::ArrowError;
+use crate::{divide_by_zero_error, EvalMode};
 
 macro_rules! integer_round {
-    ($X:expr, $DIV:expr, $HALF:expr) => {{
+    ($X:expr, $DIV:expr, $HALF:expr, $FAIL_ON_ERROR:expr) => {{
         let rem = $X % $DIV;
         if rem <= -$HALF {
-            ($X - rem).sub_wrapping($DIV)
+            if($FAIL_ON_ERROR){
+                match ($X - rem).sub_checked($DIV){
+                    Ok(v) => Ok(v),
+                    Err(_) => {
+                        return Err(ArrowError::ComputeError(divide_by_zero_error().to_string()));
+                    }
+                }
+            }
+            else{
+                Ok(($X - rem).sub_wrapping($DIV))
+            }
         } else if rem >= $HALF {
-            ($X - rem).add_wrapping($DIV)
+            if($FAIL_ON_ERROR){
+                match ($X - rem).add_checked($DIV){
+                    Ok(v) => Ok(v),
+                    Err(_) => {
+                        return Err(ArrowError::ComputeError(divide_by_zero_error().to_string()));
+                    }
+                }
+            }
+            else{
+                Ok(($X - rem).add_wrapping($DIV))
+            }
         } else {
-            $X - rem
+            if($FAIL_ON_ERROR){
+                match ($X - rem).sub_checked(/* i64 */){
+                    Ok(v) => Ok(v),
+                    Err(_) => {
+                        return Err(ArrowError::ComputeError(divide_by_zero_error().to_string()));
+                    }
+                }
+            }
+            else{
+                Ok($X - rem)
+            }
         }
     }};
 }
 
 macro_rules! round_integer_array {
-    ($ARRAY:expr, $POINT:expr, $TYPE:ty, $NATIVE:ty) => {{
+    ($ARRAY:expr, $POINT:expr, $TYPE:ty, $NATIVE:ty, $FAIL_ON_ERROR:expr) => {{
         let array = $ARRAY.as_any().downcast_ref::<$TYPE>().unwrap();
         let ten: $NATIVE = 10;
-        let result: $TYPE = if let Some(div) = ten.checked_pow((-(*$POINT)) as u32) {
+        let result = if let Some(div) = ten.checked_pow((-(*$POINT)) as u32) {
             let half = div / 2;
-            arrow::compute::kernels::arity::unary(array, |x| integer_round!(x, div, half))
+            arrow::compute::kernels::arity::try_unary(array, |x| integer_round!(x, div, half, $FAIL_ON_ERROR))
         } else {
-            arrow::compute::kernels::arity::unary(array, |_| 0)
-        };
+            arrow::compute::kernels::arity::try_unary(array, |_| Ok(0))
+        }.map_err(|e| DataFusionError::ArrowError(e))?;
         Ok(ColumnarValue::Array(Arc::new(result)))
     }};
 }
 
 macro_rules! round_integer_scalar {
-    ($SCALAR:expr, $POINT:expr, $TYPE:expr, $NATIVE:ty) => {{
+    ($SCALAR:expr, $POINT:expr, $TYPE:expr, $NATIVE:ty, $FAIL_ON_ERROR:expr) => {{
         let ten: $NATIVE = 10;
         if let Some(div) = ten.checked_pow((-(*$POINT)) as u32) {
             let half = div / 2;
             Ok(ColumnarValue::Scalar($TYPE(
-                $SCALAR.map(|x| integer_round!(x, div, half)),
+                $SCALAR.map(|x| integer_round!(x, div, half, $FAIL_ON_ERROR)),
             )))
         } else {
             Ok(ColumnarValue::Scalar($TYPE(Some(0))))
@@ -68,6 +100,7 @@ macro_rules! round_integer_scalar {
 pub fn spark_round(
     args: &[ColumnarValue],
     data_type: &DataType,
+    fail_on_error: bool
 ) -> Result<ColumnarValue, DataFusionError> {
     let value = &args[0];
     let point = &args[1];
@@ -76,10 +109,10 @@ pub fn spark_round(
     };
     match value {
         ColumnarValue::Array(array) => match array.data_type() {
-            DataType::Int64 if *point < 0 => round_integer_array!(array, point, Int64Array, i64),
-            DataType::Int32 if *point < 0 => round_integer_array!(array, point, Int32Array, i32),
-            DataType::Int16 if *point < 0 => round_integer_array!(array, point, Int16Array, i16),
-            DataType::Int8 if *point < 0 => round_integer_array!(array, point, Int8Array, i8),
+            DataType::Int64 if *point < 0 => round_integer_array!(array, point, Int64Array, i64, fail_on_error),
+            DataType::Int32 if *point < 0 => round_integer_array!(array, point, Int32Array, i32, fail_on_error),
+            DataType::Int16 if *point < 0 => round_integer_array!(array, point, Int16Array, i16, fail_on_error),
+            DataType::Int8 if *point < 0 => round_integer_array!(array, point, Int8Array, i8, fail_on_error),
             DataType::Decimal128(_, scale) if *scale >= 0 => {
                 let f = decimal_round_f(scale, point);
                 let (precision, scale) = get_precision_scale(data_type);
@@ -93,16 +126,16 @@ pub fn spark_round(
         },
         ColumnarValue::Scalar(a) => match a {
             ScalarValue::Int64(a) if *point < 0 => {
-                round_integer_scalar!(a, point, ScalarValue::Int64, i64)
+                round_integer_scalar!(a, point, ScalarValue::Int64, i64, fail_on_error)
             }
             ScalarValue::Int32(a) if *point < 0 => {
-                round_integer_scalar!(a, point, ScalarValue::Int32, i32)
+                round_integer_scalar!(a, point, ScalarValue::Int32, i32, fail_on_error)
             }
             ScalarValue::Int16(a) if *point < 0 => {
-                round_integer_scalar!(a, point, ScalarValue::Int16, i16)
+                round_integer_scalar!(a, point, ScalarValue::Int16, i16, fail_on_error)
             }
             ScalarValue::Int8(a) if *point < 0 => {
-                round_integer_scalar!(a, point, ScalarValue::Int8, i8)
+                round_integer_scalar!(a, point, ScalarValue::Int8, i8, fail_on_error)
             }
             ScalarValue::Decimal128(a, _, scale) if *scale >= 0 => {
                 let f = decimal_round_f(scale, point);
@@ -158,7 +191,7 @@ mod test {
             ]))),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
         ];
-        let ColumnarValue::Array(result) = spark_round(&args, &DataType::Float32)? else {
+        let ColumnarValue::Array(result) = spark_round(&args, &DataType::Float32,false)? else {
             unreachable!()
         };
         let floats = as_float32_array(&result)?;
@@ -176,7 +209,7 @@ mod test {
             ]))),
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
         ];
-        let ColumnarValue::Array(result) = spark_round(&args, &DataType::Float64)? else {
+        let ColumnarValue::Array(result) = spark_round(&args, &DataType::Float64, false)? else {
             unreachable!()
         };
         let floats = as_float64_array(&result)?;
@@ -193,7 +226,7 @@ mod test {
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
         ];
         let ColumnarValue::Scalar(ScalarValue::Float32(Some(result))) =
-            spark_round(&args, &DataType::Float32)?
+            spark_round(&args, &DataType::Float32, false)?
         else {
             unreachable!()
         };
@@ -209,7 +242,7 @@ mod test {
             ColumnarValue::Scalar(ScalarValue::Int64(Some(2))),
         ];
         let ColumnarValue::Scalar(ScalarValue::Float64(Some(result))) =
-            spark_round(&args, &DataType::Float64)?
+            spark_round(&args, &DataType::Float64, false)?
         else {
             unreachable!()
         };

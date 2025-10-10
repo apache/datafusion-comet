@@ -50,7 +50,8 @@ object CometCeil extends CometExpressionSerde[Ceil] {
         withInfo(expr, s"Decimal type $t has negative scale")
         None
       case _ =>
-        val optExpr = scalarFunctionExprToProtoWithReturnType("ceil", expr.dataType, childExpr)
+        val optExpr =
+          scalarFunctionExprToProtoWithReturnType("ceil", expr.dataType, false, childExpr)
         optExprWithInfo(optExpr, expr, expr.child)
     }
   }
@@ -69,7 +70,8 @@ object CometFloor extends CometExpressionSerde[Floor] {
         withInfo(expr, s"Decimal type $t has negative scale")
         None
       case _ =>
-        val optExpr = scalarFunctionExprToProtoWithReturnType("floor", expr.dataType, childExpr)
+        val optExpr =
+          scalarFunctionExprToProtoWithReturnType("floor", expr.dataType, false, childExpr)
         optExprWithInfo(optExpr, expr, expr.child)
     }
   }
@@ -118,7 +120,7 @@ object CometHex extends CometExpressionSerde[Hex] with MathExprBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
-    val optExpr = scalarFunctionExprToProtoWithReturnType("hex", expr.dataType, childExpr)
+    val optExpr = scalarFunctionExprToProtoWithReturnType("hex", expr.dataType, false, childExpr)
     optExprWithInfo(optExpr, expr, expr.child)
   }
 }
@@ -132,7 +134,12 @@ object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
     val failOnErrorExpr = exprToProtoInternal(Literal(expr.failOnError), inputs, binding)
 
     val optExpr =
-      scalarFunctionExprToProtoWithReturnType("unhex", expr.dataType, childExpr, failOnErrorExpr)
+      scalarFunctionExprToProtoWithReturnType(
+        "unhex",
+        expr.dataType,
+        false,
+        childExpr,
+        failOnErrorExpr)
     optExprWithInfo(optExpr, expr, expr.child)
   }
 }
