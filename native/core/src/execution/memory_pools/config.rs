@@ -59,16 +59,10 @@ pub(crate) fn parse_memory_pool_config(
     memory_limit: i64,
     memory_limit_per_task: i64,
 ) -> CometResult<MemoryPoolConfig> {
-    let pool_size_global = memory_limit as usize;
-    let pool_size_per_task = memory_limit_per_task as usize;
+    let pool_size = memory_limit as usize;
     let memory_pool_config = if off_heap_mode {
         match memory_pool_type.as_str() {
-            "fair_unified_global" => {
-                MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size_global)
-            }
-            "fair_unified" => {
-                MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size_per_task)
-            }
+            "fair_unified" => MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size),
             "greedy_unified" => {
                 // the `unified` memory pool interacts with Spark's memory pool to allocate
                 // memory therefore does not need a size to be explicitly set. The pool size
@@ -83,6 +77,7 @@ pub(crate) fn parse_memory_pool_config(
         }
     } else {
         // Use the memory pool from DF
+        let pool_size_per_task = memory_limit_per_task as usize;
         match memory_pool_type.as_str() {
             "fair_spill_task_shared" => {
                 MemoryPoolConfig::new(MemoryPoolType::FairSpillTaskShared, pool_size_per_task)
@@ -91,11 +86,9 @@ pub(crate) fn parse_memory_pool_config(
                 MemoryPoolConfig::new(MemoryPoolType::GreedyTaskShared, pool_size_per_task)
             }
             "fair_spill_global" => {
-                MemoryPoolConfig::new(MemoryPoolType::FairSpillGlobal, pool_size_global)
+                MemoryPoolConfig::new(MemoryPoolType::FairSpillGlobal, pool_size)
             }
-            "greedy_global" => {
-                MemoryPoolConfig::new(MemoryPoolType::GreedyGlobal, pool_size_global)
-            }
+            "greedy_global" => MemoryPoolConfig::new(MemoryPoolType::GreedyGlobal, pool_size),
             "fair_spill" => MemoryPoolConfig::new(MemoryPoolType::FairSpill, pool_size_per_task),
             "greedy" => MemoryPoolConfig::new(MemoryPoolType::Greedy, pool_size_per_task),
             "unbounded" => MemoryPoolConfig::new(MemoryPoolType::Unbounded, 0),

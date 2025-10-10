@@ -515,7 +515,7 @@ object CometConf extends ShimCometConf {
         "'greedy_task_shared', 'fair_spill_task_shared', 'greedy_global', 'fair_spill_global', " +
         "and `unbounded`. When running Spark in off-heap mode, available pool types are " +
         "'greedy_unified' and `fair_unified`. The default pool type is `greedy_task_shared` " +
-        s"for on-heap mode and `unified` for off-heap mode. $TUNING_GUIDE.")
+        s"for on-heap mode and `fair_unified` for off-heap mode. $TUNING_GUIDE.")
     .stringConf
     .createWithDefault("default")
 
@@ -526,7 +526,7 @@ object CometConf extends ShimCometConf {
           "Only applies to off-heap mode. " +
           s"$TUNING_GUIDE.")
       .doubleConf
-      .createWithDefault(0.9)
+      .createWithDefault(1.0)
 
   val COMET_SCAN_PREFETCH_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.preFetch.enabled")

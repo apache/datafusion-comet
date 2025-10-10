@@ -280,7 +280,7 @@ object CometExecIterator extends Logging {
       val memoryFraction = CometConf.COMET_EXEC_MEMORY_POOL_FRACTION.get()
       val memoryLimit = (offHeapSize * memoryFraction).toLong
       val memoryLimitPerTask = (memoryLimit.toFloat * coresPerTask / numCores).toLong
-      val memoryPoolType = getMemoryPoolType(defaultValue = "fair_unified_global")
+      val memoryPoolType = getMemoryPoolType(defaultValue = "fair_unified")
       logInfo(
         s"memoryPoolType=$memoryPoolType, " +
           s"offHeapSize=${toMB(offHeapSize)}, " +
