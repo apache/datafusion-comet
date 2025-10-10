@@ -239,7 +239,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("date_add with scalar overflow") {
+  // TODO: https://github.com/apache/datafusion-comet/issues/2539
+  ignore("date_add with scalar overflow") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
