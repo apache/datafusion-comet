@@ -86,16 +86,6 @@ class CometExecIterator(
     val conf = SparkEnv.get.conf
     val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
 
-    val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
-    val memoryLimit = if (offHeapMode) {
-      // in unified mode we share off-heap memory with Spark
-      ByteUnit.MiB.toBytes(conf.getSizeAsMb("spark.memory.offHeap.size"))
-    } else {
-      // we'll use the built-in memory pool from DF, and initializes with `memory_limit`
-      // and `memory_fraction` below.
-      CometSparkSessionExtensions.getCometMemoryOverhead(conf)
-    }
-
     // serialize Comet related Spark configs in protobuf format
     val builder = ConfigMap.newBuilder()
     conf.getAll.filter(_._1.startsWith(CometConf.COMET_PREFIX)).foreach { case (k, v) =>
