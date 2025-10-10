@@ -2990,7 +2990,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("ANSI support for integral divide (division by zero)") {
     val data = Seq((Integer.MAX_VALUE, 0))
     Seq("true", "false").foreach { p =>
-      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> p) {
         withParquetTable(data, "tbl") {
           val res = spark.sql("""
                 |SELECT
