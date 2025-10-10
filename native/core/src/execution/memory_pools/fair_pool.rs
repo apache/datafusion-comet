@@ -133,7 +133,10 @@ impl MemoryPool for CometFairMemoryPool {
         if additional > 0 {
             let mut state = self.state.lock();
             let num = state.num;
-            let limit = self.pool_size.checked_div(num).unwrap();
+            let limit = self
+                .pool_size
+                .checked_div(num)
+                .expect("overflow in checked_div");
             let size = reservation.size();
             if limit < size + additional {
                 return resources_err!(
@@ -155,7 +158,10 @@ impl MemoryPool for CometFairMemoryPool {
                     state.used
                 );
             }
-            state.used = state.used.checked_add(additional).unwrap();
+            state.used = state
+                .used
+                .checked_add(additional)
+                .expect("overflow in checked_add");
         }
         Ok(())
     }
