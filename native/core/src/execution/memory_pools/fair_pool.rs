@@ -70,7 +70,7 @@ impl CometFairMemoryPool {
         }
     }
 
-    fn acquire_from_spark(&self, additional: usize) -> CometResult<i64> {
+    fn acquire(&self, additional: usize) -> CometResult<i64> {
         let mut env = JVMClasses::get_env()?;
         let handle = self.task_memory_manager_handle.as_obj();
         unsafe {
@@ -79,7 +79,7 @@ impl CometFairMemoryPool {
         }
     }
 
-    fn release_to_spark(&self, size: usize) -> CometResult<()> {
+    fn release(&self, size: usize) -> CometResult<()> {
         let mut env = JVMClasses::get_env()?;
         let handle = self.task_memory_manager_handle.as_obj();
         unsafe {
@@ -119,7 +119,7 @@ impl MemoryPool for CometFairMemoryPool {
             if size < subtractive {
                 panic!("Failed to release {subtractive} bytes where only {size} bytes reserved")
             }
-            self.release_to_spark(subtractive)
+            self.release(subtractive)
                 .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
             state.used = state.used.checked_sub(subtractive).unwrap();
         }
@@ -144,12 +144,12 @@ impl MemoryPool for CometFairMemoryPool {
                 );
             }
 
-            let acquired = self.acquire_from_spark(additional)?;
+            let acquired = self.acquire(additional)?;
             // If the number of bytes we acquired is less than the requested, return an error,
             // and hopefully will trigger spilling from the caller side.
             if acquired < additional as i64 {
                 // Release the acquired bytes before throwing error
-                self.release_to_spark(acquired as usize)?;
+                self.release(acquired as usize)?;
 
                 return resources_err!(
                     "Failed to acquire {} bytes, only got {} bytes. Reserved: {} bytes",
