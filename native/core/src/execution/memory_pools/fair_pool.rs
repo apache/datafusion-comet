@@ -36,7 +36,7 @@ use parking_lot::Mutex;
 
 /// A DataFusion fair `MemoryPool` implementation for Comet. Internally this is
 /// implemented via delegating calls to [`crate::jvm_bridge::CometTaskMemoryManager`].
-pub struct CometFairUnifiedMemoryPool {
+pub struct CometFairMemoryPool {
     task_memory_manager_handle: Arc<GlobalRef>,
     pool_size: usize,
     state: Mutex<CometFairPoolState>,
@@ -47,7 +47,7 @@ struct CometFairPoolState {
     num: usize,
 }
 
-impl Debug for CometFairUnifiedMemoryPool {
+impl Debug for CometFairMemoryPool {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         let state = self.state.lock();
         f.debug_struct("CometFairMemoryPool")
@@ -58,11 +58,11 @@ impl Debug for CometFairUnifiedMemoryPool {
     }
 }
 
-impl CometFairUnifiedMemoryPool {
+impl CometFairMemoryPool {
     pub fn new(
         task_memory_manager_handle: Arc<GlobalRef>,
         pool_size: usize,
-    ) -> CometFairUnifiedMemoryPool {
+    ) -> CometFairMemoryPool {
         Self {
             task_memory_manager_handle,
             pool_size,
@@ -88,10 +88,10 @@ impl CometFairUnifiedMemoryPool {
     }
 }
 
-unsafe impl Send for CometFairUnifiedMemoryPool {}
-unsafe impl Sync for CometFairUnifiedMemoryPool {}
+unsafe impl Send for CometFairMemoryPool {}
+unsafe impl Sync for CometFairMemoryPool {}
 
-impl MemoryPool for CometFairUnifiedMemoryPool {
+impl MemoryPool for CometFairMemoryPool {
     fn register(&self, _: &MemoryConsumer) {
         let mut state = self.state.lock();
         state.num = state

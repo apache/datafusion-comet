@@ -23,7 +23,7 @@ mod unified_pool;
 use datafusion::execution::memory_pool::{
     FairSpillPool, GreedyMemoryPool, MemoryPool, TrackConsumersPool, UnboundedMemoryPool,
 };
-use fair_pool::CometFairUnifiedMemoryPool;
+use fair_pool::CometFairMemoryPool;
 use jni::objects::GlobalRef;
 use once_cell::sync::OnceCell;
 use std::num::NonZeroUsize;
@@ -51,10 +51,8 @@ pub(crate) fn create_memory_pool(
         }
         MemoryPoolType::FairUnified => {
             // Set Comet fair memory pool for native
-            let memory_pool = CometFairUnifiedMemoryPool::new(
-                comet_task_memory_manager,
-                memory_pool_config.pool_size,
-            );
+            let memory_pool =
+                CometFairMemoryPool::new(comet_task_memory_manager, memory_pool_config.pool_size);
             Arc::new(TrackConsumersPool::new(
                 memory_pool,
                 NonZeroUsize::new(NUM_TRACKED_CONSUMERS).unwrap(),
