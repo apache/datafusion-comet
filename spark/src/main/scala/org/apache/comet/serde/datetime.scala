@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, WeekDay, WeekOfYear, Year}
-import org.apache.spark.sql.types.{DateType, IntegerType}
+import org.apache.spark.sql.types.IntegerType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
@@ -255,18 +255,7 @@ object CometDateAdd extends CometScalarFunction[DateAdd]("date_add")
 
 object CometDateSub extends CometScalarFunction[DateSub]("date_sub")
 
-object CometTruncDate extends CometExpressionSerde[TruncDate] {
-  override def convert(
-      expr: TruncDate,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(expr.date, inputs, binding)
-    val formatExpr = exprToProtoInternal(expr.format, inputs, binding)
-    val optExpr =
-      scalarFunctionExprToProtoWithReturnType("date_trunc", DateType, childExpr, formatExpr)
-    optExprWithInfo(optExpr, expr, expr.date, expr.format)
-  }
-}
+object CometTruncDate extends CometScalarFunction[TruncDate]("date_trunc")
 
 object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
   override def convert(
