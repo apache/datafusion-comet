@@ -21,7 +21,6 @@ package org.apache.comet
 
 import java.io.File
 
-import scala.collection.mutable.ListBuffer
 import scala.util.Random
 import scala.util.matching.Regex
 
@@ -35,7 +34,6 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.Compatible
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -1049,13 +1047,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ArrayType to StringType") {
-    val scanImpl = sys.env
-      .getOrElse(
-        "COMET_PARQUET_SCAN_IMPL",
-        conf.getConfString(CometConf.COMET_NATIVE_SCAN_IMPL.key, "native_comet"))
-    val cometScanTypeChecker = CometScanTypeChecker(scanImpl)
-    val hasIncompatibleType =
-      (dt: DataType) => !cometScanTypeChecker.isTypeSupported(dt, scanImpl, ListBuffer.empty)
     Seq(
       BooleanType,
       StringType,
@@ -1069,7 +1060,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DecimalType(38, 18),
       BinaryType).foreach { dt =>
       val input = generateArrays(100, dt)
-      castTest(input, StringType, hasIncompatibleType(input.schema))
+      castTest(input, StringType, hasIncompatibleType = usingParquetExecWithIncompatTypes)
     }
   }
 
