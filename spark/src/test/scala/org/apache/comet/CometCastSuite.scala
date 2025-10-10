@@ -1049,7 +1049,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ArrayType to StringType") {
-
     val scanImpl = sys.env
       .getOrElse(
         "COMET_PARQUET_SCAN_IMPL",
