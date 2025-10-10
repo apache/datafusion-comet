@@ -68,10 +68,6 @@ class Native extends NativeBase {
       memoryLimit: Long,
       memoryLimitPerTask: Long,
       taskAttemptId: Long,
-      debug: Boolean,
-      explain: Boolean,
-      tracingEnabled: Boolean,
-      maxTempDirectorySize: Long,
       keyUnwrapper: CometFileKeyUnwrapper): Long
   // scalastyle:on
 
