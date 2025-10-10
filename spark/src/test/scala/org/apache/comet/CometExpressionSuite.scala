@@ -2988,20 +2988,29 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for integral divide (division by zero)") {
-    val data = Seq((Integer.MIN_VALUE, 0))
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
-      withParquetTable(data, "tbl") {
-        val res = spark.sql("""
-                              |SELECT
-                              |  _1 div _2
-                              |  from tbl
-                              |  """.stripMargin)
+    val data = Seq((Integer.MAX_VALUE, 0))
+    Seq("true", "false").foreach { p =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withParquetTable(data, "tbl") {
+          val res = spark.sql("""
+                |SELECT
+                |  _1 div _2
+                |  from tbl
+                |  """.stripMargin)
 
-        checkSparkMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("Division by zero"))
-          case _ => fail("Exception should be thrown")
+          checkSparkMaybeThrows(res) match {
+            case (Some(sparkException), Some(cometException)) =>
+              assert(sparkException.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
+              assert(cometException.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
+            case (None, None) => checkSparkAnswerAndOperator(res)
+            case (None, Some(ex)) =>
+              fail(
+                "Comet threw an exception but Spark did not. Comet exception: " + ex.getMessage)
+            case (Some(sparkException), None) =>
+              fail(
+                "Spark threw an exception but Comet did not. Spark exception: " +
+                  sparkException.getMessage)
+          }
         }
       }
     }

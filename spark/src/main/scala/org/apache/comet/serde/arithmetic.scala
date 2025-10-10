@@ -200,7 +200,7 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
 
     val rightExpr = if (expr.evalMode != EvalMode.ANSI) nullIfWhenPrimitive(right) else right
 
-    val dataType = (left.dataType, right.dataType) match {
+    val dataType = (left.dataType, rightExpr.dataType) match {
       case (l: DecimalType, r: DecimalType) =>
         // copy from IntegralDivide.resultDecimalType
         val intDig = l.precision - l.scale + r.scale
