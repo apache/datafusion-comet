@@ -45,7 +45,7 @@ and requiring shuffle memory to be separately configured.
 The recommended way to allocate memory for Comet is to set `spark.memory.offHeap.enabled=true`. This allows
 Comet to share an off-heap memory pool with Spark, reducing the overall memory overhead. The size of the pool is
 specified by `spark.memory.offHeap.size`. For more details about Spark off-heap memory mode, please refer to
-[Spark documentation]. For full details on configuring Comet memory in off-heap mode, see the [advanced memory tuning] 
+[Spark documentation]. For full details on configuring Comet memory in off-heap mode, see the [Advanced Memory Tuning] 
 section of this guide.
 
 [Spark documentation]: https://spark.apache.org/docs/latest/configuration.html
@@ -66,7 +66,7 @@ Comet supports native shuffle and columnar shuffle (these terms are explained in
 In on-heap mode, columnar shuffle memory must be separately allocated using `spark.comet.columnar.shuffle.memorySize`.
 If this setting is not provided, it will be calculated by multiplying `spark.comet.memoryOverhead` by
 `spark.comet.columnar.shuffle.memory.factor` (default value is `1.0`). If a shuffle exceeds this amount of memory
-then the query will fail. For full details on configuring Comet memory in on-heap mode, see the [advanced memory tuning]
+then the query will fail. For full details on configuring Comet memory in on-heap mode, see the [Advanced Memory Tuning]
 section of this guide.
 
 [shuffle]: #shuffle
