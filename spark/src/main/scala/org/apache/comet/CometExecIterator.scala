@@ -266,8 +266,8 @@ class CometExecIterator(
 object CometExecIterator extends Logging {
 
   def getMemoryConfig(conf: SparkConf): MemoryConfig = {
-    val numCores = numDriverOrExecutorCores(conf).toFloat
-    val coresPerTask = conf.get("spark.task.cpus", "1").toFloat
+    val numCores = numDriverOrExecutorCores(conf)
+    val coresPerTask = conf.get("spark.task.cpus", "1").toInt
     // there are different paths for on-heap vs off-heap mode
     val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
     if (offHeapMode) {
@@ -312,8 +312,15 @@ object CometExecIterator extends Logging {
       if (threads == "*") Runtime.getRuntime.availableProcessors() else threads.toInt
     }
 
+    // If running in local mode, get number of threads from the spark.master setting.
+    // See https://spark.apache.org/docs/latest/submitting-applications.html#master-urls
+    // for supported formats
+
+    // `local[*]` means using all available cores and `local[2]` means using 2 cores.
     val LOCAL_N_REGEX = """local\[([0-9]+|\*)\]""".r
+    // Also handle format `local[num-worker-threads, max-failures]
     val LOCAL_N_FAILURES_REGEX = """local\[([0-9]+|\*)\s*,\s*([0-9]+)\]""".r
+
     val master = conf.get("spark.master")
     master match {
       case "local" => 1
