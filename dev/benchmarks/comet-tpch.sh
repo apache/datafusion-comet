@@ -22,7 +22,7 @@ $SPARK_HOME/sbin/stop-master.sh
 $SPARK_HOME/sbin/stop-worker.sh
 
 $SPARK_HOME/sbin/start-master.sh
-$SPARK_HOME/sbin/start-worker.sh $SPARK_MASTER
+RUST_BACKTRACE=1 $SPARK_HOME/sbin/start-worker.sh $SPARK_MASTER
 
 $SPARK_HOME/bin/spark-submit \
     --master $SPARK_MASTER \
