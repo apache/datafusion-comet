@@ -1249,7 +1249,11 @@ fn cast_array_to_string(
     let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
     let mut str = String::with_capacity(array.len() * 16);
 
-    let casted_values = cast_array(Arc::clone(array.values()), &DataType::Utf8, spark_cast_options)?;
+    let casted_values = cast_array(
+        Arc::clone(array.values()),
+        &DataType::Utf8,
+        spark_cast_options,
+    )?;
     let string_values = casted_values
         .as_any()
         .downcast_ref::<StringArray>()
