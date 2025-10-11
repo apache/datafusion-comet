@@ -1248,25 +1248,34 @@ fn cast_array_to_string(
 ) -> DataFusionResult<ArrayRef> {
     let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
     let mut str = String::with_capacity(array.len() * 16);
+
+    let casted_values = cast_array(Arc::clone(array.values()), &DataType::Utf8, spark_cast_options)?;
+    let string_values = casted_values
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("Casted values should be StringArray");
+
+    let offsets = array.offsets();
     for row_index in 0..array.len() {
         if array.is_null(row_index) {
             builder.append_null();
         } else {
             str.clear();
-            let value_ref = array.value(row_index);
-            let native_cast_result = cast_array(value_ref, &Utf8, spark_cast_options).unwrap();
-            let string_array = native_cast_result
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap();
-            let mut any_fields_written = false;
+            let start = offsets[row_index] as usize;
+            let end = offsets[row_index + 1] as usize;
+
             str.push('[');
-            for s in string_array.iter() {
-                if any_fields_written {
+            let mut first = true;
+            for idx in start..end {
+                if !first {
                     str.push_str(", ");
                 }
-                str.push_str(s.unwrap_or(&spark_cast_options.null_string));
-                any_fields_written = true;
+                if string_values.is_null(idx) {
+                    str.push_str(&spark_cast_options.null_string);
+                } else {
+                    str.push_str(string_values.value(idx));
+                }
+                first = false;
             }
             str.push(']');
             builder.append_value(&str);
