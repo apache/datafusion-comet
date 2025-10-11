@@ -50,6 +50,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
 
   override def getSupportLevel(cast: Cast): SupportLevel = {
     if (cast.child.isInstanceOf[Literal]) {
+      // casting from literal is compatible because we delegate to Spark
+      // further data type checks will be performed by CometLiteral
       Compatible()
     } else {
       isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
@@ -61,9 +63,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     cast.child match {
-      case l: Literal =>
-        val value = cast.eval()
-        exprToProtoInternal(Literal(value, l.dataType), inputs, binding)
+      case _: Literal =>
+        exprToProtoInternal(Literal.create(cast.eval(), cast.dataType), inputs, binding)
       case _ =>
         val childExpr = exprToProtoInternal(cast.child, inputs, binding)
         if (childExpr.isDefined) {

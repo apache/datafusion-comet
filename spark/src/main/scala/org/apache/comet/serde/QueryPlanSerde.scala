@@ -646,7 +646,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val conf = SQLConf.get
 
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       val exprConfName = handler.getExprConfigName(expr)
