@@ -30,7 +30,7 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
@@ -1046,6 +1046,29 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(10, 0))
   }
 
+  test("cast ArrayType to StringType") {
+    val scanImpl = sys.env
+      .getOrElse(
+        "COMET_PARQUET_SCAN_IMPL",
+        conf.getConfString(CometConf.COMET_NATIVE_SCAN_IMPL.key, "native_comet"))
+    val isNativeCometScan = scanImpl == "native_comet"
+    Seq(
+      BooleanType,
+      StringType,
+      ByteType,
+      IntegerType,
+      LongType,
+      ShortType,
+      //      FloatType,
+      //      DoubleType,
+      DecimalType(10, 2),
+      DecimalType(38, 18),
+      BinaryType).foreach { dt =>
+      val input = generateArrays(100, dt)
+      castTest(input, StringType, hasIncompatibleType = isNativeCometScan)
+    }
+  }
+
   private def generateFloats(): DataFrame = {
     withNulls(gen.generateFloats(dataSize)).toDF("a")
   }
@@ -1072,6 +1095,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def generateLongs(): DataFrame = {
     withNulls(gen.generateLongs(dataSize)).toDF("a")
+  }
+
+  private def generateArrays(rowSize: Int, elementType: DataType): DataFrame = {
+    import scala.collection.JavaConverters._
+    val schema = StructType(Seq(StructField("a", ArrayType(elementType), true)))
+    spark.createDataFrame(gen.generateRows(rowSize, schema).asJava, schema)
   }
 
   // https://github.com/apache/datafusion-comet/issues/2038
