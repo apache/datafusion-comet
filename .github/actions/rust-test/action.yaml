@@ -61,8 +61,14 @@ runs:
         cd common
         ../mvnw -B clean compile -DskipTests
 
+    - name: Install nextest
+      shell: bash
+      run: |
+        cargo install cargo-nextest --locked
+
     - name: Run Cargo test
       shell: bash
       run: |
         cd native
-        RUST_BACKTRACE=1 cargo test
+        RUST_BACKTRACE=1 cargo nextest run
+
