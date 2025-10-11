@@ -1047,6 +1047,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ArrayType to StringType") {
+    val scanImpl = sys.env
+      .getOrElse(
+        "COMET_PARQUET_SCAN_IMPL",
+        conf.getConfString(CometConf.COMET_NATIVE_SCAN_IMPL.key, "native_comet"))
+    val isNativeCometScan = scanImpl == "native_comet"
     Seq(
       BooleanType,
       StringType,
@@ -1060,7 +1065,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DecimalType(38, 18),
       BinaryType).foreach { dt =>
       val input = generateArrays(100, dt)
-      castTest(input, StringType, hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      castTest(input, StringType, hasIncompatibleType = isNativeCometScan)
     }
   }
 
