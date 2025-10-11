@@ -67,7 +67,7 @@ object CometUpper extends CometCaseConversionBase[Upper]("upper")
 object CometLower extends CometCaseConversionBase[Lower]("lower")
 
 object CometLength extends CometScalarFunction[Length]("length") {
-  override def getSupportLevel(expr: Length): SupportLevel = expr.dataType match {
+  override def getSupportLevel(expr: Length): SupportLevel = expr.child.dataType match {
     case _: BinaryType => Unsupported(Some("Length on BinaryType is not supported"))
     case _ => Compatible()
   }
