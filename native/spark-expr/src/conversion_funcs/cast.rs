@@ -23,7 +23,6 @@ use arrow::array::{
     Decimal128Builder, DictionaryArray, GenericByteArray, ListArray, StringArray, StructArray,
 };
 use arrow::compute::can_cast_types;
-use arrow::datatypes::DataType::Utf8;
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, DataType, GenericBinaryType, Schema,
 };
