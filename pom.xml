@@ -742,7 +742,11 @@ under the License.
                               <arg>-unchecked</arg>
                               <arg>-feature</arg>
                               <arg>-Xlint:_</arg>
+                              <!--
+                              To-do:
+                              CometColumnarToRowExec.scala:117: dead code following this construct
                               <arg>-Ywarn-dead-code</arg>
+                              -->
                               <arg>-Ywarn-numeric-widen</arg>
                               <arg>-Ywarn-value-discard</arg>
                               <arg>-Ywarn-unused:imports,patvars,privates,locals,params,-implicits</arg>
