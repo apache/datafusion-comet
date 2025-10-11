@@ -1,3 +1,0 @@
-[profile.ci]
-# Do not cancel the test run on the first failure.
-fail-fast = false

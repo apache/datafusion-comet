@@ -70,5 +70,5 @@ runs:
       shell: bash
       run: |
         cd native
-        RUST_BACKTRACE=1 cargo nextest --profile ci run
+        RUST_BACKTRACE=1 cargo nextest run
 
