@@ -21,8 +21,8 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, InitCap, Like, Literal, Lower, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
-import org.apache.spark.sql.types.{DataTypes, LongType, StringType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, InitCap, Length, Like, Literal, Lower, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -65,6 +65,13 @@ class CometCaseConversionBase[T <: Expression](function: String)
 object CometUpper extends CometCaseConversionBase[Upper]("upper")
 
 object CometLower extends CometCaseConversionBase[Lower]("lower")
+
+object CometLength extends CometScalarFunction[Length]("length") {
+  override def getSupportLevel(expr: Length): SupportLevel = expr.dataType match {
+    case _: BinaryType => Unsupported(Some("Length on BinaryType is not supported"))
+    case _ => Compatible()
+  }
+}
 
 object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
 
