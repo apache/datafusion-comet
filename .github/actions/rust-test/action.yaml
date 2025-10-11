@@ -62,15 +62,13 @@ runs:
         ../mvnw -B clean compile -DskipTests
 
     - name: Install nextest
-      uses: baptiste0928/cargo-install@v3
-      with:
-        crate: cargo-nextest
-        locked: true
+      shell: bash
+      run: |
+        cargo install cargo-nextest --locked
 
     - name: Run Cargo test
       shell: bash
       run: |
         cd native
-        cargo install cargo-nextest --locked
         RUST_BACKTRACE=1 cargo nextest --profile ci run
 
