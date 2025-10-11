@@ -18,14 +18,17 @@
  */
 package org.apache.comet.shims
 
-import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.CommonStringExprs
+import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
+import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
+import org.apache.comet.serde.QueryPlanSerde.{binaryOutputStyle, exprToProtoInternal}
+
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.{BinaryType, BooleanType, StringType}
+import org.apache.spark.sql.types.{BinaryType, BooleanType, DataTypes, StringType}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -61,6 +64,44 @@ trait CometExprShim extends CommonStringExprs {
                   BooleanType) =>
           val Seq(bin, charset, _, _) = s.arguments
           stringDecode(expr, charset, bin, inputs, binding)
+
+        case expr: ToPrettyString =>
+          val child = expr.asInstanceOf[UnaryExpression].child
+          val timezoneId = expr.asInstanceOf[TimeZoneAwareExpression].timeZoneId
+
+          val castSupported = CometCast.isSupported(
+            child.dataType,
+            DataTypes.StringType,
+            timezoneId,
+            CometEvalMode.TRY)
+
+          val isCastSupported = castSupported match {
+            case Compatible(_) => true
+            case Incompatible(_) => true
+            case _ => false
+          }
+
+          if (isCastSupported) {
+            exprToProtoInternal(child, inputs, binding) match {
+              case Some(p) =>
+                val toPrettyString = ExprOuterClass.ToPrettyString
+                  .newBuilder()
+                  .setChild(p)
+                  .setTimezone(timezoneId.getOrElse("UTC"))
+                  .setBinaryOutputStyle(binaryOutputStyle)
+                  .build()
+                Some(
+                  ExprOuterClass.Expr
+                    .newBuilder()
+                    .setToPrettyString(toPrettyString)
+                    .build())
+              case _ =>
+                withInfo(expr, child)
+                None
+            }
+          } else {
+            None
+          }
 
         case _ => None
       }
