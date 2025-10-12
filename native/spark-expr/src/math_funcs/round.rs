@@ -30,34 +30,25 @@ macro_rules! integer_round {
         let rem = $X % $DIV;
         if rem <= -$HALF {
             if $FAIL_ON_ERROR {
-                match ($X - rem).sub_checked($DIV) {
-                    Ok(v) => Ok(v),
-                    Err(_e) => Err(ArrowError::ComputeError(
-                        arithmetic_overflow_error("integer").to_string(),
-                    )),
-                }
+                ($X - rem).sub_checked($DIV).map_err(|_| {
+                    ArrowError::ComputeError(arithmetic_overflow_error("integer").to_string())
+                })
             } else {
                 Ok(($X - rem).sub_wrapping($DIV))
             }
         } else if rem >= $HALF {
             if $FAIL_ON_ERROR {
-                match ($X - rem).add_checked($DIV) {
-                    Ok(v) => Ok(v),
-                    Err(_e) => Err(ArrowError::ComputeError(
-                        arithmetic_overflow_error("integer").to_string(),
-                    )),
-                }
+                ($X - rem).add_checked($DIV).map_err(|_| {
+                    ArrowError::ComputeError(arithmetic_overflow_error("integer").to_string())
+                })
             } else {
                 Ok(($X - rem).add_wrapping($DIV))
             }
         } else {
             if $FAIL_ON_ERROR {
-                match $X.sub_checked(rem) {
-                    Ok(v) => Ok(v),
-                    Err(_e) => Err(ArrowError::ComputeError(
-                        arithmetic_overflow_error("integer").to_string(),
-                    )),
-                }
+                $X.sub_checked(rem).map_err(|_| {
+                    ArrowError::ComputeError(arithmetic_overflow_error("integer").to_string())
+                })
             } else {
                 Ok($X.sub_wrapping(rem))
             }
