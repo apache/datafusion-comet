@@ -56,7 +56,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
-    """[ARITHMETIC_OVERFLOW] overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
+    """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
 
@@ -1516,9 +1516,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           128,
           randomSize = 100)
         // this test requires native_comet scan due to unsigned u8/u16 issue
-        withSQLConf(
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
-          SQLConf.ANSI_ENABLED.key -> "true") {
+        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
           withParquetTable(path.toString, "tbl") {
             for (s <- Seq(-5, -1, 0, 1, 5, -1000, 1000, -323, -308, 308, -15, 15, -16, 16,
                 null)) {
