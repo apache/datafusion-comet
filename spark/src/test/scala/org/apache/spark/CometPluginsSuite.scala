@@ -31,7 +31,7 @@ class CometPluginsSuite extends CometTestBase {
     conf.set("spark.plugins", "org.apache.spark.CometPlugin")
     conf.set("spark.comet.enabled", "true")
     conf.set("spark.comet.exec.enabled", "true")
-    conf.set("spark.comet.exec.onheap.enabled", "true")
+    conf.set("spark.comet.exec.onHeap.enabled", "true")
     conf
   }
 
@@ -100,7 +100,7 @@ class CometPluginsDefaultSuite extends CometTestBase {
     conf.set("spark.plugins", "org.apache.spark.CometPlugin")
     conf.set("spark.comet.enabled", "true")
     conf.set("spark.comet.exec.shuffle.enabled", "true")
-    conf.set("spark.comet.exec.onheap.enabled", "true")
+    conf.set("spark.comet.exec.onHeap.enabled", "true")
     conf
   }
 
@@ -130,7 +130,7 @@ class CometPluginsNonOverrideSuite extends CometTestBase {
     conf.set("spark.comet.enabled", "true")
     conf.set("spark.comet.exec.shuffle.enabled", "false")
     conf.set("spark.comet.exec.enabled", "false")
-    conf.set("spark.comet.exec.onheap.enabled", "true")
+    conf.set("spark.comet.exec.onHeap.enabled", "true")
     conf
   }
 

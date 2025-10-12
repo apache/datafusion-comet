@@ -511,7 +511,7 @@ object CometConf extends ShimCometConf {
       .createWithDefault(false)
 
   val COMET_ENABLE_ONHEAP_MODE: ConfigEntry[Boolean] =
-    conf("spark.comet.exec.onheap.enabled")
+    conf("spark.comet.exec.onHeap.enabled")
       .doc("Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests.")
       .booleanConf
       .createWithDefault(sys.env.getOrElse("ENABLE_COMET_ONHEAP", "false").toBoolean)

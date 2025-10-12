@@ -56,7 +56,7 @@ section of this guide.
 Support for on-heap memory pools is deprecated and will be removed from a future release.
 ```
 
-Comet is disabled by default in on-heap mode, but can be enabled by setting `spark.comet.exec.onheap.enabled=true`.
+Comet is disabled by default in on-heap mode, but can be enabled by setting `spark.comet.exec.onHeap.enabled=true`.
 
 When running in on-heap mode, Comet memory can be allocated by setting `spark.comet.memoryOverhead`. If this setting
 is not provided, it will be calculated by multiplying the current Spark executor memory by
