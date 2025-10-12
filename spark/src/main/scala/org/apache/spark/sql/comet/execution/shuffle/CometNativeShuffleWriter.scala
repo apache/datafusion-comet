@@ -60,7 +60,8 @@ class CometNativeShuffleWriter[K, V](
   private val OFFSET_LENGTH = 8
 
   var partitionLengths: Array[Long] = _
-  var mapStatus: MapStatus = _
+  // Store MapStatus opaquely as AnyRef to avoid private[spark] visibility issues; cast back when needed.
+  var mapStatus: AnyRef = _
 
   override def write(inputs: Iterator[Product2[K, V]]): Unit = {
     val shuffleBlockResolver =
@@ -302,7 +303,7 @@ class CometNativeShuffleWriter[K, V](
 
   override def stop(success: Boolean): Option[MapStatus] = {
     if (success) {
-      Some(mapStatus)
+      Some(mapStatus.asInstanceOf[MapStatus])
     } else {
       None
     }
