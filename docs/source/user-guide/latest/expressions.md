@@ -79,6 +79,7 @@ incompatible expressions.
 | StringInstr     | Yes               |                                                                                                            |
 | StringRepeat    | Yes               | Negative argument for number of times to repeat causes exception                                           |
 | StringReplace   | Yes               |                                                                                                            |
+| StringLPad      | Yes               |                                                                                                            |
 | StringRPad      | Yes               |                                                                                                            |
 | StringSpace     | Yes               |                                                                                                            |
 | StringTranslate | Yes               |                                                                                                            |
@@ -92,7 +93,7 @@ incompatible expressions.
 ## Date/Time Functions
 
 | Expression     | SQL                          | Spark-Compatible? | Compatibility Notes                                                                                                  |
-|----------------|------------------------------| ----------------- |----------------------------------------------------------------------------------------------------------------------|
+| -------------- | ---------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------- |
 | DateAdd        | `date_add`                   | Yes               |                                                                                                                      |
 | DateSub        | `date_sub`                   | Yes               |                                                                                                                      |
 | DatePart       | `date_part(field, source)`   | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
@@ -117,14 +118,14 @@ incompatible expressions.
 | Expression     | SQL       | Spark-Compatible? | Compatibility Notes               |
 | -------------- | --------- | ----------------- | --------------------------------- |
 | Acos           | `acos`    | Yes               |                                   |
-| Add            | `+`       | Yes               | ANSI mode is not supported.       |
+| Add            | `+`       | Yes               |                                   |
 | Asin           | `asin`    | Yes               |                                   |
 | Atan           | `atan`    | Yes               |                                   |
 | Atan2          | `atan2`   | Yes               |                                   |
-| BRound         | `bround`  | Yes               | ANSI mode is not supported.       |
+| BRound         | `bround`  | Yes               |                                   |
 | Ceil           | `ceil`    | Yes               |                                   |
 | Cos            | `cos`     | Yes               |                                   |
-| Divide         | `/`       | Yes               | ANSI mode is not supported.       |
+| Divide         | `/`       | Yes               |                                   |
 | Exp            | `exp`     | Yes               |                                   |
 | Expm1          | `expm1`   | Yes               |                                   |
 | Floor          | `floor`   | Yes               |                                   |
@@ -134,7 +135,7 @@ incompatible expressions.
 | Log            | `log`     | Yes               |                                   |
 | Log2           | `log2`    | Yes               |                                   |
 | Log10          | `log10`   | Yes               |                                   |
-| Multiply       | `*`       | Yes               | ANSI mode is not supported.       |
+| Multiply       | `*`       | Yes               |                                   |
 | Pow            | `power`   | Yes               |                                   |
 | Rand           | `rand`    | Yes               |                                   |
 | Randn          | `randn`   | Yes               |                                   |
@@ -143,7 +144,7 @@ incompatible expressions.
 | Signum         | `signum`  | Yes               |                                   |
 | Sin            | `sin`     | Yes               |                                   |
 | Sqrt           | `sqrt`    | Yes               |                                   |
-| Subtract       | `-`       | Yes               | ANSI mode is not supported.       |
+| Subtract       | `-`       | Yes               |                                   |
 | Tan            | `tan`     | Yes               |                                   |
 | TryAdd         | `try_add` | Yes               | Only integer inputs are supported |
 | TryDivide      | `try_div` | Yes               | Only integer inputs are supported |
@@ -207,6 +208,7 @@ incompatible expressions.
 | ArrayContains  | Yes               |                                                                                                                                                                                           |
 | ArrayDistinct  | No                | Behaves differently than spark. Comet first sorts then removes duplicates while Spark preserves the original order.                                                                       |
 | ArrayExcept    | No                |                                                                                                                                                                                           |
+| ArrayFilter    | Yes               | Only supports case where function is `IsNotNull`                                                                                                                                          |
 | ArrayInsert    | No                |                                                                                                                                                                                           |
 | ArrayIntersect | No                |                                                                                                                                                                                           |
 | ArrayJoin      | No                |                                                                                                                                                                                           |

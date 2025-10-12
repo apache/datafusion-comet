@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, InitCap, Like, Literal, Lower, RLike, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, InitCap, Like, Literal, Lower, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
 import org.apache.spark.sql.types.{DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
@@ -162,6 +162,35 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] {
 
     scalarFunctionExprToProto(
       "rpad",
+      exprToProtoInternal(expr.str, inputs, binding),
+      exprToProtoInternal(expr.len, inputs, binding),
+      exprToProtoInternal(expr.pad, inputs, binding))
+  }
+}
+
+object CometStringLPad extends CometExpressionSerde[StringLPad] {
+
+  /**
+   * Convert a Spark expression into a protocol buffer representation that can be passed into
+   * native code.
+   *
+   * @param expr
+   *   The Spark expression.
+   * @param inputs
+   *   The input attributes.
+   * @param binding
+   *   Whether the attributes are bound (this is only relevant in aggregate expressions).
+   * @return
+   *   Protocol buffer representation, or None if the expression could not be converted. In this
+   *   case it is expected that the input expression will have been tagged with reasons why it
+   *   could not be converted.
+   */
+  override def convert(
+      expr: StringLPad,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    scalarFunctionExprToProto(
+      "lpad",
       exprToProtoInternal(expr.str, inputs, binding),
       exprToProtoInternal(expr.len, inputs, binding),
       exprToProtoInternal(expr.pad, inputs, binding))

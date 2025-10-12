@@ -41,6 +41,8 @@ use datafusion::{
 };
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
+use datafusion_spark::function::datetime::date_add::SparkDateAdd;
+use datafusion_spark::function::datetime::date_sub::SparkDateSub;
 use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::string::char::CharFunc;
@@ -76,6 +78,11 @@ use crate::execution::spark_plan::SparkPlan;
 
 use crate::execution::tracing::{log_memory_usage, trace_begin, trace_end, with_trace};
 
+use crate::execution::spark_config::{
+    SparkConfig, COMET_DEBUG_ENABLED, COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
+    COMET_TRACING_ENABLED,
+};
+use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
 use once_cell::sync::Lazy;
@@ -165,12 +172,23 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     memory_limit: jlong,
     memory_limit_per_task: jlong,
     task_attempt_id: jlong,
-    debug_native: jboolean,
-    explain_native: jboolean,
-    tracing_enabled: jboolean,
+    key_unwrapper_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
-        with_trace("createPlan", tracing_enabled != JNI_FALSE, || {
+        // Deserialize Spark configs
+        let array = unsafe { JPrimitiveArray::from_raw(serialized_spark_configs) };
+        let bytes = env.convert_byte_array(array)?;
+        let spark_configs = serde::deserialize_config(bytes.as_slice())?;
+        let spark_config: HashMap<String, String> = spark_configs.entries.into_iter().collect();
+
+        // Access Comet configs
+        let debug_native = spark_config.get_bool(COMET_DEBUG_ENABLED);
+        let explain_native = spark_config.get_bool(COMET_EXPLAIN_NATIVE_ENABLED);
+        let tracing_enabled = spark_config.get_bool(COMET_TRACING_ENABLED);
+        let max_temp_directory_size =
+            spark_config.get_u64(COMET_MAX_TEMP_DIRECTORY_SIZE, 100 * 1024 * 1024 * 1024);
+
+        with_trace("createPlan", tracing_enabled, || {
             // Init JVM classes
             JVMClasses::init(&mut env);
 
@@ -180,15 +198,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let array = unsafe { JPrimitiveArray::from_raw(serialized_query) };
             let bytes = env.convert_byte_array(array)?;
             let spark_plan = serde::deserialize_op(bytes.as_slice())?;
-
-            // Deserialize Spark configs
-            let array = unsafe { JPrimitiveArray::from_raw(serialized_spark_configs) };
-            let bytes = env.convert_byte_array(array)?;
-            let spark_configs = serde::deserialize_config(bytes.as_slice())?;
-
-            // Convert Spark configs to HashMap
-            let _spark_config_map: HashMap<String, String> =
-                spark_configs.entries.into_iter().collect();
 
             let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 
@@ -229,8 +238,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             // We need to keep the session context alive. Some session state like temporary
             // dictionaries are stored in session context. If it is dropped, the temporary
             // dictionaries will be dropped as well.
-            let session =
-                prepare_datafusion_session_context(batch_size as usize, memory_pool, local_dirs)?;
+            let session = prepare_datafusion_session_context(
+                batch_size as usize,
+                memory_pool,
+                local_dirs,
+                max_temp_directory_size,
+            )?;
 
             let plan_creation_time = start.elapsed();
 
@@ -239,6 +252,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             } else {
                 None
             };
+
+            // Handle key unwrapper for encrypted files
+            if !key_unwrapper_obj.is_null() {
+                let encryption_factory = CometEncryptionFactory {
+                    key_unwrapper: jni_new_global_ref!(env, key_unwrapper_obj)?,
+                };
+                session.runtime_env().register_parquet_encryption_factory(
+                    ENCRYPTION_FACTORY_ID,
+                    Arc::new(encryption_factory),
+                );
+            }
 
             let exec_context = Box::new(ExecutionContext {
                 id,
@@ -254,10 +278,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 metrics_last_update_time: Instant::now(),
                 plan_creation_time,
                 session_ctx: Arc::new(session),
-                debug_native: debug_native == 1,
-                explain_native: explain_native == 1,
+                debug_native,
+                explain_native,
                 memory_pool_config,
-                tracing_enabled: tracing_enabled != JNI_FALSE,
+                tracing_enabled,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
@@ -270,9 +294,12 @@ fn prepare_datafusion_session_context(
     batch_size: usize,
     memory_pool: Arc<dyn MemoryPool>,
     local_dirs: Vec<String>,
+    max_temp_directory_size: u64,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
-    let disk_manager = DiskManagerBuilder::default().with_mode(DiskManagerMode::Directories(paths));
+    let disk_manager = DiskManagerBuilder::default()
+        .with_mode(DiskManagerMode::Directories(paths))
+        .with_max_temp_directory_size(max_temp_directory_size);
     let mut rt_config = RuntimeEnvBuilder::new().with_disk_manager_builder(disk_manager);
     rt_config = rt_config.with_memory_pool(memory_pool);
 
@@ -303,6 +330,8 @@ fn prepare_datafusion_session_context(
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(CharFunc::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitGet::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateAdd::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
 
     // Must be the last one to override existing functions with the same name
     datafusion_comet_spark_expr::register_all_comet_functions(&mut session_ctx)?;

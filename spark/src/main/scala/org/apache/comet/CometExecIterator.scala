@@ -24,14 +24,18 @@ import java.lang.management.ManagementFactory
 
 import scala.util.matching.Regex
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
+import org.apache.spark.util.SerializableConfiguration
 
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_METRICS_UPDATE_INTERVAL}
+import org.apache.comet.CometConf._
 import org.apache.comet.Tracing.withTrace
+import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.vector.NativeUtil
 
@@ -52,6 +56,8 @@ import org.apache.comet.vector.NativeUtil
  *   The number of partitions.
  * @param partitionIndex
  *   The index of the partition.
+ * @param encryptedFilePaths
+ *   Paths to encrypted Parquet files that need key unwrapping.
  */
 class CometExecIterator(
     val id: Long,
@@ -60,7 +66,9 @@ class CometExecIterator(
     protobufQueryPlan: Array[Byte],
     nativeMetrics: CometMetricNode,
     numParts: Int,
-    partitionIndex: Int)
+    partitionIndex: Int,
+    broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
+    encryptedFilePaths: Seq[String] = Seq.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -68,10 +76,12 @@ class CometExecIterator(
   private val memoryMXBean = ManagementFactory.getMemoryMXBean
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
-  private val cometTaskMemoryManager = new CometTaskMemoryManager(id)
+  private val taskAttemptId = TaskContext.get().taskAttemptId
+  private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
   private val cometBatchIterators = inputs.map { iterator =>
     new CometBatchIterator(iterator, nativeUtil)
   }.toArray
+
   private val plan = {
     val conf = SparkEnv.get.conf
     val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
@@ -86,9 +96,9 @@ class CometExecIterator(
       CometSparkSessionExtensions.getCometMemoryOverhead(conf)
     }
 
-    // serialize Spark conf in protobuf format
+    // serialize Comet related Spark configs in protobuf format
     val builder = ConfigMap.newBuilder()
-    conf.getAll.foreach { case (k, v) =>
+    conf.getAll.filter(_._1.startsWith(CometConf.COMET_PREFIX)).foreach { case (k, v) =>
       builder.putEntries(k, v)
     }
     val protobufSparkConfigs = builder.build().toByteArray
@@ -99,6 +109,19 @@ class CometExecIterator(
       0
     } else {
       getMemoryLimitPerTask(conf)
+    }
+
+    // Create keyUnwrapper if encryption is enabled
+    val keyUnwrapper = if (encryptedFilePaths.nonEmpty) {
+      val unwrapper = new CometFileKeyUnwrapper()
+      val hadoopConf: Configuration = broadcastedHadoopConfForEncryption.get.value.value
+
+      encryptedFilePaths.foreach(filePath =>
+        unwrapper.storeDecryptionKeyRetriever(filePath, hadoopConf))
+
+      unwrapper
+    } else {
+      null
     }
 
     nativeLib.createPlan(
@@ -116,10 +139,8 @@ class CometExecIterator(
       memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
       memoryLimit,
       memoryLimitPerTask,
-      taskAttemptId = TaskContext.get().taskAttemptId,
-      debug = COMET_DEBUG_ENABLED.get(),
-      explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
-      tracingEnabled)
+      taskAttemptId,
+      keyUnwrapper)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
@@ -143,6 +164,7 @@ class CometExecIterator(
     def convertToInt(threads: String): Int = {
       if (threads == "*") Runtime.getRuntime.availableProcessors() else threads.toInt
     }
+
     val LOCAL_N_REGEX = """local\[([0-9]+|\*)\]""".r
     val LOCAL_N_FAILURES_REGEX = """local\[([0-9]+|\*)\s*,\s*([0-9]+)\]""".r
     val master = conf.get("spark.master")
@@ -175,6 +197,11 @@ class CometExecIterator(
         })
     } catch {
       case e: CometNativeException =>
+        // it is generally considered bad practice to log and then rethrow an
+        // exception, but it really helps debugging to be able to see which task
+        // threw the exception, so we log the exception with taskAttemptId here
+        logError(s"Native execution for task $taskAttemptId failed", e)
+
         val fileNotFoundPattern: Regex =
           ("""^External: Object at location (.+?) not found: No such file or directory """ +
             """\(os error \d+\)$""").r

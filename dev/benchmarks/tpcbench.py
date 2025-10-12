@@ -21,7 +21,7 @@ import json
 from pyspark.sql import SparkSession
 import time
 
-def main(benchmark: str, data_path: str, query_path: str, iterations: int, output: str, name: str):
+def main(benchmark: str, data_path: str, query_path: str, iterations: int, output: str, name: str, query_num: int = None):
 
     # Initialize a SparkSession
     spark = SparkSession.builder \
@@ -61,7 +61,16 @@ def main(benchmark: str, data_path: str, query_path: str, iterations: int, outpu
         print(f"Starting iteration {iteration} of {iterations}")
         iter_start_time = time.time()
 
-        for query in range(1, num_queries+1):
+        # Determine which queries to run
+        if query_num is not None:
+            # Validate query number
+            if query_num < 1 or query_num > num_queries:
+                raise ValueError(f"Query number {query_num} is out of range. Valid range is 1-{num_queries} for {benchmark}")
+            queries_to_run = [query_num]
+        else:
+            queries_to_run = range(1, num_queries+1)
+
+        for query in queries_to_run:
             spark.sparkContext.setJobDescription(f"{benchmark} q{query}")
 
             # read text file
@@ -105,8 +114,6 @@ def main(benchmark: str, data_path: str, query_path: str, iterations: int, outpu
     # Stop the SparkSession
     spark.stop()
 
-    #print(str)
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DataFusion benchmark derived from TPC-H / TPC-DS")
     parser.add_argument("--benchmark", required=True, help="Benchmark to run (tpch or tpcds)")
@@ -115,6 +122,7 @@ if __name__ == "__main__":
     parser.add_argument("--iterations", required=False, default="1", help="How many iterations to run")
     parser.add_argument("--output", required=True, help="Path to write output")
     parser.add_argument("--name", required=True, help="Prefix for result file e.g. spark/comet/gluten")
+    parser.add_argument("--query", required=False, type=int, help="Specific query number to run (1-based). If not specified, all queries will be run.")
     args = parser.parse_args()
 
-    main(args.benchmark, args.data, args.queries, int(args.iterations), args.output, args.name)
+    main(args.benchmark, args.data, args.queries, int(args.iterations), args.output, args.name, args.query)

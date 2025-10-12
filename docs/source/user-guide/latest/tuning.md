@@ -116,13 +116,13 @@ Comet implements multiple memory pool implementations. The type of pool can be s
 
 The valid pool types for off-heap mode are:
 
-- `unified` (default when `spark.memory.offHeap.enabled=true` is set)
-- `fair_unified`
+- `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
+- `greedy_unified`
 
 Both of these pools share off-heap memory between Spark and Comet. This approach is referred to as
 unified memory management. The size of the pool is specified by `spark.memory.offHeap.size`.
 
-The `unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
+The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.
 
 The `fair_unified` pool type prevents operators from using more than an even fraction of the available memory
@@ -208,14 +208,14 @@ back to Spark for shuffle operations.
 
 #### Native Shuffle
 
-Comet provides a fully native shuffle implementation, which generally provides the best performance. However,
-native shuffle currently only supports `HashPartitioning` and `SinglePartitioning` and has some restrictions on
-supported data types.
+Comet provides a fully native shuffle implementation, which generally provides the best performance. Native shuffle
+supports `HashPartitioning`, `RangePartitioning` and `SinglePartitioning` but currently only supports primitive type
+partitioning keys. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
 
 #### Columnar (JVM) Shuffle
 
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
-`SinglePartitioning`. This shuffle implementation supports more data types than native shuffle.
+`SinglePartitioning`. This shuffle implementation supports complex data types as partitioning keys.
 
 ### Shuffle Compression
 

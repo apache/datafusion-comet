@@ -48,6 +48,7 @@ import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
+import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
@@ -69,10 +70,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
-    // TODO ArrayCompact
+    classOf[ArrayCompact] -> CometArrayCompact,
     classOf[ArrayContains] -> CometArrayContains,
     classOf[ArrayDistinct] -> CometArrayDistinct,
     classOf[ArrayExcept] -> CometArrayExcept,
+    classOf[ArrayFilter] -> CometArrayFilter,
     classOf[ArrayInsert] -> CometArrayInsert,
     classOf[ArrayIntersect] -> CometArrayIntersect,
     classOf[ArrayJoin] -> CometArrayJoin,
@@ -175,6 +177,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[StringRepeat] -> CometStringRepeat,
     classOf[StringReplace] -> CometScalarFunction("replace"),
     classOf[StringRPad] -> CometStringRPad,
+    classOf[StringLPad] -> CometStringLPad,
     classOf[StringSpace] -> CometScalarFunction("string_space"),
     classOf[StringTranslate] -> CometScalarFunction("translate"),
     classOf[StringTrim] -> CometScalarFunction("trim"),
@@ -218,7 +221,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
   private val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // TODO SortOrder (?)
     // TODO PromotePrecision
-    // TODO CheckOverflow
     // TODO KnownFloatingPointNormalized
     // TODO ScalarSubquery
     // TODO UnscaledValue
@@ -227,6 +229,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     // TODO RegExpReplace
     classOf[Alias] -> CometAlias,
     classOf[AttributeReference] -> CometAttributeReference,
+    classOf[CheckOverflow] -> CometCheckOverflow,
     classOf[Coalesce] -> CometCoalesce,
     classOf[Literal] -> CometLiteral,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
@@ -769,28 +772,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         // `PromotePrecision` is just a wrapper, don't need to serialize it.
         exprToProtoInternal(child, inputs, binding)
 
-      case CheckOverflow(child, dt, nullOnOverflow) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-
-        if (childExpr.isDefined) {
-          val builder = ExprOuterClass.CheckOverflow.newBuilder()
-          builder.setChild(childExpr.get)
-          builder.setFailOnError(!nullOnOverflow)
-
-          // `dataType` must be decimal type
-          val dataType = serializeDataType(dt)
-          builder.setDatatype(dataType.get)
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setCheckOverflow(builder)
-              .build())
-        } else {
-          withInfo(expr, child)
-          None
-        }
-
       case RegExpReplace(subject, pattern, replacement, startPosition) =>
         if (!RegExp.isSupportedPattern(pattern.toString) &&
           !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
@@ -910,11 +891,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, bloomFilter, value)
           None
         }
-      case af @ ArrayFilter(_, func) if func.children.head.isInstanceOf[IsNotNull] =>
-        convert(af, CometArrayCompact)
       case l @ Length(child) if child.dataType == BinaryType =>
         withInfo(l, "Length on BinaryType is not supported")
         None
+      case r @ Reverse(child) if child.dataType.isInstanceOf[ArrayType] =>
+        convert(r, CometArrayReverse)
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) =>
@@ -1159,6 +1140,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
           // Collect S3/cloud storage configurations
           val hadoopConf = scan.relation.sparkSession.sessionState
             .newHadoopConfWithOptions(scan.relation.options)
+
+          nativeScanBuilder.setEncryptionEnabled(CometParquetUtils.encryptionEnabled(hadoopConf))
+
           firstPartition.foreach { partitionFile =>
             val objectStoreOptions =
               NativeConfig.extractObjectStoreOptions(hadoopConf, partitionFile.pathUri)
@@ -1700,6 +1684,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   }
 
   // scalastyle:off
+
   /**
    * Align w/ Arrow's
    * [[https://github.com/apache/arrow-rs/blob/55.2.0/arrow-ord/src/rank.rs#L30-L40 can_rank]] and
