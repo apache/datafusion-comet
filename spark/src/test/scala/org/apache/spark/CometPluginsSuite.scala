@@ -179,3 +179,4 @@ class CometPluginsUnifiedModeOverrideSuite extends CometTestBase {
     assert(execMemOverhead3 == "1G")
     assert(execMemOverhead4 == "1G")
   }
+}
