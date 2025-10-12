@@ -49,7 +49,10 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
 
     if (!CometSparkSessionExtensions.isOffHeapEnabled(sc.getConf) &&
       !CometConf.COMET_ENABLE_ONHEAP_MODE.get()) {
-      logWarning("Comet plugin is disabled because Spark is not running in off-heap mode")
+      logWarning(
+        "Comet plugin is disabled because Spark is not running in off-heap mode. Set " +
+          s"${CometConf.COMET_ENABLE_ONHEAP_MODE.key}=true to override this restriction " +
+          "(for testing purposes only).")
       return Collections.emptyMap[String, String]
     }
 
