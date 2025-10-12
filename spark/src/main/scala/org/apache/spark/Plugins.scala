@@ -28,7 +28,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.sql.internal.StaticSQLConf
 
-import org.apache.comet.CometSparkSessionExtensions
+import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
 /**
  * Comet driver plugin. This class is loaded by Spark's plugin framework. It will be instantiated
@@ -46,6 +46,12 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
 
   override def init(sc: SparkContext, pluginContext: PluginContext): ju.Map[String, String] = {
     logInfo("CometDriverPlugin init")
+
+    if (!CometSparkSessionExtensions.isOffHeapEnabled(sc.getConf) &&
+      !CometConf.COMET_ENABLE_ONHEAP_MODE.get()) {
+      logWarning("Comet plugin is disabled because Spark is not running in off-heap mode")
+      return Collections.emptyMap[String, String]
+    }
 
     // register CometSparkSessionExtensions if it isn't already registered
     CometDriverPlugin.registerCometSessionExtension(sc.conf)
