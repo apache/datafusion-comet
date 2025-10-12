@@ -21,6 +21,7 @@ package org.apache.comet.serde
 
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
@@ -42,6 +43,7 @@ import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, Sh
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._

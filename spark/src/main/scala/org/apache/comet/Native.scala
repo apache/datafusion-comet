@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.nio.ByteBuffer
+
 import scala.annotation.nowarn
 
 import org.apache.spark.CometTaskMemoryManager
