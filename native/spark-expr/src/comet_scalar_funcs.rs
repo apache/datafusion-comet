@@ -99,6 +99,7 @@ pub fn create_comet_physical_fun_with_eval_mode(
     fail_on_error: Option<bool>,
     eval_mode: EvalMode,
 ) -> Result<Arc<ScalarUDF>, DataFusionError> {
+    let fail_on_error = fail_on_error.unwrap_or(false);
     match fun_name {
         "ceil" => {
             make_comet_scalar_udf!("ceil", spark_ceil, data_type)
@@ -119,8 +120,7 @@ pub fn create_comet_physical_fun_with_eval_mode(
             make_comet_scalar_udf!("lpad", func, without data_type)
         }
         "round" => {
-            let fail_on_error_s = fail_on_error.unwrap_or(false);
-            make_comet_scalar_udf!("round", spark_round, data_type, fail_on_error_s)
+            make_comet_scalar_udf!("round", spark_round, data_type, fail_on_error)
         }
         "unscaled_value" => {
             let func = Arc::new(spark_unscaled_value);
@@ -178,7 +178,6 @@ pub fn create_comet_physical_fun_with_eval_mode(
         }
         "spark_modulo" => {
             let func = Arc::new(spark_modulo);
-            let fail_on_error = fail_on_error.unwrap_or(false);
             make_comet_scalar_udf!("spark_modulo", func, without data_type, fail_on_error)
         }
         _ => registry.udf(fun_name).map_err(|e| {

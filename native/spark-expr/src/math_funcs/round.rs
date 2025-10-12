@@ -15,38 +15,49 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::error::ArrowError;
+use crate::arithmetic_overflow_error;
 use crate::math_funcs::utils::{get_precision_scale, make_decimal_array, make_decimal_scalar};
 use arrow::array::{Array, ArrowNativeTypeOp};
 use arrow::array::{Int16Array, Int32Array, Int64Array, Int8Array};
 use arrow::datatypes::DataType;
+use arrow::error::ArrowError;
 use datafusion::common::{exec_err, internal_err, DataFusionError, ScalarValue};
 use datafusion::{functions::math::round::round, physical_plan::ColumnarValue};
 use std::{cmp::min, sync::Arc};
-use crate::divide_by_zero_error;
 
 macro_rules! integer_round {
     ($X:expr, $DIV:expr, $HALF:expr, $FAIL_ON_ERROR:expr) => {{
         let rem = $X % $DIV;
         if rem <= -$HALF {
             if $FAIL_ON_ERROR {
-                ($X - rem).sub_checked($DIV)
-                    .ok_or_else(|| ArrowError::ComputeError(divide_by_zero_error().to_string()))
+                match ($X - rem).sub_checked($DIV) {
+                    Ok(v) => Ok(v),
+                    Err(_e) => Err(ArrowError::ComputeError(
+                        arithmetic_overflow_error("integer").to_string(),
+                    )),
+                }
             } else {
                 Ok(($X - rem).sub_wrapping($DIV))
             }
         } else if rem >= $HALF {
             if $FAIL_ON_ERROR {
-                ($X - rem)
-                    .add_checked($DIV)
-                    .ok_or_else(|| ArrowError::ComputeError(divide_by_zero_error().to_string()))
+                match ($X - rem).add_checked($DIV) {
+                    Ok(v) => Ok(v),
+                    Err(_e) => Err(ArrowError::ComputeError(
+                        arithmetic_overflow_error("integer").to_string(),
+                    )),
+                }
             } else {
                 Ok(($X - rem).add_wrapping($DIV))
             }
         } else {
             if $FAIL_ON_ERROR {
-                $X.sub_checked(rem)
-                    .ok_or_else(|| ArrowError::ComputeError(divide_by_zero_error().to_string()))
+                match $X.sub_checked(rem) {
+                    Ok(v) => Ok(v),
+                    Err(_e) => Err(ArrowError::ComputeError(
+                        arithmetic_overflow_error("integer").to_string(),
+                    )),
+                }
             } else {
                 Ok($X.sub_wrapping(rem))
             }
@@ -58,12 +69,15 @@ macro_rules! round_integer_array {
     ($ARRAY:expr, $POINT:expr, $TYPE:ty, $NATIVE:ty, $FAIL_ON_ERROR:expr) => {{
         let array = $ARRAY.as_any().downcast_ref::<$TYPE>().unwrap();
         let ten: $NATIVE = 10;
-        let result: Result<$TYPE, ArrowError> = if let Some(div) = ten.checked_pow((-(*$POINT)) as u32) {
+        let result: $TYPE = if let Some(div) = ten.checked_pow((-(*$POINT)) as u32) {
             let half = div / 2;
-            arrow::compute::kernels::arity::try_unary(array, |x| integer_round!(x, div, half,$FAIL_ON_ERROR))
+            arrow::compute::kernels::arity::try_unary(array, |x| {
+                integer_round!(x, div, half, $FAIL_ON_ERROR)
+            })?
         } else {
-            arrow::compute::kernels::arity::try_unary(array, |_| Ok(0))
-        }?
+            arrow::compute::kernels::arity::try_unary(array, |_| Ok(0))?
+        };
+        Ok(ColumnarValue::Array(Arc::new(result)))
     }};
 }
 
@@ -73,17 +87,19 @@ macro_rules! round_integer_scalar {
         if let Some(div) = ten.checked_pow((-(*$POINT)) as u32) {
             let half = div / 2;
             let scalar_opt = match $SCALAR {
-                Some(x) => {
-                    // integer_round! returns Result<$NATIVE, ArrowError>
-                    match integer_round!(x, div, half, $FAIL_ON_ERROR) {
-                        Ok(v) => Some(v),
-                        Err(e) => return Err(DataFusionError::ArrowError(e)),
+                Some(x) => match integer_round!(x, div, half, $FAIL_ON_ERROR) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        return Err(DataFusionError::ArrowError(
+                            Box::from(e),
+                            Some(DataFusionError::get_back_trace()),
+                        ))
                     }
-                }
+                },
                 None => None,
             };
-            Ok(ColumnarValue::Scalar($TYPE(scalar_opt)))}
-        else {
+            Ok(ColumnarValue::Scalar($TYPE(scalar_opt)))
+        } else {
             Ok(ColumnarValue::Scalar($TYPE(Some(0))))
         }
     }};
@@ -102,10 +118,18 @@ pub fn spark_round(
     };
     match value {
         ColumnarValue::Array(array) => match array.data_type() {
-            DataType::Int64 if *point < 0 => round_integer_array!(array, point, Int64Array, i64,fail_on_error),
-            DataType::Int32 if *point < 0 => round_integer_array!(array, point, Int32Array, i32, fail_on_error),
-            DataType::Int16 if *point < 0 => round_integer_array!(array, point, Int16Array, i16, fail_on_error),
-            DataType::Int8 if *point < 0 => round_integer_array!(array, point, Int8Array, i8, fail_on_error),
+            DataType::Int64 if *point < 0 => {
+                round_integer_array!(array, point, Int64Array, i64, fail_on_error)
+            }
+            DataType::Int32 if *point < 0 => {
+                round_integer_array!(array, point, Int32Array, i32, fail_on_error)
+            }
+            DataType::Int16 if *point < 0 => {
+                round_integer_array!(array, point, Int16Array, i16, fail_on_error)
+            }
+            DataType::Int8 if *point < 0 => {
+                round_integer_array!(array, point, Int8Array, i8, fail_on_error)
+            }
             DataType::Decimal128(_, scale) if *scale >= 0 => {
                 let f = decimal_round_f(scale, point);
                 let (precision, scale) = get_precision_scale(data_type);

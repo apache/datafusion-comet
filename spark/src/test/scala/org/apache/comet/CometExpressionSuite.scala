@@ -56,7 +56,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
-    """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
+    """[ARITHMETIC_OVERFLOW] overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
 
@@ -1516,7 +1516,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           128,
           randomSize = 100)
         // this test requires native_comet scan due to unsigned u8/u16 issue
-        withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+        withSQLConf(
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
+          SQLConf.ANSI_ENABLED.key -> "true") {
           withParquetTable(path.toString, "tbl") {
             for (s <- Seq(-5, -1, 0, 1, 5, -1000, 1000, -323, -308, 308, -15, 15, -16, 16,
                 null)) {
@@ -3003,6 +3005,37 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             case (Some(sparkException), Some(cometException)) =>
               assert(sparkException.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
               assert(cometException.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
+            case (None, None) => checkSparkAnswerAndOperator(res)
+            case (None, Some(ex)) =>
+              fail(
+                "Comet threw an exception but Spark did not. Comet exception: " + ex.getMessage)
+            case (Some(sparkException), None) =>
+              fail(
+                "Spark threw an exception but Comet did not. Spark exception: " +
+                  sparkException.getMessage)
+          }
+        }
+      }
+    }
+  }
+
+  test("ANSI support for round function") {
+    val data = Seq((Integer.MAX_VALUE, Integer.MIN_VALUE, Long.MinValue, Long.MaxValue))
+    Seq("true", "false").foreach { p =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withParquetTable(data, "tbl") {
+          val res = spark.sql(s"""
+                                |SELECT
+                                |  round(_1, -1) ,
+                                |  round(_1, -10) ,
+                                |  round(${Int.MaxValue}, -10)
+                                |  from tbl
+                                |  """.stripMargin)
+
+          checkSparkMaybeThrows(res) match {
+            case (Some(sparkException), Some(cometException)) =>
+              assert(sparkException.getMessage.contains("ARITHMETIC_OVERFLOW"))
+              assert(cometException.getMessage.contains("ARITHMETIC_OVERFLOW"))
             case (None, None) => checkSparkAnswerAndOperator(res)
             case (None, Some(ex)) =>
               fail(
