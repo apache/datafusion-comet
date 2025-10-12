@@ -3020,7 +3020,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("ANSI support for round function") {
     val data = Seq((Integer.MAX_VALUE, Integer.MIN_VALUE, Long.MinValue, Long.MaxValue))
     Seq("true", "false").foreach { p =>
-      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> p) {
         withParquetTable(data, "tbl") {
           val res = spark.sql(s"""
                                 |SELECT
