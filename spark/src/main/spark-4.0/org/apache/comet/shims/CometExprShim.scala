@@ -16,62 +16,65 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
 package org.apache.comet.shims
 
-import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.CommonStringExprs
-import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.{BinaryType, BooleanType, StringType}
 
+import org.apache.comet.expressions.CometEvalMode
+import org.apache.comet.serde.CommonStringExprs
+import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
+
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
 trait CometExprShim extends CommonStringExprs {
-    protected def evalMode(c: Cast): CometEvalMode.Value =
-        CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
+  protected def evalMode(c: Cast): CometEvalMode.Value =
+    CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
-    protected def binaryOutputStyle: BinaryOutputStyle = {
-        SQLConf.get.getConf(SQLConf.BINARY_OUTPUT_STYLE).map(SQLConf.BinaryOutputStyle.withName) match {
-        case Some(SQLConf.BinaryOutputStyle.UTF8) => BinaryOutputStyle.UTF8
-        case Some(SQLConf.BinaryOutputStyle.BASIC) => BinaryOutputStyle.BASIC
-        case Some(SQLConf.BinaryOutputStyle.BASE64) => BinaryOutputStyle.BASE64
-        case Some(SQLConf.BinaryOutputStyle.HEX) => BinaryOutputStyle.HEX
-        case _ => BinaryOutputStyle.HEX_DISCRETE
-      }
+  protected def binaryOutputStyle: BinaryOutputStyle = {
+    SQLConf.get
+      .getConf(SQLConf.BINARY_OUTPUT_STYLE)
+      .map(SQLConf.BinaryOutputStyle.withName) match {
+      case Some(SQLConf.BinaryOutputStyle.UTF8) => BinaryOutputStyle.UTF8
+      case Some(SQLConf.BinaryOutputStyle.BASIC) => BinaryOutputStyle.BASIC
+      case Some(SQLConf.BinaryOutputStyle.BASE64) => BinaryOutputStyle.BASE64
+      case Some(SQLConf.BinaryOutputStyle.HEX) => BinaryOutputStyle.HEX
+      case _ => BinaryOutputStyle.HEX_DISCRETE
     }
+  }
 
-    def versionSpecificExprToProtoInternal(
-        expr: Expression,
-        inputs: Seq[Attribute],
-        binding: Boolean): Option[Expr] = {
-      expr match {
-        case s: StaticInvoke
-            if s.staticObject == classOf[StringDecode] &&
-              s.dataType.isInstanceOf[StringType] &&
-              s.functionName == "decode" &&
-              s.arguments.size == 4 &&
-              s.inputTypes == Seq(
-                  BinaryType,
-                  StringTypeWithCollation(supportsTrimCollation = true),
-                  BooleanType,
-                  BooleanType) =>
-          val Seq(bin, charset, _, _) = s.arguments
-          stringDecode(expr, charset, bin, inputs, binding)
+  def versionSpecificExprToProtoInternal(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr match {
+      case s: StaticInvoke
+          if s.staticObject == classOf[StringDecode] &&
+            s.dataType.isInstanceOf[StringType] &&
+            s.functionName == "decode" &&
+            s.arguments.size == 4 &&
+            s.inputTypes == Seq(
+              BinaryType,
+              StringTypeWithCollation(supportsTrimCollation = true),
+              BooleanType,
+              BooleanType) =>
+        val Seq(bin, charset, _, _) = s.arguments
+        stringDecode(expr, charset, bin, inputs, binding)
 
-        case _ => None
-      }
+      case _ => None
     }
+  }
 }
 
 object CometEvalModeUtil {
-    def fromSparkEvalMode(evalMode: EvalMode.Value): CometEvalMode.Value = evalMode match {
-        case EvalMode.LEGACY => CometEvalMode.LEGACY
-        case EvalMode.TRY => CometEvalMode.TRY
-        case EvalMode.ANSI => CometEvalMode.ANSI
-    }
+  def fromSparkEvalMode(evalMode: EvalMode.Value): CometEvalMode.Value = evalMode match {
+    case EvalMode.LEGACY => CometEvalMode.LEGACY
+    case EvalMode.TRY => CometEvalMode.TRY
+    case EvalMode.ANSI => CometEvalMode.ANSI
+  }
 }
-

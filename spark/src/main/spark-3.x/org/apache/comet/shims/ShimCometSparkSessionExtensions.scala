@@ -22,9 +22,10 @@ package org.apache.comet.shims
 import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 
 trait ShimCometSparkSessionExtensions {
+
   /**
    * TODO: delete after dropping Spark 3.x support and directly call
-   *       SQLConf.EXTENDED_EXPLAIN_PROVIDERS.key
+   * SQLConf.EXTENDED_EXPLAIN_PROVIDERS.key
    */
   protected val EXTENDED_EXPLAIN_PROVIDERS_KEY = "spark.sql.extendedExplainProviders"
 

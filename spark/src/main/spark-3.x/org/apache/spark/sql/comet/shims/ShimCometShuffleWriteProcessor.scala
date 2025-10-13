@@ -36,9 +36,9 @@ trait ShimCometShuffleWriteProcessor extends ShuffleWriteProcessor {
   }
 
   def write(
-    inputs: Iterator[_],
-    dep: ShuffleDependency[_, _, _],
-    mapId: Long,
-    mapIndex: Int,
-    context: TaskContext): MapStatus
+      inputs: Iterator[_],
+      dep: ShuffleDependency[_, _, _],
+      mapId: Long,
+      mapIndex: Int,
+      context: TaskContext): MapStatus
 }
