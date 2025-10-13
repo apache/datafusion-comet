@@ -37,29 +37,47 @@ object GenerateDocs {
 
   private def userGuideLocation = "docs/source/user-guide/latest/"
 
+  val publicConfigs: ListBuffer[ConfigEntry[_]] = CometConf.allConfs.filter(_.isPublic)
+
+  val shuffleConf: ListBuffer[ConfigEntry[_]] = publicConfigs.filter(_.key.contains(".shuffle."))
+
+  val parquetConf: ListBuffer[ConfigEntry[_]] = publicConfigs.filter(_.key.contains(".parquet."))
+
+  val documentedConfigs = shuffleConf ++ parquetConf
+
+  // TODO enable
+  // assert(publicConfigs.toSet == documentedConfigs.toSet,
+  // "Not all public configs will be documented")
+
+  val sections: Map[String, ListBuffer[ConfigEntry[_]]] =
+    Map("parquet" -> parquetConf, "shuffle" -> shuffleConf)
+
   def main(args: Array[String]): Unit = {
     generateConfigReference()
     generateCompatibilityGuide()
   }
 
   private def generateConfigReference(): Unit = {
+    val pattern = "<!--BEGIN:CONFIG_TABLE[(.*)]-->".r
     val filename = s"$userGuideLocation/configs.md"
     val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))
     for (line <- lines) {
       w.write(s"${line.stripTrailing()}\n".getBytes)
-      if (line.trim == "<!--BEGIN:CONFIG_TABLE-->") {
-        val publicConfigs = CometConf.allConfs.filter(_.isPublic)
-        val confs = publicConfigs.sortBy(_.key)
-        w.write("| Config | Description | Default Value |\n".getBytes)
-        w.write("|--------|-------------|---------------|\n".getBytes)
-        for (conf <- confs) {
-          if (conf.defaultValue.isEmpty) {
-            w.write(s"| ${conf.key} | ${conf.doc.trim} | |\n".getBytes)
-          } else {
-            w.write(s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
+      line match {
+        case pattern(section) =>
+          val confs = sections(section).sortBy(_.key)
+          w.write("| Config | Description | Default Value |\n".getBytes)
+          w.write("|--------|-------------|---------------|\n".getBytes)
+          for (conf <- confs) {
+            if (conf.defaultValue.isEmpty) {
+              w.write(s"| ${conf.key} | ${conf.doc.trim} | |\n".getBytes)
+            } else {
+              w.write(
+                s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
+            }
           }
-        }
+        case _ =>
       }
     }
     w.close()
