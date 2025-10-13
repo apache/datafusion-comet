@@ -741,18 +741,17 @@ under the License.
                               <arg>-deprecation</arg>
                               <arg>-unchecked</arg>
                               <arg>-feature</arg>
-                              <!--
-                              To-do:
-                              class CometShuffleManager references private[spark] trait ShuffleReadMetricsReporter
-                              <arg>-Xlint:_</arg>
-
-                              CometColumnarToRowExec.scala:117: dead code following this construct
                               <arg>-Ywarn-dead-code</arg>
-                              -->
                               <arg>-Ywarn-numeric-widen</arg>
                               <arg>-Ywarn-value-discard</arg>
                               <arg>-Ywarn-unused:imports,patvars,privates,locals,params,-implicits</arg>
                               <arg>-Xfatal-warnings</arg>
+                              <!--
+                              Private trait reference under class CometShuffleManager
+                              <arg>-Xlint:_</arg>
+                              UnsupportedException being thrown on SparkPlan default.
+                              <arg>-Ywarn-dead-code</arg>
+                              -->
                           </args>
                       </configuration>
                   </plugin>
