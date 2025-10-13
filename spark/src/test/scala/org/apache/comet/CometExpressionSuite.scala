@@ -3018,7 +3018,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for round function") {
-    Seq((Integer.MAX_VALUE, Integer.MIN_VALUE, Long.MinValue, Long.MaxValue)).foreach { value =>
+    Seq(
+      (
+        Int.MaxValue,
+        Int.MinValue,
+        Long.MinValue,
+        Long.MaxValue,
+        Byte.MinValue,
+        Byte.MaxValue,
+        Short.MinValue,
+        Short.MaxValue)).foreach { value =>
       val data = Seq(value)
       withParquetTable(data, "tbl") {
         Seq(-1000, -100, -10, -1, 0, 1, 10, 100, 1000).foreach { scale =>
