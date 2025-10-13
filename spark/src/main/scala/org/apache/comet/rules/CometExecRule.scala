@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.util.SparkStringUtils
+import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.execution._
@@ -617,7 +617,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     if (showTransformations && !newPlan.fastEquals(plan)) {
       logInfo(s"""
            |=== Applying Rule $ruleName ===
-           |${SparkStringUtils.sideBySide(plan.treeString, newPlan.treeString).mkString("\n")}
+           |${sideBySide(plan.treeString, newPlan.treeString).mkString("\n")}
            |""".stripMargin)
     }
     newPlan

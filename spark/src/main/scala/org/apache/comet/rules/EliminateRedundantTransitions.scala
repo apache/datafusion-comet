@@ -21,7 +21,7 @@ package org.apache.comet.rules
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.util.SparkStringUtils
+import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
@@ -60,7 +60,7 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
     if (showTransformations && !newPlan.fastEquals(plan)) {
       logInfo(s"""
            |=== Applying Rule $ruleName ===
-           |${SparkStringUtils.sideBySide(plan.treeString, newPlan.treeString).mkString("\n")}
+           |${sideBySide(plan.treeString, newPlan.treeString).mkString("\n")}
            |""".stripMargin)
     }
     newPlan
