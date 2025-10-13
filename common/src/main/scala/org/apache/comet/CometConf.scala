@@ -62,6 +62,7 @@ object CometConf extends ShimCometConf {
   private val CATEGORY_EXEC = "exec"
   private val CATEGORY_SHUFFLE = "shuffle"
   private val CATEGORY_TUNING = "tuning"
+  private val CATEGORY_TESTING = "testing"
 
   def register(conf: ConfigEntry[_]): Unit = {
     assert(conf.category.nonEmpty, s"${conf.key} does not have a category defined")
@@ -272,7 +273,7 @@ object CometConf extends ShimCometConf {
     .createWithDefault(false)
 
   val COMET_MEMORY_OVERHEAD: OptionalConfigEntry[Long] = conf("spark.comet.memoryOverhead")
-    .category(CATEGORY_TUNING)
+    .category(CATEGORY_TESTING)
     .doc(
       "The amount of additional memory to be allocated per executor process for Comet, in MiB, " +
         "when running Spark in on-heap mode. " +
@@ -283,7 +284,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_MEMORY_OVERHEAD_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.memory.overhead.factor")
-      .category(CATEGORY_TUNING)
+      .category(CATEGORY_TESTING)
       .doc(
         "Fraction of executor memory to be allocated as additional memory for Comet " +
           "when running Spark in on-heap mode. " +
@@ -295,7 +296,7 @@ object CometConf extends ShimCometConf {
       .createWithDefault(0.2)
 
   val COMET_MEMORY_OVERHEAD_MIN_MIB: ConfigEntry[Long] = conf("spark.comet.memory.overhead.min")
-    .category(CATEGORY_TUNING)
+    .category(CATEGORY_TESTING)
     .doc("Minimum amount of additional memory to be allocated per executor process for Comet, " +
       s"in MiB, when running Spark in on-heap mode. $TUNING_GUIDE.")
     .bytesConf(ByteUnit.MiB)
@@ -428,7 +429,7 @@ object CometConf extends ShimCometConf {
   val COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE: OptionalConfigEntry[Long] =
     conf("spark.comet.columnar.shuffle.memorySize")
       .internal()
-      .category(CATEGORY_SHUFFLE)
+      .category(CATEGORY_TESTING)
       .doc("Amount of memory to reserve for columnar shuffle when running in on-heap mode. " +
         s"$TUNING_GUIDE.")
       .bytesConf(ByteUnit.MiB)
@@ -437,7 +438,7 @@ object CometConf extends ShimCometConf {
   val COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.columnar.shuffle.memory.factor")
       .internal()
-      .category(CATEGORY_SHUFFLE)
+      .category(CATEGORY_TESTING)
       .doc("Fraction of Comet memory to be allocated per executor process for columnar shuffle " +
         s"when running in on-heap mode. $TUNING_GUIDE.")
       .doubleConf
@@ -560,7 +561,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_ENABLE_ONHEAP_MODE: ConfigEntry[Boolean] =
     conf("spark.comet.exec.onHeap.enabled")
-      .category(CATEGORY_EXEC)
+      .category(CATEGORY_TESTING)
       .doc("Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests.")
       .booleanConf
       .createWithDefault(sys.env.getOrElse("ENABLE_COMET_ONHEAP", "false").toBoolean)
