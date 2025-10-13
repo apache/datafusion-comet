@@ -65,6 +65,7 @@ object CometConf extends ShimCometConf {
   private val CATEGORY_MISC = "misc"
 
   def register(conf: ConfigEntry[_]): Unit = {
+    assert(conf.category.nonEmpty, s"${conf.key} does not have a category defined")
     allConfs.append(conf)
   }
 
