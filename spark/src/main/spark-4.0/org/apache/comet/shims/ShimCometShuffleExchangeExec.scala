@@ -37,7 +37,9 @@ trait ShimCometShuffleExchangeExec {
       s.advisoryPartitionSize)
   }
 
-  protected def fromAttributes(attributes: Seq[Attribute]): StructType = DataTypeUtils.fromAttributes(attributes)
+  protected def fromAttributes(attributes: Seq[Attribute]): StructType =
+    DataTypeUtils.fromAttributes(attributes)
 
-  protected def getShuffleId(shuffleDependency: ShuffleDependency[Int, _, _]): Int = shuffleDependency.shuffleId
+  protected def getShuffleId(shuffleDependency: ShuffleDependency[Int, _, _]): Int =
+    shuffleDependency.shuffleId
 }
