@@ -646,7 +646,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val conf = SQLConf.get
 
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       val exprConfName = handler.getExprConfigName(expr)
@@ -689,16 +688,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
 
     versionSpecificExprToProtoInternal(expr, inputs, binding).orElse(expr match {
-      case cast @ Cast(_: Literal, dataType, _, _) =>
-        // This can happen after promoting decimal precisions
-        val value = cast.eval()
-        exprToProtoInternal(Literal(value, dataType), inputs, binding)
-
-      case UnaryExpression(child) if expr.prettyName == "trycast" =>
-        val timeZoneId = conf.sessionLocalTimeZone
-        val cast = Cast(child, expr.dataType, Some(timeZoneId), EvalMode.TRY)
-        convert(cast, CometCast)
-
       // ToPrettyString is new in Spark 3.5
       case _
           if expr.getClass.getSimpleName == "ToPrettyString" && expr
