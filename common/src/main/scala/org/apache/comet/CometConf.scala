@@ -57,6 +57,13 @@ object CometConf extends ShimCometConf {
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
+  private val CATEGORY_PARQUET = "parquet"
+  private val CATEGORY_SHUFFLE = "shuffle"
+  private val CATEGORY_SCAN = "scan"
+  private val CATEGORY_EXEC = "exec"
+  private val CATEGORY_TUNING = "tuning"
+  private val CATEGORY_MISC = "misc"
+
   def register(conf: ConfigEntry[_]): Unit = {
     allConfs.append(conf)
   }
@@ -70,6 +77,7 @@ object CometConf extends ShimCometConf {
   val COMET_EXPR_CONFIG_PREFIX: String = s"$COMET_PREFIX.expression";
 
   val COMET_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.enabled")
+    .category(CATEGORY_EXEC)
     .doc(
       "Whether to enable Comet extension for Spark. When this is turned on, Spark will use " +
         "Comet to read Parquet data source. Note that to enable native vectorized execution, " +
@@ -79,6 +87,7 @@ object CometConf extends ShimCometConf {
     .createWithDefault(sys.env.getOrElse("ENABLE_COMET", "true").toBoolean)
 
   val COMET_NATIVE_SCAN_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
+    .category(CATEGORY_SCAN)
     .doc(
       "Whether to enable native scans. When this is turned on, Spark will use Comet to " +
         "read supported data sources (currently only Parquet is supported natively). Note " +
@@ -93,6 +102,7 @@ object CometConf extends ShimCometConf {
   val SCAN_AUTO = "auto"
 
   val COMET_NATIVE_SCAN_IMPL: ConfigEntry[String] = conf("spark.comet.scan.impl")
+    .category(CATEGORY_SCAN)
     .doc(
       s"The implementation of Comet Native Scan to use. Available modes are '$SCAN_NATIVE_COMET'," +
         s"'$SCAN_NATIVE_DATAFUSION', and '$SCAN_NATIVE_ICEBERG_COMPAT'. " +
@@ -112,6 +122,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.respectFilterPushdown")
+      .category(CATEGORY_PARQUET)
       .doc(
         "Whether to respect Spark's PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be " +
           "respected when running the Spark SQL test suite but the default setting " +
@@ -122,6 +133,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
+      .category(CATEGORY_PARQUET)
       .doc(
         "Whether to enable Comet's parallel reader for Parquet files. The parallel reader reads " +
           "ranges of consecutive data in a  file in parallel. It is faster for large files and " +
@@ -131,6 +143,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_PARQUET_PARALLEL_IO_THREADS: ConfigEntry[Int] =
     conf("spark.comet.parquet.read.parallel.io.thread-pool.size")
+      .category(CATEGORY_PARQUET)
       .doc("The maximum number of parallel threads the parallel reader will use in a single " +
         "executor. For executors configured with a smaller number of cores, use a smaller number.")
       .intConf
@@ -138,6 +151,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_IO_MERGE_RANGES: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.io.mergeRanges")
+      .category(CATEGORY_PARQUET)
       .doc(
         "When enabled the parallel reader will try to merge ranges of data that are separated " +
           "by less than 'comet.parquet.read.io.mergeRanges.delta' bytes. Longer continuous reads " +
@@ -147,6 +161,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_IO_MERGE_RANGES_DELTA: ConfigEntry[Int] =
     conf("spark.comet.parquet.read.io.mergeRanges.delta")
+      .category(CATEGORY_PARQUET)
       .doc(
         "The delta in bytes between consecutive read ranges below which the parallel reader " +
           "will try to merge the ranges. The default is 8MB.")
@@ -155,6 +170,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_IO_ADJUST_READRANGE_SKEW: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.io.adjust.readRange.skew")
+      .category(CATEGORY_PARQUET)
       .doc("In the parallel reader, if the read ranges submitted are skewed in sizes, this " +
         "option will cause the reader to break up larger read ranges into smaller ranges to " +
         "reduce the skew. This will result in a slightly larger number of connections opened to " +
@@ -164,6 +180,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.parquet.enabled")
+      .category(CATEGORY_MISC)
       .doc(
         "When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to " +
           "Arrow format. Note that to enable native vectorized execution, both this config and " +
@@ -173,6 +190,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_CONVERT_FROM_JSON_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.json.enabled")
+      .category(CATEGORY_MISC)
       .doc(
         "When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to " +
           "Arrow format. Note that to enable native vectorized execution, both this config and " +
@@ -182,6 +200,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_CONVERT_FROM_CSV_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.csv.enabled")
+      .category(CATEGORY_MISC)
       .doc(
         "When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to " +
           "Arrow format. Note that to enable native vectorized execution, both this config and " +
@@ -190,6 +209,7 @@ object CometConf extends ShimCometConf {
       .createWithDefault(false)
 
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
+    .category(CATEGORY_EXEC)
     .doc(
       "Whether to enable Comet native vectorized execution for Spark. This controls whether " +
         "Spark should convert operators into their Comet counterparts and execute them in " +
@@ -235,6 +255,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
+      .category(CATEGORY_EXEC)
       .doc("Experimental support for Sort Merge Join with filter")
       .booleanConf
       .createWithDefault(false)
@@ -246,12 +267,14 @@ object CometConf extends ShimCometConf {
       notes = Some("stddev is slower than Spark's implementation"))
 
   val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
+    .category(CATEGORY_MISC)
     .doc(s"Enable fine-grained tracing of events and memory usage. $TRACING_GUIDE.")
     .internal()
     .booleanConf
     .createWithDefault(false)
 
   val COMET_MEMORY_OVERHEAD: OptionalConfigEntry[Long] = conf("spark.comet.memoryOverhead")
+    .category(CATEGORY_TUNING)
     .doc(
       "The amount of additional memory to be allocated per executor process for Comet, in MiB, " +
         "when running Spark in on-heap mode. " +
@@ -262,6 +285,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_MEMORY_OVERHEAD_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.memory.overhead.factor")
+      .category(CATEGORY_TUNING)
       .doc(
         "Fraction of executor memory to be allocated as additional memory for Comet " +
           "when running Spark in on-heap mode. " +
@@ -671,6 +695,7 @@ object CometConf extends ShimCometConf {
       defaultValue: Boolean,
       notes: Option[String] = None): ConfigEntry[Boolean] = {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.$exec.enabled")
+      .category(CATEGORY_EXEC)
       .doc(
         s"Whether to enable $exec by default." + notes
           .map(s => s" $s.")
