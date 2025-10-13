@@ -34,8 +34,6 @@ import org.apache.spark.sql.types.DataTypes
 class CometToPrettyStringSuite extends CometFuzzTestBase {
 
   test("ToPrettyString") {
-    val cometScanTypeChecker = CometScanTypeChecker(conf.getConfString(CometConf.COMET_NATIVE_SCAN_IMPL.key))
-    val scanImpl = conf.getConfString(CometConf.COMET_NATIVE_SCAN_IMPL.key)
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     val table = spark.sessionState.catalog.lookupRelation(TableIdentifier("t1"))
@@ -47,7 +45,7 @@ class CometToPrettyStringSuite extends CometFuzzTestBase {
       val analyzed = spark.sessionState.analyzer.execute(plan)
       val result: DataFrame = Dataset.ofRows(spark, analyzed)
       CometCast.isSupported(field.dataType, DataTypes.StringType, Some(spark.sessionState.conf.sessionLocalTimeZone), CometEvalMode.TRY) match {
-        case _: Compatible if cometScanTypeChecker.isTypeSupported(field.dataType, scanImpl, ListBuffer.empty) =>
+        case _: Compatible if CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get()).isTypeSupported(field.dataType, field.name, ListBuffer.empty) =>
           checkSparkAnswerAndOperator(result)
         case _ => checkSparkAnswer(result)
       }
