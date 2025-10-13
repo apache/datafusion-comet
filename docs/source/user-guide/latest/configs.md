@@ -49,7 +49,7 @@ Comet provides the following configuration settings.
 | spark.comet.parquet.respectFilterPushdown | Whether to respect Spark's PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be respected when running the Spark SQL test suite but the default setting results in poor performance in Comet when using the new native scans, disabled by default | false |
 <!--END:CONFIG_TABLE-->
 
-## Shuffle Execution Settings
+## Query Execution Settings
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[exec]-->
