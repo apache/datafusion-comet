@@ -210,6 +210,7 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
     val arraysOverlapScalarExpr = scalarFunctionExprToProtoWithReturnType(
       "array_has_any",
       BooleanType,
+      false,
       leftArrayExprProto,
       rightArrayExprProto)
     optExprWithInfo(arraysOverlapScalarExpr, expr, expr.children: _*)
@@ -250,6 +251,7 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
     val arrayCompactScalarExpr = scalarFunctionExprToProtoWithReturnType(
       "array_remove_all",
       ArrayType(elementType = elementType),
+      false,
       arrayExprProto,
       nullLiteralProto)
     optExprWithInfo(arrayCompactScalarExpr, expr, expr.children: _*)

@@ -19,9 +19,6 @@
 
 package org.apache.spark.sql
 
-import org.apache.comet.CometFuzzTestBase
-import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.Compatible
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Alias, ToPrettyString}
@@ -31,6 +28,10 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.BinaryOutputStyle
 import org.apache.spark.sql.types.DataTypes
 
+import org.apache.comet.CometFuzzTestBase
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
+import org.apache.comet.serde.Compatible
+
 class CometToPrettyStringSuite extends CometFuzzTestBase {
 
   test("ToPrettyString") {
@@ -39,8 +40,7 @@ class CometToPrettyStringSuite extends CometFuzzTestBase {
       BinaryOutputStyle.BASIC,
       BinaryOutputStyle.BASE64,
       BinaryOutputStyle.HEX,
-      BinaryOutputStyle.HEX_DISCRETE
-    )
+      BinaryOutputStyle.HEX_DISCRETE)
     style.foreach(s =>
       withSQLConf(SQLConf.BINARY_OUTPUT_STYLE.key -> s.toString) {
         val df = spark.read.parquet(filename)
@@ -53,12 +53,15 @@ class CometToPrettyStringSuite extends CometFuzzTestBase {
           val plan = Project(Seq(prettyExpr), table)
           val analyzed = spark.sessionState.analyzer.execute(plan)
           val result: DataFrame = Dataset.ofRows(spark, analyzed)
-          CometCast.isSupported(field.dataType, DataTypes.StringType, Some(spark.sessionState.conf.sessionLocalTimeZone), CometEvalMode.TRY) match {
+          CometCast.isSupported(
+            field.dataType,
+            DataTypes.StringType,
+            Some(spark.sessionState.conf.sessionLocalTimeZone),
+            CometEvalMode.TRY) match {
             case _: Compatible => checkSparkAnswerAndOperator(result)
             case _ => checkSparkAnswer(result)
           }
         }
-      }
-    )
+      })
   }
 }

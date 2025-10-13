@@ -510,6 +510,12 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_ENABLE_ONHEAP_MODE: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.onHeap.enabled")
+      .doc("Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests.")
+      .booleanConf
+      .createWithDefault(sys.env.getOrElse("ENABLE_COMET_ONHEAP", "false").toBoolean)
+
   val COMET_EXEC_MEMORY_POOL_TYPE: ConfigEntry[String] = conf("spark.comet.exec.memoryPool")
     .doc(
       "The type of memory pool to be used for Comet native execution. " +

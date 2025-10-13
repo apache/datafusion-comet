@@ -166,7 +166,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Contains] -> CometScalarFunction("contains"),
     classOf[EndsWith] -> CometScalarFunction("ends_with"),
     classOf[InitCap] -> CometInitCap,
-    classOf[Length] -> CometScalarFunction("length"),
+    classOf[Length] -> CometLength,
     classOf[Like] -> CometLike,
     classOf[Lower] -> CometLower,
     classOf[OctetLength] -> CometScalarFunction("octet_length"),
@@ -646,7 +646,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val conf = SQLConf.get
 
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       val exprConfName = handler.getExprConfigName(expr)
@@ -689,16 +688,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
 
     versionSpecificExprToProtoInternal(expr, inputs, binding).orElse(expr match {
-      case cast @ Cast(_: Literal, dataType, _, _) =>
-        // This can happen after promoting decimal precisions
-        val value = cast.eval()
-        exprToProtoInternal(Literal(value, dataType), inputs, binding)
-
-      case UnaryExpression(child) if expr.prettyName == "trycast" =>
-        val timeZoneId = conf.sessionLocalTimeZone
-        val cast = Cast(child, expr.dataType, Some(timeZoneId), EvalMode.TRY)
-        convert(cast, CometCast)
-
       // ToPrettyString is new in Spark 3.5
       case _
           if expr.getClass.getSimpleName == "ToPrettyString" && expr
@@ -862,7 +851,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case UnscaledValue(child) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
         val optExpr =
-          scalarFunctionExprToProtoWithReturnType("unscaled_value", LongType, childExpr)
+          scalarFunctionExprToProtoWithReturnType("unscaled_value", LongType, false, childExpr)
         optExprWithInfo(optExpr, expr, child)
 
       case MakeDecimal(child, precision, scale, true) =>
@@ -870,6 +859,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val optExpr = scalarFunctionExprToProtoWithReturnType(
           "make_decimal",
           DecimalType(precision, scale),
+          false,
           childExpr)
         optExprWithInfo(optExpr, expr, child)
 
@@ -891,9 +881,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, bloomFilter, value)
           None
         }
-      case l @ Length(child) if child.dataType == BinaryType =>
-        withInfo(l, "Length on BinaryType is not supported")
-        None
       case r @ Reverse(child) if child.dataType.isInstanceOf[ArrayType] =>
         convert(r, CometArrayReverse)
       case expr =>
@@ -981,9 +968,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
   def scalarFunctionExprToProtoWithReturnType(
       funcName: String,
       returnType: DataType,
+      failOnError: Boolean,
       args: Option[Expr]*): Option[Expr] = {
     val builder = ExprOuterClass.ScalarFunc.newBuilder()
     builder.setFunc(funcName)
+    builder.setFailOnError(failOnError)
     serializeDataType(returnType).flatMap { t =>
       builder.setReturnType(t)
       scalarFunctionExprToProto0(builder, args: _*)
@@ -993,6 +982,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   def scalarFunctionExprToProto(funcName: String, args: Option[Expr]*): Option[Expr] = {
     val builder = ExprOuterClass.ScalarFunc.newBuilder()
     builder.setFunc(funcName)
+    builder.setFailOnError(false)
     scalarFunctionExprToProto0(builder, args: _*)
   }
 
