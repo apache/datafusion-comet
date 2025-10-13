@@ -65,9 +65,7 @@ trait CometExprShim extends CommonStringExprs {
           val Seq(bin, charset, _, _) = s.arguments
           stringDecode(expr, charset, bin, inputs, binding)
 
-        case expr: ToPrettyString =>
-          val child = expr.asInstanceOf[UnaryExpression].child
-          val timezoneId = expr.asInstanceOf[TimeZoneAwareExpression].timeZoneId
+        case expr @ ToPrettyString(child, timeZoneId) =>
 
           val castSupported = CometCast.isSupported(
             child.dataType,
@@ -87,7 +85,7 @@ trait CometExprShim extends CommonStringExprs {
                 val toPrettyString = ExprOuterClass.ToPrettyString
                   .newBuilder()
                   .setChild(p)
-                  .setTimezone(timezoneId.getOrElse("UTC"))
+                  .setTimezone(timeZoneId.getOrElse("UTC"))
                   .setBinaryOutputStyle(binaryOutputStyle)
                   .build()
                 Some(

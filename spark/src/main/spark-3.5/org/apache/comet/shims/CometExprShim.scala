@@ -45,14 +45,12 @@ trait CometExprShim extends CommonStringExprs {
           // Right child is the encoding expression.
           stringDecode(expr, s.charset, s.bin, inputs, binding)
 
-        case expr: ToPrettyString =>
-          val child = expr.asInstanceOf[UnaryExpression].child
-          val timezoneId = expr.asInstanceOf[TimeZoneAwareExpression].timeZoneId
+        case expr @ ToPrettyString(child, timeZoneId) =>
 
           val castSupported = CometCast.isSupported(
             child.dataType,
             DataTypes.StringType,
-            timezoneId,
+            timeZoneId,
             CometEvalMode.TRY)
 
           val isCastSupported = castSupported match {
