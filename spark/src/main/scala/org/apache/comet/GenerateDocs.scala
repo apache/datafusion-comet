@@ -39,26 +39,12 @@ object GenerateDocs {
 
   val publicConfigs: Set[ConfigEntry[_]] = CometConf.allConfs.filter(_.isPublic).toSet
 
-  val shuffleConf: Set[ConfigEntry[_]] = publicConfigs.filter(_.key.contains(".shuffle."))
-
-  val parquetConf: Set[ConfigEntry[_]] = publicConfigs.filter(_.key.contains(".parquet."))
-
-  val miscConf: Set[ConfigEntry[_]] = publicConfigs -- (shuffleConf ++ parquetConf)
-
-  val sections: Map[String, Set[ConfigEntry[_]]] =
-    Map("parquet" -> parquetConf, "shuffle" -> shuffleConf, "misc" -> miscConf)
-
   def main(args: Array[String]): Unit = {
     generateConfigReference()
     generateCompatibilityGuide()
   }
 
   private def generateConfigReference(): Unit = {
-
-    val undocumented: Set[ConfigEntry[_]] = sections.values.flatten.toSet -- publicConfigs
-
-    // TODO convert this into an assertion before merging
-    Console.err.print(s"Undocumented configs: ${undocumented.map(_.key).mkString}")
 
     val pattern = "<!--BEGIN:CONFIG_TABLE\\[(.*)]-->".r
     val filename = s"$userGuideLocation/configs.md"
@@ -67,8 +53,8 @@ object GenerateDocs {
     for (line <- lines) {
       w.write(s"${line.stripTrailing()}\n".getBytes)
       line match {
-        case pattern(section) =>
-          val confs = sections(section).toList.sortBy(_.key)
+        case pattern(category) =>
+          val confs = publicConfigs.filter(_.category == category).toList.sortBy(_.key)
           w.write("| Config | Description | Default Value |\n".getBytes)
           w.write("|--------|-------------|---------------|\n".getBytes)
           for (conf <- confs) {

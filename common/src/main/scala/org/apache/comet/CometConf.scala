@@ -794,6 +794,7 @@ private class TypedConfigBuilder[T](
       converter,
       stringConverter,
       parent._doc,
+      parent._category,
       parent._public,
       parent._version)
     CometConf.register(conf)
@@ -809,6 +810,7 @@ private class TypedConfigBuilder[T](
       converter,
       stringConverter,
       parent._doc,
+      parent._category,
       parent._public,
       parent._version)
     CometConf.register(conf)
@@ -821,6 +823,7 @@ private[comet] abstract class ConfigEntry[T](
     val valueConverter: String => T,
     val stringConverter: T => String,
     val doc: String,
+    val category: String,
     val isPublic: Boolean,
     val version: String) {
 
@@ -852,9 +855,10 @@ private[comet] class ConfigEntryWithDefault[T](
     valueConverter: String => T,
     stringConverter: T => String,
     doc: String,
+    category: String,
     isPublic: Boolean,
     version: String)
-    extends ConfigEntry(key, valueConverter, stringConverter, doc, isPublic, version) {
+    extends ConfigEntry(key, valueConverter, stringConverter, doc, category, isPublic, version) {
   override def defaultValue: Option[T] = Some(_defaultValue)
 
   override def defaultValueString: String = stringConverter(_defaultValue)
@@ -874,6 +878,7 @@ private[comet] class OptionalConfigEntry[T](
     val rawValueConverter: String => T,
     val rawStringConverter: T => String,
     doc: String,
+    category: String,
     isPublic: Boolean,
     version: String)
     extends ConfigEntry[Option[T]](
@@ -881,6 +886,7 @@ private[comet] class OptionalConfigEntry[T](
       s => Some(rawValueConverter(s)),
       v => v.map(rawStringConverter).orNull,
       doc,
+      category,
       isPublic,
       version) {
 
@@ -898,6 +904,7 @@ private[comet] case class ConfigBuilder(key: String) {
   var _public = true
   var _doc = ""
   var _version = ""
+  var _category = ""
 
   def internal(): ConfigBuilder = {
     _public = false
@@ -906,6 +913,11 @@ private[comet] case class ConfigBuilder(key: String) {
 
   def doc(s: String): ConfigBuilder = {
     _doc = s
+    this
+  }
+
+  def category(s: String): ConfigBuilder = {
+    _category = s
     this
   }
 
