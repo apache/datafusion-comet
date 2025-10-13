@@ -166,7 +166,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Contains] -> CometScalarFunction("contains"),
     classOf[EndsWith] -> CometScalarFunction("ends_with"),
     classOf[InitCap] -> CometInitCap,
-    classOf[Length] -> CometScalarFunction("length"),
+    classOf[Length] -> CometLength,
     classOf[Like] -> CometLike,
     classOf[Lower] -> CometLower,
     classOf[OctetLength] -> CometScalarFunction("octet_length"),
@@ -862,9 +862,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(expr, bloomFilter, value)
           None
         }
-      case l @ Length(child) if child.dataType == BinaryType =>
-        withInfo(l, "Length on BinaryType is not supported")
-        None
       case r @ Reverse(child) if child.dataType.isInstanceOf[ArrayType] =>
         convert(r, CometArrayReverse)
       case expr =>
