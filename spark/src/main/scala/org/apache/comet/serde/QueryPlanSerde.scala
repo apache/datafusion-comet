@@ -19,6 +19,7 @@
 
 package org.apache.comet.serde
 
+import scala.annotation.unused
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
@@ -50,14 +51,12 @@ import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
-import org.apache.comet.serde.OperatorOuterClass.{BuildSide, JoinType, Operator, AggregateMode => CometAggregateMode}
+import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.literals.CometLiteral
 import org.apache.comet.shims.CometExprShim
-
-import scala.annotation.unused
 
 /**
  * An utility object for query plan and expression serialization.

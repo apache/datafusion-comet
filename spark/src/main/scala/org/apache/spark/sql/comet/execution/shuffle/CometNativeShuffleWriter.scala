@@ -60,7 +60,8 @@ class CometNativeShuffleWriter[K, V](
   private val OFFSET_LENGTH = 8
 
   var partitionLengths: Array[Long] = _
-  // Store MapStatus opaquely as AnyRef to avoid private[spark] visibility issues; cast back when needed.
+  // Store MapStatus opaquely as AnyRef,
+  // to avoid private[spark] visibility issues; cast back when needed.
   var mapStatus: AnyRef = _
 
   override def write(inputs: Iterator[Product2[K, V]]): Unit = {

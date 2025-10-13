@@ -49,12 +49,13 @@ object SourceFilterSerde extends Logging {
           .setIndex(index)
           .setDatatype(dataType.get)
           .build()
-        Some((
-          field.dataType,
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setBound(boundExpr)
-            .build()))
+        Some(
+          (
+            field.dataType,
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setBound(boundExpr)
+              .build()))
       } else {
         None
       }
