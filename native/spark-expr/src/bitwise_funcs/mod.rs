@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod bitwise_count;
 mod bitwise_not;
 
-pub use bitwise_count::SparkBitwiseCount;
 pub use bitwise_not::SparkBitwiseNot;
