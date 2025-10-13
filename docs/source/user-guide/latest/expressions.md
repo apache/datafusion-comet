@@ -116,7 +116,7 @@ incompatible expressions.
 ## Math Expressions
 
 | Expression     | SQL       | Spark-Compatible? | Compatibility Notes               |
-|----------------|-----------|-------------------|-----------------------------------|
+| -------------- | --------- | ----------------- |-----------------------------------|
 | Acos           | `acos`    | Yes               |                                   |
 | Add            | `+`       | Yes               |                                   |
 | Asin           | `asin`    | Yes               |                                   |
@@ -139,7 +139,7 @@ incompatible expressions.
 | Pow            | `power`   | Yes               |                                   |
 | Rand           | `rand`    | Yes               |                                   |
 | Randn          | `randn`   | Yes               |                                   |
-| Remainder      | `%`       | Yes               |                                   |
+| Remainder      | `%`       | Yes               | ANSI mode is not supported.       |
 | Round          | `round`   | Yes               |                                   |
 | Signum         | `signum`  | Yes               |                                   |
 | Sin            | `sin`     | Yes               |                                   |
