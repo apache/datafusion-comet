@@ -2478,7 +2478,7 @@ impl PhysicalPlanner {
             fun_name,
             data_type.clone(),
             &self.session_ctx.state(),
-            None,
+            Some(expr.fail_on_error),
         )?;
 
         let args = args
@@ -3346,6 +3346,7 @@ mod tests {
                         func: "make_array".to_string(),
                         args: vec![array_col, array_col_1],
                         return_type: None,
+                        fail_on_error: false,
                     })),
                 }],
             })),
@@ -3464,6 +3465,7 @@ mod tests {
                         func: "array_repeat".to_string(),
                         args: vec![array_col, array_col_1],
                         return_type: None,
+                        fail_on_error: false,
                     })),
                 }],
             })),

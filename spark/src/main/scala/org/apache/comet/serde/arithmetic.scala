@@ -279,14 +279,6 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 
 object CometRound extends CometExpressionSerde[Round] {
 
-  override def getSupportLevel(expr: Round): SupportLevel = {
-    if (expr.ansiEnabled) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
-
   override def convert(
       r: Round,
       inputs: Seq[Attribute],
@@ -325,7 +317,12 @@ object CometRound extends CometExpressionSerde[Round] {
         // `scale` must be Int64 type in DataFusion
         val scaleExpr = exprToProtoInternal(Literal(_scale.toLong, LongType), inputs, binding)
         val optExpr =
-          scalarFunctionExprToProtoWithReturnType("round", r.dataType, childExpr, scaleExpr)
+          scalarFunctionExprToProtoWithReturnType(
+            "round",
+            r.dataType,
+            r.ansiEnabled,
+            childExpr,
+            scaleExpr)
         optExprWithInfo(optExpr, r, r.child)
     }
 

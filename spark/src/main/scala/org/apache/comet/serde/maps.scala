@@ -85,7 +85,7 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     val valueType = expr.right.dataType.asInstanceOf[ArrayType].elementType
     val returnType = MapType(keyType = keyType, valueType = valueType)
     val mapFromArraysExpr =
-      scalarFunctionExprToProtoWithReturnType("map", returnType, keysExpr, valuesExpr)
+      scalarFunctionExprToProtoWithReturnType("map", returnType, false, keysExpr, valuesExpr)
     optExprWithInfo(mapFromArraysExpr, expr, expr.children: _*)
   }
 }
