@@ -19,6 +19,7 @@
 
 package org.apache.comet.serde
 
+import scala.annotation.unused
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, EvalMode}
@@ -414,7 +415,7 @@ trait CometCovBase {
       statsType: Int,
       inputs: Seq[Attribute],
       binding: Boolean,
-      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+      @unused conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
     val child1Expr = exprToProto(cov.left, inputs, binding)
     val child2Expr = exprToProto(cov.right, inputs, binding)
     val dataType = serializeDataType(cov.dataType)

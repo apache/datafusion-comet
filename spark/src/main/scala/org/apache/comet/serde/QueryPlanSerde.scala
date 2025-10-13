@@ -19,6 +19,7 @@
 
 package org.apache.comet.serde
 
+import scala.annotation.unused
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
@@ -1804,7 +1805,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
         .setFileSize(file.fileSize)
       partitionBuilder.addPartitionedFile(fileBuilder.build())
     })
-    nativeScanBuilder.addFilePartitions(partitionBuilder.build())
+    nativeScanBuilder.addFilePartitions(partitionBuilder.build()); ()
   }
 }
 
@@ -1886,7 +1887,7 @@ trait CometExpressionSerde[T <: Expression] {
    * @return
    *   Support level (Compatible, Incompatible, or Unsupported).
    */
-  def getSupportLevel(expr: T): SupportLevel = Compatible(None)
+  def getSupportLevel(@unused expr: T): SupportLevel = Compatible(None)
 
   /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into

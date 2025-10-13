@@ -21,11 +21,15 @@ package org.apache.comet
 
 import java.nio.ByteBuffer
 
+import scala.annotation.nowarn
+
 import org.apache.spark.CometTaskMemoryManager
 import org.apache.spark.sql.comet.CometMetricNode
 
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 
+// Suppress unused warnings since native methods have no Scala impl
+@nowarn("msg=never used")
 class Native extends NativeBase {
 
   // scalastyle:off

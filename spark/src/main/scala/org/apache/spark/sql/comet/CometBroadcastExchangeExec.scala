@@ -146,7 +146,7 @@ case class CometBroadcastExchangeExec(
         longMetric("numOutputRows") += numRows
         if (numRows >= maxBroadcastRows) {
           throw QueryExecutionErrors.cannotBroadcastTableOverMaxTableRowsError(
-            maxBroadcastRows,
+            maxBroadcastRows.toLong,
             numRows)
         }
 
@@ -198,7 +198,7 @@ case class CometBroadcastExchangeExec(
 
   override protected def doPrepare(): Unit = {
     // Materialize the future.
-    relationFuture
+    relationFuture; ()
   }
 
   override protected def doExecute(): RDD[InternalRow] = {

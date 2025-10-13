@@ -19,9 +19,12 @@
 
 package org.apache.comet.expressions
 
+import scala.annotation.nowarn
+
 object RegExp {
 
   /** Determine whether the regexp pattern is supported natively and compatible with Spark */
+  @nowarn // suppress unused param warning since 'pattern' is only a placeholder here
   def isSupportedPattern(pattern: String): Boolean = {
     // this is a placeholder for implementing logic to determine if the pattern
     // is known to be compatible with Spark, so that we can enable regexp automatically

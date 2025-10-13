@@ -100,13 +100,13 @@ object CometDriverPlugin extends Logging {
     val extensions = conf.get(extensionKey, "")
     if (extensions.isEmpty) {
       logInfo(s"Setting $extensionKey=$extensionClass")
-      conf.set(extensionKey, extensionClass)
+      conf.set(extensionKey, extensionClass); ()
     } else {
       val currentExtensions = extensions.split(",").map(_.trim)
       if (!currentExtensions.contains(extensionClass)) {
         val newValue = s"$extensions,$extensionClass"
         logInfo(s"Setting $extensionKey=$newValue")
-        conf.set(extensionKey, newValue)
+        conf.set(extensionKey, newValue); ()
       }
     }
   }

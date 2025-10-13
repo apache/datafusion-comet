@@ -50,11 +50,12 @@ object SourceFilterSerde extends Logging {
           .setDatatype(dataType.get)
           .build()
         Some(
-          field.dataType,
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setBound(boundExpr)
-            .build())
+          (
+            field.dataType,
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setBound(boundExpr)
+              .build()))
       } else {
         None
       }
@@ -80,8 +81,8 @@ object SourceFilterSerde extends Logging {
       // refer to org.apache.spark.sql.catalyst.CatalystTypeConverters.CatalystTypeConverter#toScala
       dataType match {
         case _: BooleanType => exprBuilder.setBoolVal(value.asInstanceOf[Boolean])
-        case _: ByteType => exprBuilder.setByteVal(value.asInstanceOf[Byte])
-        case _: ShortType => exprBuilder.setShortVal(value.asInstanceOf[Short])
+        case _: ByteType => exprBuilder.setByteVal(value.asInstanceOf[Byte].toInt)
+        case _: ShortType => exprBuilder.setShortVal(value.asInstanceOf[Short].toInt)
         case _: IntegerType => exprBuilder.setIntVal(value.asInstanceOf[Int])
         case _: LongType => exprBuilder.setLongVal(value.asInstanceOf[Long])
         case _: FloatType => exprBuilder.setFloatVal(value.asInstanceOf[Float])

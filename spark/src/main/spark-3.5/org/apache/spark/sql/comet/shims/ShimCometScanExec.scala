@@ -21,7 +21,6 @@ package org.apache.spark.sql.comet.shims
 
 
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression}
@@ -32,6 +31,8 @@ import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.SPARK_VERSION_SHORT
 import org.apache.spark.util.VersionUtils
+
+import scala.annotation.nowarn
 import scala.math.Ordering.Implicits._
 
 trait ShimCometScanExec {
@@ -42,7 +43,7 @@ trait ShimCometScanExec {
 
   def isSparkVersionAtLeast355: Boolean = {
     VersionUtils.majorMinorPatchVersion(SPARK_VERSION_SHORT) match {
-      case Some((major, minor, patch)) => (major, minor, patch) >= (3, 5, 5)
+      case Some((major, minor, patch)) => (major, minor, patch) >= ((3, 5, 5))
       case None =>
         throw new IllegalArgumentException(s"Malformed Spark version: $SPARK_VERSION_SHORT")
     }
@@ -62,7 +63,7 @@ trait ShimCometScanExec {
     fsRelation.fileFormat.fileConstantMetadataExtractors,
     options)
 
-  // see SPARK-39634
+  @nowarn // Temporary implementation, see SPARK-39634
   protected def isNeededForSchema(sparkSchema: StructType): Boolean = false
 
   protected def getPartitionedFile(f: FileStatusWithMetadata, p: PartitionDirectory): PartitionedFile =
