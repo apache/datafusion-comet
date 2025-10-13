@@ -16,7 +16,11 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
 package org.apache.comet.shims
+
+import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.types.DataTypes
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
@@ -24,73 +28,68 @@ import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, In
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
-import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.types.DataTypes
-
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
 trait CometExprShim extends CommonStringExprs {
-    protected def evalMode(c: Cast): CometEvalMode.Value =
-        CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
+  protected def evalMode(c: Cast): CometEvalMode.Value =
+    CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
   protected def binaryOutputStyle: BinaryOutputStyle = BinaryOutputStyle.HEX_DISCRETE
 
-    def versionSpecificExprToProtoInternal(
-        expr: Expression,
-        inputs: Seq[Attribute],
-        binding: Boolean): Option[Expr] = {
-      expr match {
-        case s: StringDecode =>
-          // Right child is the encoding expression.
-          stringDecode(expr, s.charset, s.bin, inputs, binding)
+  def versionSpecificExprToProtoInternal(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    expr match {
+      case s: StringDecode =>
+        // Right child is the encoding expression.
+        stringDecode(expr, s.charset, s.bin, inputs, binding)
 
-        case expr @ ToPrettyString(child, timeZoneId) =>
+      case expr @ ToPrettyString(child, timeZoneId) =>
+        val castSupported = CometCast.isSupported(
+          child.dataType,
+          DataTypes.StringType,
+          timeZoneId,
+          CometEvalMode.TRY)
 
-          val castSupported = CometCast.isSupported(
-            child.dataType,
-            DataTypes.StringType,
-            timeZoneId,
-            CometEvalMode.TRY)
+        val isCastSupported = castSupported match {
+          case Compatible(_) => true
+          case Incompatible(_) => true
+          case _ => false
+        }
 
-          val isCastSupported = castSupported match {
-            case Compatible(_) => true
-            case Incompatible(_) => true
-            case _ => false
-          }
-
-          if (isCastSupported) {
-            exprToProtoInternal(child, inputs, binding) match {
-              case Some(p) =>
-                val toPrettyString = ExprOuterClass.ToPrettyString
+        if (isCastSupported) {
+          exprToProtoInternal(child, inputs, binding) match {
+            case Some(p) =>
+              val toPrettyString = ExprOuterClass.ToPrettyString
+                .newBuilder()
+                .setChild(p)
+                .setTimezone(timeZoneId.getOrElse("UTC"))
+                .setBinaryOutputStyle(binaryOutputStyle)
+                .build()
+              Some(
+                ExprOuterClass.Expr
                   .newBuilder()
-                  .setChild(p)
-                  .setTimezone(timezoneId.getOrElse("UTC"))
-                  .setBinaryOutputStyle(binaryOutputStyle)
-                  .build()
-                Some(
-                  ExprOuterClass.Expr
-                    .newBuilder()
-                    .setToPrettyString(toPrettyString)
-                    .build())
-              case _ =>
-                withInfo(expr, child)
-                None
-            }
-          } else {
-            None
+                  .setToPrettyString(toPrettyString)
+                  .build())
+            case _ =>
+              withInfo(expr, child)
+              None
           }
+        } else {
+          None
+        }
 
-        case _ => None
-      }
+      case _ => None
     }
+  }
 }
 
 object CometEvalModeUtil {
-    def fromSparkEvalMode(evalMode: EvalMode.Value): CometEvalMode.Value = evalMode match {
-        case EvalMode.LEGACY => CometEvalMode.LEGACY
-        case EvalMode.TRY => CometEvalMode.TRY
-        case EvalMode.ANSI => CometEvalMode.ANSI
-    }
+  def fromSparkEvalMode(evalMode: EvalMode.Value): CometEvalMode.Value = evalMode match {
+    case EvalMode.LEGACY => CometEvalMode.LEGACY
+    case EvalMode.TRY => CometEvalMode.TRY
+    case EvalMode.ANSI => CometEvalMode.ANSI
+  }
 }
-
