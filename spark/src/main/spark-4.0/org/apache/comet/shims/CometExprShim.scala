@@ -25,9 +25,11 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.{BinaryType, BooleanType, DataTypes, StringType}
 
-import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.CommonStringExprs
+import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
+import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
+import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -70,7 +72,7 @@ trait CometExprShim extends CommonStringExprs {
         val castSupported = CometCast.isSupported(
           child.dataType,
           DataTypes.StringType,
-          timezoneId,
+          timeZoneId,
           CometEvalMode.TRY)
 
         val isCastSupported = castSupported match {
