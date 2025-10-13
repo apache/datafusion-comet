@@ -136,7 +136,7 @@ class CometExecIterator(
       localDiskDirs,
       batchSize = COMET_BATCH_SIZE.get(),
       offHeapMode,
-      memoryPoolType = memoryPoolType,
+      memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
       memoryLimit,
       memoryLimitPerTask,
       taskAttemptId,
