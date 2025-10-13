@@ -266,9 +266,8 @@ object CometConf extends ShimCometConf {
       notes = Some("stddev is slower than Spark's implementation"))
 
   val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
-    .category(CATEGORY_SCAN)
+    .category(CATEGORY_TUNING)
     .doc(s"Enable fine-grained tracing of events and memory usage. $TRACING_GUIDE.")
-    .internal()
     .booleanConf
     .createWithDefault(false)
 
@@ -449,7 +448,6 @@ object CometConf extends ShimCometConf {
 
   val COMET_COLUMNAR_SHUFFLE_BATCH_SIZE: ConfigEntry[Int] =
     conf("spark.comet.columnar.shuffle.batch.size")
-      .internal()
       .category(CATEGORY_SHUFFLE)
       .doc("Batch size when writing out sorted spill files on the native side. Note that " +
         "this should not be larger than batch size (i.e., `spark.comet.batchSize`). Otherwise " +
@@ -650,7 +648,6 @@ object CometConf extends ShimCometConf {
 
   val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")
-      .internal()
       .category(CATEGORY_SCAN)
       .doc("Whether to enable Spark to Arrow columnar conversion. When this is turned on, " +
         "Comet will convert operators in " +
