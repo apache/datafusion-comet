@@ -915,6 +915,17 @@ under the License.
               </licenseHeader>
             </java>
             <scala>
+              <includes>
+                <include>src/main/scala/**/*.scala</include>
+                <include>src/test/scala/**/*.scala</include>
+                <include>src/main/scala/**/*.sc</include>
+                <include>src/test/scala/**/*.sc</include>
+                <!-- Include spark shim sources -->
+                <include>src/main/spark-*/**/*.scala</include>
+                <include>src/test/spark-*/**/*.scala</include>
+                <include>src/main/spark-*/**/*.cc</include>
+                <include>src/test/spark-*/**/*.cc</include>
+              </includes>
               <toggleOffOn />
               <scalafmt>
                 <version>${scalafmt.version}</version>

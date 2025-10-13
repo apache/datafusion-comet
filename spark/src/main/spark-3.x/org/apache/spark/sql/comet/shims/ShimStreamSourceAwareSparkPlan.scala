@@ -19,5 +19,4 @@
 
 package org.apache.spark.sql.comet.shims
 
-trait ShimStreamSourceAwareSparkPlan {
-}
+trait ShimStreamSourceAwareSparkPlan {}
