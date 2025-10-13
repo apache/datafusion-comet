@@ -43,12 +43,6 @@ object GenerateDocs {
 
   val parquetConf: ListBuffer[ConfigEntry[_]] = publicConfigs.filter(_.key.contains(".parquet."))
 
-  val documentedConfigs = shuffleConf ++ parquetConf
-
-  // TODO enable
-  // assert(publicConfigs.toSet == documentedConfigs.toSet,
-  // "Not all public configs will be documented")
-
   val sections: Map[String, ListBuffer[ConfigEntry[_]]] =
     Map("parquet" -> parquetConf, "shuffle" -> shuffleConf)
 
@@ -58,7 +52,7 @@ object GenerateDocs {
   }
 
   private def generateConfigReference(): Unit = {
-    val pattern = "<!--BEGIN:CONFIG_TABLE[(.*)]-->".r
+    val pattern = "<!--BEGIN:CONFIG_TABLE\\[(.*)]-->".r
     val filename = s"$userGuideLocation/configs.md"
     val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))
