@@ -57,12 +57,11 @@ object CometConf extends ShimCometConf {
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
-  private val CATEGORY_PARQUET = "parquet"
-  private val CATEGORY_SHUFFLE = "shuffle"
   private val CATEGORY_SCAN = "scan"
+  private val CATEGORY_PARQUET = "parquet"
   private val CATEGORY_EXEC = "exec"
+  private val CATEGORY_SHUFFLE = "shuffle"
   private val CATEGORY_TUNING = "tuning"
-  private val CATEGORY_MISC = "misc"
 
   def register(conf: ConfigEntry[_]): Unit = {
     assert(conf.category.nonEmpty, s"${conf.key} does not have a category defined")
@@ -180,7 +179,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.parquet.enabled")
-      .category(CATEGORY_MISC)
+      .category(CATEGORY_SCAN)
       .doc(
         "When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to " +
           "Arrow format. Note that to enable native vectorized execution, both this config and " +
@@ -190,7 +189,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_CONVERT_FROM_JSON_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.json.enabled")
-      .category(CATEGORY_MISC)
+      .category(CATEGORY_SCAN)
       .doc(
         "When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to " +
           "Arrow format. Note that to enable native vectorized execution, both this config and " +
@@ -200,7 +199,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_CONVERT_FROM_CSV_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.csv.enabled")
-      .category(CATEGORY_MISC)
+      .category(CATEGORY_SCAN)
       .doc(
         "When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to " +
           "Arrow format. Note that to enable native vectorized execution, both this config and " +
@@ -267,7 +266,7 @@ object CometConf extends ShimCometConf {
       notes = Some("stddev is slower than Spark's implementation"))
 
   val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
-    .category(CATEGORY_MISC)
+    .category(CATEGORY_SCAN)
     .doc(s"Enable fine-grained tracing of events and memory usage. $TRACING_GUIDE.")
     .internal()
     .booleanConf
@@ -652,7 +651,7 @@ object CometConf extends ShimCometConf {
   val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")
       .internal()
-      .category(CATEGORY_EXEC)
+      .category(CATEGORY_SCAN)
       .doc("Whether to enable Spark to Arrow columnar conversion. When this is turned on, " +
         "Comet will convert operators in " +
         "`spark.comet.sparkToColumnar.supportedOperatorList` into Arrow columnar format before " +
@@ -662,7 +661,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
     conf("spark.comet.sparkToColumnar.supportedOperatorList")
-      .category(CATEGORY_EXEC)
+      .category(CATEGORY_SCAN)
       .doc("A comma-separated list of operators that will be converted to Arrow columnar " +
         "format when 'spark.comet.sparkToColumnar.enabled' is true")
       .stringConf
