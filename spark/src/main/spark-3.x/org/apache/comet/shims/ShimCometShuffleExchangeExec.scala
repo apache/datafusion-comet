@@ -48,6 +48,6 @@ trait ShimCometShuffleExchangeExec {
     StructType(attributes.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
 
   // TODO: remove after dropping Spark 3.x support
-  @nowarn // Suppress parameter neve used warning.
+  @nowarn // Suppress parameter never used warning.
   protected def getShuffleId(shuffleDependency: ShuffleDependency[Int, _, _]): Int = 0
 }

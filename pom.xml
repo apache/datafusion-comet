@@ -741,7 +741,6 @@ under the License.
                               <arg>-deprecation</arg>
                               <arg>-unchecked</arg>
                               <arg>-feature</arg>
-                              <arg>-Ywarn-dead-code</arg>
                               <arg>-Ywarn-numeric-widen</arg>
                               <arg>-Ywarn-value-discard</arg>
                               <arg>-Ywarn-unused:imports,patvars,privates,locals,params,-implicits</arg>
