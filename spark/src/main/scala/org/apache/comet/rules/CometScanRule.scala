@@ -61,7 +61,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
     if (showTransformations) {
-      logInfo(s"\nINPUT: $plan\nOUTPUT: $newPlan")
+      logInfo(s"CometScanRule:\nINPUT: $plan\nOUTPUT: $newPlan")
     }
     newPlan
   }

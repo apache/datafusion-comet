@@ -57,8 +57,7 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
     if (showTransformations) {
-      // scalastyle:off println
-      System.err.println(s"EliminateRedundantTransitions:\nINPUT: $plan\nOUTPUT: $newPlan")
+      logInfo(s"EliminateRedundantTransitions:\nINPUT: $plan\nOUTPUT: $newPlan")
     }
     newPlan
   }

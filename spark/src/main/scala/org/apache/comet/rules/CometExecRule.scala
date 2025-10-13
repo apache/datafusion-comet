@@ -614,7 +614,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
     if (showTransformations) {
-      logInfo(s"\nINPUT: $plan\nOUTPUT: $newPlan")
+      logInfo(s"CometExecRule:\nINPUT: $plan\nOUTPUT: $newPlan")
     }
     newPlan
   }
