@@ -18,7 +18,7 @@
 .PHONY: all core jvm test clean release-linux release bench
 
 define spark_jvm_17_extra_args
-$(shell ./mvnw help:evaluate -Dexpression=extraJavaTestArgs | grep -v '\[')
+$(shell ./mvnw help:evaluate -q -DforceStdout -Dexpression=extraJavaTestArgs)
 endef
 
 # Build optional Comet native features (like hdfs e.g)
