@@ -226,24 +226,19 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
       expr: RegExpReplace,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    expr.pos match {
-      case Literal(value, DataTypes.IntegerType) if value == 1 =>
-        val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
-        val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
-        val replacementExpr = exprToProtoInternal(expr.rep, inputs, binding)
-        // DataFusion's regexp_replace stops at the first match. We need to add the 'g' flag
-        // to apply the regex globally to match Spark behavior.
-        val flagsExpr = exprToProtoInternal(Literal("g"), inputs, binding)
-        val optExpr = scalarFunctionExprToProto(
-          "regexp_replace",
-          subjectExpr,
-          patternExpr,
-          replacementExpr,
-          flagsExpr)
-        optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
-      case _ =>
-        None
-    }
+    val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
+    val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
+    val replacementExpr = exprToProtoInternal(expr.rep, inputs, binding)
+    // DataFusion's regexp_replace stops at the first match. We need to add the 'g' flag
+    // to apply the regex globally to match Spark behavior.
+    val flagsExpr = exprToProtoInternal(Literal("g"), inputs, binding)
+    val optExpr = scalarFunctionExprToProto(
+      "regexp_replace",
+      subjectExpr,
+      patternExpr,
+      replacementExpr,
+      flagsExpr)
+    optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
   }
 }
 
