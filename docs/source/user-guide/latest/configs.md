@@ -279,11 +279,3 @@ Comet provides the following configuration settings.
 | spark.comet.exec.memoryPool.fraction | Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html). | 1.0 |
 | spark.comet.tracing.enabled | Enable fine-grained tracing of events and memory usage. For more information, refer to the Comet Tracing Guide (https://datafusion.apache.org/comet/user-guide/tracing.html). | false |
 <!--END:CONFIG_TABLE-->
-
-## Configuration Settings Used In Tests
-
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
-<!--BEGIN:CONFIG_TABLE[testing]-->
-| Config | Description | Default Value |
-|--------|-------------|---------------|
-<!--END:CONFIG_TABLE-->
