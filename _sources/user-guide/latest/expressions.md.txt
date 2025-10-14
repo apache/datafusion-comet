@@ -140,7 +140,7 @@ incompatible expressions.
 | Pow            | `power`   | Yes               |                                   |
 | Rand           | `rand`    | Yes               |                                   |
 | Randn          | `randn`   | Yes               |                                   |
-| Remainder      | `%`       | Yes               | ANSI mode is not supported.       |
+| Remainder      | `%`       | Yes               |                                   |
 | Round          | `round`   | Yes               |                                   |
 | Signum         | `signum`  | Yes               |                                   |
 | Sin            | `sin`     | Yes               |                                   |
