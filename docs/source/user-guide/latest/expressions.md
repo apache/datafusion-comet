@@ -116,7 +116,7 @@ incompatible expressions.
 ## Math Expressions
 
 | Expression     | SQL       | Spark-Compatible? | Compatibility Notes               |
-| -------------- | --------- | ----------------- | --------------------------------- |
+|----------------|-----------|-------------------|-----------------------------------|
 | Acos           | `acos`    | Yes               |                                   |
 | Add            | `+`       | Yes               |                                   |
 | Asin           | `asin`    | Yes               |                                   |
@@ -130,7 +130,7 @@ incompatible expressions.
 | Expm1          | `expm1`   | Yes               |                                   |
 | Floor          | `floor`   | Yes               |                                   |
 | Hex            | `hex`     | Yes               |                                   |
-| IntegralDivide | `div`     | Yes               | ANSI mode is not supported.       |
+| IntegralDivide | `div`     | Yes               |                                   |
 | IsNaN          | `isnan`   | Yes               |                                   |
 | Log            | `log`     | Yes               |                                   |
 | Log2           | `log2`    | Yes               |                                   |
@@ -140,7 +140,7 @@ incompatible expressions.
 | Rand           | `rand`    | Yes               |                                   |
 | Randn          | `randn`   | Yes               |                                   |
 | Remainder      | `%`       | Yes               | ANSI mode is not supported.       |
-| Round          | `round`   | Yes               | ANSI mode is not supported.       |
+| Round          | `round`   | Yes               |                                   |
 | Signum         | `signum`  | Yes               |                                   |
 | Sin            | `sin`     | Yes               |                                   |
 | Sqrt           | `sqrt`    | Yes               |                                   |

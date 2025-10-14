@@ -16,13 +16,15 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
 package org.apache.comet.shims
 
-import org.apache.comet.shims.ShimCometBroadcastExchangeExec.SPARK_MAX_BROADCAST_TABLE_SIZE
 import org.apache.spark.SparkContext
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeLike
 import org.apache.spark.sql.internal.SQLConf
+
+import org.apache.comet.shims.ShimCometBroadcastExchangeExec.SPARK_MAX_BROADCAST_TABLE_SIZE
 
 trait ShimCometBroadcastExchangeExec {
 
@@ -32,7 +34,7 @@ trait ShimCometBroadcastExchangeExec {
     sc.setInterruptOnCancel(true)
   }
 
-  def cancelJobGroup(sc: SparkContext,  broadcastExchange: BroadcastExchangeLike): Unit = {
+  def cancelJobGroup(sc: SparkContext, broadcastExchange: BroadcastExchangeLike): Unit = {
     sc.cancelJobsWithTag(broadcastExchange.jobTag)
   }
 

@@ -29,8 +29,6 @@ import org.apache.spark.SparkConf
 import org.apache.spark.SparkEnv
 import org.apache.spark.TaskContext
 import org.apache.spark.internal.{config, Logging}
-import org.apache.spark.internal.config.IO_COMPRESSION_CODEC
-import org.apache.spark.io.CompressionCodec
 import org.apache.spark.shuffle._
 import org.apache.spark.shuffle.api.ShuffleExecutorComponents
 import org.apache.spark.shuffle.sort.{BypassMergeSortShuffleHandle, SerializedShuffleHandle, SortShuffleManager, SortShuffleWriter}
@@ -266,18 +264,6 @@ object CometShuffleManager extends Logging {
       SparkEnv.get.executorId,
       extraConfigs.asJava)
     executorComponents
-  }
-
-  lazy val compressionCodecForShuffling: CompressionCodec = {
-    val sparkConf = SparkEnv.get.conf
-    val codecName = CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC.get(SQLConf.get)
-
-    // only zstd compression is supported at the moment
-    if (codecName != "zstd") {
-      logWarning(
-        s"Overriding config ${IO_COMPRESSION_CODEC}=${codecName} in shuffling, force using zstd")
-    }
-    CompressionCodec.createCodec(sparkConf, "zstd")
   }
 
   def shouldBypassMergeSort(conf: SparkConf, dep: ShuffleDependency[_, _, _]): Boolean = {
