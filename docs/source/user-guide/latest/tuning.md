@@ -36,10 +36,6 @@ than before. See the [Determining How Much Memory to Allocate] section for more 
 
 [Determining How Much Memory to Allocate]: #determining-how-much-memory-to-allocate
 
-Comet supports Spark's on-heap (the default) and off-heap mode for allocating memory. However, we strongly recommend
-using off-heap mode. Comet has some limitations when running in on-heap mode, such as requiring more memory overall,
-and requiring shuffle memory to be separately configured.
-
 ### Configuring Comet Memory
 
 Comet shares an off-heap memory pool with Spark. The size of the pool is
@@ -71,7 +67,7 @@ Baseline Spark Performance
 
 Comet Performance
 
-- Comet requires at least 5 GB of RAM in off-heap mode and 6 GB RAM in on-heap mode, but performance at this level
+- Comet requires at least 5 GB of RAM, but performance at this level
   is around 340 seconds, which is significantly faster than Spark with any amount of RAM
 - Comet running in off-heap with 8 cores completes the benchmark in 295 seconds, more than 2x faster than Spark
 - It is worth noting that running Comet with only 4 cores and 4 GB RAM completes the benchmark in 520 seconds,
