@@ -538,32 +538,23 @@ trait CometStddev {
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
     val child = stddev.child
-    if (CometConf.COMET_EXPR_STDDEV_ENABLED.get(conf)) {
-      val childExpr = exprToProto(child, inputs, binding)
-      val dataType = serializeDataType(stddev.dataType)
+    val childExpr = exprToProto(child, inputs, binding)
+    val dataType = serializeDataType(stddev.dataType)
 
-      if (childExpr.isDefined && dataType.isDefined) {
-        val builder = ExprOuterClass.Stddev.newBuilder()
-        builder.setChild(childExpr.get)
-        builder.setNullOnDivideByZero(nullOnDivideByZero)
-        builder.setDatatype(dataType.get)
-        builder.setStatsTypeValue(statsType)
+    if (childExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.Stddev.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setNullOnDivideByZero(nullOnDivideByZero)
+      builder.setDatatype(dataType.get)
+      builder.setStatsTypeValue(statsType)
 
-        Some(
-          ExprOuterClass.AggExpr
-            .newBuilder()
-            .setStddev(builder)
-            .build())
-      } else {
-        withInfo(aggExpr, child)
-        None
-      }
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setStddev(builder)
+          .build())
     } else {
-      withInfo(
-        aggExpr,
-        "stddev disabled by default because it can be slower than Spark. " +
-          s"Set ${CometConf.COMET_EXPR_STDDEV_ENABLED}=true to enable it.",
-        child)
+      withInfo(aggExpr, child)
       None
     }
   }
