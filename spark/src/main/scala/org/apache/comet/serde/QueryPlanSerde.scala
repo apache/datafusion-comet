@@ -238,7 +238,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
   /**
    * Mapping of Spark expression class to Comet expression handler.
    */
-  private val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+  val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     mathExpressions ++ hashExpressions ++ stringExpressions ++
       conditionalExpressions ++ mapExpressions ++ predicateExpressions ++
       structExpressions ++ bitwiseExpressions ++ miscExpressions ++ arrayExpressions ++

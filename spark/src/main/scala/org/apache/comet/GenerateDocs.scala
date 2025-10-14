@@ -26,7 +26,7 @@ import scala.collection.mutable.ListBuffer
 import org.apache.spark.sql.catalyst.expressions.Cast
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{Compatible, Incompatible}
+import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -54,16 +54,23 @@ object GenerateDocs {
       w.write(s"${line.stripTrailing()}\n".getBytes)
       line match {
         case pattern(category) =>
-          val confs = publicConfigs.filter(_.category == category).toList.sortBy(_.key)
           w.write("| Config | Description | Default Value |\n".getBytes)
           w.write("|--------|-------------|---------------|\n".getBytes)
-          for (conf <- confs) {
-            if (conf.defaultValue.isEmpty) {
-              w.write(s"| ${conf.key} | ${conf.doc.trim} | |\n".getBytes)
-            } else {
-              w.write(
-                s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
-            }
+          category match {
+            case "enable_expr" =>
+              for (expr <- QueryPlanSerde.exprSerdeMap.keys.map(_.getSimpleName).toList.sorted) {
+                w.write(s"| $expr | Enable Comet acceleration for $expr | true |\n".getBytes)
+              }
+            case _ =>
+              val confs = publicConfigs.filter(_.category == category).toList.sortBy(_.key)
+              for (conf <- confs) {
+                if (conf.defaultValue.isEmpty) {
+                  w.write(s"| ${conf.key} | ${conf.doc.trim} | |\n".getBytes)
+                } else {
+                  w.write(
+                    s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
+                }
+              }
           }
         case _ =>
       }

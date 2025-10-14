@@ -23,9 +23,10 @@ Comet supports the following Spark expressions. Expressions that are marked as S
 natively in Comet and provide the same results as Spark, or will fall back to Spark for cases that would not
 be compatible.
 
-All expressions are enabled by default, but can be disabled by setting
+All expressions are enabled by default, but most can be disabled by setting
 `spark.comet.expression.EXPRNAME.enabled=false`, where `EXPRNAME` is the expression name as specified in
-the following tables, such as `Length`, or `StartsWith`.
+the following tables, such as `Length`, or `StartsWith`. See the [Comet Configuration Guide] for a full list
+of expressions that be disabled.
 
 Expressions that are not Spark-compatible will fall back to Spark by default and can be enabled by setting
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`.
@@ -269,4 +270,5 @@ incompatible expressions.
 | ToPrettyString               | Yes               |                                                                             |
 | UnscaledValue                | Yes               |                                                                             |
 
+[Comet Configuration Guide]: configs.md
 [Comet Compatibility Guide]: compatibility.md
