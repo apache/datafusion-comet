@@ -60,6 +60,7 @@ object CometConf extends ShimCometConf {
   private val CATEGORY_SCAN = "scan"
   private val CATEGORY_PARQUET = "parquet"
   private val CATEGORY_EXEC = "exec"
+  private val CATEGORY_ENABLE_EXEC = "enable_exec"
   private val CATEGORY_SHUFFLE = "shuffle"
   private val CATEGORY_TUNING = "tuning"
   private val CATEGORY_TESTING = "testing"
@@ -729,7 +730,7 @@ object CometConf extends ShimCometConf {
       defaultValue: Boolean,
       notes: Option[String] = None): ConfigEntry[Boolean] = {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.$exec.enabled")
-      .category(CATEGORY_EXEC)
+      .category(CATEGORY_ENABLE_EXEC)
       .doc(
         s"Whether to enable $exec by default." + notes
           .map(s => s" $s.")

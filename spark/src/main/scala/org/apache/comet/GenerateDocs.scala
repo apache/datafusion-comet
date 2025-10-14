@@ -59,7 +59,8 @@ object GenerateDocs {
           category match {
             case "enable_expr" =>
               for (expr <- QueryPlanSerde.exprSerdeMap.keys.map(_.getSimpleName).toList.sorted) {
-                w.write(s"| $expr | Enable Comet acceleration for $expr | true |\n".getBytes)
+                val config = s"spark.comet.expression.$expr.enabled"
+                w.write(s"| $config | Enable Comet acceleration for $expr | true |\n".getBytes)
               }
             case _ =>
               val confs = publicConfigs.filter(_.category == category).toList.sortBy(_.key)
