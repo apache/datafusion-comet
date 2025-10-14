@@ -49,7 +49,7 @@ Comet provides the following configuration settings.
 | spark.comet.exec.globalLimit.enabled | Whether to enable globalLimit by default. | true |
 | spark.comet.exec.hashJoin.enabled | Whether to enable hashJoin by default. | true |
 | spark.comet.exec.localLimit.enabled | Whether to enable localLimit by default. | true |
-| spark.comet.exec.memoryPool | The type of memory pool to be used for Comet native execution when running Spark in off-heap mode, available pool types are 'greedy', 'fair_spill', 'greedy_task_shared', 'fair_spill_task_shared', 'greedy_global', 'fair_spill_global', and `unbounded`. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html). | fair_unified |
+| spark.comet.exec.memoryPool | The type of memory pool to be used for Comet native execution when running Spark in off-heap mode. Available pool types are 'greedy_unified' and `fair_unified`. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html). | fair_unified |
 | spark.comet.exec.memoryPool.fraction | Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html). | 1.0 |
 | spark.comet.exec.project.enabled | Whether to enable project by default. | true |
 | spark.comet.exec.replaceSortMergeJoin | Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html). | false |
