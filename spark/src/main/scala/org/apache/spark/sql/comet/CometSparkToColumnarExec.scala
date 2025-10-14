@@ -83,7 +83,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
         val startNs = System.nanoTime()
         val batch = iter.next()
         conversionTime += System.nanoTime() - startNs
-        numInputRows += batch.numRows()
+        numInputRows += batch.numRows().toLong
         numOutputBatches += 1
         batch
       }
@@ -123,7 +123,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
             CometArrowConverters.rowToArrowBatchIter(
               sparkBatches,
               schema,
-              maxRecordsPerBatch,
+              maxRecordsPerBatch.toLong,
               timeZoneId,
               context)
           createTimingIter(arrowBatches, numInputRows, numOutputBatches, conversionTime)

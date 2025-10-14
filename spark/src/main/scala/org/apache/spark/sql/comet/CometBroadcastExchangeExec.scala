@@ -146,7 +146,7 @@ case class CometBroadcastExchangeExec(
         longMetric("numOutputRows") += numRows
         if (numRows >= maxBroadcastRows) {
           throw QueryExecutionErrors.cannotBroadcastTableOverMaxTableRowsError(
-            maxBroadcastRows,
+            maxBroadcastRows.toLong,
             numRows)
         }
 
