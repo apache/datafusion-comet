@@ -877,9 +877,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         true
       case RangePartitioning(orderings, _) =>
         if (!CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)) {
-          // do not encourage the users to enable the config because we know that
-          // the experimental implementation is not correct yet
-          withInfo(s, "Range partitioning is not supported by native shuffle")
+          withInfo(
+            s,
+            s"${CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key} is disabled")
           return false
         }
         var supported = true
@@ -924,22 +924,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           _: TimestampNTZType | _: DecimalType | _: DateType =>
         true
       case StructType(fields) =>
-        fields.forall(f => supportedSerializableDataType(f.dataType)) &&
+        fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
         // Java Arrow stream reader cannot work on duplicate field name
         fields.map(f => f.name).distinct.length == fields.length &&
         fields.nonEmpty
-
-      // TODO add support for nested complex types
-      // https://github.com/apache/datafusion-comet/issues/2199
-      case ArrayType(ArrayType(_, _), _) => false
-      case ArrayType(MapType(_, _, _), _) => false
-      case MapType(MapType(_, _, _), _, _) => false
-      case MapType(_, MapType(_, _, _), _) => false
-      case MapType(StructType(_), _, _) => false
-      case MapType(_, StructType(_), _) => false
-      case MapType(ArrayType(_, _), _, _) => false
-      case MapType(_, ArrayType(_, _), _) => false
-
       case ArrayType(elementType, _) =>
         supportedSerializableDataType(elementType)
       case MapType(keyType, valueType, _) =>
