@@ -689,46 +689,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
 
     versionSpecificExprToProtoInternal(expr, inputs, binding).orElse(expr match {
-      // ToPrettyString is new in Spark 3.5
-      case _
-          if expr.getClass.getSimpleName == "ToPrettyString" && expr
-            .isInstanceOf[UnaryExpression] && expr.isInstanceOf[TimeZoneAwareExpression] =>
-        val child = expr.asInstanceOf[UnaryExpression].child
-        val timezoneId = expr.asInstanceOf[TimeZoneAwareExpression].timeZoneId
-
-        val castSupported = CometCast.isSupported(
-          child.dataType,
-          DataTypes.StringType,
-          timezoneId,
-          CometEvalMode.TRY)
-
-        val isCastSupported = castSupported match {
-          case Compatible(_) => true
-          case Incompatible(_) => true
-          case _ => false
-        }
-
-        if (isCastSupported) {
-          exprToProtoInternal(child, inputs, binding) match {
-            case Some(p) =>
-              val toPrettyString = ExprOuterClass.ToPrettyString
-                .newBuilder()
-                .setChild(p)
-                .setTimezone(timezoneId.getOrElse("UTC"))
-                .setBinaryOutputStyle(binaryOutputStyle)
-                .build()
-              Some(
-                ExprOuterClass.Expr
-                  .newBuilder()
-                  .setToPrettyString(toPrettyString)
-                  .build())
-            case _ =>
-              withInfo(expr, child)
-              None
-          }
-        } else {
-          None
-        }
 
       case SortOrder(child, direction, nullOrdering, _) =>
         val childExpr = exprToProtoInternal(child, inputs, binding)
