@@ -263,7 +263,12 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
     val childExpr = exprToProtoInternal(expr.date, inputs, binding)
     val formatExpr = exprToProtoInternal(expr.format, inputs, binding)
     val optExpr =
-      scalarFunctionExprToProtoWithReturnType("date_trunc", DateType, childExpr, formatExpr)
+      scalarFunctionExprToProtoWithReturnType(
+        "date_trunc",
+        DateType,
+        false,
+        childExpr,
+        formatExpr)
     optExprWithInfo(optExpr, expr, expr.date, expr.format)
   }
 }
