@@ -84,6 +84,11 @@ jobs:
             maven_opts: "-Pspark-3.5 -Dspark.version=3.5.5 -Pscala-2.13"
             scan_impl: "native_comet"
 
+          - name: "Spark 3.5.6, JDK 17, Scala 2.13"
+            java_version: "17"
+            maven_opts: "-Pspark-3.5 -Dspark.version=3.5.6 -Pscala-2.13"
+            scan_impl: "native_comet"
+
           - name: "Spark 3.5, JDK 17, Scala 2.12 native_datafusion"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.12"
