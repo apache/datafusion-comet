@@ -32,7 +32,7 @@ import org.apache.comet.CometConf
 object CometStringExpressionBenchmark extends CometBenchmarkBase {
 
   def subStringExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Substring Expr", values, output = output)
+    val benchmark = new Benchmark("Substring Expr", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -62,7 +62,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def stringSpaceExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("StringSpace Expr", values, output = output)
+    val benchmark = new Benchmark("StringSpace Expr", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -92,7 +92,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def asciiExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr ascii", values, output = output)
+    val benchmark = new Benchmark("Expr ascii", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -122,7 +122,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def bitLengthExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr bit_length", values, output = output)
+    val benchmark = new Benchmark("Expr bit_length", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -152,7 +152,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def octetLengthExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr octet_length", values, output = output)
+    val benchmark = new Benchmark("Expr octet_length", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -182,7 +182,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def upperExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr upper", values, output = output)
+    val benchmark = new Benchmark("Expr upper", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -213,7 +213,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def lowerExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr lower", values, output = output)
+    val benchmark = new Benchmark("Expr lower", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -243,7 +243,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def chrExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr chr", values, output = output)
+    val benchmark = new Benchmark("Expr chr", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -273,7 +273,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def initCapExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr initCap", values, output = output)
+    val benchmark = new Benchmark("Expr initCap", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -303,7 +303,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def trimExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr trim", values, output = output)
+    val benchmark = new Benchmark("Expr trim", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -333,7 +333,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def concatwsExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr concatws", values, output = output)
+    val benchmark = new Benchmark("Expr concatws", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -363,7 +363,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def lengthExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr length", values, output = output)
+    val benchmark = new Benchmark("Expr length", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -393,7 +393,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def repeatExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr repeat", values, output = output)
+    val benchmark = new Benchmark("Expr repeat", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -423,7 +423,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def reverseExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr reverse", values, output = output)
+    val benchmark = new Benchmark("Expr reverse", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -483,7 +483,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def replaceExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr replace", values, output = output)
+    val benchmark = new Benchmark("Expr replace", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -513,7 +513,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def translateExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr translate", values, output = output)
+    val benchmark = new Benchmark("Expr translate", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
