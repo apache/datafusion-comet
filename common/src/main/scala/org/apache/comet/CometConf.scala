@@ -520,21 +520,20 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(sys.env.getOrElse("ENABLE_COMET_ONHEAP", "false").toBoolean)
 
-  val COMET_EXEC_OFFHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] = conf(
-    "spark.comet.exec.memoryPool")
-    .doc(
-      "The type of memory pool to be used for Comet native execution " +
-        "when running Spark in off-heap mode. Available pool types are 'greedy', 'fair_spill', " +
-        "'greedy_task_shared', 'fair_spill_task_shared', 'greedy_global', 'fair_spill_global', " +
-        s"and `unbounded`. $TUNING_GUIDE.")
-    .stringConf
-    .createWithDefault("fair_unified")
+  val COMET_EXEC_OFFHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] =
+    conf("spark.comet.exec.memoryPool")
+      .doc(
+        "The type of memory pool to be used for Comet native execution when running Spark in " +
+          "off-heap mode. Available pool types are 'greedy_unified' and `fair_unified`. " +
+          s"$TUNING_GUIDE.")
+      .stringConf
+      .createWithDefault("fair_unified")
 
   val COMET_EXEC_ONHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] = conf(
     "spark.comet.exec.onHeap.memoryPool")
     .doc(
       "The type of memory pool to be used for Comet native execution " +
-        "hen running Spark in on-heap mode. Available pool types are 'greedy', 'fair_spill', " +
+        "when running Spark in on-heap mode. Available pool types are 'greedy', 'fair_spill', " +
         "'greedy_task_shared', 'fair_spill_task_shared', 'greedy_global', 'fair_spill_global', " +
         "and `unbounded`.")
     .internal()
