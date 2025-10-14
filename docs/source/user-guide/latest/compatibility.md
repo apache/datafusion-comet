@@ -193,6 +193,7 @@ The following cast operations are generally compatible with Spark except for the
 | double | long |  |
 | double | float |  |
 | double | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
+| decimal | boolean |  |
 | decimal | byte |  |
 | decimal | short |  |
 | decimal | integer |  |
