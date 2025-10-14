@@ -94,11 +94,10 @@ Comet implements multiple memory pool implementations. The type of pool can be s
 
 The valid pool types are:
 
-- `fair_unified_global` (default when `spark.memory.offHeap.enabled=true` is set)
-- `fair_unified`
+- `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
 - `greedy_unified`
 
-All of these pools share off-heap memory between Spark and Comet. This approach is referred to as
+Both of these pools share off-heap memory between Spark and Comet. This approach is referred to as
 unified memory management. The size of the pool is specified by `spark.memory.offHeap.size`.
 
 Comet's memory accounting isn't 100% accurate and this can result in Comet using more memory than it reserves, 
@@ -110,11 +109,6 @@ The `fair_unified` pool types prevents operators from using more than an even fr
 (i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
 when there is sufficient memory in order to leave enough memory for other operators.
-
-`fair_unified_global` allows any task to use the full off-heap memory pool.
-
-`fair_unified` restricts each task to using a fraction of the off-heap memory pool based on number of cores
-and cores per task.
 
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.
