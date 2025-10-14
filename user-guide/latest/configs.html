@@ -535,9 +535,54 @@ under the License.
               
               <div class="toc-item">
                 
+<div class="tocsection onthispage pt-5 pb-3">
+    <i class="fas fa-list"></i> On this page
+</div>
 
 <nav id="bd-toc-nav">
-    
+    <ul class="visible nav section-nav flex-column">
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#scan-configuration-settings">
+   Scan Configuration Settings
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#parquet-reader-configuration-settings">
+   Parquet Reader Configuration Settings
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#query-execution-settings">
+   Query Execution Settings
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#enabling-or-disabling-individual-operators">
+   Enabling or Disabling Individual Operators
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#enabling-or-disabling-individual-scalar-expressions">
+   Enabling or Disabling Individual Scalar Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#enabling-or-disabling-individual-aggregate-expressions">
+   Enabling or Disabling Individual Aggregate Expressions
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#shuffle-configuration-settings">
+   Shuffle Configuration Settings
+  </a>
+ </li>
+ <li class="toc-h2 nav-item toc-entry">
+  <a class="reference internal nav-link" href="#memory-tuning-configuration-settings">
+   Memory &amp; Tuning Configuration Settings
+  </a>
+ </li>
+</ul>
+
 </nav>
               </div>
               
@@ -585,8 +630,10 @@ under the License.
 <section id="comet-configuration-settings">
 <h1>Comet Configuration Settings<a class="headerlink" href="#comet-configuration-settings" title="Link to this heading">¶</a></h1>
 <p>Comet provides the following configuration settings.</p>
+<section id="scan-configuration-settings">
+<h2>Scan Configuration Settings<a class="headerlink" href="#scan-configuration-settings" title="Link to this heading">¶</a></h2>
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
-<!--BEGIN:CONFIG_TABLE-->
+<!--BEGIN:CONFIG_TABLE[scan]-->
 <table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Config</p></th>
@@ -595,153 +642,133 @@ under the License.
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>spark.comet.batchSize</p></td>
-<td><p>The columnar batch size, i.e., the maximum number of rows that a batch can contain.</p></td>
-<td><p>8192</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.caseConversion.enabled</p></td>
-<td><p>Java uses locale-specific rules when converting strings to upper or lower case and Rust does not, so we disable upper and lower by default.</p></td>
-<td><p>false</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.columnar.shuffle.async.enabled</p></td>
-<td><p>Whether to enable asynchronous shuffle for Arrow-based shuffle.</p></td>
-<td><p>false</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.columnar.shuffle.async.max.thread.num</p></td>
-<td><p>Maximum number of threads on an executor used for Comet async columnar shuffle. This is the upper bound of total number of shuffle threads per executor. In other words, if the number of cores * the number of shuffle threads per task <code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.async.thread.num</span></code> is larger than this config. Comet will use this config as the number of shuffle threads per executor instead.</p></td>
-<td><p>100</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.columnar.shuffle.async.thread.num</p></td>
-<td><p>Number of threads used for Comet async columnar shuffle per shuffle task. Note that more threads means more memory requirement to buffer shuffle data before flushing to disk. Also, more threads may not always improve performance, and should be set based on the number of cores available.</p></td>
-<td><p>3</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.convert.csv.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.convert.csv.enabled</p></td>
 <td><p>When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to Arrow format. Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.convert.json.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.convert.json.enabled</p></td>
 <td><p>When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to Arrow format. Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.convert.parquet.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.convert.parquet.enabled</p></td>
 <td><p>When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to Arrow format. Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.debug.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.scan.allowIncompatible</p></td>
+<td><p>Some Comet scan implementations are not currently fully compatible with Spark for all datatypes. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.scan.enabled</p></td>
+<td><p>Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.scan.preFetch.enabled</p></td>
+<td><p>Whether to enable pre-fetching feature of CometScan.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.scan.preFetch.threadNum</p></td>
+<td><p>The number of threads running pre-fetching for CometScan. Effective if spark.comet.scan.preFetch.enabled is enabled. Note that more pre-fetching threads means more memory requirement to store pre-fetched row groups.</p></td>
+<td><p>2</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.sparkToColumnar.enabled</p></td>
+<td><p>Whether to enable Spark to Arrow columnar conversion. When this is turned on, Comet will convert operators in <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code> into Arrow columnar format before processing.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.sparkToColumnar.supportedOperatorList</p></td>
+<td><p>A comma-separated list of operators that will be converted to Arrow columnar format when ‘spark.comet.sparkToColumnar.enabled’ is true</p></td>
+<td><p>Range,InMemoryTableScan,RDDScan</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.hadoop.fs.comet.libhdfs.schemes</p></td>
+<td><p>Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses via libhdfs, separated by commas. Valid only when built with hdfs feature enabled.</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="parquet-reader-configuration-settings">
+<h2>Parquet Reader Configuration Settings<a class="headerlink" href="#parquet-reader-configuration-settings" title="Link to this heading">¶</a></h2>
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+<!--BEGIN:CONFIG_TABLE[parquet]-->
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>spark.comet.parquet.enable.directBuffer</p></td>
+<td><p>Whether to use Java direct byte buffer when reading Parquet.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.parquet.read.io.adjust.readRange.skew</p></td>
+<td><p>In the parallel reader, if the read ranges submitted are skewed in sizes, this option will cause the reader to break up larger read ranges into smaller ranges to reduce the skew. This will result in a slightly larger number of connections opened to the file system but may give improved performance.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.parquet.read.io.mergeRanges</p></td>
+<td><p>When enabled the parallel reader will try to merge ranges of data that are separated by less than ‘comet.parquet.read.io.mergeRanges.delta’ bytes. Longer continuous reads are faster on cloud storage.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.parquet.read.io.mergeRanges.delta</p></td>
+<td><p>The delta in bytes between consecutive read ranges below which the parallel reader will try to merge the ranges. The default is 8MB.</p></td>
+<td><p>8388608</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.parquet.read.parallel.io.enabled</p></td>
+<td><p>Whether to enable Comet’s parallel reader for Parquet files. The parallel reader reads ranges of consecutive data in a  file in parallel. It is faster for large files and row groups but uses more resources.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.parquet.read.parallel.io.thread-pool.size</p></td>
+<td><p>The maximum number of parallel threads the parallel reader will use in a single executor. For executors configured with a smaller number of cores, use a smaller number.</p></td>
+<td><p>16</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.parquet.respectFilterPushdown</p></td>
+<td><p>Whether to respect Spark’s PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be respected when running the Spark SQL test suite but the default setting results in poor performance in Comet when using the new native scans, disabled by default</p></td>
+<td><p>false</p></td>
+</tr>
+</tbody>
+</table>
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="query-execution-settings">
+<h2>Query Execution Settings<a class="headerlink" href="#query-execution-settings" title="Link to this heading">¶</a></h2>
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+<!--BEGIN:CONFIG_TABLE[exec]-->
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>spark.comet.caseConversion.enabled</p></td>
+<td><p>Java uses locale-specific rules when converting strings to upper or lower case and Rust does not, so we disable upper and lower by default.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.debug.enabled</p></td>
 <td><p>Whether to enable debug mode for Comet. When enabled, Comet will do additional checks for debugging purpose. For example, validating array when importing arrays from JVM at native side. Note that these checks may be expensive in performance and should only be enabled for debugging purpose.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.dppFallback.enabled</p></td>
+<tr class="row-even"><td><p>spark.comet.dppFallback.enabled</p></td>
 <td><p>Whether to fall back to Spark for queries that use DPP.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.enabled</p></td>
+<tr class="row-odd"><td><p>spark.comet.enabled</p></td>
 <td><p>Whether to enable Comet extension for Spark. When this is turned on, Spark will use Comet to read Parquet data source. Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled. By default, this config is the value of the env var <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET</span></code> if set, or true otherwise.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.exceptionOnDatetimeRebase</p></td>
+<tr class="row-even"><td><p>spark.comet.exceptionOnDatetimeRebase</p></td>
 <td><p>Whether to throw exception when seeing dates/timestamps from the legacy hybrid (Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according to the Proleptic Gregorian calendar. When this is true, Comet will throw exceptions when seeing these dates/timestamps that were written by Spark version before 3.0. If this is false, these dates/timestamps will be read as if they were written to the Proleptic Gregorian calendar and will not be rebased.</p></td>
 <td><p>false</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.exec.aggregate.enabled</p></td>
-<td><p>Whether to enable aggregate by default.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.exec.broadcastExchange.enabled</p></td>
-<td><p>Whether to enable broadcastExchange by default.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.exec.broadcastHashJoin.enabled</p></td>
-<td><p>Whether to enable broadcastHashJoin by default.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.exec.coalesce.enabled</p></td>
-<td><p>Whether to enable coalesce by default.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.exec.collectLimit.enabled</p></td>
-<td><p>Whether to enable collectLimit by default.</p></td>
-<td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p>spark.comet.exec.enabled</p></td>
 <td><p>Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of ‘spark.comet.exec.&lt;operator_name&gt;.enabled’ at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.exec.expand.enabled</p></td>
-<td><p>Whether to enable expand by default.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.exec.filter.enabled</p></td>
-<td><p>Whether to enable filter by default.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.exec.globalLimit.enabled</p></td>
-<td><p>Whether to enable globalLimit by default.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.exec.hashJoin.enabled</p></td>
-<td><p>Whether to enable hashJoin by default.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.exec.localLimit.enabled</p></td>
-<td><p>Whether to enable localLimit by default.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.exec.memoryPool</p></td>
-<td><p>The type of memory pool to be used for Comet native execution when running Spark in off-heap mode. Available pool types are ‘greedy_unified’ and <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code>. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
-<td><p>fair_unified</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.exec.memoryPool.fraction</p></td>
-<td><p>Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
-<td><p>1.0</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.exec.project.enabled</p></td>
-<td><p>Whether to enable project by default.</p></td>
-<td><p>true</p></td>
-</tr>
 <tr class="row-even"><td><p>spark.comet.exec.replaceSortMergeJoin</p></td>
 <td><p>Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
 <td><p>false</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.exec.shuffle.compression.codec</p></td>
-<td><p>The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and snappy are supported. Compression can be disabled by setting spark.shuffle.compress=false.</p></td>
-<td><p>lz4</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.exec.shuffle.compression.zstd.level</p></td>
-<td><p>The compression level to use when compressing shuffle files with zstd.</p></td>
-<td><p>1</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.exec.shuffle.enabled</p></td>
-<td><p>Whether to enable Comet native shuffle. Note that this requires setting ‘spark.shuffle.manager’ to ‘org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager’. ‘spark.shuffle.manager’ must be set before starting the Spark application and cannot be changed during the application.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.exec.sort.enabled</p></td>
-<td><p>Whether to enable sort by default.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.exec.sortMergeJoin.enabled</p></td>
-<td><p>Whether to enable sortMergeJoin by default.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.exec.sortMergeJoinWithJoinFilter.enabled</p></td>
-<td><p>Experimental support for Sort Merge Join with filter</p></td>
-<td><p>false</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.exec.stddev.enabled</p></td>
-<td><p>Whether to enable stddev by default. stddev is slower than Spark’s implementation.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.exec.takeOrderedAndProject.enabled</p></td>
-<td><p>Whether to enable takeOrderedAndProject by default.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.exec.union.enabled</p></td>
-<td><p>Whether to enable union by default.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.exec.window.enabled</p></td>
-<td><p>Whether to enable window by default.</p></td>
-<td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p>spark.comet.explain.native.enabled</p></td>
 <td><p>When this setting is enabled, Comet will provide a tree representation of the native query plan before execution and again after execution, with metrics.</p></td>
@@ -771,65 +798,801 @@ under the License.
 <td><p>The interval in milliseconds to update metrics. If interval is negative, metrics will be updated upon task completion.</p></td>
 <td><p>3000</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.native.shuffle.partitioning.hash.enabled</p></td>
-<td><p>Whether to enable hash partitioning for Comet native shuffle.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.native.shuffle.partitioning.range.enabled</p></td>
-<td><p>Whether to enable range partitioning for Comet native shuffle.</p></td>
-<td><p>true</p></td>
-</tr>
 <tr class="row-even"><td><p>spark.comet.nativeLoadRequired</p></td>
 <td><p>Whether to require Comet native library to load successfully when Comet is enabled. If not, Comet will silently fallback to Spark when it fails to load the native lib. Otherwise, an error will be thrown and the Spark job will be aborted.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.parquet.enable.directBuffer</p></td>
-<td><p>Whether to use Java direct byte buffer when reading Parquet.</p></td>
-<td><p>false</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.parquet.read.io.adjust.readRange.skew</p></td>
-<td><p>In the parallel reader, if the read ranges submitted are skewed in sizes, this option will cause the reader to break up larger read ranges into smaller ranges to reduce the skew. This will result in a slightly larger number of connections opened to the file system but may give improved performance.</p></td>
-<td><p>false</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.parquet.read.io.mergeRanges</p></td>
-<td><p>When enabled the parallel reader will try to merge ranges of data that are separated by less than ‘comet.parquet.read.io.mergeRanges.delta’ bytes. Longer continuous reads are faster on cloud storage.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.parquet.read.io.mergeRanges.delta</p></td>
-<td><p>The delta in bytes between consecutive read ranges below which the parallel reader will try to merge the ranges. The default is 8MB.</p></td>
-<td><p>8388608</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.parquet.read.parallel.io.enabled</p></td>
-<td><p>Whether to enable Comet’s parallel reader for Parquet files. The parallel reader reads ranges of consecutive data in a  file in parallel. It is faster for large files and row groups but uses more resources.</p></td>
-<td><p>true</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.parquet.read.parallel.io.thread-pool.size</p></td>
-<td><p>The maximum number of parallel threads the parallel reader will use in a single executor. For executors configured with a smaller number of cores, use a smaller number.</p></td>
-<td><p>16</p></td>
-</tr>
-<tr class="row-odd"><td><p>spark.comet.parquet.respectFilterPushdown</p></td>
-<td><p>Whether to respect Spark’s PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be respected when running the Spark SQL test suite but the default setting results in poor performance in Comet when using the new native scans, disabled by default</p></td>
-<td><p>false</p></td>
-</tr>
-<tr class="row-even"><td><p>spark.comet.regexp.allowIncompatible</p></td>
+<tr class="row-odd"><td><p>spark.comet.regexp.allowIncompatible</p></td>
 <td><p>Comet is not currently fully compatible with Spark for all regular expressions. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.scan.allowIncompatible</p></td>
-<td><p>Some Comet scan implementations are not currently fully compatible with Spark for all datatypes. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).</p></td>
-<td><p>false</p></td>
+</tbody>
+</table>
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="enabling-or-disabling-individual-operators">
+<h2>Enabling or Disabling Individual Operators<a class="headerlink" href="#enabling-or-disabling-individual-operators" title="Link to this heading">¶</a></h2>
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+<!--BEGIN:CONFIG_TABLE[enable_exec]-->
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
 </tr>
-<tr class="row-even"><td><p>spark.comet.scan.enabled</p></td>
-<td><p>Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and ‘spark.comet.exec.enabled’ need to be enabled.</p></td>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>spark.comet.exec.aggregate.enabled</p></td>
+<td><p>Whether to enable aggregate by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.scan.preFetch.enabled</p></td>
-<td><p>Whether to enable pre-fetching feature of CometScan.</p></td>
+<tr class="row-odd"><td><p>spark.comet.exec.broadcastExchange.enabled</p></td>
+<td><p>Whether to enable broadcastExchange by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.broadcastHashJoin.enabled</p></td>
+<td><p>Whether to enable broadcastHashJoin by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.coalesce.enabled</p></td>
+<td><p>Whether to enable coalesce by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.collectLimit.enabled</p></td>
+<td><p>Whether to enable collectLimit by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.expand.enabled</p></td>
+<td><p>Whether to enable expand by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.filter.enabled</p></td>
+<td><p>Whether to enable filter by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.globalLimit.enabled</p></td>
+<td><p>Whether to enable globalLimit by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.hashJoin.enabled</p></td>
+<td><p>Whether to enable hashJoin by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.localLimit.enabled</p></td>
+<td><p>Whether to enable localLimit by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.project.enabled</p></td>
+<td><p>Whether to enable project by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.sort.enabled</p></td>
+<td><p>Whether to enable sort by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.sortMergeJoin.enabled</p></td>
+<td><p>Whether to enable sortMergeJoin by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.sortMergeJoinWithJoinFilter.enabled</p></td>
+<td><p>Experimental support for Sort Merge Join with filter</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p>spark.comet.scan.preFetch.threadNum</p></td>
-<td><p>The number of threads running pre-fetching for CometScan. Effective if spark.comet.scan.preFetch.enabled is enabled. Note that more pre-fetching threads means more memory requirement to store pre-fetched row groups.</p></td>
-<td><p>2</p></td>
+<tr class="row-even"><td><p>spark.comet.exec.takeOrderedAndProject.enabled</p></td>
+<td><p>Whether to enable takeOrderedAndProject by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.union.enabled</p></td>
+<td><p>Whether to enable union by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.window.enabled</p></td>
+<td><p>Whether to enable window by default.</p></td>
+<td><p>true</p></td>
+</tr>
+</tbody>
+</table>
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="enabling-or-disabling-individual-scalar-expressions">
+<h2>Enabling or Disabling Individual Scalar Expressions<a class="headerlink" href="#enabling-or-disabling-individual-scalar-expressions" title="Link to this heading">¶</a></h2>
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+<!--BEGIN:CONFIG_TABLE[enable_expr]-->
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>spark.comet.expression.Acos.enabled</p></td>
+<td><p>Enable Comet acceleration for Acos</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Add.enabled</p></td>
+<td><p>Enable Comet acceleration for Add</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Alias.enabled</p></td>
+<td><p>Enable Comet acceleration for Alias</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.And.enabled</p></td>
+<td><p>Enable Comet acceleration for And</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.ArrayAppend.enabled</p></td>
+<td><p>Enable Comet acceleration for ArrayAppend</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.ArrayCompact.enabled</p></td>
+<td><p>Enable Comet acceleration for ArrayCompact</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.ArrayContains.enabled</p></td>
+<td><p>Enable Comet acceleration for ArrayContains</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.ArrayDistinct.enabled</p></td>
+<td><p>Enable Comet acceleration for ArrayDistinct</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.ArrayExcept.enabled</p></td>
+<td><p>Enable Comet acceleration for ArrayExcept</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.ArrayFilter.enabled</p></td>
+<td><p>Enable Comet acceleration for ArrayFilter</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.ArrayInsert.enabled</p></td>
+<td><p>Enable Comet acceleration for ArrayInsert</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.ArrayIntersect.enabled</p></td>
+<td><p>Enable Comet acceleration for ArrayIntersect</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.ArrayJoin.enabled</p></td>
+<td><p>Enable Comet acceleration for ArrayJoin</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.ArrayMax.enabled</p></td>
+<td><p>Enable Comet acceleration for ArrayMax</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.ArrayMin.enabled</p></td>
+<td><p>Enable Comet acceleration for ArrayMin</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.ArrayRemove.enabled</p></td>
+<td><p>Enable Comet acceleration for ArrayRemove</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.ArrayRepeat.enabled</p></td>
+<td><p>Enable Comet acceleration for ArrayRepeat</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.ArrayUnion.enabled</p></td>
+<td><p>Enable Comet acceleration for ArrayUnion</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.ArraysOverlap.enabled</p></td>
+<td><p>Enable Comet acceleration for ArraysOverlap</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Ascii.enabled</p></td>
+<td><p>Enable Comet acceleration for Ascii</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Asin.enabled</p></td>
+<td><p>Enable Comet acceleration for Asin</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Atan.enabled</p></td>
+<td><p>Enable Comet acceleration for Atan</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Atan2.enabled</p></td>
+<td><p>Enable Comet acceleration for Atan2</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.AttributeReference.enabled</p></td>
+<td><p>Enable Comet acceleration for AttributeReference</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.BitLength.enabled</p></td>
+<td><p>Enable Comet acceleration for BitLength</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.BitwiseAnd.enabled</p></td>
+<td><p>Enable Comet acceleration for BitwiseAnd</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.BitwiseCount.enabled</p></td>
+<td><p>Enable Comet acceleration for BitwiseCount</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.BitwiseGet.enabled</p></td>
+<td><p>Enable Comet acceleration for BitwiseGet</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.BitwiseNot.enabled</p></td>
+<td><p>Enable Comet acceleration for BitwiseNot</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.BitwiseOr.enabled</p></td>
+<td><p>Enable Comet acceleration for BitwiseOr</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.BitwiseXor.enabled</p></td>
+<td><p>Enable Comet acceleration for BitwiseXor</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.CaseWhen.enabled</p></td>
+<td><p>Enable Comet acceleration for CaseWhen</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Cast.enabled</p></td>
+<td><p>Enable Comet acceleration for Cast</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Ceil.enabled</p></td>
+<td><p>Enable Comet acceleration for Ceil</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.CheckOverflow.enabled</p></td>
+<td><p>Enable Comet acceleration for CheckOverflow</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Chr.enabled</p></td>
+<td><p>Enable Comet acceleration for Chr</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Coalesce.enabled</p></td>
+<td><p>Enable Comet acceleration for Coalesce</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.ConcatWs.enabled</p></td>
+<td><p>Enable Comet acceleration for ConcatWs</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Contains.enabled</p></td>
+<td><p>Enable Comet acceleration for Contains</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Cos.enabled</p></td>
+<td><p>Enable Comet acceleration for Cos</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.CreateArray.enabled</p></td>
+<td><p>Enable Comet acceleration for CreateArray</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.CreateNamedStruct.enabled</p></td>
+<td><p>Enable Comet acceleration for CreateNamedStruct</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.DateAdd.enabled</p></td>
+<td><p>Enable Comet acceleration for DateAdd</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.DateSub.enabled</p></td>
+<td><p>Enable Comet acceleration for DateSub</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.DayOfMonth.enabled</p></td>
+<td><p>Enable Comet acceleration for DayOfMonth</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.DayOfWeek.enabled</p></td>
+<td><p>Enable Comet acceleration for DayOfWeek</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.DayOfYear.enabled</p></td>
+<td><p>Enable Comet acceleration for DayOfYear</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Divide.enabled</p></td>
+<td><p>Enable Comet acceleration for Divide</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.ElementAt.enabled</p></td>
+<td><p>Enable Comet acceleration for ElementAt</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.EndsWith.enabled</p></td>
+<td><p>Enable Comet acceleration for EndsWith</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.EqualNullSafe.enabled</p></td>
+<td><p>Enable Comet acceleration for EqualNullSafe</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.EqualTo.enabled</p></td>
+<td><p>Enable Comet acceleration for EqualTo</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Exp.enabled</p></td>
+<td><p>Enable Comet acceleration for Exp</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Expm1.enabled</p></td>
+<td><p>Enable Comet acceleration for Expm1</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Flatten.enabled</p></td>
+<td><p>Enable Comet acceleration for Flatten</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Floor.enabled</p></td>
+<td><p>Enable Comet acceleration for Floor</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.FromUnixTime.enabled</p></td>
+<td><p>Enable Comet acceleration for FromUnixTime</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.GetArrayItem.enabled</p></td>
+<td><p>Enable Comet acceleration for GetArrayItem</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.GetArrayStructFields.enabled</p></td>
+<td><p>Enable Comet acceleration for GetArrayStructFields</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.GetMapValue.enabled</p></td>
+<td><p>Enable Comet acceleration for GetMapValue</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.GetStructField.enabled</p></td>
+<td><p>Enable Comet acceleration for GetStructField</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.GreaterThan.enabled</p></td>
+<td><p>Enable Comet acceleration for GreaterThan</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.GreaterThanOrEqual.enabled</p></td>
+<td><p>Enable Comet acceleration for GreaterThanOrEqual</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Hex.enabled</p></td>
+<td><p>Enable Comet acceleration for Hex</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Hour.enabled</p></td>
+<td><p>Enable Comet acceleration for Hour</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.If.enabled</p></td>
+<td><p>Enable Comet acceleration for If</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.In.enabled</p></td>
+<td><p>Enable Comet acceleration for In</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.InSet.enabled</p></td>
+<td><p>Enable Comet acceleration for InSet</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.InitCap.enabled</p></td>
+<td><p>Enable Comet acceleration for InitCap</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.IntegralDivide.enabled</p></td>
+<td><p>Enable Comet acceleration for IntegralDivide</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.IsNaN.enabled</p></td>
+<td><p>Enable Comet acceleration for IsNaN</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.IsNotNull.enabled</p></td>
+<td><p>Enable Comet acceleration for IsNotNull</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.IsNull.enabled</p></td>
+<td><p>Enable Comet acceleration for IsNull</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Length.enabled</p></td>
+<td><p>Enable Comet acceleration for Length</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.LessThan.enabled</p></td>
+<td><p>Enable Comet acceleration for LessThan</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.LessThanOrEqual.enabled</p></td>
+<td><p>Enable Comet acceleration for LessThanOrEqual</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Like.enabled</p></td>
+<td><p>Enable Comet acceleration for Like</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Literal.enabled</p></td>
+<td><p>Enable Comet acceleration for Literal</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Log.enabled</p></td>
+<td><p>Enable Comet acceleration for Log</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Log10.enabled</p></td>
+<td><p>Enable Comet acceleration for Log10</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Log2.enabled</p></td>
+<td><p>Enable Comet acceleration for Log2</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Lower.enabled</p></td>
+<td><p>Enable Comet acceleration for Lower</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.MapEntries.enabled</p></td>
+<td><p>Enable Comet acceleration for MapEntries</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.MapFromArrays.enabled</p></td>
+<td><p>Enable Comet acceleration for MapFromArrays</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.MapKeys.enabled</p></td>
+<td><p>Enable Comet acceleration for MapKeys</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.MapValues.enabled</p></td>
+<td><p>Enable Comet acceleration for MapValues</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Md5.enabled</p></td>
+<td><p>Enable Comet acceleration for Md5</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Minute.enabled</p></td>
+<td><p>Enable Comet acceleration for Minute</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.MonotonicallyIncreasingID.enabled</p></td>
+<td><p>Enable Comet acceleration for MonotonicallyIncreasingID</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Month.enabled</p></td>
+<td><p>Enable Comet acceleration for Month</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Multiply.enabled</p></td>
+<td><p>Enable Comet acceleration for Multiply</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Murmur3Hash.enabled</p></td>
+<td><p>Enable Comet acceleration for Murmur3Hash</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Not.enabled</p></td>
+<td><p>Enable Comet acceleration for Not</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.OctetLength.enabled</p></td>
+<td><p>Enable Comet acceleration for OctetLength</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Or.enabled</p></td>
+<td><p>Enable Comet acceleration for Or</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Pow.enabled</p></td>
+<td><p>Enable Comet acceleration for Pow</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Quarter.enabled</p></td>
+<td><p>Enable Comet acceleration for Quarter</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.RLike.enabled</p></td>
+<td><p>Enable Comet acceleration for RLike</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Rand.enabled</p></td>
+<td><p>Enable Comet acceleration for Rand</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Randn.enabled</p></td>
+<td><p>Enable Comet acceleration for Randn</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.RegExpReplace.enabled</p></td>
+<td><p>Enable Comet acceleration for RegExpReplace</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Remainder.enabled</p></td>
+<td><p>Enable Comet acceleration for Remainder</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Reverse.enabled</p></td>
+<td><p>Enable Comet acceleration for Reverse</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Round.enabled</p></td>
+<td><p>Enable Comet acceleration for Round</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Second.enabled</p></td>
+<td><p>Enable Comet acceleration for Second</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Sha2.enabled</p></td>
+<td><p>Enable Comet acceleration for Sha2</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.ShiftLeft.enabled</p></td>
+<td><p>Enable Comet acceleration for ShiftLeft</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.ShiftRight.enabled</p></td>
+<td><p>Enable Comet acceleration for ShiftRight</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Signum.enabled</p></td>
+<td><p>Enable Comet acceleration for Signum</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Sin.enabled</p></td>
+<td><p>Enable Comet acceleration for Sin</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.SparkPartitionID.enabled</p></td>
+<td><p>Enable Comet acceleration for SparkPartitionID</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Sqrt.enabled</p></td>
+<td><p>Enable Comet acceleration for Sqrt</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.StartsWith.enabled</p></td>
+<td><p>Enable Comet acceleration for StartsWith</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.StringInstr.enabled</p></td>
+<td><p>Enable Comet acceleration for StringInstr</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.StringLPad.enabled</p></td>
+<td><p>Enable Comet acceleration for StringLPad</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.StringRPad.enabled</p></td>
+<td><p>Enable Comet acceleration for StringRPad</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.StringRepeat.enabled</p></td>
+<td><p>Enable Comet acceleration for StringRepeat</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.StringReplace.enabled</p></td>
+<td><p>Enable Comet acceleration for StringReplace</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.StringSpace.enabled</p></td>
+<td><p>Enable Comet acceleration for StringSpace</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.StringTranslate.enabled</p></td>
+<td><p>Enable Comet acceleration for StringTranslate</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.StringTrim.enabled</p></td>
+<td><p>Enable Comet acceleration for StringTrim</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.StringTrimBoth.enabled</p></td>
+<td><p>Enable Comet acceleration for StringTrimBoth</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.StringTrimLeft.enabled</p></td>
+<td><p>Enable Comet acceleration for StringTrimLeft</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.StringTrimRight.enabled</p></td>
+<td><p>Enable Comet acceleration for StringTrimRight</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.StructsToJson.enabled</p></td>
+<td><p>Enable Comet acceleration for StructsToJson</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Substring.enabled</p></td>
+<td><p>Enable Comet acceleration for Substring</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Subtract.enabled</p></td>
+<td><p>Enable Comet acceleration for Subtract</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Tan.enabled</p></td>
+<td><p>Enable Comet acceleration for Tan</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.TruncDate.enabled</p></td>
+<td><p>Enable Comet acceleration for TruncDate</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.TruncTimestamp.enabled</p></td>
+<td><p>Enable Comet acceleration for TruncTimestamp</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.UnaryMinus.enabled</p></td>
+<td><p>Enable Comet acceleration for UnaryMinus</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Unhex.enabled</p></td>
+<td><p>Enable Comet acceleration for Unhex</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Upper.enabled</p></td>
+<td><p>Enable Comet acceleration for Upper</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.WeekDay.enabled</p></td>
+<td><p>Enable Comet acceleration for WeekDay</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.WeekOfYear.enabled</p></td>
+<td><p>Enable Comet acceleration for WeekOfYear</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.XxHash64.enabled</p></td>
+<td><p>Enable Comet acceleration for XxHash64</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Year.enabled</p></td>
+<td><p>Enable Comet acceleration for Year</p></td>
+<td><p>true</p></td>
+</tr>
+</tbody>
+</table>
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="enabling-or-disabling-individual-aggregate-expressions">
+<h2>Enabling or Disabling Individual Aggregate Expressions<a class="headerlink" href="#enabling-or-disabling-individual-aggregate-expressions" title="Link to this heading">¶</a></h2>
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+<!--BEGIN:CONFIG_TABLE[enable_agg_expr]-->
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>spark.comet.expression.Average.enabled</p></td>
+<td><p>Enable Comet acceleration for Average</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.BitAndAgg.enabled</p></td>
+<td><p>Enable Comet acceleration for BitAndAgg</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.BitOrAgg.enabled</p></td>
+<td><p>Enable Comet acceleration for BitOrAgg</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.BitXorAgg.enabled</p></td>
+<td><p>Enable Comet acceleration for BitXorAgg</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.BloomFilterAggregate.enabled</p></td>
+<td><p>Enable Comet acceleration for BloomFilterAggregate</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Corr.enabled</p></td>
+<td><p>Enable Comet acceleration for Corr</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Count.enabled</p></td>
+<td><p>Enable Comet acceleration for Count</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.CovPopulation.enabled</p></td>
+<td><p>Enable Comet acceleration for CovPopulation</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.CovSample.enabled</p></td>
+<td><p>Enable Comet acceleration for CovSample</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.First.enabled</p></td>
+<td><p>Enable Comet acceleration for First</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Last.enabled</p></td>
+<td><p>Enable Comet acceleration for Last</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Max.enabled</p></td>
+<td><p>Enable Comet acceleration for Max</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.Min.enabled</p></td>
+<td><p>Enable Comet acceleration for Min</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.StddevPop.enabled</p></td>
+<td><p>Enable Comet acceleration for StddevPop</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.StddevSamp.enabled</p></td>
+<td><p>Enable Comet acceleration for StddevSamp</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.Sum.enabled</p></td>
+<td><p>Enable Comet acceleration for Sum</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.expression.VariancePop.enabled</p></td>
+<td><p>Enable Comet acceleration for VariancePop</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.expression.VarianceSamp.enabled</p></td>
+<td><p>Enable Comet acceleration for VarianceSamp</p></td>
+<td><p>true</p></td>
+</tr>
+</tbody>
+</table>
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="shuffle-configuration-settings">
+<h2>Shuffle Configuration Settings<a class="headerlink" href="#shuffle-configuration-settings" title="Link to this heading">¶</a></h2>
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+<!--BEGIN:CONFIG_TABLE[shuffle]-->
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>spark.comet.columnar.shuffle.async.enabled</p></td>
+<td><p>Whether to enable asynchronous shuffle for Arrow-based shuffle.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.columnar.shuffle.async.max.thread.num</p></td>
+<td><p>Maximum number of threads on an executor used for Comet async columnar shuffle. This is the upper bound of total number of shuffle threads per executor. In other words, if the number of cores * the number of shuffle threads per task <code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.async.thread.num</span></code> is larger than this config. Comet will use this config as the number of shuffle threads per executor instead.</p></td>
+<td><p>100</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.columnar.shuffle.async.thread.num</p></td>
+<td><p>Number of threads used for Comet async columnar shuffle per shuffle task. Note that more threads means more memory requirement to buffer shuffle data before flushing to disk. Also, more threads may not always improve performance, and should be set based on the number of cores available.</p></td>
+<td><p>3</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.columnar.shuffle.batch.size</p></td>
+<td><p>Batch size when writing out sorted spill files on the native side. Note that this should not be larger than batch size (i.e., <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>). Otherwise it will produce larger batches than expected in the native operator after shuffle.</p></td>
+<td><p>8192</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.shuffle.compression.codec</p></td>
+<td><p>The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and snappy are supported. Compression can be disabled by setting spark.shuffle.compress=false.</p></td>
+<td><p>lz4</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.shuffle.compression.zstd.level</p></td>
+<td><p>The compression level to use when compressing shuffle files with zstd.</p></td>
+<td><p>1</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.shuffle.enabled</p></td>
+<td><p>Whether to enable Comet native shuffle. Note that this requires setting ‘spark.shuffle.manager’ to ‘org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager’. ‘spark.shuffle.manager’ must be set before starting the Spark application and cannot be changed during the application.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.native.shuffle.partitioning.hash.enabled</p></td>
+<td><p>Whether to enable hash partitioning for Comet native shuffle.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.native.shuffle.partitioning.range.enabled</p></td>
+<td><p>Whether to enable range partitioning for Comet native shuffle.</p></td>
+<td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p>spark.comet.shuffle.preferDictionary.ratio</p></td>
 <td><p>The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. Note that this config is only used when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> is <code class="docutils literal notranslate"><span class="pre">jvm</span></code>.</p></td>
@@ -839,17 +1602,42 @@ under the License.
 <td><p>Comet reports smaller sizes for shuffle due to using Arrow’s columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy.</p></td>
 <td><p>1.0</p></td>
 </tr>
-<tr class="row-odd"><td><p>spark.comet.sparkToColumnar.supportedOperatorList</p></td>
-<td><p>A comma-separated list of operators that will be converted to Arrow columnar format when ‘spark.comet.sparkToColumnar.enabled’ is true</p></td>
-<td><p>Range,InMemoryTableScan,RDDScan</p></td>
+</tbody>
+</table>
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="memory-tuning-configuration-settings">
+<h2>Memory &amp; Tuning Configuration Settings<a class="headerlink" href="#memory-tuning-configuration-settings" title="Link to this heading">¶</a></h2>
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+<!--BEGIN:CONFIG_TABLE[tuning]-->
+<table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
 </tr>
-<tr class="row-even"><td><p>spark.hadoop.fs.comet.libhdfs.schemes</p></td>
-<td><p>Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses via libhdfs, separated by commas. Valid only when built with hdfs feature enabled.</p></td>
-<td><p></p></td>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>spark.comet.batchSize</p></td>
+<td><p>The columnar batch size, i.e., the maximum number of rows that a batch can contain.</p></td>
+<td><p>8192</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.exec.memoryPool</p></td>
+<td><p>The type of memory pool to be used for Comet native execution when running Spark in off-heap mode. Available pool types are <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> and <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code>. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
+<td><p>fair_unified</p></td>
+</tr>
+<tr class="row-even"><td><p>spark.comet.exec.memoryPool.fraction</p></td>
+<td><p>Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html).</p></td>
+<td><p>1.0</p></td>
+</tr>
+<tr class="row-odd"><td><p>spark.comet.tracing.enabled</p></td>
+<td><p>Enable fine-grained tracing of events and memory usage. For more information, refer to the Comet Tracing Guide (https://datafusion.apache.org/comet/user-guide/tracing.html).</p></td>
+<td><p>false</p></td>
 </tr>
 </tbody>
 </table>
 <!--END:CONFIG_TABLE-->
+</section>
 </section>
 
 
