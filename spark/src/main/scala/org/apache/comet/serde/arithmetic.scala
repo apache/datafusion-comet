@@ -244,14 +244,6 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
 
 object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 
-  override def getSupportLevel(expr: Remainder): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
-
   override def convert(
       expr: Remainder,
       inputs: Seq[Attribute],
