@@ -210,6 +210,7 @@ Comet provides the following configuration settings.
 | spark.comet.expression.RLike.enabled | Enable Comet acceleration for RLike | true |
 | spark.comet.expression.Rand.enabled | Enable Comet acceleration for Rand | true |
 | spark.comet.expression.Randn.enabled | Enable Comet acceleration for Randn | true |
+| spark.comet.expression.RegExpReplace.enabled | Enable Comet acceleration for RegExpReplace | true |
 | spark.comet.expression.Remainder.enabled | Enable Comet acceleration for Remainder | true |
 | spark.comet.expression.Reverse.enabled | Enable Comet acceleration for Reverse | true |
 | spark.comet.expression.Round.enabled | Enable Comet acceleration for Round | true |
@@ -274,7 +275,8 @@ Comet provides the following configuration settings.
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | spark.comet.batchSize | The columnar batch size, i.e., the maximum number of rows that a batch can contain. | 8192 |
-| spark.comet.exec.memoryPool | The type of memory pool to be used for Comet native execution. When running Spark in on-heap mode, available pool types are 'greedy', 'fair_spill', 'greedy_task_shared', 'fair_spill_task_shared', 'greedy_global', 'fair_spill_global', and `unbounded`. When running Spark in off-heap mode, available pool types are 'greedy_unified' and `fair_unified`. The default pool type is `greedy_task_shared` for on-heap mode and `unified` for off-heap mode. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html). | default |
+| spark.comet.exec.memoryPool | The type of memory pool to be used for Comet native execution when running Spark in off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html). | fair_unified |
+| spark.comet.exec.memoryPool.fraction | Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html). | 1.0 |
 | spark.comet.tracing.enabled | Enable fine-grained tracing of events and memory usage. For more information, refer to the Comet Tracing Guide (https://datafusion.apache.org/comet/user-guide/tracing.html). | false |
 <!--END:CONFIG_TABLE-->
 
@@ -284,8 +286,4 @@ Comet provides the following configuration settings.
 <!--BEGIN:CONFIG_TABLE[testing]-->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
-| spark.comet.exec.onHeap.enabled | Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests. | false |
-| spark.comet.memory.overhead.factor | Fraction of executor memory to be allocated as additional memory for Comet when running Spark in on-heap mode. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html). | 0.2 |
-| spark.comet.memory.overhead.min | Minimum amount of additional memory to be allocated per executor process for Comet, in MiB, when running Spark in on-heap mode. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html). | 402653184b |
-| spark.comet.memoryOverhead | The amount of additional memory to be allocated per executor process for Comet, in MiB, when running Spark in on-heap mode. This config is optional. If this is not specified, it will be set to `spark.comet.memory.overhead.factor` * `spark.executor.memory`. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html). | |
 <!--END:CONFIG_TABLE-->
