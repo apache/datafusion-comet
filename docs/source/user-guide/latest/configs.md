@@ -67,7 +67,6 @@ Comet provides the following configuration settings.
 | spark.comet.exceptionOnDatetimeRebase | Whether to throw exception when seeing dates/timestamps from the legacy hybrid (Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according to the Proleptic Gregorian calendar. When this is true, Comet will throw exceptions when seeing these dates/timestamps that were written by Spark version before 3.0. If this is false, these dates/timestamps will be read as if they were written to the Proleptic Gregorian calendar and will not be rebased. | false |
 | spark.comet.exec.enabled | Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of 'spark.comet.exec.<operator_name>.enabled' at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native. | true |
 | spark.comet.exec.replaceSortMergeJoin | Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the Comet Tuning Guide (https://datafusion.apache.org/comet/user-guide/tuning.html). | false |
-| spark.comet.exec.sortMergeJoinWithJoinFilter.enabled | Experimental support for Sort Merge Join with filter | false |
 | spark.comet.explain.native.enabled | When this setting is enabled, Comet will provide a tree representation of the native query plan before execution and again after execution, with metrics. | false |
 | spark.comet.explain.verbose.enabled | When this setting is enabled, Comet's extended explain output will provide the full query plan annotated with fallback reasons as well as a summary of how much of the plan was accelerated by Comet. When this setting is disabled, a list of fallback reasons will be provided instead. | false |
 | spark.comet.explainFallback.enabled | When this setting is enabled, Comet will provide logging explaining the reason(s) why a query stage cannot be executed natively. Set this to false to reduce the amount of logging. | false |
@@ -98,13 +97,13 @@ Comet provides the following configuration settings.
 | spark.comet.exec.project.enabled | Whether to enable project by default. | true |
 | spark.comet.exec.sort.enabled | Whether to enable sort by default. | true |
 | spark.comet.exec.sortMergeJoin.enabled | Whether to enable sortMergeJoin by default. | true |
-| spark.comet.exec.stddev.enabled | Whether to enable stddev by default. stddev is slower than Spark's implementation. | true |
+| spark.comet.exec.sortMergeJoinWithJoinFilter.enabled | Experimental support for Sort Merge Join with filter | false |
 | spark.comet.exec.takeOrderedAndProject.enabled | Whether to enable takeOrderedAndProject by default. | true |
 | spark.comet.exec.union.enabled | Whether to enable union by default. | true |
 | spark.comet.exec.window.enabled | Whether to enable window by default. | true |
 <!--END:CONFIG_TABLE-->
 
-## Enabling or Disabling Individual Expressions
+## Enabling or Disabling Individual Scalar Expressions
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[enable_expr]-->
@@ -247,6 +246,32 @@ Comet provides the following configuration settings.
 | spark.comet.expression.WeekOfYear.enabled | Enable Comet acceleration for WeekOfYear | true |
 | spark.comet.expression.XxHash64.enabled | Enable Comet acceleration for XxHash64 | true |
 | spark.comet.expression.Year.enabled | Enable Comet acceleration for Year | true |
+<!--END:CONFIG_TABLE-->
+
+## Enabling or Disabling Individual Aggregate Expressions
+
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+<!--BEGIN:CONFIG_TABLE[enable_agg_expr]-->
+| Config | Description | Default Value |
+|--------|-------------|---------------|
+| spark.comet.expression.Average.enabled | Enable Comet acceleration for Average | true |
+| spark.comet.expression.BitAndAgg.enabled | Enable Comet acceleration for BitAndAgg | true |
+| spark.comet.expression.BitOrAgg.enabled | Enable Comet acceleration for BitOrAgg | true |
+| spark.comet.expression.BitXorAgg.enabled | Enable Comet acceleration for BitXorAgg | true |
+| spark.comet.expression.BloomFilterAggregate.enabled | Enable Comet acceleration for BloomFilterAggregate | true |
+| spark.comet.expression.Corr.enabled | Enable Comet acceleration for Corr | true |
+| spark.comet.expression.Count.enabled | Enable Comet acceleration for Count | true |
+| spark.comet.expression.CovPopulation.enabled | Enable Comet acceleration for CovPopulation | true |
+| spark.comet.expression.CovSample.enabled | Enable Comet acceleration for CovSample | true |
+| spark.comet.expression.First.enabled | Enable Comet acceleration for First | true |
+| spark.comet.expression.Last.enabled | Enable Comet acceleration for Last | true |
+| spark.comet.expression.Max.enabled | Enable Comet acceleration for Max | true |
+| spark.comet.expression.Min.enabled | Enable Comet acceleration for Min | true |
+| spark.comet.expression.StddevPop.enabled | Enable Comet acceleration for StddevPop | true |
+| spark.comet.expression.StddevSamp.enabled | Enable Comet acceleration for StddevSamp | true |
+| spark.comet.expression.Sum.enabled | Enable Comet acceleration for Sum | true |
+| spark.comet.expression.VariancePop.enabled | Enable Comet acceleration for VariancePop | true |
+| spark.comet.expression.VarianceSamp.enabled | Enable Comet acceleration for VarianceSamp | true |
 <!--END:CONFIG_TABLE-->
 
 ## Shuffle Configuration Settings

@@ -62,6 +62,11 @@ object GenerateDocs {
                 val config = s"spark.comet.expression.$expr.enabled"
                 w.write(s"| $config | Enable Comet acceleration for $expr | true |\n".getBytes)
               }
+            case "enable_agg_expr" =>
+              for (expr <- QueryPlanSerde.aggrSerdeMap.keys.map(_.getSimpleName).toList.sorted) {
+                val config = s"spark.comet.expression.$expr.enabled"
+                w.write(s"| $config | Enable Comet acceleration for $expr | true |\n".getBytes)
+              }
             case _ =>
               val confs = publicConfigs.filter(_.category == category).toList.sortBy(_.key)
               for (conf <- confs) {
