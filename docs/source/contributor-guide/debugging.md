@@ -128,7 +128,7 @@ To build Comet with this feature enabled:
 make release COMET_FEATURES=backtrace
 ```
 
-Start Comet with `RUST_BACKTRACE=1`
+Set `RUST_BACKTRACE=1` for the Spark worker/executor process, or for `spark-submit` if running in local mode.
 
 ```console
 RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true
@@ -189,3 +189,43 @@ This produces output like the following:
 
 Additionally, you can place a `log4rs.yaml` configuration file inside the Comet configuration directory specified by the `COMET_CONF_DIR` environment variable to enable more advanced logging configurations. This file uses the [log4rs YAML configuration format](https://docs.rs/log4rs/latest/log4rs/#configuration-via-a-yaml-file).
 For example, see: [log4rs.yaml](https://github.com/apache/datafusion-comet/blob/main/conf/log4rs.yaml).
+
+### Debugging Memory Reservations
+
+Set `spark.comet.debug.memory=true` to log all calls that grow or shrink memory reservations.
+
+Example log output:
+
+```
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(256232960) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(256375168) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(256899456) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(257296128) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].try_grow(257820416) returning Err
+[Task 486] MemoryPool[ExternalSorterMerge[6]].shrink(10485760)
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(150464)
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(146688)
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(137856)
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(141952)
+[Task 486] MemoryPool[ExternalSorterMerge[6]].try_grow(0) returning Ok
+[Task 486] MemoryPool[ExternalSorterMerge[6]].try_grow(0) returning Ok
+[Task 486] MemoryPool[ExternalSorter[6]].shrink(524288)
+[Task 486] MemoryPool[ExternalSorterMerge[6]].try_grow(0) returning Ok
+[Task 486] MemoryPool[ExternalSorterMerge[6]].try_grow(68928) returning Ok
+```
+
+When backtraces are enabled (see earlier section) then backtraces will be included for failed allocations. 
+
+There are Python scripts in `dev/scripts` that can be used to produce charts for a particular Spark task.
+
+First, extract the memory logging and write to CSV:
+
+```shell
+python3 dev/scripts/mem_debug_to_csv.py /path/to/executor/log > /tmp/mem.csv
+```
+
+Next, generate a chart from the CSV file for a specific Spark task:
+
+```shell
+python3 dev/scripts/plot_memory_usage.py /tmp/mem.csv --task 1234
+```

@@ -54,6 +54,9 @@ object CometConf extends ShimCometConf {
   private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
     "Guide (https://datafusion.apache.org/comet/user-guide/tracing.html)"
 
+  private val DEBUGGING_GUIDE = "For more information, refer to the Comet Debugging " +
+    "Guide (https://datafusion.apache.org/comet/contributor-guide/debugging.html"
+
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
 
@@ -456,6 +459,12 @@ object CometConf extends ShimCometConf {
           "validating array when importing arrays from JVM at native side. Note that these " +
           "checks may be expensive in performance and should only be enabled for debugging " +
           "purpose.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_DEBUG_MEMORY_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_PREFIX.debug.memory")
+      .doc(s"When enabled, log all native memory pool interactions. $DEBUGGING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
