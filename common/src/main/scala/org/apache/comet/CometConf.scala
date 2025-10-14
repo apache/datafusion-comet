@@ -524,7 +524,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.memoryPool")
       .doc(
         "The type of memory pool to be used for Comet native execution when running Spark in " +
-          "off-heap mode. Available pool types are 'greedy_unified' and `fair_unified`. " +
+          "off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. " +
           s"$TUNING_GUIDE.")
       .stringConf
       .createWithDefault("fair_unified")
@@ -533,8 +533,8 @@ object CometConf extends ShimCometConf {
     "spark.comet.exec.onHeap.memoryPool")
     .doc(
       "The type of memory pool to be used for Comet native execution " +
-        "when running Spark in on-heap mode. Available pool types are 'greedy', 'fair_spill', " +
-        "'greedy_task_shared', 'fair_spill_task_shared', 'greedy_global', 'fair_spill_global', " +
+        "when running Spark in on-heap mode. Available pool types are `greedy`, `fair_spill`, " +
+        "`greedy_task_shared`, `fair_spill_task_shared`, `greedy_global`, `fair_spill_global`, " +
         "and `unbounded`.")
     .internal()
     .stringConf
