@@ -19,14 +19,17 @@
 
 package org.apache.spark.sql
 
+import scala.collection.mutable.ListBuffer
+
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Alias, ToPrettyString}
 import org.apache.spark.sql.catalyst.plans.logical.Project
 import org.apache.spark.sql.types.DataTypes
 
-import org.apache.comet.CometFuzzTestBase
+import org.apache.comet.{CometConf, CometFuzzTestBase}
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
+import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.Compatible
 
 class CometToPrettyStringSuite extends CometFuzzTestBase {
@@ -47,7 +50,10 @@ class CometToPrettyStringSuite extends CometFuzzTestBase {
         DataTypes.StringType,
         Some(spark.sessionState.conf.sessionLocalTimeZone),
         CometEvalMode.TRY) match {
-        case _: Compatible => checkSparkAnswerAndOperator(result)
+        case _: Compatible
+            if CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
+              .isTypeSupported(field.dataType, field.name, ListBuffer.empty) =>
+          checkSparkAnswerAndOperator(result)
         case _ => checkSparkAnswer(result)
       }
     }
