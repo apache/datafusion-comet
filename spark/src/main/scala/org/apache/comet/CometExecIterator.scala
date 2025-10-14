@@ -276,7 +276,7 @@ object CometExecIterator extends Logging {
       val memoryFraction = CometConf.COMET_EXEC_MEMORY_POOL_FRACTION.get()
       val memoryLimit = (offHeapSize * memoryFraction).toLong
       val memoryLimitPerTask = (memoryLimit.toFloat * coresPerTask / numCores).toLong
-      val memoryPoolType = getMemoryPoolType(defaultValue = "fair_unified")
+      val memoryPoolType = COMET_EXEC_OFFHEAP_MEMORY_POOL_TYPE.get()
       logInfo(
         s"memoryPoolType=$memoryPoolType, " +
           s"offHeapSize=${toMB(offHeapSize)}, " +
@@ -291,19 +291,12 @@ object CometExecIterator extends Logging {
       // example 16GB maxMemory * 16 cores with 4 cores per task results
       // in memory_limit_per_task = 16 GB * 4 / 16 = 16 GB / 4 = 4GB
       val memoryLimitPerTask = (memoryLimit.toFloat * coresPerTask / numCores).toLong
-      val memoryPoolType = getMemoryPoolType(defaultValue = "greedy_task_shared")
+      val memoryPoolType = COMET_EXEC_ONHEAP_MEMORY_POOL_TYPE.get()
       logInfo(
         s"memoryPoolType=$memoryPoolType, " +
           s"memoryLimit=${toMB(memoryLimit)}, " +
           s"memoryLimitPerTask=${toMB(memoryLimitPerTask)}")
       MemoryConfig(offHeapMode, memoryPoolType = memoryPoolType, memoryLimit, memoryLimitPerTask)
-    }
-  }
-
-  private def getMemoryPoolType(defaultValue: String): String = {
-    COMET_EXEC_MEMORY_POOL_TYPE.get() match {
-      case "default" => defaultValue
-      case other => other
     }
   }
 
