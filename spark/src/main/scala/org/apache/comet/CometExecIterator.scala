@@ -275,7 +275,7 @@ object CometExecIterator extends Logging {
       val offHeapSize = ByteUnit.MiB.toBytes(conf.getSizeAsMb("spark.memory.offHeap.size"))
       val memoryFraction = CometConf.COMET_EXEC_MEMORY_POOL_FRACTION.get()
       val memoryLimit = (offHeapSize * memoryFraction).toLong
-      val memoryLimitPerTask = (memoryLimit.toFloat * coresPerTask / numCores).toLong
+      val memoryLimitPerTask = (memoryLimit.toDouble * coresPerTask / numCores).toLong
       val memoryPoolType = COMET_EXEC_OFFHEAP_MEMORY_POOL_TYPE.get()
       logInfo(
         s"memoryPoolType=$memoryPoolType, " +
@@ -290,7 +290,7 @@ object CometExecIterator extends Logging {
       val memoryLimit = CometSparkSessionExtensions.getCometMemoryOverhead(conf)
       // example 16GB maxMemory * 16 cores with 4 cores per task results
       // in memory_limit_per_task = 16 GB * 4 / 16 = 16 GB / 4 = 4GB
-      val memoryLimitPerTask = (memoryLimit.toFloat * coresPerTask / numCores).toLong
+      val memoryLimitPerTask = (memoryLimit.toDouble * coresPerTask / numCores).toLong
       val memoryPoolType = COMET_EXEC_ONHEAP_MEMORY_POOL_TYPE.get()
       logInfo(
         s"memoryPoolType=$memoryPoolType, " +
