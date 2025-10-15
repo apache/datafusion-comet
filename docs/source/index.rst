@@ -49,7 +49,8 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    :caption: User Guides:
    :hidden:
 
-   Comet 0.10.0-SNAPSHOT <user-guide/latest/index>
+   Comet 0.12.0-SNAPSHOT <user-guide/latest/index>
+   Comet 0.10.x <user-guide/0.10/index>
    Comet 0.9.x <user-guide/0.9/index>
    Comet 0.8.x <user-guide/0.8/index>
 

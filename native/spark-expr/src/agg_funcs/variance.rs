@@ -34,12 +34,21 @@ use std::sync::Arc;
 /// we have our own implementation is that DataFusion has UInt64 for state_field `count`,
 /// while Spark has Double for count. Also we have added `null_on_divide_by_zero`
 /// to be consistent with Spark's implementation.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Variance {
     name: String,
     signature: Signature,
     stats_type: StatsType,
     null_on_divide_by_zero: bool,
+}
+
+impl std::hash::Hash for Variance {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.signature.hash(state);
+        (self.stats_type as u8).hash(state);
+        self.null_on_divide_by_zero.hash(state);
+    }
 }
 
 impl Variance {

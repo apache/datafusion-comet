@@ -17,99 +17,60 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Comet Benchmarking in AWS
+# Comet Benchmarking in EC2
 
-This guide is for setting up benchmarks on AWS EC2 with a single node with Parquet files located in S3.
+This guide is for setting up benchmarks on AWS EC2 with a single node with Parquet files either located on an
+attached EBS volume, or stored in S3.
 
-## Data Generation
+## Create EC2 Instance
 
 - Create an EC2 instance with an EBS volume sized for approximately 2x the size of
   the dataset to be generated (200 GB for scale factor 100, 2 TB for scale factor 1000, and so on)
-- Create an S3 bucket to store the Parquet files
+- Optionally, create an S3 bucket to store the Parquet files
 
-Install prerequisites:
+Recommendation: Use `c7i.4xlarge` instance type with `provisioned iops 2` EBS volume (8000 IOPS).
 
-```shell
-sudo yum install -y docker git python3-pip
-
-sudo systemctl start docker
-sudo systemctl enable docker
-sudo usermod -aG docker ec2-user
-newgrp docker
-
-docker pull ghcr.io/scalytics/tpch-docker:main
-
-pip3 install datafusion
-```
-
-Run the data generation script:
+## Install Prerequisites
 
 ```shell
-git clone https://github.com/apache/datafusion-benchmarks.git
-cd datafusion-benchmarks/tpch
-nohup python3 tpchgen.py generate --scale-factor 100 --partitions 16 &
-```
-
-Check on progress with the following commands:
-
-```shell
-docker ps
-du -h -d 1 data
-```
-
-Fix ownership in the generated files:
-
-```shell
-sudo chown -R ec2-user:docker data
-```
-
-Convert to Parquet:
-
-```shell
-nohup python3 tpchgen.py convert --scale-factor 100 --partitions 16 &
-```
-
-Delete the CSV files:
-
-```shell
-cd data
-rm *.tbl.*
-```
-
-Copy the Parquet files to S3:
-
-```shell
-aws s3 cp . s3://your-bucket-name/top-level-folder/ --recursive
-```
-
-## Install Spark
-
-Install Java
-
-```shell
-sudo yum install -y java-17-amazon-corretto-headless java-17-amazon-corretto-devel
-```
-
-Set JAVA_HOME
-
-```shell
+sudo yum update -y
+sudo yum install -y git protobuf-compiler java-17-amazon-corretto-headless java-17-amazon-corretto-devel
+sudo yum groupinstall -y "Development Tools"
 export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
 ```
 
-Install Spark
+## Generate Benchmark Data
 
 ```shell
-wget https://archive.apache.org/dist/spark/spark-3.5.4/spark-3.5.4-bin-hadoop3.tgz
-tar xzf spark-3.5.4-bin-hadoop3.tgz
-sudo mv spark-3.5.4-bin-hadoop3 /opt
-export SPARK_HOME=/opt/spark-3.5.4-bin-hadoop3/
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+RUSTFLAGS='-C target-cpu=native' cargo install tpchgen-cli
+tpchgen-cli -s 100 --format parquet --parts 32 --output-dir data
+```
+
+Rename the generated directories so that they have a `.parquet` suffix. For example, rename `customer` to
+`customer.parquet`.
+
+Set the `TPCH_DATA` environment variable. This will be referenced by the benchmarking scripts.
+
+```shell
+export TPCH_DATA=/home/ec2-user/data
+```
+
+## Install Apache Spark
+
+```shell
+export SPARK_VERSION=3.5.6
+wget https://archive.apache.org/dist/spark/spark-$SPARK_VERSION/spark-$SPARK_VERSION-bin-hadoop3.tgz
+tar xzf spark-$SPARK_VERSION-bin-hadoop3.tgz
+sudo mv spark-$SPARK_VERSION-bin-hadoop3 /opt
+export SPARK_HOME=/opt/spark-$SPARK_VERSION-bin-hadoop3/
 mkdir /tmp/spark-events
 ```
 
 Set `SPARK_MASTER` env var (IP address will need to be edited):
 
 ```shell
-export SPARK_MASTER=spark://172.31.34.87:7077
+export SPARK_MASTER=spark://172.31.34.87:7077 
 ```
 
 Set `SPARK_LOCAL_DIRS` to point to EBS volume
@@ -126,11 +87,59 @@ Add the following entry to `spark-env.sh`:
 SPARK_LOCAL_DIRS=/mnt/tmp
 ```
 
-Start Spark in standalone mode:
+## Git Clone DataFusion Repositories
 
 ```shell
-$SPARK_HOME/sbin/start-master.sh
-$SPARK_HOME/sbin/start-worker.sh $SPARK_MASTER
+git clone https://github.com/apache/datafusion-benchmarks.git
+git clone https://github.com/apache/datafusion-comet.git
+```
+
+Build Comet
+
+```shell
+cd datafusion-comet
+make release
+```
+
+Set `COMET_JAR` environment variable.
+
+```shell
+export COMET_JAR=/home/ec2-user/datafusion-comet/spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar
+```
+
+## Run Benchmarks
+
+Use the scripts in `dev/benchmarks` in the Comet repository.
+
+```shell
+cd dev/benchmarks
+export TPCH_QUERIES=/home/ec2-user/datafusion-benchmarks/tpch/queries/
+```
+
+Run Spark benchmark:
+
+```shell
+./spark-tpch.sh
+```
+
+Run Comet benchmark:
+
+```shell
+./comet-tpch.sh
+```
+
+## Running Benchmarks with S3
+
+Copy the Parquet data to an S3 bucket.
+
+```shell
+aws s3 cp /home/ec2-user/data s3://your-bucket-name/--recursive
+```
+
+Update `TPCH_DATA` environment variable.
+
+```shell
+export TPCH_DATA=s3a://your-bucket-name
 ```
 
 Install Hadoop jar files:
@@ -148,76 +157,11 @@ aws_access_key_id=your-access-key
 aws_secret_access_key=your-secret-key
 ```
 
-## Run Spark Benchmarks
-
-Run the following command (the `--data` parameter will need to be updated to point to your S3 bucket):
+Modify the scripts to add the following configurations.
 
 ```shell
-$SPARK_HOME/bin/spark-submit \
-  --master $SPARK_MASTER \
-  --conf spark.driver.memory=4G \
-  --conf spark.executor.instances=1 \
-  --conf spark.executor.cores=8 \
-  --conf spark.cores.max=8 \
-  --conf spark.executor.memory=16g \
-  --conf spark.eventLog.enabled=false \
-  --conf spark.local.dir=/mnt/tmp \
-  --conf spark.driver.extraJavaOptions="-Djava.io.tmpdir=/mnt/tmp" \
-  --conf spark.executor.extraJavaOptions="-Djava.io.tmpdir=/mnt/tmp" \
-  --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
-  --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
-  tpcbench.py \
-  --benchmark tpch \
-  --data s3a://your-bucket-name/top-level-folder \
-  --queries /home/ec2-user/datafusion-benchmarks/tpch/queries \
-  --output . \
-  --iterations 1
+--conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
+--conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
 ```
 
-## Run Comet Benchmarks
-
-Install Comet JAR from Maven:
-
-```shell
-wget https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/0.9.0/comet-spark-spark3.5_2.12-0.9.0.jar -P $SPARK_HOME/jars
-export COMET_JAR=$SPARK_HOME/jars/comet-spark-spark3.5_2.12-0.9.0.jar
-```
-
-Run the following command (the `--data` parameter will need to be updated to point to your S3 bucket):
-
-```shell
-$SPARK_HOME/bin/spark-submit \
-  --master $SPARK_MASTER \
-  --conf spark.driver.memory=4G \
-  --conf spark.executor.instances=1 \
-  --conf spark.executor.cores=8 \
-  --conf spark.cores.max=8 \
-  --conf spark.executor.memory=16g \
-  --conf spark.memory.offHeap.enabled=true \
-  --conf spark.memory.offHeap.size=16g \
-  --conf spark.eventLog.enabled=false \
-  --conf spark.local.dir=/mnt/tmp \
-  --conf spark.driver.extraJavaOptions="-Djava.io.tmpdir=/mnt/tmp" \
-  --conf spark.executor.extraJavaOptions="-Djava.io.tmpdir=/mnt/tmp" \
-  --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
-  --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
-  --jars $COMET_JAR \
-  --driver-class-path $COMET_JAR \
-  --conf spark.driver.extraClassPath=$COMET_JAR \
-  --conf spark.executor.extraClassPath=$COMET_JAR \
-  --conf spark.plugins=org.apache.spark.CometPlugin \
-  --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-  --conf spark.comet.enabled=true \
-  --conf spark.comet.expression.allowIncompatible=true \
-  --conf spark.comet.exec.replaceSortMergeJoin=true \
-  --conf spark.comet.exec.shuffle.enabled=true \
-  --conf spark.comet.exec.shuffle.fallbackToColumnar=true \
-  --conf spark.comet.exec.shuffle.compression.codec=lz4 \
-  --conf spark.comet.exec.shuffle.compression.level=1 \
-  tpcbench.py \
-  --benchmark tpch \
-  --data s3a://your-bucket-name/top-level-folder \
-  --queries /home/ec2-user/datafusion-benchmarks/tpch/queries \
-  --output . \
-  --iterations 1
-```
+Now run the `spark-tpch.sh` and `comet-tpch.sh` scripts.

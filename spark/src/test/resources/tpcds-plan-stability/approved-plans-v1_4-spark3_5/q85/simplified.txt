@@ -2,9 +2,9 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refunded_cash),avg(wr_fee)]
-        CometHashAggregate [substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refunded_cash),avg(wr_fee),r_reason_desc,sum,count,sum,count,sum,count,avg(ws_quantity),avg(UnscaledValue(wr_refunded_cash)),avg(UnscaledValue(wr_fee))]
+        CometHashAggregate [sum,count,sum,count,sum,count] [substr(r_reason_desc, 1, 20),avg(ws_quantity),avg(wr_refunded_cash),avg(wr_fee),r_reason_desc,avg(ws_quantity),avg(UnscaledValue(wr_refunded_cash)),avg(UnscaledValue(wr_fee))]
           CometExchange [r_reason_desc] #1
-            CometHashAggregate [r_reason_desc,sum,count,sum,count,sum,count,ws_quantity,wr_refunded_cash,wr_fee]
+            CometHashAggregate [ws_quantity,wr_refunded_cash,wr_fee] [r_reason_desc,sum,count,sum,count,sum,count]
               CometProject [ws_quantity,wr_fee,wr_refunded_cash,r_reason_desc]
                 CometBroadcastHashJoin [ws_quantity,wr_reason_sk,wr_fee,wr_refunded_cash,r_reason_sk,r_reason_desc]
                   CometProject [ws_quantity,wr_reason_sk,wr_fee,wr_refunded_cash]

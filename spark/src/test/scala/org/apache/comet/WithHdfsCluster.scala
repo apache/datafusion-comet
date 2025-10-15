@@ -24,7 +24,7 @@ import java.net.InetAddress
 import java.nio.file.Files
 import java.util.UUID
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 import org.apache.commons.io.FileUtils
 import org.apache.hadoop.conf.Configuration

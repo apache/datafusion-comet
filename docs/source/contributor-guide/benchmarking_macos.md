@@ -33,25 +33,34 @@ Java and Rust must be installed locally.
 
 ```shell
 cargo install tpchgen-cli
+mkdir benchmark_data
+cd benchmark_data
 tpchgen-cli -s 100 --format=parquet
+export $BENCH_DATA=`pwd`
+```
+Create a temp folder for spark events emitted during benchmarking
+
+```shell
+mkdir /tmp/spark-events
 ```
 
 ## Clone the DataFusion Benchmarks Repository
 
 ```shell
 git clone https://github.com/apache/datafusion-benchmarks.git
+cd
+export DF_BENCH=`pwd`
 ```
 
 ## Install Spark
 
-Install Spark
+Install Apache Spark. This example refers to 3.5.4 version.
 
 ```shell
 wget https://archive.apache.org/dist/spark/spark-3.5.4/spark-3.5.4-bin-hadoop3.tgz
 tar xzf spark-3.5.4-bin-hadoop3.tgz
 sudo mv spark-3.5.4-bin-hadoop3 /opt
 export SPARK_HOME=/opt/spark-3.5.4-bin-hadoop3/
-mkdir /tmp/spark-events
 ```
 
 
@@ -99,10 +108,10 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=16g \
     --conf spark.eventLog.enabled=true \
-    /path/to/datafusion-benchmarks/runners/datafusion-comet/tpcbench.py \
+    $DF_BENCH/runners/datafusion-comet/tpcbench.py \
     --benchmark tpch \
-    --data /Users/rusty/Data/tpch/sf100 \
-    --queries /path/to/datafusion-benchmarks/tpch/queries \
+    --data $BENCH_DATA/tpch-data/ \
+    --queries $DF_BENCH/tpch/queries \
     --output . \
     --iterations 1
 ```
@@ -115,7 +124,7 @@ Build Comet from source, with `mimalloc` enabled.
 make release COMET_FEATURES=mimalloc
 ```
 
-Set `COMET_JAR` to point to the location of the Comet jar file.
+Set `COMET_JAR` to point to the location of the Comet jar file. Example for Comet 0.8
 
 ```shell
 export COMET_JAR=`pwd`/spark/target/comet-spark-spark3.5_2.12-0.8.0-SNAPSHOT.jar
@@ -145,10 +154,10 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.comet.exec.shuffle.fallbackToColumnar=true \
     --conf spark.comet.exec.replaceSortMergeJoin=true \
     --conf spark.comet.expression.allowIncompatible=true \
-    /path/to/datafusion-benchmarks/runners/datafusion-comet/tpcbench.py \
+    $DF_BENCH/runners/datafusion-comet/tpcbench.py \
     --benchmark tpch \
-    --data /path/to/tpch-data/ \
-    --queries /path/to/datafusion-benchmarks//tpch/queries \
+    --data $BENCH_DATA/tpch-data/ \
+    --queries $DF_BENCH/tpch/queries \
     --output . \
     --iterations 1
 ```

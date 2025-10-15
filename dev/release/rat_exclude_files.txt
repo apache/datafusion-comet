@@ -8,6 +8,7 @@ native/testdata/stacktrace.txt
 native/core/testdata/backtrace.txt
 native/core/testdata/stacktrace.txt
 dev/copyright/scala-header.txt
+dev/diffs/iceberg/*.diff
 dev/release/requirements.txt
 dev/release/rat_exclude_files.txt
 docs/spark_builtin_expr_coverage.txt

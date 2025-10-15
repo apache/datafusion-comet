@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.math.min
 
-import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract}
+import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -87,14 +87,6 @@ trait MathBase {
 
 object CometAdd extends CometExpressionSerde[Add] with MathBase {
 
-  override def getSupportLevel(expr: Add): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
-
   override def convert(
       expr: Add,
       inputs: Seq[Attribute],
@@ -116,14 +108,6 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
 }
 
 object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
-
-  override def getSupportLevel(expr: Subtract): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
 
   override def convert(
       expr: Subtract,
@@ -147,14 +131,6 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
 
 object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 
-  override def getSupportLevel(expr: Multiply): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
-
   override def convert(
       expr: Multiply,
       inputs: Seq[Attribute],
@@ -177,14 +153,6 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 
 object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
-  override def getSupportLevel(expr: Divide): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
-
   override def convert(
       expr: Divide,
       inputs: Seq[Attribute],
@@ -192,7 +160,8 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
     // Datafusion now throws an exception for dividing by zero
     // See https://github.com/apache/arrow-datafusion/pull/6792
     // For now, use NullIf to swap zeros with nulls.
-    val rightExpr = nullIfWhenPrimitive(expr.right)
+    val rightExpr =
+      if (expr.evalMode != EvalMode.ANSI) nullIfWhenPrimitive(expr.right) else expr.right
     if (!supportedDataType(expr.left.dataType)) {
       withInfo(expr, s"Unsupported datatype ${expr.left.dataType}")
       return None
@@ -210,14 +179,6 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 }
 
 object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with MathBase {
-
-  override def getSupportLevel(expr: IntegralDivide): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
 
   override def convert(
       expr: IntegralDivide,
@@ -237,9 +198,9 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       if (expr.right.dataType.isInstanceOf[DecimalType]) expr.right
       else Cast(expr.right, DecimalType(19, 0))
 
-    val rightExpr = nullIfWhenPrimitive(right)
+    val rightExpr = if (expr.evalMode != EvalMode.ANSI) nullIfWhenPrimitive(right) else right
 
-    val dataType = (left.dataType, right.dataType) match {
+    val dataType = (left.dataType, rightExpr.dataType) match {
       case (l: DecimalType, r: DecimalType) =>
         // copy from IntegralDivide.resultDecimalType
         val intDig = l.precision - l.scale + r.scale
@@ -283,14 +244,6 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
 
 object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 
-  override def getSupportLevel(expr: Remainder): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
-
   override def convert(
       expr: Remainder,
       inputs: Seq[Attribute],
@@ -317,14 +270,6 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 }
 
 object CometRound extends CometExpressionSerde[Round] {
-
-  override def getSupportLevel(expr: Round): SupportLevel = {
-    if (expr.ansiEnabled) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
 
   override def convert(
       r: Round,
@@ -364,9 +309,36 @@ object CometRound extends CometExpressionSerde[Round] {
         // `scale` must be Int64 type in DataFusion
         val scaleExpr = exprToProtoInternal(Literal(_scale.toLong, LongType), inputs, binding)
         val optExpr =
-          scalarFunctionExprToProtoWithReturnType("round", r.dataType, childExpr, scaleExpr)
+          scalarFunctionExprToProtoWithReturnType(
+            "round",
+            r.dataType,
+            r.ansiEnabled,
+            childExpr,
+            scaleExpr)
         optExprWithInfo(optExpr, r, r.child)
     }
 
+  }
+}
+object CometUnaryMinus extends CometExpressionSerde[UnaryMinus] {
+
+  override def convert(
+      expr: UnaryMinus,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    if (childExpr.isDefined) {
+      val builder = ExprOuterClass.UnaryMinus.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setFailOnError(expr.failOnError)
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setUnaryMinus(builder)
+          .build())
+    } else {
+      withInfo(expr, expr.child)
+      None
+    }
   }
 }

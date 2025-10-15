@@ -30,7 +30,7 @@ use jni::{
     objects::{JClass, JString},
     JNIEnv, JavaVM,
 };
-use log::{info, LevelFilter};
+use log::info;
 use log4rs::{
     append::console::{ConsoleAppender, Target},
     config::{load_config_file, Appender, Deserializers, Root},
@@ -70,6 +70,7 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
     e: JNIEnv,
     _: JClass,
     log_conf_path: JString,
+    log_level: JString,
 ) {
     // Initialize the error handling to capture panic backtraces
     errors::init();
@@ -80,7 +81,11 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
         // empty path means there is no custom log4rs config file provided, so fallback to use
         // the default configuration
         let log_config = if path.is_empty() {
-            default_logger_config()
+            let log_level: String = match env.get_string(&log_level) {
+                Ok(level) => level.into(),
+                Err(_) => "info".parse().unwrap(),
+            };
+            default_logger_config(&log_level)
         } else {
             load_config_file(path, Deserializers::default())
                 .map_err(|err| CometError::Config(err.to_string()))
@@ -100,14 +105,47 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
 
 const LOG_PATTERN: &str = "{d(%y/%m/%d %H:%M:%S)} {l} {f}: {m}{n}";
 
-// Creates a default log4rs config, which logs to console with `INFO` level.
-fn default_logger_config() -> CometResult<Config> {
+/// JNI method to check if a specific feature is enabled in the native Rust code.
+/// # Arguments
+/// * `feature_name` - The name of the feature to check. Supported features:
+///   - "jemalloc" - tikv-jemallocator memory allocator
+///   - "hdfs" - HDFS object store support
+///   - "hdfs-opendal" - HDFS support via OpenDAL
+/// # Returns
+/// * `1` (true) if the feature is enabled
+/// * `0` (false) if the feature is disabled or unknown
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
+    env: JNIEnv,
+    _: JClass,
+    feature_name: JString,
+) -> jni::sys::jboolean {
+    try_unwrap_or_throw(&env, |mut env| {
+        let feature: String = env.get_string(&feature_name)?.into();
+
+        let enabled = match feature.as_str() {
+            "jemalloc" => cfg!(feature = "jemalloc"),
+            "hdfs" => cfg!(feature = "hdfs"),
+            "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
+            _ => false, // Unknown features return false
+        };
+
+        Ok(enabled as u8)
+    })
+}
+
+// Creates a default log4rs config, which logs to console with log level.
+fn default_logger_config(log_level: &str) -> CometResult<Config> {
     let console_append = ConsoleAppender::builder()
         .target(Target::Stderr)
         .encoder(Box::new(PatternEncoder::new(LOG_PATTERN)))
         .build();
     let appender = Appender::builder().build("console", Box::new(console_append));
-    let root = Root::builder().appender("console").build(LevelFilter::Info);
+    let root = Root::builder().appender("console").build(
+        log_level
+            .parse()
+            .map_err(|err| CometError::Config(format!("{err}")))?,
+    );
     Config::builder()
         .appender(appender)
         .build(root)

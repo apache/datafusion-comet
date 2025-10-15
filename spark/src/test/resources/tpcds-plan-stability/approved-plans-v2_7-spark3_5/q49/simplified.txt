@@ -22,9 +22,9 @@ WholeStageCodegen (11)
                                           InputAdapter
                                             CometSort [item,return_ratio,currency_ratio]
                                               CometExchange #2
-                                                CometHashAggregate [item,return_ratio,currency_ratio,ws_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,sum(coalesce(wr_return_quantity, 0)),sum(coalesce(ws_quantity, 0)),sum(coalesce(cast(wr_return_amt as decimal(12,2)), 0.00)),sum(coalesce(cast(ws_net_paid as decimal(12,2)), 0.00))]
+                                                CometHashAggregate [sum,sum,sum,isEmpty,sum,isEmpty] [item,return_ratio,currency_ratio,ws_item_sk,sum(coalesce(wr_return_quantity, 0)),sum(coalesce(ws_quantity, 0)),sum(coalesce(cast(wr_return_amt as decimal(12,2)), 0.00)),sum(coalesce(cast(ws_net_paid as decimal(12,2)), 0.00))]
                                                   CometExchange [ws_item_sk] #3
-                                                    CometHashAggregate [ws_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,wr_return_quantity,ws_quantity,wr_return_amt,ws_net_paid]
+                                                    CometHashAggregate [wr_return_quantity,ws_quantity,wr_return_amt,ws_net_paid] [ws_item_sk,sum,sum,sum,isEmpty,sum,isEmpty]
                                                       CometProject [ws_item_sk,ws_quantity,ws_net_paid,wr_return_quantity,wr_return_amt]
                                                         CometBroadcastHashJoin [ws_item_sk,ws_quantity,ws_net_paid,ws_sold_date_sk,wr_return_quantity,wr_return_amt,d_date_sk]
                                                           CometProject [ws_item_sk,ws_quantity,ws_net_paid,ws_sold_date_sk,wr_return_quantity,wr_return_amt]
@@ -62,9 +62,9 @@ WholeStageCodegen (11)
                                           InputAdapter
                                             CometSort [item,return_ratio,currency_ratio]
                                               CometExchange #7
-                                                CometHashAggregate [item,return_ratio,currency_ratio,cs_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,sum(coalesce(cr_return_quantity, 0)),sum(coalesce(cs_quantity, 0)),sum(coalesce(cast(cr_return_amount as decimal(12,2)), 0.00)),sum(coalesce(cast(cs_net_paid as decimal(12,2)), 0.00))]
+                                                CometHashAggregate [sum,sum,sum,isEmpty,sum,isEmpty] [item,return_ratio,currency_ratio,cs_item_sk,sum(coalesce(cr_return_quantity, 0)),sum(coalesce(cs_quantity, 0)),sum(coalesce(cast(cr_return_amount as decimal(12,2)), 0.00)),sum(coalesce(cast(cs_net_paid as decimal(12,2)), 0.00))]
                                                   CometExchange [cs_item_sk] #8
-                                                    CometHashAggregate [cs_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,cr_return_quantity,cs_quantity,cr_return_amount,cs_net_paid]
+                                                    CometHashAggregate [cr_return_quantity,cs_quantity,cr_return_amount,cs_net_paid] [cs_item_sk,sum,sum,sum,isEmpty,sum,isEmpty]
                                                       CometProject [cs_item_sk,cs_quantity,cs_net_paid,cr_return_quantity,cr_return_amount]
                                                         CometBroadcastHashJoin [cs_item_sk,cs_quantity,cs_net_paid,cs_sold_date_sk,cr_return_quantity,cr_return_amount,d_date_sk]
                                                           CometProject [cs_item_sk,cs_quantity,cs_net_paid,cs_sold_date_sk,cr_return_quantity,cr_return_amount]
@@ -92,9 +92,9 @@ WholeStageCodegen (11)
                                           InputAdapter
                                             CometSort [item,return_ratio,currency_ratio]
                                               CometExchange #10
-                                                CometHashAggregate [item,return_ratio,currency_ratio,ss_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,sum(coalesce(sr_return_quantity, 0)),sum(coalesce(ss_quantity, 0)),sum(coalesce(cast(sr_return_amt as decimal(12,2)), 0.00)),sum(coalesce(cast(ss_net_paid as decimal(12,2)), 0.00))]
+                                                CometHashAggregate [sum,sum,sum,isEmpty,sum,isEmpty] [item,return_ratio,currency_ratio,ss_item_sk,sum(coalesce(sr_return_quantity, 0)),sum(coalesce(ss_quantity, 0)),sum(coalesce(cast(sr_return_amt as decimal(12,2)), 0.00)),sum(coalesce(cast(ss_net_paid as decimal(12,2)), 0.00))]
                                                   CometExchange [ss_item_sk] #11
-                                                    CometHashAggregate [ss_item_sk,sum,sum,sum,isEmpty,sum,isEmpty,sr_return_quantity,ss_quantity,sr_return_amt,ss_net_paid]
+                                                    CometHashAggregate [sr_return_quantity,ss_quantity,sr_return_amt,ss_net_paid] [ss_item_sk,sum,sum,sum,isEmpty,sum,isEmpty]
                                                       CometProject [ss_item_sk,ss_quantity,ss_net_paid,sr_return_quantity,sr_return_amt]
                                                         CometBroadcastHashJoin [ss_item_sk,ss_quantity,ss_net_paid,ss_sold_date_sk,sr_return_quantity,sr_return_amt,d_date_sk]
                                                           CometProject [ss_item_sk,ss_quantity,ss_net_paid,ss_sold_date_sk,sr_return_quantity,sr_return_amt]

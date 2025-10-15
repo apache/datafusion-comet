@@ -101,7 +101,9 @@ Detecting the debugger
 
 ## Verbose debug
 
-By default, Comet outputs the exception details specific for Comet.
+### Enabling Native Backtraces
+
+By default, Comet does not show native backtraces when exceptions happen in native code:
 
 ```scala
 scala> spark.sql("my_failing_query").show(false)
@@ -116,21 +118,20 @@ This was likely caused by a bug in DataFusion's code and we would welcome that y
 
 ```
 
-There is a verbose exception option by leveraging DataFusion [backtraces](https://arrow.apache.org/datafusion/user-guide/example-usage.html#enable-backtraces)
-This option allows to append native DataFusion stack trace to the original error message.
-To enable this option with Comet it is needed to include `backtrace` feature in [Cargo.toml](https://github.com/apache/arrow-datafusion-comet/blob/main/core/Cargo.toml) for DataFusion dependencies
+Comet can be built with DataFusion's [backtrace] feature enabled, which will include native back traces in `CometNativeException`.
 
-```toml
-datafusion-common = { version = "36.0.0", features = ["backtrace"] }
-datafusion = { default-features = false, version = "36.0.0", features = ["unicode_expressions", "backtrace"] }
+[backtrace]: https://arrow.apache.org/datafusion/user-guide/example-usage.html#enable-backtraces
+
+To build Comet with this feature enabled:
+
+```shell
+make release COMET_FEATURES=backtrace
 ```
-
-Then build the Comet as [described](https://github.com/apache/arrow-datafusion-comet/blob/main/README.md#getting-started)
 
 Start Comet with `RUST_BACKTRACE=1`
 
 ```console
-RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.5_2.12-0.10.0-SNAPSHOT.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true
+RUST_BACKTRACE=1 $SPARK_HOME/spark-shell --jars spark/target/comet-spark-spark3.5_2.12-$COMET_VERSION.jar --conf spark.plugins=org.apache.spark.CometPlugin --conf spark.comet.enabled=true --conf spark.comet.exec.enabled=true
 ```
 
 Get the expanded exception details
@@ -162,3 +163,29 @@ Note:
 
 - The backtrace coverage in DataFusion is still improving. So there is a chance the error still not covered, if so feel free to file a [ticket](https://github.com/apache/arrow-datafusion/issues)
 - The backtrace evaluation comes with performance cost and intended mostly for debugging purposes
+
+### Native log configuration
+
+By default, Comet emits native-side logs at the `INFO` level to `stderr`.
+
+You can use the `COMET_LOG_LEVEL` environment variable to specify the log level. Supported values are: `OFF`, `ERROR`, `WARN`, `INFO`, `DEBUG`, `TRACE`.
+
+For example, to configure native logs at the `DEBUG` level on spark executor:
+
+```
+spark.executorEnv.COMET_LOG_LEVEL=DEBUG
+```
+
+This produces output like the following:
+
+```
+25/09/15 20:17:42 INFO core/src/lib.rs: Comet native library version 0.11.0 initialized
+25/09/15 20:17:44 DEBUG /xxx/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/datafusion-execution-49.0.2/src/disk_manager.rs: Created local dirs [TempDir { path: "/private/var/folders/4p/9gtjq1s10fd6frkv9kzy0y740000gn/T/blockmgr-ba524f95-a792-4d79-b49c-276ba324941e/datafusion-qrpApx" }] as DataFusion working directory
+25/09/15 20:17:44 DEBUG /xxx/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/datafusion-functions-nested-49.0.2/src/lib.rs: Overwrite existing UDF: array_to_string
+25/09/15 20:17:44 DEBUG /xxx/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/datafusion-functions-nested-49.0.2/src/lib.rs: Overwrite existing UDF: string_to_array
+25/09/15 20:17:44 DEBUG /xxx/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/datafusion-functions-nested-49.0.2/src/lib.rs: Overwrite existing UDF: range
+...
+```
+
+Additionally, you can place a `log4rs.yaml` configuration file inside the Comet configuration directory specified by the `COMET_CONF_DIR` environment variable to enable more advanced logging configurations. This file uses the [log4rs YAML configuration format](https://docs.rs/log4rs/latest/log4rs/#configuration-via-a-yaml-file).
+For example, see: [log4rs.yaml](https://github.com/apache/datafusion-comet/blob/main/conf/log4rs.yaml).

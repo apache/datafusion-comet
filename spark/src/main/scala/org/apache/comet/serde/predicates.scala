@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{And, Attribute, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, LessThan, LessThanOrEqual, Literal, Not, Or}
 import org.apache.spark.sql.types.BooleanType
@@ -218,7 +218,7 @@ object CometIsNaN extends CometExpressionSerde[IsNaN] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
-    val optExpr = scalarFunctionExprToProtoWithReturnType("isnan", BooleanType, childExpr)
+    val optExpr = scalarFunctionExprToProtoWithReturnType("isnan", BooleanType, false, childExpr)
 
     optExprWithInfo(optExpr, expr, expr.child)
   }

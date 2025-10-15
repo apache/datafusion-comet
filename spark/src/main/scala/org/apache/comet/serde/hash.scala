@@ -40,7 +40,7 @@ object CometXxHash64 extends CometExpressionSerde[XxHash64] {
       .setLongVal(expr.seed)
     val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
     // the seed is put at the end of the arguments
-    scalarFunctionExprToProtoWithReturnType("xxhash64", LongType, exprs :+ seedExpr: _*)
+    scalarFunctionExprToProtoWithReturnType("xxhash64", LongType, false, exprs :+ seedExpr: _*)
   }
 }
 
@@ -59,7 +59,11 @@ object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] {
       .setIntVal(expr.seed)
     val seedExpr = Some(ExprOuterClass.Expr.newBuilder().setLiteral(seedBuilder).build())
     // the seed is put at the end of the arguments
-    scalarFunctionExprToProtoWithReturnType("murmur3_hash", IntegerType, exprs :+ seedExpr: _*)
+    scalarFunctionExprToProtoWithReturnType(
+      "murmur3_hash",
+      IntegerType,
+      false,
+      exprs :+ seedExpr: _*)
   }
 }
 
@@ -81,7 +85,7 @@ object CometSha2 extends CometExpressionSerde[Sha2] {
 
     val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
     val numBitsExpr = exprToProtoInternal(expr.right, inputs, binding)
-    scalarFunctionExprToProtoWithReturnType("sha2", StringType, leftExpr, numBitsExpr)
+    scalarFunctionExprToProtoWithReturnType("sha2", StringType, false, leftExpr, numBitsExpr)
   }
 }
 

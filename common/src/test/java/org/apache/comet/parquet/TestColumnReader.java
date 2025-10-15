@@ -26,8 +26,6 @@ import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.BiFunction;
 
-import scala.collection.JavaConverters;
-
 import org.junit.Test;
 
 import org.apache.arrow.memory.BufferAllocator;
@@ -46,6 +44,7 @@ import org.apache.comet.vector.CometVector;
 
 import static org.apache.spark.sql.types.DataTypes.*;
 import static org.junit.Assert.*;
+import static scala.jdk.javaapi.CollectionConverters.*;
 
 @SuppressWarnings("unchecked")
 public class TestColumnReader {
@@ -97,7 +96,7 @@ public class TestColumnReader {
       StructField field = StructField.apply("f", type, false, null);
 
       List<Object> values = Collections.singletonList(VALUES.get(i));
-      InternalRow row = GenericInternalRow.apply(JavaConverters.asScalaBuffer(values).toSeq());
+      InternalRow row = GenericInternalRow.apply(asScala(values).toSeq());
       ConstantColumnReader reader = new ConstantColumnReader(field, BATCH_SIZE, row, 0, true);
       reader.readBatch(BATCH_SIZE);
       CometVector vector = reader.currentBatch();

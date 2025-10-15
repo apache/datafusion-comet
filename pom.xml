@@ -30,7 +30,7 @@ under the License.
   </parent>
   <groupId>org.apache.datafusion</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>0.10.0-SNAPSHOT</version>
+  <version>0.12.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Comet Project Parent POM</name>
 
@@ -50,7 +50,7 @@ under the License.
     <maven-compiler-plugin.version>3.11.0</maven-compiler-plugin.version>
     <maven-assembly-plugin.version>3.6.0</maven-assembly-plugin.version>
     <maven-shade-plugin.version>3.2.4</maven-shade-plugin.version>
-    <maven-surefire-plugin.version>3.1.2</maven-surefire-plugin.version>
+    <maven-surefire-plugin.version>3.5.4</maven-surefire-plugin.version>
     <maven-source-plugin.version>3.3.0</maven-source-plugin.version>
     <maven-enforcer-plugin.version>3.3.0</maven-enforcer-plugin.version>
     <maven-failsafe-plugin.version>3.1.0</maven-failsafe-plugin.version>
@@ -64,10 +64,10 @@ under the License.
     <scalafix-maven-plugin.version>0.1.7_0.10.4</scalafix-maven-plugin.version>
     <extra-enforcer-rules.version>1.7.0</extra-enforcer-rules.version>
     <scalafmt.version>3.6.1</scalafmt.version>
-    <apache-rat-plugin.version>0.16</apache-rat-plugin.version>
+    <apache-rat-plugin.version>0.16.1</apache-rat-plugin.version>
     <scala.version>2.12.18</scala.version>
     <scala.binary.version>2.12</scala.binary.version>
-    <scala.plugin.version>4.8.0</scala.plugin.version>
+    <scala.plugin.version>4.9.6</scala.plugin.version>
     <scalatest.version>3.2.16</scalatest.version>
     <scalatest-maven-plugin.version>2.2.0</scalatest-maven-plugin.version>
     <spark.version>3.5.6</spark.version>
@@ -257,6 +257,11 @@ under the License.
         <groupId>org.scala-lang</groupId>
         <artifactId>scala-library</artifactId>
         <version>${scala.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.scala-lang.modules</groupId>
+        <artifactId>scala-collection-compat_${scala.binary.version}</artifactId>
+        <version>2.12.0</version>
       </dependency>
       <dependency>
         <groupId>com.google.protobuf</groupId>
@@ -594,6 +599,9 @@ under the License.
         <parquet.version>1.13.1</parquet.version>
         <slf4j.version>2.0.6</slf4j.version>
         <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
+        <java.version>11</java.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
     </profile>
 
@@ -606,6 +614,9 @@ under the License.
         <parquet.version>1.13.1</parquet.version>
         <slf4j.version>2.0.7</slf4j.version>
         <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
+        <java.version>11</java.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
     </profile>
 
@@ -616,7 +627,7 @@ under the License.
         <!-- Use Scala 2.13 by default -->
         <scala.version>2.13.16</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.0.0</spark.version>
+        <spark.version>4.0.1</spark.version>
         <spark.version.short>4.0</spark.version.short>
         <parquet.version>1.15.2</parquet.version>
         <semanticdb.version>4.13.6</semanticdb.version>
@@ -904,6 +915,13 @@ under the License.
               </licenseHeader>
             </java>
             <scala>
+              <includes>
+                <include>src/main/scala/**/*.scala</include>
+                <include>src/test/scala/**/*.scala</include>
+                <!-- Include spark shim sources -->
+                <include>src/main/spark-*/**/*.scala</include>
+                <include>src/test/spark-*/**/*.scala</include>
+              </includes>
               <toggleOffOn />
               <scalafmt>
                 <version>${scalafmt.version}</version>

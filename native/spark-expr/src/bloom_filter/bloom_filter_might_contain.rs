@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use crate::bloom_filter::spark_bloom_filter::SparkBloomFilter;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct BloomFilterMightContain {
     signature: Signature,
     bloom_filter: Option<SparkBloomFilter>,

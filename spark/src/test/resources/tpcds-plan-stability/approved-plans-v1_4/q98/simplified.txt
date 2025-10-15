@@ -13,9 +13,9 @@ WholeStageCodegen (3)
                         InputAdapter
                           CometSort [i_item_desc,i_category,i_class,i_current_price,itemrevenue,_w0,i_item_id]
                             CometExchange [i_class] #2
-                              CometHashAggregate [i_item_desc,i_category,i_class,i_current_price,itemrevenue,_w0,i_item_id,sum,sum(UnscaledValue(ss_ext_sales_price))]
+                              CometHashAggregate [sum] [i_item_desc,i_category,i_class,i_current_price,itemrevenue,_w0,i_item_id,sum(UnscaledValue(ss_ext_sales_price))]
                                 CometExchange [i_item_id,i_item_desc,i_category,i_class,i_current_price] #3
-                                  CometHashAggregate [i_item_id,i_item_desc,i_category,i_class,i_current_price,sum,ss_ext_sales_price]
+                                  CometHashAggregate [ss_ext_sales_price] [i_item_id,i_item_desc,i_category,i_class,i_current_price,sum]
                                     CometProject [ss_ext_sales_price,i_item_id,i_item_desc,i_current_price,i_class,i_category]
                                       CometBroadcastHashJoin [ss_ext_sales_price,ss_sold_date_sk,i_item_id,i_item_desc,i_current_price,i_class,i_category,d_date_sk]
                                         CometProject [ss_ext_sales_price,ss_sold_date_sk,i_item_id,i_item_desc,i_current_price,i_class,i_category]

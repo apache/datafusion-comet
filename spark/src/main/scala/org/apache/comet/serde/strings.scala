@@ -21,8 +21,8 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, InitCap, Like, Literal, Lower, RLike, StringRepeat, StringRPad, Substring, Upper}
-import org.apache.spark.sql.types.{DataTypes, LongType, StringType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, InitCap, Length, Like, Literal, Lower, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -66,17 +66,23 @@ object CometUpper extends CometCaseConversionBase[Upper]("upper")
 
 object CometLower extends CometCaseConversionBase[Lower]("lower")
 
+object CometLength extends CometScalarFunction[Length]("length") {
+  override def getSupportLevel(expr: Length): SupportLevel = expr.child.dataType match {
+    case _: BinaryType => Unsupported(Some("Length on BinaryType is not supported"))
+    case _ => Compatible()
+  }
+}
+
 object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
 
+  override def getSupportLevel(expr: InitCap): SupportLevel = {
+    // Behavior differs from Spark. One example is that for the input "robert rose-smith", Spark
+    // will produce "Robert Rose-smith", but Comet will produce "Robert Rose-Smith".
+    // https://github.com/apache/datafusion-comet/issues/1052
+    Incompatible(None)
+  }
+
   override def convert(expr: InitCap, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    if (!CometConf.COMET_EXEC_INITCAP_ENABLED.get()) {
-      withInfo(
-        expr,
-        "Comet initCap is not compatible with Spark yet. " +
-          "See https://github.com/apache/datafusion-comet/issues/1052 ." +
-          s"Set ${CometConf.COMET_EXEC_INITCAP_ENABLED.key}=true to enable it anyway.")
-      return None
-    }
     super.convert(expr, inputs, binding)
   }
 }
@@ -160,16 +166,79 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] {
       expr: StringRPad,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    expr.pad match {
-      case Literal(str, DataTypes.StringType) if str.toString == " " =>
-        scalarFunctionExprToProto(
-          "rpad",
-          exprToProtoInternal(expr.str, inputs, binding),
-          exprToProtoInternal(expr.len, inputs, binding))
-      case _ =>
-        withInfo(expr, "StringRPad with non-space characters is not supported")
-        None
+
+    scalarFunctionExprToProto(
+      "rpad",
+      exprToProtoInternal(expr.str, inputs, binding),
+      exprToProtoInternal(expr.len, inputs, binding),
+      exprToProtoInternal(expr.pad, inputs, binding))
+  }
+}
+
+object CometStringLPad extends CometExpressionSerde[StringLPad] {
+
+  /**
+   * Convert a Spark expression into a protocol buffer representation that can be passed into
+   * native code.
+   *
+   * @param expr
+   *   The Spark expression.
+   * @param inputs
+   *   The input attributes.
+   * @param binding
+   *   Whether the attributes are bound (this is only relevant in aggregate expressions).
+   * @return
+   *   Protocol buffer representation, or None if the expression could not be converted. In this
+   *   case it is expected that the input expression will have been tagged with reasons why it
+   *   could not be converted.
+   */
+  override def convert(
+      expr: StringLPad,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    scalarFunctionExprToProto(
+      "lpad",
+      exprToProtoInternal(expr.str, inputs, binding),
+      exprToProtoInternal(expr.len, inputs, binding),
+      exprToProtoInternal(expr.pad, inputs, binding))
+  }
+}
+
+object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
+  override def getSupportLevel(expr: RegExpReplace): SupportLevel = {
+    if (!RegExp.isSupportedPattern(expr.regexp.toString) &&
+      !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+      withInfo(
+        expr,
+        s"Regexp pattern ${expr.regexp} is not compatible with Spark. " +
+          s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
+          "to allow it anyway.")
+      return Incompatible()
     }
+    expr.pos match {
+      case Literal(value, DataTypes.IntegerType) if value == 1 => Compatible()
+      case _ =>
+        Unsupported(Some("Comet only supports regexp_replace with an offset of 1 (no offset)."))
+    }
+  }
+
+  override def convert(
+      expr: RegExpReplace,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
+    val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
+    val replacementExpr = exprToProtoInternal(expr.rep, inputs, binding)
+    // DataFusion's regexp_replace stops at the first match. We need to add the 'g' flag
+    // to apply the regex globally to match Spark behavior.
+    val flagsExpr = exprToProtoInternal(Literal("g"), inputs, binding)
+    val optExpr = scalarFunctionExprToProto(
+      "regexp_replace",
+      subjectExpr,
+      patternExpr,
+      replacementExpr,
+      flagsExpr)
+    optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
   }
 }
 

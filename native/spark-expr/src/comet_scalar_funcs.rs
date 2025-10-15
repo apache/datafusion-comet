@@ -16,14 +16,13 @@
 // under the License.
 
 use crate::hash_funcs::*;
-use crate::map_funcs::spark_map_sort;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
-    spark_array_repeat, spark_ceil, spark_date_add, spark_date_sub, spark_decimal_div,
-    spark_decimal_integral_div, spark_floor, spark_hex, spark_isnan, spark_make_decimal,
-    spark_read_side_padding, spark_round, spark_rpad, spark_unhex, spark_unscaled_value,
-    SparkBitwiseCount, SparkBitwiseGet, SparkBitwiseNot, SparkDateTrunc, SparkStringSpace,
+    spark_array_repeat, spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor,
+    spark_hex, spark_isnan, spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round,
+    spark_rpad, spark_unhex, spark_unscaled_value, EvalMode, SparkBitwiseCount, SparkBitwiseNot,
+    SparkDateTrunc, SparkStringSpace,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -65,6 +64,15 @@ macro_rules! make_comet_scalar_udf {
         );
         Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
     }};
+    ($name:expr, $func:ident, $data_type:ident, $eval_mode:ident) => {{
+        let scalar_func = CometScalarFunction::new(
+            $name.to_string(),
+            Signature::variadic_any(Volatility::Immutable),
+            $data_type.clone(),
+            Arc::new(move |args| $func(args, &$data_type, $eval_mode)),
+        );
+        Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
+    }};
 }
 
 /// Create a physical scalar function.
@@ -74,6 +82,24 @@ pub fn create_comet_physical_fun(
     registry: &dyn FunctionRegistry,
     fail_on_error: Option<bool>,
 ) -> Result<Arc<ScalarUDF>, DataFusionError> {
+    create_comet_physical_fun_with_eval_mode(
+        fun_name,
+        data_type,
+        registry,
+        fail_on_error,
+        EvalMode::Legacy,
+    )
+}
+
+/// Create a physical scalar function with eval mode. Goal is to deprecate above function once all the operators have ANSI support
+pub fn create_comet_physical_fun_with_eval_mode(
+    fun_name: &str,
+    data_type: DataType,
+    registry: &dyn FunctionRegistry,
+    fail_on_error: Option<bool>,
+    eval_mode: EvalMode,
+) -> Result<Arc<ScalarUDF>, DataFusionError> {
+    let fail_on_error = fail_on_error.unwrap_or(false);
     match fun_name {
         "ceil" => {
             make_comet_scalar_udf!("ceil", spark_ceil, data_type)
@@ -89,8 +115,12 @@ pub fn create_comet_physical_fun(
             let func = Arc::new(spark_rpad);
             make_comet_scalar_udf!("rpad", func, without data_type)
         }
+        "lpad" => {
+            let func = Arc::new(spark_lpad);
+            make_comet_scalar_udf!("lpad", func, without data_type)
+        }
         "round" => {
-            make_comet_scalar_udf!("round", spark_round, data_type)
+            make_comet_scalar_udf!("round", spark_round, data_type, fail_on_error)
         }
         "unscaled_value" => {
             let func = Arc::new(spark_unscaled_value);
@@ -108,26 +138,27 @@ pub fn create_comet_physical_fun(
             make_comet_scalar_udf!("unhex", func, without data_type)
         }
         "decimal_div" => {
-            make_comet_scalar_udf!("decimal_div", spark_decimal_div, data_type)
+            make_comet_scalar_udf!("decimal_div", spark_decimal_div, data_type, eval_mode)
         }
         "decimal_integral_div" => {
             make_comet_scalar_udf!(
                 "decimal_integral_div",
                 spark_decimal_integral_div,
-                data_type
+                data_type,
+                eval_mode
             )
         }
         "checked_add" => {
-            make_comet_scalar_udf!("checked_add", checked_add, data_type)
+            make_comet_scalar_udf!("checked_add", checked_add, data_type, eval_mode)
         }
         "checked_sub" => {
-            make_comet_scalar_udf!("checked_sub", checked_sub, data_type)
+            make_comet_scalar_udf!("checked_sub", checked_sub, data_type, eval_mode)
         }
         "checked_mul" => {
-            make_comet_scalar_udf!("checked_mul", checked_mul, data_type)
+            make_comet_scalar_udf!("checked_mul", checked_mul, data_type, eval_mode)
         }
         "checked_div" => {
-            make_comet_scalar_udf!("checked_div", checked_div, data_type)
+            make_comet_scalar_udf!("checked_div", checked_div, data_type, eval_mode)
         }
         "murmur3_hash" => {
             let func = Arc::new(spark_murmur3_hash);
@@ -141,26 +172,13 @@ pub fn create_comet_physical_fun(
             let func = Arc::new(spark_isnan);
             make_comet_scalar_udf!("isnan", func, without data_type)
         }
-        "date_add" => {
-            let func = Arc::new(spark_date_add);
-            make_comet_scalar_udf!("date_add", func, without data_type)
-        }
-        "date_sub" => {
-            let func = Arc::new(spark_date_sub);
-            make_comet_scalar_udf!("date_sub", func, without data_type)
-        }
         "array_repeat" => {
             let func = Arc::new(spark_array_repeat);
             make_comet_scalar_udf!("array_repeat", func, without data_type)
         }
         "spark_modulo" => {
             let func = Arc::new(spark_modulo);
-            let fail_on_error = fail_on_error.unwrap_or(false);
             make_comet_scalar_udf!("spark_modulo", func, without data_type, fail_on_error)
-        }
-        "map_sort" => {
-            let func = Arc::new(spark_map_sort);
-            make_comet_scalar_udf!("spark_map_sort", func, without data_type)
         }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
@@ -174,7 +192,6 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
     vec![
         Arc::new(ScalarUDF::new_from_impl(SparkBitwiseNot::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkBitwiseCount::default())),
-        Arc::new(ScalarUDF::new_from_impl(SparkBitwiseGet::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkStringSpace::default())),
     ]
@@ -195,6 +212,26 @@ struct CometScalarFunction {
     signature: Signature,
     data_type: DataType,
     func: ScalarFunctionImplementation,
+}
+
+impl PartialEq for CometScalarFunction {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.signature == other.signature
+            && self.data_type == other.data_type
+        // Note: we do not test ScalarFunctionImplementation equality, relying on function metadata.
+    }
+}
+
+impl Eq for CometScalarFunction {}
+
+impl std::hash::Hash for CometScalarFunction {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.signature.hash(state);
+        self.data_type.hash(state);
+        // Note: we do not hash ScalarFunctionImplementation, relying on function metadata.
+    }
 }
 
 impl Debug for CometScalarFunction {

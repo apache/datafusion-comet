@@ -27,7 +27,7 @@ use datafusion::logical_expr::{
 };
 use std::{any::Any, sync::Arc};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkStringSpace {
     signature: Signature,
     aliases: Vec<String>,

@@ -468,7 +468,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       """
         |select 1 a
         |""".stripMargin,
-      "select array(1, 2, null, 3, null) from tbl")
+      "select array(cast(1 as byte), cast(2 as byte), null, cast(3 as byte), null) from tbl")
   }
 
   test("native reader - support ARRAY literal SHORT fields") {
@@ -556,5 +556,13 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       spark.range(10).select(array(col("id")).as("arr")).write.saveAsTable("array_tbl")
       assert(sql("SELECT * FROM array_tbl where arr = ARRAY(1L)").count == 1)
     }
+  }
+
+  test("native reader - support ARRAY literal nested ARRAY fields") {
+    testSingleLineQuery(
+      """
+          |select 1 a
+          |""".stripMargin,
+      "select array(array(1, 2, null), array(), array(10), null, array(null)) from tbl")
   }
 }

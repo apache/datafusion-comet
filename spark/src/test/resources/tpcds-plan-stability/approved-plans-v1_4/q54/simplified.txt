@@ -2,12 +2,12 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [segment,num_customers,segment_base]
-        CometHashAggregate [segment,num_customers,segment_base,count,count(1)]
+        CometHashAggregate [count] [segment,num_customers,segment_base,count(1)]
           CometExchange [segment] #1
             CometHashAggregate [segment,count]
-              CometHashAggregate [segment,c_customer_sk,sum,sum(UnscaledValue(ss_ext_sales_price))]
+              CometHashAggregate [c_customer_sk,sum] [segment,sum(UnscaledValue(ss_ext_sales_price))]
                 CometExchange [c_customer_sk] #2
-                  CometHashAggregate [c_customer_sk,sum,ss_ext_sales_price]
+                  CometHashAggregate [ss_ext_sales_price] [c_customer_sk,sum]
                     CometProject [c_customer_sk,ss_ext_sales_price]
                       CometBroadcastHashJoin [c_customer_sk,ss_ext_sales_price,ss_sold_date_sk,d_date_sk]
                         CometProject [c_customer_sk,ss_ext_sales_price,ss_sold_date_sk]

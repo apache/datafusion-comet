@@ -37,7 +37,7 @@ use datafusion::logical_expr::Volatility::Immutable;
 use DataType::*;
 
 /// AVG aggregate expression
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Avg {
     name: String,
     signature: Signature,

@@ -25,27 +25,29 @@ import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.TaskContext
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expression, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, HashPartitioningLike, Partitioning, PartitioningCollection, UnknownPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.{BinaryExecNode, ColumnarToRowExec, ExecSubqueryExpression, ExplainUtils, LeafExecNode, ScalarSubquery, SparkPlan, UnaryExecNode}
-import org.apache.spark.sql.execution.PartitioningPreservingUnaryExecNode
+import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException}
+import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
@@ -114,7 +116,9 @@ object CometExec {
       nativePlan,
       CometMetricNode(Map.empty),
       numParts,
-      partitionIdx)
+      partitionIdx,
+      broadcastedHadoopConfForEncryption = None,
+      encryptedFilePaths = Seq.empty)
   }
 
   def getCometIterator(
@@ -123,7 +127,9 @@ object CometExec {
       nativePlan: Operator,
       nativeMetrics: CometMetricNode,
       numParts: Int,
-      partitionIdx: Int): CometExecIterator = {
+      partitionIdx: Int,
+      broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
+      encryptedFilePaths: Seq[String]): CometExecIterator = {
     val outputStream = new ByteArrayOutputStream()
     nativePlan.writeTo(outputStream)
     outputStream.close()
@@ -135,7 +141,9 @@ object CometExec {
       bytes,
       nativeMetrics,
       numParts,
-      partitionIdx)
+      partitionIdx,
+      broadcastedHadoopConfForEncryption,
+      encryptedFilePaths)
   }
 
   /**
@@ -201,6 +209,39 @@ abstract class CometNativeExec extends CometExec {
         // TODO: support native metrics for all operators.
         val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
+        // For each relation in a CometNativeScan generate a hadoopConf,
+        // for each file path in a relation associate with hadoopConf
+        val cometNativeScans: Seq[CometNativeScanExec] = this
+          .collectLeaves()
+          .filter(_.isInstanceOf[CometNativeScanExec])
+          .map(_.asInstanceOf[CometNativeScanExec])
+        assert(
+          cometNativeScans.size <= 1,
+          "We expect one native scan in a Comet plan since we will broadcast one hadoopConf.")
+        // If this assumption changes in the future, you can look at the commit history of #2447
+        // to see how there used to be a map of relations to broadcasted confs in case multiple
+        // relations in a single plan. The example that came up was UNION. See discussion at:
+        // https://github.com/apache/datafusion-comet/pull/2447#discussion_r2406118264
+        val (broadcastedHadoopConfForEncryption, encryptedFilePaths) =
+          cometNativeScans.headOption.fold(
+            (None: Option[Broadcast[SerializableConfiguration]], Seq.empty[String])) { scan =>
+            // This creates a hadoopConf that brings in any SQLConf "spark.hadoop.*" configs and
+            // per-relation configs since different tables might have different decryption
+            // properties.
+            val hadoopConf = scan.relation.sparkSession.sessionState
+              .newHadoopConfWithOptions(scan.relation.options)
+            val encryptionEnabled = CometParquetUtils.encryptionEnabled(hadoopConf)
+            if (encryptionEnabled) {
+              // hadoopConf isn't serializable, so we have to do a broadcasted config.
+              val broadcastedConf =
+                scan.relation.sparkSession.sparkContext
+                  .broadcast(new SerializableConfiguration(hadoopConf))
+              (Some(broadcastedConf), scan.relation.inputFiles.toSeq)
+            } else {
+              (None, Seq.empty)
+            }
+          }
+
         def createCometExecIter(
             inputs: Seq[Iterator[ColumnarBatch]],
             numParts: Int,
@@ -212,7 +253,9 @@ abstract class CometNativeExec extends CometExec {
             serializedPlanCopy,
             nativeMetrics,
             numParts,
-            partitionIndex)
+            partitionIndex,
+            broadcastedHadoopConfForEncryption,
+            encryptedFilePaths)
 
           setSubqueries(it.id, this)
 
@@ -238,6 +281,7 @@ abstract class CometNativeExec extends CometExec {
           case (_: CometBroadcastExchangeExec, _) => false
           case (BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _), _) => false
           case (BroadcastQueryStageExec(_, _: ReusedExchangeExec, _), _) => false
+          case (ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) => false
           case _ => true
         }
 
@@ -245,6 +289,7 @@ abstract class CometNativeExec extends CometExec {
           case _: CometBroadcastExchangeExec => true
           case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
           case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => true
+          case ReusedExchangeExec(_, _: CometBroadcastExchangeExec) => true
           case _ => false
         }
 
@@ -272,16 +317,16 @@ abstract class CometNativeExec extends CometExec {
         sparkPlans.zipWithIndex.foreach { case (plan, idx) =>
           plan match {
             case c: CometBroadcastExchangeExec =>
-              inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
+              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
             case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) =>
-              inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
+              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
             case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) =>
-              inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
+              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
             case BroadcastQueryStageExec(
                   _,
                   ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
                   _) =>
-              inputs += c.setNumPartitions(firstNonBroadcastPlanNumPartitions).executeColumnar()
+              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
             case _: CometNativeExec =>
             // no-op
             case _ if idx == firstNonBroadcastPlan.get._2 =>
@@ -427,6 +472,7 @@ abstract class CometBinaryExec extends CometNativeExec with BinaryExecNode
  */
 case class SerializedPlan(plan: Option[Array[Byte]]) {
   def isDefined: Boolean = plan.isDefined
+
   def isEmpty: Boolean = plan.isEmpty
 }
 
@@ -440,6 +486,7 @@ case class CometProjectExec(
     extends CometUnaryExec
     with PartitioningPreservingUnaryExecNode {
   override def producedAttributes: AttributeSet = outputSet
+
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
 
@@ -472,6 +519,7 @@ case class CometFilterExec(
     extends CometUnaryExec {
 
   override def outputPartitioning: Partitioning = child.outputPartitioning
+
   override def outputOrdering: Seq[SortOrder] = child.outputOrdering
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
@@ -549,7 +597,9 @@ case class CometLocalLimitExec(
     extends CometUnaryExec {
 
   override def output: Seq[Attribute] = child.output
+
   override def outputPartitioning: Partitioning = child.outputPartitioning
+
   override def outputOrdering: Seq[SortOrder] = child.outputOrdering
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
@@ -583,7 +633,9 @@ case class CometGlobalLimitExec(
     extends CometUnaryExec {
 
   override def output: Seq[Attribute] = child.output
+
   override def outputPartitioning: Partitioning = child.outputPartitioning
+
   override def outputOrdering: Seq[SortOrder] = child.outputOrdering
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
@@ -692,6 +744,8 @@ case class CometHashAggregateExec(
     override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec
     with PartitioningPreservingUnaryExecNode {
+  override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(resultExpressions)
+
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
 
@@ -981,6 +1035,7 @@ case class CometScanWrapper(override val nativeOp: Operator, override val origin
     extends CometNativeExec
     with LeafExecNode {
   override val serializedPlanOpt: SerializedPlan = SerializedPlan(None)
+
   override def stringArgs: Iterator[Any] = Iterator(originalPlan.output, originalPlan)
 }
 

@@ -20,13 +20,12 @@
 package org.apache.spark.sql.comet.shims
 
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, FileSourceConstantMetadataAttribute, Literal}
-import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
-import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil, ScalarSubquery}
+import org.apache.spark.sql.execution.datasources._
+import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.StructType
 
@@ -55,25 +54,31 @@ trait ShimCometScanExec extends ShimStreamSourceAwareSparkPlan {
   // see SPARK-39634
   protected def isNeededForSchema(sparkSchema: StructType): Boolean = false
 
-  protected def getPartitionedFile(f: FileStatusWithMetadata, p: PartitionDirectory): PartitionedFile =
+  protected def getPartitionedFile(
+      f: FileStatusWithMetadata,
+      p: PartitionDirectory): PartitionedFile =
     PartitionedFileUtil.getPartitionedFile(f, f.getPath, p.values, 0, f.getLen)
 
-  protected def splitFiles(sparkSession: SparkSession,
-                           file: FileStatusWithMetadata,
-                           filePath: Path,
-                           isSplitable: Boolean,
-                           maxSplitBytes: Long,
-                           partitionValues: InternalRow): Seq[PartitionedFile] =
+  protected def splitFiles(
+      sparkSession: SparkSession,
+      file: FileStatusWithMetadata,
+      filePath: Path,
+      isSplitable: Boolean,
+      maxSplitBytes: Long,
+      partitionValues: InternalRow): Seq[PartitionedFile] =
     PartitionedFileUtil.splitFiles(file, filePath, isSplitable, maxSplitBytes, partitionValues)
 
-  protected def getPushedDownFilters(relation: HadoopFsRelation , dataFilters: Seq[Expression]):  Seq[Filter] = {
+  protected def getPushedDownFilters(
+      relation: HadoopFsRelation,
+      dataFilters: Seq[Expression]): Seq[Filter] = {
     translateToV1Filters(relation, dataFilters, _.toLiteral)
   }
 
   // From Spark FileSourceScanLike
-  private def translateToV1Filters(relation: HadoopFsRelation,
-                                    dataFilters: Seq[Expression],
-                                    scalarSubqueryToLiteral: ScalarSubquery => Literal): Seq[Filter] = {
+  private def translateToV1Filters(
+      relation: HadoopFsRelation,
+      dataFilters: Seq[Expression],
+      scalarSubqueryToLiteral: ScalarSubquery => Literal): Seq[Filter] = {
     val scalarSubqueryReplaced = dataFilters.map(_.transform {
       // Replace scalar subquery to literal so that `DataSourceStrategy.translateFilter` can
       // support translating it.
@@ -85,10 +90,12 @@ trait ShimCometScanExec extends ShimStreamSourceAwareSparkPlan {
     // because the metadata struct has been flatted in FileSourceStrategy
     // and thus metadata col filters are invalid to be pushed down. Metadata that is generated
     // during the scan can be used for filters.
-    scalarSubqueryReplaced.filterNot(_.references.exists {
-      case FileSourceConstantMetadataAttribute(_) => true
-      case _ => false
-    }).flatMap(DataSourceStrategy.translateFilter(_, supportNestedPredicatePushdown))
+    scalarSubqueryReplaced
+      .filterNot(_.references.exists {
+        case FileSourceConstantMetadataAttribute(_) => true
+        case _ => false
+      })
+      .flatMap(DataSourceStrategy.translateFilter(_, supportNestedPredicatePushdown))
   }
 
 }

@@ -23,7 +23,7 @@ use datafusion::logical_expr::{ColumnarValue, Volatility};
 use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDFImpl, Signature};
 use std::{any::Any, sync::Arc};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkBitwiseNot {
     signature: Signature,
     aliases: Vec<String>,

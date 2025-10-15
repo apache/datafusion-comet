@@ -94,6 +94,12 @@ allowed_expr+="|^org/apache/spark/CometPlugin.class$"
 allowed_expr+="|^org/apache/spark/CometDriverPlugin.*$"
 allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.class$"
 allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.*$"
+allowed_expr+="|^scala-collection-compat.properties$"
+allowed_expr+="|^scala/$"
+allowed_expr+="|^scala/annotation/"
+allowed_expr+="|^scala/collection/"
+allowed_expr+="|^scala/jdk/"
+allowed_expr+="|^scala/util/"
 
 allowed_expr+=")"
 declare -i bad_artifacts=0

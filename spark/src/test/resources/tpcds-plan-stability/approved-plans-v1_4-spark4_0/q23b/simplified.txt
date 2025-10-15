@@ -3,9 +3,9 @@ WholeStageCodegen (1)
     InputAdapter
       CometTakeOrderedAndProject [c_last_name,c_first_name,sales]
         CometUnion [c_last_name,c_first_name,sales]
-          CometHashAggregate [c_last_name,c_first_name,sales,sum,isEmpty,sum((cast(cs_quantity as decimal(10,0)) * cs_list_price))]
+          CometHashAggregate [sum,isEmpty] [c_last_name,c_first_name,sales,sum((cast(cs_quantity as decimal(10,0)) * cs_list_price))]
             CometExchange [c_last_name,c_first_name] #1
-              CometHashAggregate [c_last_name,c_first_name,sum,isEmpty,cs_quantity,cs_list_price]
+              CometHashAggregate [cs_quantity,cs_list_price] [c_last_name,c_first_name,sum,isEmpty]
                 CometProject [cs_quantity,cs_list_price,c_first_name,c_last_name]
                   CometBroadcastHashJoin [cs_quantity,cs_list_price,cs_sold_date_sk,c_first_name,c_last_name,d_date_sk]
                     CometProject [cs_quantity,cs_list_price,cs_sold_date_sk,c_first_name,c_last_name]
@@ -28,7 +28,7 @@ WholeStageCodegen (1)
                                   CometBroadcastExchange [item_sk] #4
                                     CometProject [item_sk]
                                       CometFilter [item_sk,cnt]
-                                        CometHashAggregate [item_sk,cnt,_groupingexpression,i_item_sk,d_date,count,count(1)]
+                                        CometHashAggregate [_groupingexpression,d_date,count] [item_sk,cnt,i_item_sk,count(1)]
                                           CometExchange [_groupingexpression,i_item_sk,d_date] #5
                                             CometHashAggregate [_groupingexpression,i_item_sk,d_date,count]
                                               CometProject [i_item_desc] [d_date,i_item_sk,_groupingexpression]
@@ -59,12 +59,12 @@ WholeStageCodegen (1)
                                   WholeStageCodegen (1)
                                     CometColumnarToRow
                                       InputAdapter
-                                        CometHashAggregate [tpcds_cmax,max,max(csales)]
+                                        CometHashAggregate [max] [tpcds_cmax,max(csales)]
                                           CometExchange #11
-                                            CometHashAggregate [max,csales]
-                                              CometHashAggregate [csales,c_customer_sk,sum,isEmpty,sum((cast(ss_quantity as decimal(10,0)) * ss_sales_price))]
+                                            CometHashAggregate [csales] [max]
+                                              CometHashAggregate [c_customer_sk,sum,isEmpty] [csales,sum((cast(ss_quantity as decimal(10,0)) * ss_sales_price))]
                                                 CometExchange [c_customer_sk] #12
-                                                  CometHashAggregate [c_customer_sk,sum,isEmpty,ss_quantity,ss_sales_price]
+                                                  CometHashAggregate [ss_quantity,ss_sales_price] [c_customer_sk,sum,isEmpty]
                                                     CometProject [ss_quantity,ss_sales_price,c_customer_sk]
                                                       CometBroadcastHashJoin [ss_quantity,ss_sales_price,ss_sold_date_sk,c_customer_sk,d_date_sk]
                                                         CometProject [ss_quantity,ss_sales_price,ss_sold_date_sk,c_customer_sk]
@@ -84,9 +84,9 @@ WholeStageCodegen (1)
                                                           CometProject [d_date_sk]
                                                             CometFilter [d_date_sk,d_year]
                                                               CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
-                                CometHashAggregate [c_customer_sk,ssales,sum,isEmpty,sum((cast(ss_quantity as decimal(10,0)) * ss_sales_price))]
+                                CometHashAggregate [sum,isEmpty] [c_customer_sk,ssales,sum((cast(ss_quantity as decimal(10,0)) * ss_sales_price))]
                                   CometExchange [c_customer_sk] #9
-                                    CometHashAggregate [c_customer_sk,sum,isEmpty,ss_quantity,ss_sales_price]
+                                    CometHashAggregate [ss_quantity,ss_sales_price] [c_customer_sk,sum,isEmpty]
                                       CometProject [ss_quantity,ss_sales_price,c_customer_sk]
                                         CometBroadcastHashJoin [ss_customer_sk,ss_quantity,ss_sales_price,c_customer_sk]
                                           CometProject [ss_customer_sk,ss_quantity,ss_sales_price]
@@ -106,15 +106,15 @@ WholeStageCodegen (1)
                                 CometProject [c_customer_sk]
                                   CometFilter [c_customer_sk,ssales]
                                     ReusedSubquery [tpcds_cmax] #3
-                                    CometHashAggregate [c_customer_sk,ssales,sum,isEmpty,sum((cast(ss_quantity as decimal(10,0)) * ss_sales_price))]
+                                    CometHashAggregate [sum,isEmpty] [c_customer_sk,ssales,sum((cast(ss_quantity as decimal(10,0)) * ss_sales_price))]
                                       ReusedExchange [c_customer_sk,sum,isEmpty] #9
                     CometBroadcastExchange [d_date_sk] #17
                       CometProject [d_date_sk]
                         CometFilter [d_date_sk,d_year,d_moy]
                           CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
-          CometHashAggregate [c_last_name,c_first_name,sales,sum,isEmpty,sum((cast(ws_quantity as decimal(10,0)) * ws_list_price))]
+          CometHashAggregate [sum,isEmpty] [c_last_name,c_first_name,sales,sum((cast(ws_quantity as decimal(10,0)) * ws_list_price))]
             CometExchange [c_last_name,c_first_name] #18
-              CometHashAggregate [c_last_name,c_first_name,sum,isEmpty,ws_quantity,ws_list_price]
+              CometHashAggregate [ws_quantity,ws_list_price] [c_last_name,c_first_name,sum,isEmpty]
                 CometProject [ws_quantity,ws_list_price,c_first_name,c_last_name]
                   CometBroadcastHashJoin [ws_quantity,ws_list_price,ws_sold_date_sk,c_first_name,c_last_name,d_date_sk]
                     CometProject [ws_quantity,ws_list_price,ws_sold_date_sk,c_first_name,c_last_name]
@@ -132,7 +132,7 @@ WholeStageCodegen (1)
                             CometProject [c_customer_sk]
                               CometFilter [c_customer_sk,ssales]
                                 ReusedSubquery [tpcds_cmax] #3
-                                CometHashAggregate [c_customer_sk,ssales,sum,isEmpty,sum((cast(ss_quantity as decimal(10,0)) * ss_sales_price))]
+                                CometHashAggregate [sum,isEmpty] [c_customer_sk,ssales,sum((cast(ss_quantity as decimal(10,0)) * ss_sales_price))]
                                   ReusedExchange [c_customer_sk,sum,isEmpty] #9
                         ReusedExchange [c_customer_sk,c_first_name,c_last_name] #15
                     ReusedExchange [d_date_sk] #17

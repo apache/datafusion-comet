@@ -118,6 +118,11 @@ class CometExecSuite extends CometTestBase {
           val (_, cometPlan) = checkSparkAnswer(df)
           val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
           assert(infos.contains("Dynamic Partition Pruning is not supported"))
+
+          withSQLConf(CometConf.COMET_EXPLAIN_VERBOSE_ENABLED.key -> "true") {
+            val extendedExplain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
+            assert(extendedExplain.contains("Comet accelerated"))
+          }
         }
       }
     }
@@ -1031,9 +1036,8 @@ class CometExecSuite extends CometTestBase {
           |GROUP BY key
               """.stripMargin)
 
-      // The above query uses COUNT(DISTINCT) which Comet doesn't support yet, so the plan will
-      // have a mix of `HashAggregate` and `CometHashAggregate`. In the following we check all
-      // operators starting from `CometHashAggregate` are native.
+      // The above query uses SUM(DISTINCT) and count(distinct value1, value2)
+      // which is not yet supported
       checkSparkAnswer(df)
       val subPlan = stripAQEPlan(df.queryExecution.executedPlan).collectFirst {
         case s: CometHashAggregateExec => s
@@ -2212,6 +2216,48 @@ class CometExecSuite extends CometTestBase {
       }
       assert(nodeNames.length == 1)
       assert(nodeNames.head == "CometSparkRowToColumnar")
+    }
+  }
+
+  test("ReusedExchange broadcast with incompatible partitions number does not fail") {
+    withTable("tbl1", "tbl2", "tbl3") {
+      // enforce different number of partitions for future broadcasts/exchanges
+      spark
+        .range(50)
+        .withColumnRenamed("id", "x")
+        .repartition(2)
+        .writeTo("tbl1")
+        .using("parquet")
+        .create()
+      spark
+        .range(50)
+        .withColumnRenamed("id", "y")
+        .repartition(3)
+        .writeTo("tbl2")
+        .using("parquet")
+        .create()
+      spark
+        .range(50)
+        .withColumnRenamed("id", "z")
+        .repartition(4)
+        .writeTo("tbl3")
+        .using("parquet")
+        .create()
+      val df1 = spark.table("tbl1")
+      val df2 = spark.table("tbl2")
+      val df3 = spark.table("tbl3")
+      Seq("true", "false").foreach(aqeEnabled =>
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
+          val dfWithReusedExchange = df1
+            .join(df3.hint("broadcast").join(df1, $"x" === $"z"), "x", "right")
+            .join(
+              df3
+                .hint("broadcast")
+                .join(df2, $"y" === $"z", "right")
+                .withColumnRenamed("z", "z1"),
+              $"x" === $"y")
+          checkSparkAnswerAndOperator(dfWithReusedExchange, classOf[ReusedExchangeExec])
+        })
     }
   }
 

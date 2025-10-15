@@ -2,9 +2,9 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [w_state,i_item_id,sales_before,sales_after]
-        CometHashAggregate [w_state,i_item_id,sales_before,sales_after,sum,isEmpty,sum,isEmpty,sum(CASE WHEN (d_date < 2000-03-11) THEN (cs_sales_price - coalesce(cast(cr_refunded_cash as decimal(12,2)), 0.00)) ELSE 0.00 END),sum(CASE WHEN (d_date >= 2000-03-11) THEN (cs_sales_price - coalesce(cast(cr_refunded_cash as decimal(12,2)), 0.00)) ELSE 0.00 END)]
+        CometHashAggregate [sum,isEmpty,sum,isEmpty] [w_state,i_item_id,sales_before,sales_after,sum(CASE WHEN (d_date < 2000-03-11) THEN (cs_sales_price - coalesce(cast(cr_refunded_cash as decimal(12,2)), 0.00)) ELSE 0.00 END),sum(CASE WHEN (d_date >= 2000-03-11) THEN (cs_sales_price - coalesce(cast(cr_refunded_cash as decimal(12,2)), 0.00)) ELSE 0.00 END)]
           CometExchange [w_state,i_item_id] #1
-            CometHashAggregate [w_state,i_item_id,sum,isEmpty,sum,isEmpty,d_date,cs_sales_price,cr_refunded_cash]
+            CometHashAggregate [d_date,cs_sales_price,cr_refunded_cash] [w_state,i_item_id,sum,isEmpty,sum,isEmpty]
               CometProject [cs_sales_price,cr_refunded_cash,w_state,i_item_id,d_date]
                 CometBroadcastHashJoin [cs_sales_price,cs_sold_date_sk,cr_refunded_cash,w_state,i_item_id,d_date_sk,d_date]
                   CometProject [cs_sales_price,cs_sold_date_sk,cr_refunded_cash,w_state,i_item_id]

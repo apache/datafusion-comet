@@ -23,7 +23,6 @@ use arrow::compute::take;
 use arrow::datatypes::{DataType, Schema};
 use datafusion::common::{internal_err, Result};
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_expr_common::physical_expr::DynEq;
 use datafusion::physical_plan::ColumnarValue;
 use regex::Regex;
 use std::any::Any;
@@ -47,19 +46,18 @@ pub struct RLike {
     pattern: Regex,
 }
 
-impl Hash for RLike {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write(self.pattern_str.as_bytes());
+impl PartialEq for RLike {
+    fn eq(&self, other: &Self) -> bool {
+        *(self.child) == *(other.child) && self.pattern_str == other.pattern_str
     }
 }
 
-impl DynEq for RLike {
-    fn dyn_eq(&self, other: &dyn Any) -> bool {
-        if let Some(other) = other.downcast_ref::<Self>() {
-            self.pattern_str == other.pattern_str
-        } else {
-            false
-        }
+impl Eq for RLike {}
+
+impl Hash for RLike {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.child.hash(state);
+        self.pattern_str.hash(state);
     }
 }
 

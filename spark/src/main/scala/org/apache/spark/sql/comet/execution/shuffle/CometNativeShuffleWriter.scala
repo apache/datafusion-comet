@@ -22,17 +22,18 @@ package org.apache.spark.sql.comet.execution.shuffle
 import java.nio.{ByteBuffer, ByteOrder}
 import java.nio.file.{Files, Paths}
 
-import scala.collection.JavaConverters.asJavaIterableConverter
+import scala.collection.mutable
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsReporter, ShuffleWriter}
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, SinglePartition}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometConf
@@ -51,7 +52,8 @@ class CometNativeShuffleWriter[K, V](
     shuffleId: Int,
     mapId: Long,
     context: TaskContext,
-    metricsReporter: ShuffleWriteMetricsReporter)
+    metricsReporter: ShuffleWriteMetricsReporter,
+    rangePartitionBounds: Option[Seq[InternalRow]] = None)
     extends ShuffleWriter[K, V]
     with Logging {
 
@@ -101,7 +103,9 @@ class CometNativeShuffleWriter[K, V](
       nativePlan,
       nativeMetrics,
       numParts,
-      context.partitionId())
+      context.partitionId(),
+      broadcastedHadoopConfForEncryption = None,
+      encryptedFilePaths = Seq.empty)
 
     while (cometIter.hasNext) {
       cometIter.next()
@@ -140,6 +144,17 @@ class CometNativeShuffleWriter[K, V](
       MapStatus.apply(SparkEnv.get.blockManager.shuffleServerId, partitionLengths, mapId)
   }
 
+  private def isSinglePartitioning(p: Partitioning): Boolean = p match {
+    case SinglePartition => true
+    case rp: RangePartitioning =>
+      // Spark sometimes generates RangePartitioning schemes with numPartitions == 1,
+      // or the computed bounds results in a single target partition.
+      // In this case Comet just serializes a SinglePartition scheme to native.
+      rp.numPartitions == 1 || rangePartitionBounds.forall(_.isEmpty)
+    case hp: HashPartitioning => hp.numPartitions == 1
+    case _ => false
+  }
+
   private def getNativePlan(dataFile: String, indexFile: String): Operator = {
     val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("ShuffleWriterInput")
     val opBuilder = OperatorOuterClass.Operator.newBuilder()
@@ -170,6 +185,12 @@ class CometNativeShuffleWriter[K, V](
         CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get)
 
       outputPartitioning match {
+        case p if isSinglePartitioning(p) =>
+          val partitioning = PartitioningOuterClass.SinglePartition.newBuilder()
+
+          val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
+          shuffleWriterBuilder.setPartitioning(
+            partitioningBuilder.setSinglePartition(partitioning).build())
         case _: HashPartitioning =>
           val hashPartitioning = outputPartitioning.asInstanceOf[HashPartitioning]
 
@@ -194,45 +215,73 @@ class CometNativeShuffleWriter[K, V](
 
           val partitioning = PartitioningOuterClass.RangePartition.newBuilder()
           partitioning.setNumPartitions(outputPartitioning.numPartitions)
-          val sampleSize = {
-            // taken from org.apache.spark.RangePartitioner#rangeBounds
-            // This is the sample size we need to have roughly balanced output partitions,
-            // capped at 1M.
-            // Cast to double to avoid overflowing ints or longs
-            val sampleSize = math.min(
-              SQLConf.get
-                .getConf(SQLConf.RANGE_EXCHANGE_SAMPLE_SIZE_PER_PARTITION)
-                .toDouble * outputPartitioning.numPartitions,
-              1e6)
-            // Assume the input partitions are roughly balanced and over-sample a little bit.
-            // Comet: we don't divide by numPartitions since each DF plan handles one partition.
-            math.ceil(3.0 * sampleSize).toInt
-          }
-          if (sampleSize > 8192) {
-            logWarning(
-              s"RangePartitioning sampleSize of s$sampleSize exceeds Comet RecordBatch size.")
-          }
-          partitioning.setSampleSize(sampleSize)
 
-          val orderingExprs = rangePartitioning.ordering
-            .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+          // Detect duplicates by tracking expressions directly, similar to DataFusion's LexOrdering
+          // DataFusion will deduplicate identical sort expressions in LexOrdering,
+          // so we need to transform boundary rows to match the deduplicated structure
+          val seenExprs = mutable.HashSet[Expression]()
+          val deduplicationMap = mutable.ArrayBuffer[(Int, Boolean)]() // (originalIndex, isKept)
 
-          if (orderingExprs.length != rangePartitioning.ordering.length) {
-            throw new UnsupportedOperationException(
-              s"Partitioning $rangePartitioning is not supported.")
+          rangePartitioning.ordering.zipWithIndex.foreach { case (sortOrder, idx) =>
+            if (seenExprs.contains(sortOrder.child)) {
+              deduplicationMap += (idx -> false) // Will be deduplicated by DataFusion
+            } else {
+              seenExprs += sortOrder.child
+              deduplicationMap += (idx -> true) // Will be kept by DataFusion
+            }
           }
 
-          partitioning.addAllSortOrders(orderingExprs.asJava)
+          {
+            // Serialize the ordering expressions for comparisons
+            val orderingExprs = rangePartitioning.ordering
+              .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+            if (orderingExprs.length != rangePartitioning.ordering.length) {
+              throw new UnsupportedOperationException(
+                s"Partitioning $rangePartitioning is not supported.")
+            }
+            partitioning.addAllSortOrders(orderingExprs.asJava)
+          }
+
+          // Convert Spark's sequence of InternalRows that represent partitioning boundaries to
+          // sequences of Literals, where each outer entry represents a boundary row, and each
+          // internal entry is a value in that row. In other words, these are stored in row major
+          // order, not column major
+          val boundarySchema = rangePartitioning.ordering.flatMap(e => Some(e.dataType))
+
+          // Transform boundary rows to match DataFusion's deduplicated structure
+          val transformedBoundaryExprs: Seq[Seq[Literal]] =
+            rangePartitionBounds.get.map((row: InternalRow) => {
+              // For every InternalRow, map its values to Literals
+              val allLiterals =
+                row.toSeq(boundarySchema).zip(boundarySchema).map { case (value, valueType) =>
+                  Literal(value, valueType)
+                }
+
+              // Keep only the literals that correspond to non-deduplicated expressions
+              allLiterals
+                .zip(deduplicationMap)
+                .filter(_._2._2) // Keep only where isKept = true
+                .map(_._1) // Extract the literal
+            })
+
+          {
+            // Convert the sequences of Literals to a collection of serialized BoundaryRows
+            val boundaryRows: Seq[PartitioningOuterClass.BoundaryRow] = transformedBoundaryExprs
+              .map((rowLiterals: Seq[Literal]) => {
+                // Serialize each sequence of Literals as a BoundaryRow
+                val rowBuilder = PartitioningOuterClass.BoundaryRow.newBuilder();
+                val serializedExprs =
+                  rowLiterals.map(lit_value =>
+                    QueryPlanSerde.exprToProto(lit_value, outputAttributes).get)
+                rowBuilder.addAllPartitionBounds(serializedExprs.asJava)
+                rowBuilder.build()
+              })
+            partitioning.addAllBoundaryRows(boundaryRows.asJava)
+          }
 
           val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
           shuffleWriterBuilder.setPartitioning(
             partitioningBuilder.setRangePartition(partitioning).build())
-        case SinglePartition =>
-          val partitioning = PartitioningOuterClass.SinglePartition.newBuilder()
-
-          val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
-          shuffleWriterBuilder.setPartitioning(
-            partitioningBuilder.setSinglePartition(partitioning).build())
 
         case _ =>
           throw new UnsupportedOperationException(

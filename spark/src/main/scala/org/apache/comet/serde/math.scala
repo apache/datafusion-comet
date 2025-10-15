@@ -19,11 +19,11 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Atan2, Attribute, Ceil, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Unhex}
+import org.apache.spark.sql.catalyst.expressions.{Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Unhex}
 import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
 object CometAtan2 extends CometExpressionSerde[Atan2] {
   override def convert(
@@ -50,7 +50,8 @@ object CometCeil extends CometExpressionSerde[Ceil] {
         withInfo(expr, s"Decimal type $t has negative scale")
         None
       case _ =>
-        val optExpr = scalarFunctionExprToProtoWithReturnType("ceil", expr.dataType, childExpr)
+        val optExpr =
+          scalarFunctionExprToProtoWithReturnType("ceil", expr.dataType, false, childExpr)
         optExprWithInfo(optExpr, expr, expr.child)
     }
   }
@@ -69,7 +70,8 @@ object CometFloor extends CometExpressionSerde[Floor] {
         withInfo(expr, s"Decimal type $t has negative scale")
         None
       case _ =>
-        val optExpr = scalarFunctionExprToProtoWithReturnType("floor", expr.dataType, childExpr)
+        val optExpr =
+          scalarFunctionExprToProtoWithReturnType("floor", expr.dataType, false, childExpr)
         optExprWithInfo(optExpr, expr, expr.child)
     }
   }
@@ -118,7 +120,7 @@ object CometHex extends CometExpressionSerde[Hex] with MathExprBase {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
-    val optExpr = scalarFunctionExprToProtoWithReturnType("hex", expr.dataType, childExpr)
+    val optExpr = scalarFunctionExprToProtoWithReturnType("hex", expr.dataType, false, childExpr)
     optExprWithInfo(optExpr, expr, expr.child)
   }
 }
@@ -132,7 +134,12 @@ object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
     val failOnErrorExpr = exprToProtoInternal(Literal(expr.failOnError), inputs, binding)
 
     val optExpr =
-      scalarFunctionExprToProtoWithReturnType("unhex", expr.dataType, childExpr, failOnErrorExpr)
+      scalarFunctionExprToProtoWithReturnType(
+        "unhex",
+        expr.dataType,
+        false,
+        childExpr,
+        failOnErrorExpr)
     optExprWithInfo(optExpr, expr, expr.child)
   }
 }
@@ -141,5 +148,43 @@ sealed trait MathExprBase {
   protected def nullIfNegative(expression: Expression): Expression = {
     val zero = Literal.default(expression.dataType)
     If(LessThanOrEqual(expression, zero), Literal.create(null, expression.dataType), expression)
+  }
+}
+
+object CometCheckOverflow extends CometExpressionSerde[CheckOverflow] {
+
+  override def getSupportLevel(expr: CheckOverflow): SupportLevel = {
+    if (expr.dataType.isInstanceOf[DecimalType]) {
+      Compatible()
+    } else {
+      Unsupported(Some("dataType must be DecimalType"))
+    }
+  }
+
+  override def convert(
+      expr: CheckOverflow,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+
+    if (childExpr.isDefined) {
+      val builder = ExprOuterClass.CheckOverflow.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setFailOnError(!expr.nullOnOverflow)
+
+      // `dataType` must be decimal type
+      assert(expr.dataType.isInstanceOf[DecimalType])
+      val dataType = serializeDataType(expr.dataType)
+      builder.setDatatype(dataType.get)
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCheckOverflow(builder)
+          .build())
+    } else {
+      withInfo(expr, expr.child)
+      None
+    }
   }
 }
