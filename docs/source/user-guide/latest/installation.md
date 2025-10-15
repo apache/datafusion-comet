@@ -41,6 +41,7 @@ Other versions may work well enough for development and evaluation purposes.
 | 3.5.4         | 11/17        | 2.12/2.13     | Yes               | No                    |
 | 3.5.5         | 11/17        | 2.12/2.13     | Yes               | No                    |
 | 3.5.6         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
+| 3.5.7         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
 
 Note that we do not test the full matrix of supported Java and Scala versions in CI for every Spark version.
 
