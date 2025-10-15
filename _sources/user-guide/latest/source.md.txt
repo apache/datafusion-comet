@@ -27,12 +27,12 @@ Official source releases can be downloaded from https://dist.apache.org/repos/di
 
 ```console
 # Pick the latest version
-export COMET_VERSION=0.11.0-SNAPSHOT
+export COMET_VERSION=0.12.0-SNAPSHOT
 # Download the tarball
-curl -O "https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.11.0-SNAPSHOT/apache-datafusion-comet-0.11.0-SNAPSHOT.tar.gz"
+curl -O "https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.12.0-SNAPSHOT/apache-datafusion-comet-0.12.0-SNAPSHOT.tar.gz"
 # Unpack
-tar -xzf apache-datafusion-comet-0.11.0-SNAPSHOT.tar.gz
-cd apache-datafusion-comet-0.11.0-SNAPSHOT
+tar -xzf apache-datafusion-comet-0.12.0-SNAPSHOT.tar.gz
+cd apache-datafusion-comet-0.12.0-SNAPSHOT
 ```
 
 Build
