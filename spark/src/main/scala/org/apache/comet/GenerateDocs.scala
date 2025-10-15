@@ -69,11 +69,12 @@ object GenerateDocs {
                   s"| `$config` | Enable Comet acceleration for `$expr` | true |\n".getBytes)
               }
             case _ =>
-              val urlPattern = """Comet\s+(Compatibility|Tuning|Tracing)\s+Guide""".r
+              val urlPattern = """Comet\s+(Compatibility|Tuning|Tracing)\s+Guide\s+\(""".r
               val confs = publicConfigs.filter(_.category == category).toList.sortBy(_.key)
               for (conf <- confs) {
                 // convert links to Markdown
-                val doc = urlPattern.replaceAllIn(conf.doc.trim, m => s"[$m]")
+                val doc =
+                  urlPattern.replaceAllIn(conf.doc.trim, m => s"[Comet ${m.group(1)} Guide](")
                 if (conf.defaultValue.isEmpty) {
                   w.write(s"| `${conf.key}` | $doc | |\n".getBytes)
                 } else {
