@@ -74,7 +74,6 @@ Comet provides the following configuration settings.
 | `spark.comet.regexp.allowIncompatible` | [Comet Comet is not currently fully compatible with Spark for all regular expressions. Set this config to true to allow them anyway. For more information, refer to the Comet Compatibility Guide Guide] (https://datafusion.apache.org/comet/user-guide/compatibility.html). | false |
 <!--END:CONFIG_TABLE-->
 
-
 ## Viewing Explain Plan & Fallback Reasons
 
 These settings can be used to determine which parts of the plan are accelerated by Comet and to see why some parts of the plan could not be supported by Comet.
@@ -87,6 +86,37 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.explain.verbose.enabled` | When this setting is enabled, Comet's extended explain output will provide the full query plan annotated with fallback reasons as well as a summary of how much of the plan was accelerated by Comet. When this setting is disabled, a list of fallback reasons will be provided instead. | false |
 | `spark.comet.explainFallback.enabled` | When this setting is enabled, Comet will provide logging explaining the reason(s) why a query stage cannot be executed natively. Set this to false to reduce the amount of logging. | false |
 | `spark.comet.logFallbackReasons.enabled` | When this setting is enabled, Comet will log warnings for all fallback reasons. | false |
+<!--END:CONFIG_TABLE-->
+
+## Shuffle Configuration Settings
+
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+<!--BEGIN:CONFIG_TABLE[shuffle]-->
+| Config | Description | Default Value |
+|--------|-------------|---------------|
+| `spark.comet.columnar.shuffle.async.enabled` | Whether to enable asynchronous shuffle for Arrow-based shuffle. | false |
+| `spark.comet.columnar.shuffle.async.max.thread.num` | Maximum number of threads on an executor used for Comet async columnar shuffle. This is the upper bound of total number of shuffle threads per executor. In other words, if the number of cores * the number of shuffle threads per task `spark.comet.columnar.shuffle.async.thread.num` is larger than this config. Comet will use this config as the number of shuffle threads per executor instead. | 100 |
+| `spark.comet.columnar.shuffle.async.thread.num` | Number of threads used for Comet async columnar shuffle per shuffle task. Note that more threads means more memory requirement to buffer shuffle data before flushing to disk. Also, more threads may not always improve performance, and should be set based on the number of cores available. | 3 |
+| `spark.comet.columnar.shuffle.batch.size` | Batch size when writing out sorted spill files on the native side. Note that this should not be larger than batch size (i.e., `spark.comet.batchSize`). Otherwise it will produce larger batches than expected in the native operator after shuffle. | 8192 |
+| `spark.comet.exec.shuffle.compression.codec` | The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and snappy are supported. Compression can be disabled by setting spark.shuffle.compress=false. | lz4 |
+| `spark.comet.exec.shuffle.compression.zstd.level` | The compression level to use when compressing shuffle files with zstd. | 1 |
+| `spark.comet.exec.shuffle.enabled` | Whether to enable Comet native shuffle. Note that this requires setting `spark.shuffle.manager` to `org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager`. `spark.shuffle.manager` must be set before starting the Spark application and cannot be changed during the application. | true |
+| `spark.comet.native.shuffle.partitioning.hash.enabled` | Whether to enable hash partitioning for Comet native shuffle. | true |
+| `spark.comet.native.shuffle.partitioning.range.enabled` | Whether to enable range partitioning for Comet native shuffle. | true |
+| `spark.comet.shuffle.preferDictionary.ratio` | The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. Note that this config is only used when `spark.comet.exec.shuffle.mode` is `jvm`. | 10.0 |
+| `spark.comet.shuffle.sizeInBytesMultiplier` | Comet reports smaller sizes for shuffle due to using Arrow's columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy. | 1.0 |
+<!--END:CONFIG_TABLE-->
+
+## Memory & Tuning Configuration Settings
+
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+<!--BEGIN:CONFIG_TABLE[tuning]-->
+| Config | Description | Default Value |
+|--------|-------------|---------------|
+| `spark.comet.batchSize` | The columnar batch size, i.e., the maximum number of rows that a batch can contain. | 8192 |
+| `spark.comet.exec.memoryPool` | The type of memory pool to be used for [Comet Comet native execution when running Spark in off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. For more information, refer to the Comet Tuning Guide Guide] (https://datafusion.apache.org/comet/user-guide/tuning.html). | fair_unified |
+| `spark.comet.exec.memoryPool.fraction` | Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the [Comet Comet Tuning Guide Guide] (https://datafusion.apache.org/comet/user-guide/tuning.html). | 1.0 |
+| `spark.comet.tracing.enabled` | Enable fine-grained tracing of events and memory usage. For more information, refer to the [Comet Comet Tracing Guide Guide] (https://datafusion.apache.org/comet/user-guide/tracing.html). | false |
 <!--END:CONFIG_TABLE-->
 
 ## Enabling or Disabling Individual Operators
@@ -283,35 +313,4 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Sum.enabled` | Enable Comet acceleration for `Sum` | true |
 | `spark.comet.expression.VariancePop.enabled` | Enable Comet acceleration for `VariancePop` | true |
 | `spark.comet.expression.VarianceSamp.enabled` | Enable Comet acceleration for `VarianceSamp` | true |
-<!--END:CONFIG_TABLE-->
-
-## Shuffle Configuration Settings
-
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
-<!--BEGIN:CONFIG_TABLE[shuffle]-->
-| Config | Description | Default Value |
-|--------|-------------|---------------|
-| `spark.comet.columnar.shuffle.async.enabled` | Whether to enable asynchronous shuffle for Arrow-based shuffle. | false |
-| `spark.comet.columnar.shuffle.async.max.thread.num` | Maximum number of threads on an executor used for Comet async columnar shuffle. This is the upper bound of total number of shuffle threads per executor. In other words, if the number of cores * the number of shuffle threads per task `spark.comet.columnar.shuffle.async.thread.num` is larger than this config. Comet will use this config as the number of shuffle threads per executor instead. | 100 |
-| `spark.comet.columnar.shuffle.async.thread.num` | Number of threads used for Comet async columnar shuffle per shuffle task. Note that more threads means more memory requirement to buffer shuffle data before flushing to disk. Also, more threads may not always improve performance, and should be set based on the number of cores available. | 3 |
-| `spark.comet.columnar.shuffle.batch.size` | Batch size when writing out sorted spill files on the native side. Note that this should not be larger than batch size (i.e., `spark.comet.batchSize`). Otherwise it will produce larger batches than expected in the native operator after shuffle. | 8192 |
-| `spark.comet.exec.shuffle.compression.codec` | The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and snappy are supported. Compression can be disabled by setting spark.shuffle.compress=false. | lz4 |
-| `spark.comet.exec.shuffle.compression.zstd.level` | The compression level to use when compressing shuffle files with zstd. | 1 |
-| `spark.comet.exec.shuffle.enabled` | Whether to enable Comet native shuffle. Note that this requires setting `spark.shuffle.manager` to `org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager`. `spark.shuffle.manager` must be set before starting the Spark application and cannot be changed during the application. | true |
-| `spark.comet.native.shuffle.partitioning.hash.enabled` | Whether to enable hash partitioning for Comet native shuffle. | true |
-| `spark.comet.native.shuffle.partitioning.range.enabled` | Whether to enable range partitioning for Comet native shuffle. | true |
-| `spark.comet.shuffle.preferDictionary.ratio` | The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. Note that this config is only used when `spark.comet.exec.shuffle.mode` is `jvm`. | 10.0 |
-| `spark.comet.shuffle.sizeInBytesMultiplier` | Comet reports smaller sizes for shuffle due to using Arrow's columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy. | 1.0 |
-<!--END:CONFIG_TABLE-->
-
-## Memory & Tuning Configuration Settings
-
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
-<!--BEGIN:CONFIG_TABLE[tuning]-->
-| Config | Description | Default Value |
-|--------|-------------|---------------|
-| `spark.comet.batchSize` | The columnar batch size, i.e., the maximum number of rows that a batch can contain. | 8192 |
-| `spark.comet.exec.memoryPool` | The type of memory pool to be used for [Comet Comet native execution when running Spark in off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. For more information, refer to the Comet Tuning Guide Guide] (https://datafusion.apache.org/comet/user-guide/tuning.html). | fair_unified |
-| `spark.comet.exec.memoryPool.fraction` | Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the [Comet Comet Tuning Guide Guide] (https://datafusion.apache.org/comet/user-guide/tuning.html). | 1.0 |
-| `spark.comet.tracing.enabled` | Enable fine-grained tracing of events and memory usage. For more information, refer to the [Comet Comet Tracing Guide Guide] (https://datafusion.apache.org/comet/user-guide/tracing.html). | false |
 <!--END:CONFIG_TABLE-->
