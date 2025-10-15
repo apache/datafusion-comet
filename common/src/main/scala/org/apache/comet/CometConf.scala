@@ -60,6 +60,7 @@ object CometConf extends ShimCometConf {
   private val CATEGORY_SCAN = "scan"
   private val CATEGORY_PARQUET = "parquet"
   private val CATEGORY_EXEC = "exec"
+  private val CATEGORY_EXEC_EXPLAIN = "exec_explain"
   private val CATEGORY_ENABLE_EXEC = "enable_exec"
   private val CATEGORY_SHUFFLE = "shuffle"
   private val CATEGORY_TUNING = "tuning"
@@ -83,7 +84,7 @@ object CometConf extends ShimCometConf {
     .doc(
       "Whether to enable Comet extension for Spark. When this is turned on, Spark will use " +
         "Comet to read Parquet data source. Note that to enable native vectorized execution, " +
-        "both this config and 'spark.comet.exec.enabled' need to be enabled. By default, this " +
+        "both this config and `spark.comet.exec.enabled` need to be enabled. By default, this " +
         "config is the value of the env var `ENABLE_COMET` if set, or true otherwise.")
     .booleanConf
     .createWithDefault(sys.env.getOrElse("ENABLE_COMET", "true").toBoolean)
@@ -94,7 +95,7 @@ object CometConf extends ShimCometConf {
       "Whether to enable native scans. When this is turned on, Spark will use Comet to " +
         "read supported data sources (currently only Parquet is supported natively). Note " +
         "that to enable native vectorized execution, both this config and " +
-        "'spark.comet.exec.enabled' need to be enabled.")
+        "`spark.comet.exec.enabled` need to be enabled.")
     .booleanConf
     .createWithDefault(true)
 
@@ -106,13 +107,13 @@ object CometConf extends ShimCometConf {
   val COMET_NATIVE_SCAN_IMPL: ConfigEntry[String] = conf("spark.comet.scan.impl")
     .category(CATEGORY_SCAN)
     .doc(
-      s"The implementation of Comet Native Scan to use. Available modes are '$SCAN_NATIVE_COMET'," +
-        s"'$SCAN_NATIVE_DATAFUSION', and '$SCAN_NATIVE_ICEBERG_COMPAT'. " +
-        s"'$SCAN_NATIVE_COMET' is for the original Comet native scan which uses a jvm based " +
+      s"The implementation of Comet Native Scan to use. Available modes are `$SCAN_NATIVE_COMET`," +
+        s"`$SCAN_NATIVE_DATAFUSION`, and `$SCAN_NATIVE_ICEBERG_COMPAT`. " +
+        s"`$SCAN_NATIVE_COMET` is for the original Comet native scan which uses a jvm based " +
         "parquet file reader and native column decoding. Supports simple types only " +
-        s"'$SCAN_NATIVE_DATAFUSION' is a fully native implementation of scan based on DataFusion" +
-        s"'$SCAN_NATIVE_ICEBERG_COMPAT' is a native implementation that exposes apis to read " +
-        s"parquet columns natively. $SCAN_AUTO chooses the best scan.")
+        s"`$SCAN_NATIVE_DATAFUSION` is a fully native implementation of scan based on DataFusion" +
+        s"`$SCAN_NATIVE_ICEBERG_COMPAT` is a native implementation that exposes apis to read " +
+        s"parquet columns natively. `$SCAN_AUTO` chooses the best scan.")
     .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
@@ -156,7 +157,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_PARQUET)
       .doc(
         "When enabled the parallel reader will try to merge ranges of data that are separated " +
-          "by less than 'comet.parquet.read.io.mergeRanges.delta' bytes. Longer continuous reads " +
+          "by less than `comet.parquet.read.io.mergeRanges.delta` bytes. Longer continuous reads " +
           "are faster on cloud storage.")
       .booleanConf
       .createWithDefault(true)
@@ -185,7 +186,7 @@ object CometConf extends ShimCometConf {
       .doc(
         "When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to " +
           "Arrow format. Note that to enable native vectorized execution, both this config and " +
-          "'spark.comet.exec.enabled' need to be enabled.")
+          "`spark.comet.exec.enabled` need to be enabled.")
       .booleanConf
       .createWithDefault(false)
 
@@ -195,7 +196,7 @@ object CometConf extends ShimCometConf {
       .doc(
         "When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to " +
           "Arrow format. Note that to enable native vectorized execution, both this config and " +
-          "'spark.comet.exec.enabled' need to be enabled.")
+          "`spark.comet.exec.enabled` need to be enabled.")
       .booleanConf
       .createWithDefault(false)
 
@@ -205,7 +206,7 @@ object CometConf extends ShimCometConf {
       .doc(
         "When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to " +
           "Arrow format. Note that to enable native vectorized execution, both this config and " +
-          "'spark.comet.exec.enabled' need to be enabled.")
+          "`spark.comet.exec.enabled` need to be enabled.")
       .booleanConf
       .createWithDefault(false)
 
@@ -215,7 +216,7 @@ object CometConf extends ShimCometConf {
       "Whether to enable Comet native vectorized execution for Spark. This controls whether " +
         "Spark should convert operators into their Comet counterparts and execute them in " +
         "native space. Note: each operator is associated with a separate config in the " +
-        "format of 'spark.comet.exec.<operator_name>.enabled' at the moment, and both the " +
+        "format of `spark.comet.exec.<operator_name>.enabled` at the moment, and both the " +
         "config and this need to be turned on, in order for the operator to be executed in " +
         "native.")
     .booleanConf
@@ -308,9 +309,9 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_SHUFFLE)
       .doc(
         "Whether to enable Comet native shuffle. " +
-          "Note that this requires setting 'spark.shuffle.manager' to " +
-          "'org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager'. " +
-          "'spark.shuffle.manager' must be set before starting the Spark application and " +
+          "Note that this requires setting `spark.shuffle.manager` to " +
+          "`org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager`. " +
+          "`spark.shuffle.manager` must be set before starting the Spark application and " +
           "cannot be changed during the application.")
       .booleanConf
       .createWithDefault(true)
@@ -498,7 +499,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_EXPLAIN_VERBOSE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explain.verbose.enabled")
-      .category(CATEGORY_EXEC)
+      .category(CATEGORY_EXEC_EXPLAIN)
       .doc(
         "When this setting is enabled, Comet's extended explain output will provide the full " +
           "query plan annotated with fallback reasons as well as a summary of how much of " +
@@ -509,7 +510,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_EXPLAIN_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explain.native.enabled")
-      .category(CATEGORY_EXEC)
+      .category(CATEGORY_EXEC_EXPLAIN)
       .doc(
         "When this setting is enabled, Comet will provide a tree representation of " +
           "the native query plan before execution and again after execution, with " +
@@ -519,7 +520,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_EXPLAIN_TRANSFORMATIONS: ConfigEntry[Boolean] =
     conf("spark.comet.explain.rules")
-      .category(CATEGORY_EXEC)
+      .category(CATEGORY_EXEC_EXPLAIN)
       .doc("When this setting is enabled, Comet will log all plan transformations performed " +
         "in physical optimizer rules. Default: false")
       .internal()
@@ -528,7 +529,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_LOG_FALLBACK_REASONS: ConfigEntry[Boolean] =
     conf("spark.comet.logFallbackReasons.enabled")
-      .category(CATEGORY_EXEC)
+      .category(CATEGORY_EXEC_EXPLAIN)
       .doc("When this setting is enabled, Comet will log warnings for all fallback reasons.")
       .booleanConf
       .createWithDefault(
@@ -536,7 +537,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_EXPLAIN_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explainFallback.enabled")
-      .category(CATEGORY_EXEC)
+      .category(CATEGORY_EXEC_EXPLAIN)
       .doc(
         "When this setting is enabled, Comet will provide logging explaining the reason(s) " +
           "why a query stage cannot be executed natively. Set this to false to " +
@@ -680,7 +681,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.sparkToColumnar.supportedOperatorList")
       .category(CATEGORY_SCAN)
       .doc("A comma-separated list of operators that will be converted to Arrow columnar " +
-        "format when 'spark.comet.sparkToColumnar.enabled' is true")
+        "format when `spark.comet.sparkToColumnar.enabled` is true")
       .stringConf
       .toSequence
       .createWithDefault(Seq("Range,InMemoryTableScan,RDDScan"))

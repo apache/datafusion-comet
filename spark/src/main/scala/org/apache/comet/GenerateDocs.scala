@@ -45,7 +45,6 @@ object GenerateDocs {
   }
 
   private def generateConfigReference(): Unit = {
-
     val pattern = "<!--BEGIN:CONFIG_TABLE\\[(.*)]-->".r
     val filename = s"$userGuideLocation/configs.md"
     val lines = readFile(filename)
@@ -60,21 +59,26 @@ object GenerateDocs {
             case "enable_expr" =>
               for (expr <- QueryPlanSerde.exprSerdeMap.keys.map(_.getSimpleName).toList.sorted) {
                 val config = s"spark.comet.expression.$expr.enabled"
-                w.write(s"| $config | Enable Comet acceleration for $expr | true |\n".getBytes)
+                w.write(
+                  s"| `$config` | Enable Comet acceleration for `$expr` | true |\n".getBytes)
               }
             case "enable_agg_expr" =>
               for (expr <- QueryPlanSerde.aggrSerdeMap.keys.map(_.getSimpleName).toList.sorted) {
                 val config = s"spark.comet.expression.$expr.enabled"
-                w.write(s"| $config | Enable Comet acceleration for $expr | true |\n".getBytes)
+                w.write(
+                  s"| `$config` | Enable Comet acceleration for `$expr` | true |\n".getBytes)
               }
             case _ =>
+              val urlPattern = """Comet\s+(Compatibility|Tuning|Tracing)\s+Guide\s+\(""".r
               val confs = publicConfigs.filter(_.category == category).toList.sortBy(_.key)
               for (conf <- confs) {
+                // convert links to Markdown
+                val doc =
+                  urlPattern.replaceAllIn(conf.doc.trim, m => s"[Comet ${m.group(1)} Guide](")
                 if (conf.defaultValue.isEmpty) {
-                  w.write(s"| ${conf.key} | ${conf.doc.trim} | |\n".getBytes)
+                  w.write(s"| `${conf.key}` | $doc | |\n".getBytes)
                 } else {
-                  w.write(
-                    s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
+                  w.write(s"| `${conf.key}` | $doc | ${conf.defaultValueString} |\n".getBytes)
                 }
               }
           }
