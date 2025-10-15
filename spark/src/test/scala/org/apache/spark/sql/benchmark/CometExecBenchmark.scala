@@ -71,7 +71,10 @@ object CometExecBenchmark extends CometBenchmarkBase {
   def numericFilterExecBenchmark(values: Int, fractionOfZeros: Double): Unit = {
     val percentageOfZeros = fractionOfZeros * 100
     val benchmark =
-      new Benchmark(s"Project + Filter Exec ($percentageOfZeros% zeros)", values, output = output)
+      new Benchmark(
+        s"Project + Filter Exec ($percentageOfZeros% zeros)",
+        values.toLong,
+        output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -115,7 +118,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
   }
 
   def subqueryExecBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Subquery", values, output = output)
+    val benchmark = new Benchmark("Subquery", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -155,7 +158,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
   }
 
   def sortExecBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Sort Exec", values, output = output)
+    val benchmark = new Benchmark("Sort Exec", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -185,7 +188,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
   }
 
   def expandExecBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expand Exec", values, output = output)
+    val benchmark = new Benchmark("Expand Exec", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -232,7 +235,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
     val benchmark =
       new Benchmark(
         s"BloomFilterAggregate Exec (cardinality $cardinality)",
-        values,
+        values.toLong,
         output = output)
 
     val funcId_bloom_filter_agg = new FunctionIdentifier("bloom_filter_agg")

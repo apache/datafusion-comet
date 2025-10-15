@@ -37,7 +37,7 @@ object CometArithmeticBenchmark extends CometBenchmarkBase {
     val dataType = IntegerType
     val benchmark = new Benchmark(
       s"Binary op ${dataType.sql}, dictionary = $useDictionary",
-      values,
+      values.toLong,
       output = output)
 
     withTempPath { dir =>
@@ -78,7 +78,7 @@ object CometArithmeticBenchmark extends CometBenchmarkBase {
       useDictionary: Boolean): Unit = {
     val benchmark = new Benchmark(
       s"Binary op ${dataType.sql}, dictionary = $useDictionary",
-      values,
+      values.toLong,
       output = output)
     val df = makeDecimalDataFrame(values, dataType, useDictionary)
 
