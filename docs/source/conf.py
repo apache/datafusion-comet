@@ -90,6 +90,7 @@ html_theme_options = {
 }
 
 html_context = {
+    "default_mode": "light",
     "github_user": "apache",
     "github_repo": "datafusion-comet",
     "github_version": "main",
