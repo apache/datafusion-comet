@@ -27,6 +27,10 @@ Comet uses a global tokio runtime per executor process using tokio's defaults of
 maximum of 512 blocking threads. These values can be overridden using the environment variables `COMET_WORKER_THREADS`
 and `COMET_MAX_BLOCKING_THREADS`.
 
+It is recommended that `COMET_WORKER_THREADS` be set to the number of executor cores. This may not be necessary
+in some environments, such as Kubernetes, where the number of cores allocated to a pod will already be equal to the 
+number of executor cores. 
+
 ## Memory Tuning
 
 It is necessary to specify how much memory Comet can use in addition to memory already allocated to Spark. In some
@@ -39,11 +43,32 @@ than before. See the [Determining How Much Memory to Allocate] section for more 
 ### Configuring Comet Memory
 
 Comet shares an off-heap memory pool with Spark. The size of the pool is
-specified by `spark.memory.offHeap.size`. For more details about Spark off-heap memory mode, please refer to
-[Spark documentation]. For full details on configuring Comet memory in off-heap mode, see the [Advanced Memory Tuning] 
-section of this guide.
+specified by `spark.memory.offHeap.size`.
+
+Comet's memory accounting isn't 100% accurate and this can result in Comet using more memory than it reserves,
+leading to out-of-memory exceptions. To work around this issue, it is possible to
+set `spark.comet.exec.memoryPool.fraction` to a value less than `1.0` to restrict the amount of memory that can be
+reserved by Comet.
+
+For more details about Spark off-heap memory mode, please refer to [Spark documentation]. 
 
 [Spark documentation]: https://spark.apache.org/docs/latest/configuration.html
+
+Comet implements multiple memory pool implementations. The type of pool can be specified with `spark.comet.exec.memoryPool`.
+
+The valid pool types are:
+
+- `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
+- `greedy_unified`
+
+
+The `fair_unified` pool types prevents operators from using more than an even fraction of the available memory
+(i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
+the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
+when there is sufficient memory in order to leave enough memory for other operators.
+
+The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
+need to spill or have a single spillable operator.
 
 [shuffle]: #shuffle
 
@@ -74,44 +99,6 @@ Comet Performance
   providing better performance than Spark for half the resource
 
 It may be possible to reduce Comet's memory overhead by reducing batch sizes or increasing number of partitions.
-
-### SortExec
-
-Comet's SortExec implementation spills to disk when under memory pressure, but there are some known issues in the
-underlying DataFusion SortExec implementation that could cause out-of-memory errors during spilling. See
-https://github.com/apache/datafusion/issues/14692 for more information.
-
-Workarounds for this problem include:
-
-- Allocating more off-heap memory
-- Disabling native sort by setting `spark.comet.exec.sort.enabled=false`
-
-## Advanced Memory Tuning
-
-### Configuring Comet Memory Pools
-
-Comet implements multiple memory pool implementations. The type of pool can be specified with `spark.comet.exec.memoryPool`.
-
-The valid pool types are:
-
-- `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
-- `greedy_unified`
-
-Both of these pools share off-heap memory between Spark and Comet. This approach is referred to as
-unified memory management. The size of the pool is specified by `spark.memory.offHeap.size`.
-
-Comet's memory accounting isn't 100% accurate and this can result in Comet using more memory than it reserves, 
-leading to out-of-memory exceptions. To work around this issue, it is possible to 
-set `spark.comet.exec.memoryPool.fraction` to a value less than `1.0` to restrict the amount of memory that can be 
-reserved by Comet.
-
-The `fair_unified` pool types prevents operators from using more than an even fraction of the available memory
-(i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
-the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
-when there is sufficient memory in order to leave enough memory for other operators.
-
-The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
-need to spill or have a single spillable operator.
 
 ## Optimizing Joins
 

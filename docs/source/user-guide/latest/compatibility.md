@@ -83,9 +83,6 @@ The `native_datafusion` scan has some additional limitations:
 Comet will fall back to Spark for the following expressions when ANSI mode is enabled, unless
 `spark.comet.expression.allowIncompatible=true`.
 
-- IntegralDivide
-- Remainder
-- Round
 - Average
 - Sum
 - Cast (in some cases)
