@@ -73,7 +73,7 @@ object GenerateDocs {
               val confs = publicConfigs.filter(_.category == category).toList.sortBy(_.key)
               for (conf <- confs) {
                 // convert links to Markdown
-                val doc = urlPattern.replaceAllIn(conf.doc.trim, m => s"[Comet $m Guide]")
+                val doc = urlPattern.replaceAllIn(conf.doc.trim, m => s"[$m]")
                 if (conf.defaultValue.isEmpty) {
                   w.write(s"| `${conf.key}` | $doc | |\n".getBytes)
                 } else {
