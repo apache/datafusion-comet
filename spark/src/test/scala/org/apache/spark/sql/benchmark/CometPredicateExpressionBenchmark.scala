@@ -32,7 +32,7 @@ import org.apache.comet.CometConf
 object CometPredicateExpressionBenchmark extends CometBenchmarkBase {
 
   def inExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("in Expr", values, output = output)
+    val benchmark = new Benchmark("in Expr", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {

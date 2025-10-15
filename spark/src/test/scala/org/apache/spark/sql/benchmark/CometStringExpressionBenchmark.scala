@@ -453,7 +453,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def instrExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Expr instr", values, output = output)
+    val benchmark = new Benchmark("Expr instr", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {

@@ -682,15 +682,15 @@ abstract class CometTestBase
       opt match {
         case Some(i) =>
           record.add(0, i % 2 == 0)
-          record.add(1, i.toByte)
-          record.add(2, i.toShort)
+          record.add(1, i.toByte.toInt)
+          record.add(2, i.toShort.toInt)
           record.add(3, i)
           record.add(4, i.toLong)
           record.add(5, i.toFloat)
           record.add(6, i.toDouble)
           record.add(7, i.toString * 48)
-          record.add(8, (-i).toByte)
-          record.add(9, (-i).toShort)
+          record.add(8, (-i).toByte.toInt)
+          record.add(9, (-i).toShort.toInt)
           record.add(10, -i)
           record.add(11, (-i).toLong)
           record.add(12, i.toString)
@@ -711,15 +711,15 @@ abstract class CometTestBase
       val i = rand.nextLong()
       val record = new SimpleGroup(schema)
       record.add(0, i % 2 == 0)
-      record.add(1, i.toByte)
-      record.add(2, i.toShort)
+      record.add(1, i.toByte.toInt)
+      record.add(2, i.toShort.toInt)
       record.add(3, i.toInt)
       record.add(4, i)
       record.add(5, java.lang.Float.intBitsToFloat(i.toInt))
       record.add(6, java.lang.Double.longBitsToDouble(i))
       record.add(7, i.toString * 24)
-      record.add(8, (-i).toByte)
-      record.add(9, (-i).toShort)
+      record.add(8, (-i).toByte.toInt)
+      record.add(9, (-i).toShort.toInt)
       record.add(10, (-i).toInt)
       record.add(11, -i)
       record.add(12, i.toString)
@@ -768,7 +768,7 @@ abstract class CometTestBase
       if (rand.nextBoolean()) {
         None
       } else {
-        Some(getValue(i, div))
+        Some(getValue(i.toLong, div.toLong))
       }
     }
     expected.foreach { opt =>
@@ -822,7 +822,7 @@ abstract class CometTestBase
       if (rand.nextBoolean()) {
         None
       } else {
-        Some(getValue(i, div))
+        Some(getValue(i.toLong, div.toLong))
       }
     }
     expected.foreach { opt =>
@@ -1000,7 +1000,7 @@ abstract class CometTestBase
     val div = if (dictionaryEnabled) 10 else n // maps value to a small range for dict to kick in
 
     val expected = (0 until n).map { i =>
-      Some(getValue(i, div))
+      Some(getValue(i.toLong, div.toLong))
     }
     expected.foreach { opt =>
       val timestampFormats = List(
@@ -1048,7 +1048,7 @@ abstract class CometTestBase
   def makeDecimalRDD(num: Int, decimal: DecimalType, useDictionary: Boolean): DataFrame = {
     val div = if (useDictionary) 5 else num // narrow the space to make it dictionary encoded
     spark
-      .range(num)
+      .range(num.toLong)
       .map(_ % div)
       // Parquet doesn't allow column names with spaces, have to add an alias here.
       // Minus 500 here so that negative decimals are also tested.
@@ -1228,8 +1228,8 @@ abstract class CometTestBase
       val record = new SimpleGroup(schema)
       opt match {
         case Some(i) =>
-          record.add(0, i.toByte)
-          record.add(1, i.toShort)
+          record.add(0, i.toByte.toInt)
+          record.add(1, i.toShort.toInt)
           record.add(2, i)
           record.add(3, i.toLong)
           record.add(4, rand.nextFloat())

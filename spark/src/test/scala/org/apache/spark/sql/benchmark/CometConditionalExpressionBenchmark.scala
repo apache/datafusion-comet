@@ -32,7 +32,7 @@ import org.apache.comet.CometConf
 object CometConditionalExpressionBenchmark extends CometBenchmarkBase {
 
   def caseWhenExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Case When Expr", values, output = output)
+    val benchmark = new Benchmark("Case When Expr", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
@@ -65,7 +65,7 @@ object CometConditionalExpressionBenchmark extends CometBenchmarkBase {
   }
 
   def ifExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("If Expr", values, output = output)
+    val benchmark = new Benchmark("If Expr", values.toLong, output = output)
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {

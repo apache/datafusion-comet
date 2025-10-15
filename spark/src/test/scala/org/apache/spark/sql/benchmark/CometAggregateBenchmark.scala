@@ -66,7 +66,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
       new Benchmark(
         s"Grouped HashAgg Exec: single group key (cardinality $groupingKeyCardinality), " +
           s"single aggregate ${aggregateFunction.toString}",
-        values,
+        values.toLong,
         output = output)
 
     withTempPath { dir =>
@@ -104,7 +104,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
       new Benchmark(
         s"Grouped HashAgg Exec: single group key (cardinality $groupingKeyCardinality), " +
           s"single aggregate ${aggregateFunction.toString} on decimal",
-        values,
+        values.toLong,
         output = output)
 
     val df = makeDecimalDataFrame(values, dataType, false);
@@ -145,7 +145,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
       new Benchmark(
         s"Grouped HashAgg Exec: multiple group keys (cardinality $groupingKeyCard), " +
           s"single aggregate ${aggregateFunction.toString}",
-        values,
+        values.toLong,
         output = output)
 
     withTempPath { dir =>
@@ -186,7 +186,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
       new Benchmark(
         s"Grouped HashAgg Exec: single group key (cardinality $groupingKeyCard), " +
           s"multiple aggregates ${aggregateFunction.toString}",
-        values,
+        values.toLong,
         output = output)
 
     withTempPath { dir =>

@@ -1202,7 +1202,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     def makeDecimalRDD(num: Int, decimal: DecimalType, useDictionary: Boolean): DataFrame = {
       val div = if (useDictionary) 5 else num // narrow the space to make it dictionary encoded
       spark
-        .range(num)
+        .range(num.toLong)
         .map(_ % div)
         // Parquet doesn't allow column names with spaces, have to add an alias here.
         // Minus 500 here so that negative decimals are also tested.
