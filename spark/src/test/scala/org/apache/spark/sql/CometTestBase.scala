@@ -21,6 +21,7 @@ package org.apache.spark.sql
 
 import java.util.concurrent.atomic.AtomicInteger
 
+import scala.annotation.nowarn
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
@@ -425,6 +426,7 @@ abstract class CometTestBase
     case None => f(spark.read.format("parquet").load(path))
   }
 
+  @nowarn("cat=deprecation")
   protected def createParquetWriter(
       schema: MessageType,
       path: Path,
@@ -434,7 +436,6 @@ abstract class CometTestBase
       pageRowCountLimit: Int = ParquetProperties.DEFAULT_PAGE_ROW_COUNT_LIMIT,
       rowGroupSize: Long = 1024 * 1024L): ParquetWriter[Group] = {
     val hadoopConf = spark.sessionState.newHadoopConf()
-
     ExampleParquetWriter
       .builder(path)
       .withDictionaryEncoding(dictionaryEnabled)
