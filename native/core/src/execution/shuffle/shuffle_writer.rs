@@ -1112,6 +1112,7 @@ struct PartitionWriter {
 }
 
 struct SpillFile {
+    #[allow(dead_code)]
     temp_file: RefCountedTempFile,
     file: File,
 }
