@@ -839,6 +839,7 @@ pub fn process_sorted_row_partition(
             .open(&output_path)?;
 
         output_data.write_all(&frozen)?;
+        output_data.flush()?;
         current_row += n;
     }
 
