@@ -69,7 +69,7 @@ object GenerateDocs {
                   s"| `$config` | Enable Comet acceleration for `$expr` | true |\n".getBytes)
               }
             case _ =>
-              val urlPattern = """Comet\s+(.+?)\s+Guide""".r
+              val urlPattern = """Comet\s+(Compatibility|Tuning|Tracing)\s+Guide""".r
               val confs = publicConfigs.filter(_.category == category).toList.sortBy(_.key)
               for (conf <- confs) {
                 // convert links to Markdown
