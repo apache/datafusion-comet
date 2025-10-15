@@ -561,23 +561,6 @@ under the License.
      Determining How Much Memory to Allocate
     </a>
    </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#sortexec">
-     SortExec
-    </a>
-   </li>
-  </ul>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#advanced-memory-tuning">
-   Advanced Memory Tuning
-  </a>
-  <ul class="nav section-nav flex-column">
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#configuring-comet-memory-pools">
-     Configuring Comet Memory Pools
-    </a>
-   </li>
   </ul>
  </li>
  <li class="toc-h2 nav-item toc-entry">
@@ -680,6 +663,9 @@ under the License.
 <p>Comet uses a global tokio runtime per executor process using tokio’s defaults of one worker thread per core and a
 maximum of 512 blocking threads. These values can be overridden using the environment variables <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code>
 and <code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code>.</p>
+<p>It is recommended that <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code> be set to the number of executor cores. This may not be necessary
+in some environments, such as Kubernetes, where the number of cores allocated to a pod will already be equal to the
+number of executor cores.</p>
 </section>
 <section id="memory-tuning">
 <h2>Memory Tuning<a class="headerlink" href="#memory-tuning" title="Link to this heading">¶</a></h2>
@@ -690,9 +676,24 @@ than before. See the <a class="reference internal" href="#determining-how-much-m
 <section id="configuring-comet-memory">
 <h3>Configuring Comet Memory<a class="headerlink" href="#configuring-comet-memory" title="Link to this heading">¶</a></h3>
 <p>Comet shares an off-heap memory pool with Spark. The size of the pool is
-specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>. For more details about Spark off-heap memory mode, please refer to
-<a class="reference external" href="https://spark.apache.org/docs/latest/configuration.html">Spark documentation</a>. For full details on configuring Comet memory in off-heap mode, see the <a class="reference internal" href="#advanced-memory-tuning">Advanced Memory Tuning</a>
-section of this guide.</p>
+specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>.</p>
+<p>Comet’s memory accounting isn’t 100% accurate and this can result in Comet using more memory than it reserves,
+leading to out-of-memory exceptions. To work around this issue, it is possible to
+set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> to a value less than <code class="docutils literal notranslate"><span class="pre">1.0</span></code> to restrict the amount of memory that can be
+reserved by Comet.</p>
+<p>For more details about Spark off-heap memory mode, please refer to <a class="reference external" href="https://spark.apache.org/docs/latest/configuration.html">Spark documentation</a>.</p>
+<p>Comet implements multiple memory pool implementations. The type of pool can be specified with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>.</p>
+<p>The valid pool types are:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> (default when <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code> is set)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code></p></li>
+</ul>
+<p>The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool types prevents operators from using more than an even fraction of the available memory
+(i.e. <code class="docutils literal notranslate"><span class="pre">pool_size</span> <span class="pre">/</span> <span class="pre">num_reservations</span></code>). This pool works best when you know beforehand
+the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
+when there is sufficient memory in order to leave enough memory for other operators.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
+need to spill or have a single spillable operator.</p>
 </section>
 <section id="determining-how-much-memory-to-allocate">
 <h3>Determining How Much Memory to Allocate<a class="headerlink" href="#determining-how-much-memory-to-allocate" title="Link to this heading">¶</a></h3>
@@ -717,41 +718,6 @@ is around 340 seconds, which is significantly faster than Spark with any amount 
 providing better performance than Spark for half the resource</p></li>
 </ul>
 <p>It may be possible to reduce Comet’s memory overhead by reducing batch sizes or increasing number of partitions.</p>
-</section>
-<section id="sortexec">
-<h3>SortExec<a class="headerlink" href="#sortexec" title="Link to this heading">¶</a></h3>
-<p>Comet’s SortExec implementation spills to disk when under memory pressure, but there are some known issues in the
-underlying DataFusion SortExec implementation that could cause out-of-memory errors during spilling. See
-https://github.com/apache/datafusion/issues/14692 for more information.</p>
-<p>Workarounds for this problem include:</p>
-<ul class="simple">
-<li><p>Allocating more off-heap memory</p></li>
-<li><p>Disabling native sort by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sort.enabled=false</span></code></p></li>
-</ul>
-</section>
-</section>
-<section id="advanced-memory-tuning">
-<h2>Advanced Memory Tuning<a class="headerlink" href="#advanced-memory-tuning" title="Link to this heading">¶</a></h2>
-<section id="configuring-comet-memory-pools">
-<h3>Configuring Comet Memory Pools<a class="headerlink" href="#configuring-comet-memory-pools" title="Link to this heading">¶</a></h3>
-<p>Comet implements multiple memory pool implementations. The type of pool can be specified with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>.</p>
-<p>The valid pool types are:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> (default when <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code> is set)</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code></p></li>
-</ul>
-<p>Both of these pools share off-heap memory between Spark and Comet. This approach is referred to as
-unified memory management. The size of the pool is specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>.</p>
-<p>Comet’s memory accounting isn’t 100% accurate and this can result in Comet using more memory than it reserves,
-leading to out-of-memory exceptions. To work around this issue, it is possible to
-set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> to a value less than <code class="docutils literal notranslate"><span class="pre">1.0</span></code> to restrict the amount of memory that can be
-reserved by Comet.</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool types prevents operators from using more than an even fraction of the available memory
-(i.e. <code class="docutils literal notranslate"><span class="pre">pool_size</span> <span class="pre">/</span> <span class="pre">num_reservations</span></code>). This pool works best when you know beforehand
-the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
-when there is sufficient memory in order to leave enough memory for other operators.</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
-need to spill or have a single spillable operator.</p>
 </section>
 </section>
 <section id="optimizing-joins">
