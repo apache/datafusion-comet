@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet"
-version = "0.11.0-apple"
+version = "0.12.0-apple"
 dependencies = [
  "arrow",
  "assertables",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-objectstore-hdfs"
-version = "0.11.0-apple"
+version = "0.12.0-apple"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1574,7 +1574,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-proto"
-version = "0.11.0-apple"
+version = "0.12.0-apple"
 dependencies = [
  "prost",
  "prost-build",
@@ -1582,7 +1582,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-spark-expr"
-version = "0.11.0-apple"
+version = "0.12.0-apple"
 dependencies = [
  "arrow",
  "base64",
