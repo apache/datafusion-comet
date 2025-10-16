@@ -33,6 +33,14 @@
   --pst-font-size-base: 0.9rem;
 }
 
+/* Scale down the logo in the top navbar */
+.bd-header .navbar-brand img.logo__image {
+  height: 40px;
+  width: auto;
+  margin-right: 0.25rem;
+  vertical-align: middle;
+}
+
 /* --- remove the right (secondary) sidebar entirely --- */
 .bd-sidebar-secondary { display: none !important; }
 
