@@ -97,7 +97,7 @@ html_theme_options = {
     "secondary_sidebar_items": [],
     "collapse_navigation": True,
     "navbar_start": ["navbar-logo"],
-    # "navbar_center": ["navbar-nav"],
+    "navbar_center": ["navbar-nav"],
     "navbar_end": ["navbar-icon-links", "theme-switcher"],
     "icon_links": [
         {
