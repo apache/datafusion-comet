@@ -50,21 +50,21 @@ for details of the environment used for these benchmarks.
 
 When using Comet, the overall run time is reduced from 652 seconds to 268 seconds, a 2.4x speedup.
 
-![](docs/source/_static/images/benchmark-results/0.9.0/tpch_allqueries.png)
+![](docs/source/_static/images/benchmark-results/0.11.0/tpch_allqueries.png)
 
 Here is a breakdown showing relative performance of Spark and Comet for each TPC-H query.
 
-![](docs/source/_static/images/benchmark-results/0.9.0/tpch_queries_compare.png)
+![](docs/source/_static/images/benchmark-results/0.11.0/tpch_queries_compare.png)
 
 The following charts shows how much Comet currently accelerates each query from the benchmark.
 
 ### Relative speedup
 
-![](docs/source/_static/images/benchmark-results/0.9.0/tpch_queries_speedup_rel.png)
+![](docs/source/_static/images/benchmark-results/0.11.0/tpch_queries_speedup_rel.png)
 
 ### Absolute speedup
 
-![](docs/source/_static/images/benchmark-results/0.9.0/tpch_queries_speedup_abs.png)
+![](docs/source/_static/images/benchmark-results/0.11.0/tpch_queries_speedup_abs.png)
 
 These benchmarks can be reproduced in any environment using the documentation in the 
 [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html). We encourage 

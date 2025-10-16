@@ -46,11 +46,11 @@ for details of the environment used for these benchmarks.
 
 When using Comet, the overall run time is reduced from 652 seconds to 268 seconds, a 2.4x speedup.
 
-![](_static/images/benchmark-results/0.9.0/tpch_allqueries.png)
+![](_static/images/benchmark-results/0.11.0/tpch_allqueries.png)
 
 Here is a breakdown showing relative performance of Spark and Comet for each TPC-H query.
 
-![](_static/images/benchmark-results/0.9.0/tpch_queries_compare.png)
+![](_static/images/benchmark-results/0.11.0/tpch_queries_compare.png)
 
 These benchmarks can be reproduced in any environment using the documentation in the
 [Comet Benchmarking Guide](/contributor-guide/benchmarking.md). We encourage
