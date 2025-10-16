@@ -47,7 +47,7 @@ jobs:
         os: [ubuntu-24.04]
         java-version: [11, 17]
         iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}]
-        spark-version: [{short: '3.5', full: '3.5.6'}]
+        spark-version: [{short: '3.5', full: '3.5.7'}]
         scala-version: ['2.13']
       fail-fast: false
     name: iceberg-spark/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
@@ -86,7 +86,7 @@ jobs:
         os: [ubuntu-24.04]
         java-version: [11, 17]
         iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}]
-        spark-version: [{short: '3.5', full: '3.5.6'}]
+        spark-version: [{short: '3.5', full: '3.5.7'}]
         scala-version: ['2.13']
       fail-fast: false
     name: iceberg-spark-extensions/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
@@ -125,7 +125,7 @@ jobs:
         os: [ubuntu-24.04]
         java-version: [11, 17]
         iceberg-version: [{short: '1.8', full: '1.8.1'}, {short: '1.9', full: '1.9.1'}]
-        spark-version: [{short: '3.5', full: '3.5.6'}]
+        spark-version: [{short: '3.5', full: '3.5.7'}]
         scala-version: ['2.13']
       fail-fast: false
     name: iceberg-spark-runtime/${{ matrix.os }}/iceberg-${{ matrix.iceberg-version.full }}/spark-${{ matrix.spark-version.full }}/scala-${{ matrix.scala-version }}/java-${{ matrix.java-version }}
