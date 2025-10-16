@@ -87,6 +87,8 @@ html_theme = 'pydata_sphinx_theme'
 
 html_theme_options = {
     "use_edit_page_button": False,
+    "secondary_sidebar_items": [],
+    "collapse_navigation": True,
 }
 
 html_context = {
