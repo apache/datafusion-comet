@@ -17,65 +17,589 @@ specific language governing permissions and limitations
 under the License.
 -->
 
+
 <!DOCTYPE html>
 
-<html lang="en" data-content_root="../">
+
+<html lang="en" data-content_root="../" data-theme="light">
+
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
     <title>Adding a New Expression &#8212; Apache DataFusion Comet  documentation</title>
-    
-    <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
-<link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
   
-    
-    <link rel="stylesheet"
-      href="../_static/vendor/fontawesome/5.13.0/css/all.min.css">
-    <link rel="preload" as="font" type="font/woff2" crossorigin
-      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
-    <link rel="preload" as="font" type="font/woff2" crossorigin
-      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
   
-    
-      
   
-    
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
-    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=c6d785ac" />
-    
-    <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=19cf3f26" />
   
-    <script src="../_static/documentation_options.js?v=8a448e45"></script>
-    <script src="../_static/doctools.js?v=9bcbadda"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/adding_a_new_expression';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Tracing" href="tracing.html" />
     <link rel="prev" title="Comet Benchmarking Guide" href="benchmarking.html" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="docsearch:language" content="en">
-    
-
-    <!-- Google Analytics -->
-    
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
   </head>
-  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
     
-    <div class="container-fluid" id="banner"></div>
-
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
     
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../overview.html">
+    Comet Overview
+  </a>
+</li>
 
 
-    <div class="container-xl">
-      <div class="row">
-          
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../gluten_comparison.html">
+    Comparison with Gluten
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/latest/index.html">
+    0.12.0-SNAPSHOT
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/0.10/index.html">
+    0.10.x
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/0.9/index.html">
+    0.9.x
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../user-guide/0.8/index.html">
+    0.8.x
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="contributing.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="plugin_overview.html">
+    Comet Plugin Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="development.html">
+    Development Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="debugging.html">
+    Debugging Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="benchmarking.html">
+    Benchmarking Guide
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#">
+    Adding a New Expression
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="tracing.html">
+    Tracing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="profiling_native_code.html">
+    Profiling Native Code
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="spark-sql-tests.html">
+    Spark SQL Tests
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="roadmap.html">
+    Roadmap
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/apache/datafusion-comet">
+    Github and Issue Tracker
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://apache.org">
+    Apache Software Foundation
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://www.apache.org/licenses/">
+    License
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://www.apache.org/foundation/sponsorship.html">
+    Donate
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://www.apache.org/foundation/thanks.html">
+    Thanks
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://www.apache.org/security/">
+    Security
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://www.apache.org/foundation/policies/conduct.html">
+    Code of conduct
+  </a>
+</li>
+
+                </ul>
+            </li>
             
-            <!-- Only show if we have sidebars configured, else just a small margin  -->
-            <div class="col-12 col-md-3 bd-sidebar">
-              <div class="sidebar-start-items"><!--
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+ <script>
+ document.write(`
+   <button class="btn search-button-field search-button__button" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass"></i>
+    <span class="search-button__default-text">Search</span>
+    <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+   </button>
+ `);
+ </script>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+ <script>
+ document.write(`
+   <button class="btn search-button-field search-button__button" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass"></i>
+    <span class="search-button__default-text">Search</span>
+    <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+   </button>
+ `);
+ </script>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <div class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../overview.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../gluten_comparison.html">
+    Comparison with Gluten
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/latest/index.html">
+    0.12.0-SNAPSHOT
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/0.10/index.html">
+    0.10.x
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/0.9/index.html">
+    0.9.x
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/0.8/index.html">
+    0.8.x
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="contributing.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="plugin_overview.html">
+    Comet Plugin Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="development.html">
+    Development Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="debugging.html">
+    Debugging Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="benchmarking.html">
+    Benchmarking Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Adding a New Expression
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="tracing.html">
+    Tracing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="profiling_native_code.html">
+    Profiling Native Code
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="spark-sql-tests.html">
+    Spark SQL Tests
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="roadmap.html">
+    Roadmap
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/apache/datafusion-comet">
+    Github and Issue Tracker
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://apache.org">
+    Apache Software Foundation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://www.apache.org/licenses/">
+    License
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://www.apache.org/foundation/sponsorship.html">
+    Donate
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://www.apache.org/foundation/thanks.html">
+    Thanks
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://www.apache.org/security/">
+    Security
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://www.apache.org/foundation/policies/conduct.html">
+    Code of conduct
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><!--
 Licensed to the Apache Software Foundation (ASF) under one
 or more contributor license agreements.  See the NOTICE file
 distributed with this work for additional information
@@ -94,542 +618,103 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-<form class="bd-search d-flex align-items-center" action="../search.html" method="get">
-  <i class="icon fas fa-search"></i>
-  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
-</form>
-
 <nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
   <div class="bd-toc-item active">
-    
-    <p aria-level="2" class="caption" role="heading">
- <span class="caption-text">
-  Overview:
- </span>
-</p>
-<ul class="nav bd-sidenav">
- <li class="toctree-l1">
-  <a class="reference internal" href="../overview.html">
-   Comet Overview
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="../gluten_comparison.html">
-   Comparison with Gluten
-  </a>
- </li>
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Overview:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../overview.html">Comet Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../gluten_comparison.html">Comparison with Gluten</a></li>
 </ul>
-<p aria-level="2" class="caption" role="heading">
- <span class="caption-text">
-  User Guides:
- </span>
-</p>
-<ul class="nav bd-sidenav">
- <li class="toctree-l1 has-children">
-  <a class="reference internal" href="../user-guide/latest/index.html">
-   Comet 0.12.0-SNAPSHOT
-  </a>
-  <input class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" type="checkbox"/>
-  <label for="toctree-checkbox-1">
-   <i class="fas fa-chevron-down">
-   </i>
-  </label>
-  <ul>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/installation.html">
-     Installing Comet
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/source.html">
-     Building From Source
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/datasources.html">
-     Supported Data Sources
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/datatypes.html">
-     Supported Data Types
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/operators.html">
-     Supported Operators
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/expressions.html">
-     Supported Expressions
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/configs.html">
-     Configuration Settings
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/compatibility.html">
-     Compatibility Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/tuning.html">
-     Tuning Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/metrics.html">
-     Metrics Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/iceberg.html">
-     Iceberg Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/kubernetes.html">
-     Kubernetes Guide
-    </a>
-   </li>
-  </ul>
- </li>
- <li class="toctree-l1 has-children">
-  <a class="reference internal" href="../user-guide/0.10/index.html">
-   Comet 0.10.x
-  </a>
-  <input class="toctree-checkbox" id="toctree-checkbox-2" name="toctree-checkbox-2" type="checkbox"/>
-  <label for="toctree-checkbox-2">
-   <i class="fas fa-chevron-down">
-   </i>
-  </label>
-  <ul>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/installation.html">
-     Installing Comet
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/source.html">
-     Building From Source
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/datasources.html">
-     Supported Data Sources
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/datatypes.html">
-     Supported Data Types
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/operators.html">
-     Supported Operators
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/expressions.html">
-     Supported Expressions
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/configs.html">
-     Configuration Settings
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/compatibility.html">
-     Compatibility Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/tuning.html">
-     Tuning Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/metrics.html">
-     Metrics Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/iceberg.html">
-     Iceberg Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/kubernetes.html">
-     Kubernetes Guide
-    </a>
-   </li>
-  </ul>
- </li>
- <li class="toctree-l1 has-children">
-  <a class="reference internal" href="../user-guide/0.9/index.html">
-   Comet 0.9.x
-  </a>
-  <input class="toctree-checkbox" id="toctree-checkbox-3" name="toctree-checkbox-3" type="checkbox"/>
-  <label for="toctree-checkbox-3">
-   <i class="fas fa-chevron-down">
-   </i>
-  </label>
-  <ul>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/installation.html">
-     Installing Comet
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/source.html">
-     Building From Source
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/datasources.html">
-     Supported Data Sources
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/datatypes.html">
-     Supported Data Types
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/operators.html">
-     Supported Operators
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/expressions.html">
-     Supported Expressions
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/configs.html">
-     Configuration Settings
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/compatibility.html">
-     Compatibility Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/tuning.html">
-     Tuning Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/metrics.html">
-     Metrics Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/iceberg.html">
-     Iceberg Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/kubernetes.html">
-     Kubernetes Guide
-    </a>
-   </li>
-  </ul>
- </li>
- <li class="toctree-l1 has-children">
-  <a class="reference internal" href="../user-guide/0.8/index.html">
-   Comet 0.8.x
-  </a>
-  <input class="toctree-checkbox" id="toctree-checkbox-4" name="toctree-checkbox-4" type="checkbox"/>
-  <label for="toctree-checkbox-4">
-   <i class="fas fa-chevron-down">
-   </i>
-  </label>
-  <ul>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/installation.html">
-     Installing Comet
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/source.html">
-     Building From Source
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/datasources.html">
-     Supported Data Sources
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/datatypes.html">
-     Supported Data Types
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/operators.html">
-     Supported Operators
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/expressions.html">
-     Supported Expressions
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/configs.html">
-     Configuration Settings
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/compatibility.html">
-     Compatibility Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/tuning.html">
-     Tuning Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/metrics.html">
-     Metrics Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/iceberg.html">
-     Iceberg Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/kubernetes.html">
-     Kubernetes Guide
-    </a>
-   </li>
-  </ul>
- </li>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guides:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/latest/index.html">0.12.0-SNAPSHOT</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/0.10/index.html">0.10.x</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/0.9/index.html">0.9.x</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/0.8/index.html">0.8.x</a></li>
 </ul>
-<p aria-level="2" class="caption" role="heading">
- <span class="caption-text">
-  Contributor Guide
- </span>
-</p>
-<ul class="current nav bd-sidenav">
- <li class="toctree-l1">
-  <a class="reference internal" href="contributing.html">
-   Getting Started
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="plugin_overview.html">
-   Comet Plugin Architecture
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="development.html">
-   Development Guide
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="debugging.html">
-   Debugging Guide
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="benchmarking.html">
-   Benchmarking Guide
-  </a>
- </li>
- <li class="toctree-l1 current active">
-  <a class="current reference internal" href="#">
-   Adding a New Expression
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="tracing.html">
-   Tracing
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="profiling_native_code.html">
-   Profiling Native Code
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="spark-sql-tests.html">
-   Spark SQL Tests
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="roadmap.html">
-   Roadmap
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference external" href="https://github.com/apache/datafusion-comet">
-   Github and Issue Tracker
-  </a>
- </li>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Contributor Guide</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugin_overview.html#plugin-components">Plugin Components</a></li>
+<li class="toctree-l1"><a class="reference internal" href="development.html">Development Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Adding a New Expression</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tracing.html">Tracing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="profiling_native_code.html">Profiling Native Code</a></li>
+<li class="toctree-l1"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
 </ul>
-<p aria-level="2" class="caption" role="heading">
- <span class="caption-text">
-  ASF Links
- </span>
-</p>
-<ul class="nav bd-sidenav">
- <li class="toctree-l1">
-  <a class="reference external" href="https://apache.org">
-   Apache Software Foundation
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference external" href="https://www.apache.org/licenses/">
-   License
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference external" href="https://www.apache.org/foundation/sponsorship.html">
-   Donate
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference external" href="https://www.apache.org/foundation/thanks.html">
-   Thanks
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference external" href="https://www.apache.org/security/">
-   Security
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference external" href="https://www.apache.org/foundation/policies/conduct.html">
-   Code of conduct
-  </a>
- </li>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">ASF Links</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference external" href="https://apache.org">Apache Software Foundation</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://www.apache.org/licenses/">License</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://www.apache.org/foundation/sponsorship.html">Donate</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://www.apache.org/foundation/thanks.html">Thanks</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://www.apache.org/security/">Security</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://www.apache.org/foundation/policies/conduct.html">Code of conduct</a></li>
 </ul>
 
-    
   </div>
 
   <a class="navbar-brand" href="../index.html">
     <img src="../_static/images/DataFusionComet-Logo-Light.png" class="logo" alt="logo">
   </a>
 </nav>
-
-              </div>
-              <div class="sidebar-end-items">
-              </div>
-            </div>
-            
-          
-
-          
-          <div class="d-none d-xl-block col-xl-2 bd-toc">
-            
-              
-              <div class="toc-item">
-                
-<div class="tocsection onthispage pt-5 pb-3">
-    <i class="fas fa-list"></i> On this page
 </div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+  
+  <div id="rtd-footer-container"></div>
 
-<nav id="bd-toc-nav">
-    <ul class="visible nav section-nav flex-column">
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#finding-an-expression-to-add">
-   Finding an Expression to Add
-  </a>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#implementing-the-expression">
-   Implementing the Expression
-  </a>
-  <ul class="nav section-nav flex-column">
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#adding-the-expression-in-scala">
-     Adding the Expression in Scala
-    </a>
-    <ul class="nav section-nav flex-column">
-     <li class="toc-h4 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#adding-spark-side-tests-for-the-new-expression">
-       Adding Spark-side Tests for the New Expression
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
       </a>
-     </li>
-    </ul>
-   </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#adding-the-expression-to-the-protobuf-definition">
-     Adding the Expression To the Protobuf Definition
-    </a>
-   </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#adding-the-expression-in-rust">
-     Adding the Expression in Rust
-    </a>
-    <ul class="nav section-nav flex-column">
-     <li class="toc-h4 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#generally-adding-a-new-expression">
-       Generally Adding a New Expression
-      </a>
-     </li>
-     <li class="toc-h4 nav-item toc-entry">
-      <a class="reference internal nav-link" href="#adding-a-new-scalar-function-expression">
-       Adding a New Scalar Function Expression
-      </a>
-     </li>
-    </ul>
-   </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#api-differences-between-spark-versions">
-     API Differences Between Spark Versions
-    </a>
-   </li>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">Adding a...</li>
   </ul>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#shimming-to-support-different-spark-versions">
-   Shimming to Support Different Spark Versions
-  </a>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#resources">
-   Resources
-  </a>
- </li>
-</ul>
-
 </nav>
-              </div>
-              
-              <div class="toc-item">
-                
-
-<div class="tocsection editthispage">
-    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/contributor-guide/adding_a_new_expression.md">
-        <i class="fas fa-pencil-alt"></i> Edit this page
-    </a>
 </div>
-
-              </div>
+      
+    </div>
+  
+  
+</div>
+</div>
               
-            
-          </div>
-          
-
-          
-          
-            
-          
-          <main class="col-12 col-md-9 col-xl-7 py-md-5 pl-md-5 pr-md-4 bd-content" role="main">
               
-              <div>
+              
                 
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
   <!---
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -649,15 +734,15 @@ under the License.
   under the License.
 -->
 <section id="adding-a-new-expression">
-<h1>Adding a New Expression<a class="headerlink" href="#adding-a-new-expression" title="Link to this heading">¶</a></h1>
+<h1>Adding a New Expression<a class="headerlink" href="#adding-a-new-expression" title="Link to this heading">#</a></h1>
 <p>There are a number of Spark expression that are not supported by DataFusion Comet yet, and implementing them is a good way to contribute to the project.</p>
 <p>Before you start, have a look through <a class="reference external" href="https://docs.google.com/presentation/d/1H0fF2MOkkBK8fPBlnqK6LejUeLcVD917JhVWfp3mb8A/edit#slide=id.p">these slides</a> as they provide a conceptual overview. And a video of a presentation on those slides is available <a class="reference external" href="https://drive.google.com/file/d/1POU4lFAZfYwZR8zV1X2eoLiAmc1GDtSP/view?usp=sharing">here</a>.</p>
 <section id="finding-an-expression-to-add">
-<h2>Finding an Expression to Add<a class="headerlink" href="#finding-an-expression-to-add" title="Link to this heading">¶</a></h2>
+<h2>Finding an Expression to Add<a class="headerlink" href="#finding-an-expression-to-add" title="Link to this heading">#</a></h2>
 <p>You may have a specific expression in mind that you’d like to add, but if not, you can review the <a class="reference external" href="https://github.com/apache/datafusion-comet/blob/f08fcadd5fbdb5b04293d33e654f6c16f81b70c4/doc/spark_builtin_expr_coverage.txt">expression coverage document</a> to see which expressions are not yet supported.</p>
 </section>
 <section id="implementing-the-expression">
-<h2>Implementing the Expression<a class="headerlink" href="#implementing-the-expression" title="Link to this heading">¶</a></h2>
+<h2>Implementing the Expression<a class="headerlink" href="#implementing-the-expression" title="Link to this heading">#</a></h2>
 <p>Once you have the expression you’d like to add, you should take inventory of the following:</p>
 <ol class="arabic simple">
 <li><p>What is the Spark expression’s behavior across different Spark versions? These make good test cases and will inform you of any compatibility issues, such as an API change that will have to be addressed.</p></li>
@@ -671,7 +756,7 @@ under the License.
 </ol>
 <p>Once you know what you want to add, you’ll need to update the query planner to recognize the new expression in Scala and potentially add a new expression implementation in the Rust package.</p>
 <section id="adding-the-expression-in-scala">
-<h3>Adding the Expression in Scala<a class="headerlink" href="#adding-the-expression-in-scala" title="Link to this heading">¶</a></h3>
+<h3>Adding the Expression in Scala<a class="headerlink" href="#adding-the-expression-in-scala" title="Link to this heading">#</a></h3>
 <p>The <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code> object has a method <code class="docutils literal notranslate"><span class="pre">exprToProto</span></code>, which is responsible for converting a Spark expression to a protobuf expression. Within that method is an <code class="docutils literal notranslate"><span class="pre">exprToProtoInternal</span></code> method that contains a large match statement for each expression type. You’ll need to add a new case to this match statement for your new expression.</p>
 <p>For example, the <code class="docutils literal notranslate"><span class="pre">unhex</span></code> function looks like this:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">case</span><span class="w"> </span><span class="n">e</span><span class="p">:</span><span class="w"> </span><span class="nc">Unhex</span><span class="w"> </span><span class="o">=&gt;</span>
@@ -691,7 +776,7 @@ under the License.
 <li><p><code class="docutils literal notranslate"><span class="pre">scalarExprToProtoWithReturnType</span></code> is for scalar functions that need return type information. Your expression may use a different method depending on the type of expression.</p></li>
 </ul>
 <section id="adding-spark-side-tests-for-the-new-expression">
-<h4>Adding Spark-side Tests for the New Expression<a class="headerlink" href="#adding-spark-side-tests-for-the-new-expression" title="Link to this heading">¶</a></h4>
+<h4>Adding Spark-side Tests for the New Expression<a class="headerlink" href="#adding-spark-side-tests-for-the-new-expression" title="Link to this heading">#</a></h4>
 <p>It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected spark behavior. To do this, you can add a set of test cases in the <code class="docutils literal notranslate"><span class="pre">CometExpressionSuite</span></code>, and use the <code class="docutils literal notranslate"><span class="pre">checkSparkAnswerAndOperator</span></code> method to compare the results of the new expression with the expected Spark results and that Comet’s native execution engine is able to execute the expression.</p>
 <p>For example, this is the test case for the <code class="docutils literal notranslate"><span class="pre">unhex</span></code> expression:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">&quot;unhex&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
@@ -718,7 +803,7 @@ under the License.
 </section>
 </section>
 <section id="adding-the-expression-to-the-protobuf-definition">
-<h3>Adding the Expression To the Protobuf Definition<a class="headerlink" href="#adding-the-expression-to-the-protobuf-definition" title="Link to this heading">¶</a></h3>
+<h3>Adding the Expression To the Protobuf Definition<a class="headerlink" href="#adding-the-expression-to-the-protobuf-definition" title="Link to this heading">#</a></h3>
 <p>Once you have the expression implemented in Scala, you might need to update the protobuf definition to include the new expression. You may not need to do this if the expression is already covered by the existing protobuf definition (e.g. you’re adding a new scalar function).</p>
 <p>You can find the protobuf definition in <code class="docutils literal notranslate"><span class="pre">expr.proto</span></code>, and in particular the <code class="docutils literal notranslate"><span class="pre">Expr</span></code> or potentially the <code class="docutils literal notranslate"><span class="pre">AggExpr</span></code>. These are similar in theory to the large case statement in <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code>, but in protobuf format. So if you were to add a new expression called <code class="docutils literal notranslate"><span class="pre">Add2</span></code>, you would add a new case to the <code class="docutils literal notranslate"><span class="pre">Expr</span></code> message like so:</p>
 <div class="highlight-proto notranslate"><div class="highlight"><pre><span></span><span class="kd">message</span><span class="w"> </span><span class="nc">Expr</span><span class="w"> </span><span class="p">{</span>
@@ -738,11 +823,11 @@ under the License.
 </div>
 </section>
 <section id="adding-the-expression-in-rust">
-<h3>Adding the Expression in Rust<a class="headerlink" href="#adding-the-expression-in-rust" title="Link to this heading">¶</a></h3>
+<h3>Adding the Expression in Rust<a class="headerlink" href="#adding-the-expression-in-rust" title="Link to this heading">#</a></h3>
 <p>With the serialization complete, the next step is to implement the expression in Rust and ensure that the incoming plan can make use of it.</p>
 <p>How this works, is somewhat dependent on the type of expression you’re adding, so see the <code class="docutils literal notranslate"><span class="pre">core/src/execution/datafusion/expressions</span></code> directory for examples of how to implement different types of expressions.</p>
 <section id="generally-adding-a-new-expression">
-<h4>Generally Adding a New Expression<a class="headerlink" href="#generally-adding-a-new-expression" title="Link to this heading">¶</a></h4>
+<h4>Generally Adding a New Expression<a class="headerlink" href="#generally-adding-a-new-expression" title="Link to this heading">#</a></h4>
 <p>If you’re adding a new expression, you’ll need to review <code class="docutils literal notranslate"><span class="pre">create_plan</span></code> and <code class="docutils literal notranslate"><span class="pre">create_expr</span></code>. <code class="docutils literal notranslate"><span class="pre">create_plan</span></code> is responsible for translating the incoming plan into a DataFusion plan, and may delegate to <code class="docutils literal notranslate"><span class="pre">create_expr</span></code> to create the physical expressions for the plan.</p>
 <p>If you added a new message to the protobuf definition, you’ll add a new match case to the <code class="docutils literal notranslate"><span class="pre">create_expr</span></code> method to handle the new expression. For example, if you added an <code class="docutils literal notranslate"><span class="pre">Add2</span></code> expression, you would add a new case like so:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">match</span><span class="w"> </span><span class="n">spark_expr</span><span class="p">.</span><span class="n">expr_struct</span><span class="p">.</span><span class="n">as_ref</span><span class="p">().</span><span class="n">unwrap</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
@@ -754,7 +839,7 @@ under the License.
 <p><code class="docutils literal notranslate"><span class="pre">self.create_binary_expr</span></code> is for a binary expression, but if something out of the box is needed, you can create a new <code class="docutils literal notranslate"><span class="pre">PhysicalExpr</span></code> implementation. For example, see <code class="docutils literal notranslate"><span class="pre">if_expr.rs</span></code> for an example of an implementation that doesn’t fit the <code class="docutils literal notranslate"><span class="pre">create_binary_expr</span></code> mold.</p>
 </section>
 <section id="adding-a-new-scalar-function-expression">
-<h4>Adding a New Scalar Function Expression<a class="headerlink" href="#adding-a-new-scalar-function-expression" title="Link to this heading">¶</a></h4>
+<h4>Adding a New Scalar Function Expression<a class="headerlink" href="#adding-a-new-scalar-function-expression" title="Link to this heading">#</a></h4>
 <p>For a new scalar function, you can reuse a lot of code by updating the <code class="docutils literal notranslate"><span class="pre">create_comet_physical_fun</span></code> method to match on the function name and make the scalar UDF to be called. For example, the diff to add the <code class="docutils literal notranslate"><span class="pre">unhex</span></code> function is:</p>
 <div class="highlight-diff notranslate"><div class="highlight"><pre><span></span>macro_rules! make_comet_scalar_udf {
 <span class="w"> </span>   ($name:expr, $func:ident, $data_type:ident) =&gt; {{
@@ -781,7 +866,7 @@ under the License.
 </section>
 </section>
 <section id="api-differences-between-spark-versions">
-<h3>API Differences Between Spark Versions<a class="headerlink" href="#api-differences-between-spark-versions" title="Link to this heading">¶</a></h3>
+<h3>API Differences Between Spark Versions<a class="headerlink" href="#api-differences-between-spark-versions" title="Link to this heading">#</a></h3>
 <p>If the expression you’re adding has different behavior across different Spark versions, you’ll need to account for that in your implementation. There are two tools at your disposal to help with this:</p>
 <ol class="arabic simple">
 <li><p>Shims that exist in <code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-$SPARK_VERSION/org/apache/comet/shims/CometExprShim.scala</span></code> for each Spark version. These shims are used to provide compatibility between different Spark versions.</p></li>
@@ -790,7 +875,7 @@ under the License.
 </section>
 </section>
 <section id="shimming-to-support-different-spark-versions">
-<h2>Shimming to Support Different Spark Versions<a class="headerlink" href="#shimming-to-support-different-spark-versions" title="Link to this heading">¶</a></h2>
+<h2>Shimming to Support Different Spark Versions<a class="headerlink" href="#shimming-to-support-different-spark-versions" title="Link to this heading">#</a></h2>
 <p>By adding shims for each Spark version, you can provide a consistent interface for the expression across different Spark versions. For example, <code class="docutils literal notranslate"><span class="pre">unhex</span></code> added a new optional parameter is Spark 3.4, for if it should <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> or not. So for version 3.3, the shim is:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">trait</span><span class="w"> </span><span class="nc">CometExprShim</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="cm">/**</span>
@@ -816,7 +901,7 @@ under the License.
 <p>Then when <code class="docutils literal notranslate"><span class="pre">unhexSerde</span></code> is called in the <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code> object, it will use the correct shim for the Spark version.</p>
 </section>
 <section id="resources">
-<h2>Resources<a class="headerlink" href="#resources" title="Link to this heading">¶</a></h2>
+<h2>Resources<a class="headerlink" href="#resources" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p><a class="reference external" href="https://github.com/apache/datafusion-comet/pull/297">Variance PR</a></p>
 <ul>
@@ -833,50 +918,57 @@ under the License.
 </section>
 
 
-              </div>
+                </article>
               
               
-              <!-- Previous / next buttons -->
-<div class='prev-next-area'>
-    <a class='left-prev' id="prev-link" href="benchmarking.html" title="previous page">
-        <i class="fas fa-angle-left"></i>
-        <div class="prev-next-info">
-            <p class="prev-next-subtitle">previous</p>
-            <p class="prev-next-title">Comet Benchmarking Guide</p>
-        </div>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="benchmarking.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Comet Benchmarking Guide</p>
+      </div>
     </a>
-    <a class='right-next' id="next-link" href="tracing.html" title="next page">
-    <div class="prev-next-info">
+    <a class="right-next"
+       href="tracing.html"
+       title="next page">
+      <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
         <p class="prev-next-title">Tracing</p>
-    </div>
-    <i class="fas fa-angle-right"></i>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
     </a>
 </div>
+                </footer>
               
-          </main>
-          
-
-      </div>
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
     </div>
+  </div>
   
-    <script src="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
-  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">
   <div class="container">
-    
-    <div class="footer-item">
-      <p class="copyright">
-    &copy; Copyright 2023-2024, Apache Software Foundation.<br>
-</p>
-    </div>
-    
-    <div class="footer-item">
-      <p class="sphinx-version">
-Created using <a href="http://sphinx-doc.org/">Sphinx</a> 8.1.3.<br>
-</p>
-    </div>
     
     <div class="footer-item">
       <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>

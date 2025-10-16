@@ -17,65 +17,589 @@ specific language governing permissions and limitations
 under the License.
 -->
 
+
 <!DOCTYPE html>
 
-<html lang="en" data-content_root="../">
+
+<html lang="en" data-content_root="../" data-theme="light">
+
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
     <title>Running Spark SQL Tests &#8212; Apache DataFusion Comet  documentation</title>
-    
-    <link href="../_static/styles/theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
-<link href="../_static/styles/pydata-sphinx-theme.css?digest=1999514e3f237ded88cf" rel="stylesheet">
   
-    
-    <link rel="stylesheet"
-      href="../_static/vendor/fontawesome/5.13.0/css/all.min.css">
-    <link rel="preload" as="font" type="font/woff2" crossorigin
-      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-solid-900.woff2">
-    <link rel="preload" as="font" type="font/woff2" crossorigin
-      href="../_static/vendor/fontawesome/5.13.0/webfonts/fa-brands-400.woff2">
   
-    
-      
   
-    
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../_static/styles/pydata-sphinx-theme.css?v=1140d252" />
-    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=c6d785ac" />
-    
-    <link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf">
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=19cf3f26" />
   
-    <script src="../_static/documentation_options.js?v=8a448e45"></script>
-    <script src="../_static/doctools.js?v=9bcbadda"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
     <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/spark-sql-tests';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Comet Roadmap" href="roadmap.html" />
     <link rel="prev" title="Profiling Native Code" href="profiling_native_code.html" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="docsearch:language" content="en">
-    
-
-    <!-- Google Analytics -->
-    
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
   </head>
-  <body data-spy="scroll" data-target="#bd-toc-nav" data-offset="80">
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
     
-    <div class="container-fluid" id="banner"></div>
-
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
     
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../overview.html">
+    Comet Overview
+  </a>
+</li>
 
 
-    <div class="container-xl">
-      <div class="row">
-          
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../gluten_comparison.html">
+    Comparison with Gluten
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/latest/index.html">
+    0.12.0-SNAPSHOT
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/0.10/index.html">
+    0.10.x
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/0.9/index.html">
+    0.9.x
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../user-guide/0.8/index.html">
+    0.8.x
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="contributing.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="plugin_overview.html">
+    Comet Plugin Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="development.html">
+    Development Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="debugging.html">
+    Debugging Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="benchmarking.html">
+    Benchmarking Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="adding_a_new_expression.html">
+    Adding a New Expression
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="tracing.html">
+    Tracing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="profiling_native_code.html">
+    Profiling Native Code
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#">
+    Spark SQL Tests
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="roadmap.html">
+    Roadmap
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/apache/datafusion-comet">
+    Github and Issue Tracker
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://apache.org">
+    Apache Software Foundation
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://www.apache.org/licenses/">
+    License
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://www.apache.org/foundation/sponsorship.html">
+    Donate
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://www.apache.org/foundation/thanks.html">
+    Thanks
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://www.apache.org/security/">
+    Security
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://www.apache.org/foundation/policies/conduct.html">
+    Code of conduct
+  </a>
+</li>
+
+                </ul>
+            </li>
             
-            <!-- Only show if we have sidebars configured, else just a small margin  -->
-            <div class="col-12 col-md-3 bd-sidebar">
-              <div class="sidebar-start-items"><!--
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+ <script>
+ document.write(`
+   <button class="btn search-button-field search-button__button" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass"></i>
+    <span class="search-button__default-text">Search</span>
+    <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+   </button>
+ `);
+ </script>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+ <script>
+ document.write(`
+   <button class="btn search-button-field search-button__button" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass"></i>
+    <span class="search-button__default-text">Search</span>
+    <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+   </button>
+ `);
+ </script>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <div class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../overview.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../gluten_comparison.html">
+    Comparison with Gluten
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/latest/index.html">
+    0.12.0-SNAPSHOT
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/0.10/index.html">
+    0.10.x
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/0.9/index.html">
+    0.9.x
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/0.8/index.html">
+    0.8.x
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="contributing.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="plugin_overview.html">
+    Comet Plugin Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="development.html">
+    Development Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="debugging.html">
+    Debugging Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="benchmarking.html">
+    Benchmarking Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="adding_a_new_expression.html">
+    Adding a New Expression
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="tracing.html">
+    Tracing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="profiling_native_code.html">
+    Profiling Native Code
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Spark SQL Tests
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="roadmap.html">
+    Roadmap
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/apache/datafusion-comet">
+    Github and Issue Tracker
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://apache.org">
+    Apache Software Foundation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://www.apache.org/licenses/">
+    License
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://www.apache.org/foundation/sponsorship.html">
+    Donate
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://www.apache.org/foundation/thanks.html">
+    Thanks
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://www.apache.org/security/">
+    Security
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://www.apache.org/foundation/policies/conduct.html">
+    Code of conduct
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><!--
 Licensed to the Apache Software Foundation (ASF) under one
 or more contributor license agreements.  See the NOTICE file
 distributed with this work for additional information
@@ -94,528 +618,103 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-<form class="bd-search d-flex align-items-center" action="../search.html" method="get">
-  <i class="icon fas fa-search"></i>
-  <input type="search" class="form-control" name="q" id="search-input" placeholder="Search the docs ..." aria-label="Search the docs ..." autocomplete="off" >
-</form>
-
 <nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
   <div class="bd-toc-item active">
-    
-    <p aria-level="2" class="caption" role="heading">
- <span class="caption-text">
-  Overview:
- </span>
-</p>
-<ul class="nav bd-sidenav">
- <li class="toctree-l1">
-  <a class="reference internal" href="../overview.html">
-   Comet Overview
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="../gluten_comparison.html">
-   Comparison with Gluten
-  </a>
- </li>
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Overview:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../overview.html">Comet Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../gluten_comparison.html">Comparison with Gluten</a></li>
 </ul>
-<p aria-level="2" class="caption" role="heading">
- <span class="caption-text">
-  User Guides:
- </span>
-</p>
-<ul class="nav bd-sidenav">
- <li class="toctree-l1 has-children">
-  <a class="reference internal" href="../user-guide/latest/index.html">
-   Comet 0.12.0-SNAPSHOT
-  </a>
-  <input class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" type="checkbox"/>
-  <label for="toctree-checkbox-1">
-   <i class="fas fa-chevron-down">
-   </i>
-  </label>
-  <ul>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/installation.html">
-     Installing Comet
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/source.html">
-     Building From Source
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/datasources.html">
-     Supported Data Sources
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/datatypes.html">
-     Supported Data Types
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/operators.html">
-     Supported Operators
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/expressions.html">
-     Supported Expressions
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/configs.html">
-     Configuration Settings
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/compatibility.html">
-     Compatibility Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/tuning.html">
-     Tuning Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/metrics.html">
-     Metrics Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/iceberg.html">
-     Iceberg Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/latest/kubernetes.html">
-     Kubernetes Guide
-    </a>
-   </li>
-  </ul>
- </li>
- <li class="toctree-l1 has-children">
-  <a class="reference internal" href="../user-guide/0.10/index.html">
-   Comet 0.10.x
-  </a>
-  <input class="toctree-checkbox" id="toctree-checkbox-2" name="toctree-checkbox-2" type="checkbox"/>
-  <label for="toctree-checkbox-2">
-   <i class="fas fa-chevron-down">
-   </i>
-  </label>
-  <ul>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/installation.html">
-     Installing Comet
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/source.html">
-     Building From Source
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/datasources.html">
-     Supported Data Sources
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/datatypes.html">
-     Supported Data Types
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/operators.html">
-     Supported Operators
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/expressions.html">
-     Supported Expressions
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/configs.html">
-     Configuration Settings
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/compatibility.html">
-     Compatibility Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/tuning.html">
-     Tuning Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/metrics.html">
-     Metrics Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/iceberg.html">
-     Iceberg Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.10/kubernetes.html">
-     Kubernetes Guide
-    </a>
-   </li>
-  </ul>
- </li>
- <li class="toctree-l1 has-children">
-  <a class="reference internal" href="../user-guide/0.9/index.html">
-   Comet 0.9.x
-  </a>
-  <input class="toctree-checkbox" id="toctree-checkbox-3" name="toctree-checkbox-3" type="checkbox"/>
-  <label for="toctree-checkbox-3">
-   <i class="fas fa-chevron-down">
-   </i>
-  </label>
-  <ul>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/installation.html">
-     Installing Comet
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/source.html">
-     Building From Source
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/datasources.html">
-     Supported Data Sources
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/datatypes.html">
-     Supported Data Types
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/operators.html">
-     Supported Operators
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/expressions.html">
-     Supported Expressions
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/configs.html">
-     Configuration Settings
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/compatibility.html">
-     Compatibility Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/tuning.html">
-     Tuning Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/metrics.html">
-     Metrics Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/iceberg.html">
-     Iceberg Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.9/kubernetes.html">
-     Kubernetes Guide
-    </a>
-   </li>
-  </ul>
- </li>
- <li class="toctree-l1 has-children">
-  <a class="reference internal" href="../user-guide/0.8/index.html">
-   Comet 0.8.x
-  </a>
-  <input class="toctree-checkbox" id="toctree-checkbox-4" name="toctree-checkbox-4" type="checkbox"/>
-  <label for="toctree-checkbox-4">
-   <i class="fas fa-chevron-down">
-   </i>
-  </label>
-  <ul>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/installation.html">
-     Installing Comet
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/source.html">
-     Building From Source
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/datasources.html">
-     Supported Data Sources
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/datatypes.html">
-     Supported Data Types
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/operators.html">
-     Supported Operators
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/expressions.html">
-     Supported Expressions
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/configs.html">
-     Configuration Settings
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/compatibility.html">
-     Compatibility Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/tuning.html">
-     Tuning Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/metrics.html">
-     Metrics Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/iceberg.html">
-     Iceberg Guide
-    </a>
-   </li>
-   <li class="toctree-l2">
-    <a class="reference internal" href="../user-guide/0.8/kubernetes.html">
-     Kubernetes Guide
-    </a>
-   </li>
-  </ul>
- </li>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guides:</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/latest/index.html">0.12.0-SNAPSHOT</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/0.10/index.html">0.10.x</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/0.9/index.html">0.9.x</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/0.8/index.html">0.8.x</a></li>
 </ul>
-<p aria-level="2" class="caption" role="heading">
- <span class="caption-text">
-  Contributor Guide
- </span>
-</p>
-<ul class="current nav bd-sidenav">
- <li class="toctree-l1">
-  <a class="reference internal" href="contributing.html">
-   Getting Started
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="plugin_overview.html">
-   Comet Plugin Architecture
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="development.html">
-   Development Guide
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="debugging.html">
-   Debugging Guide
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="benchmarking.html">
-   Benchmarking Guide
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="adding_a_new_expression.html">
-   Adding a New Expression
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="tracing.html">
-   Tracing
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="profiling_native_code.html">
-   Profiling Native Code
-  </a>
- </li>
- <li class="toctree-l1 current active">
-  <a class="current reference internal" href="#">
-   Spark SQL Tests
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference internal" href="roadmap.html">
-   Roadmap
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference external" href="https://github.com/apache/datafusion-comet">
-   Github and Issue Tracker
-  </a>
- </li>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Contributor Guide</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugin_overview.html#plugin-components">Plugin Components</a></li>
+<li class="toctree-l1"><a class="reference internal" href="development.html">Development Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tracing.html">Tracing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="profiling_native_code.html">Profiling Native Code</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Spark SQL Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
 </ul>
-<p aria-level="2" class="caption" role="heading">
- <span class="caption-text">
-  ASF Links
- </span>
-</p>
-<ul class="nav bd-sidenav">
- <li class="toctree-l1">
-  <a class="reference external" href="https://apache.org">
-   Apache Software Foundation
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference external" href="https://www.apache.org/licenses/">
-   License
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference external" href="https://www.apache.org/foundation/sponsorship.html">
-   Donate
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference external" href="https://www.apache.org/foundation/thanks.html">
-   Thanks
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference external" href="https://www.apache.org/security/">
-   Security
-  </a>
- </li>
- <li class="toctree-l1">
-  <a class="reference external" href="https://www.apache.org/foundation/policies/conduct.html">
-   Code of conduct
-  </a>
- </li>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">ASF Links</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference external" href="https://apache.org">Apache Software Foundation</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://www.apache.org/licenses/">License</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://www.apache.org/foundation/sponsorship.html">Donate</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://www.apache.org/foundation/thanks.html">Thanks</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://www.apache.org/security/">Security</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://www.apache.org/foundation/policies/conduct.html">Code of conduct</a></li>
 </ul>
 
-    
   </div>
 
   <a class="navbar-brand" href="../index.html">
     <img src="../_static/images/DataFusionComet-Logo-Light.png" class="logo" alt="logo">
   </a>
 </nav>
-
-              </div>
-              <div class="sidebar-end-items">
-              </div>
-            </div>
-            
-          
-
-          
-          <div class="d-none d-xl-block col-xl-2 bd-toc">
-            
-              
-              <div class="toc-item">
-                
-<div class="tocsection onthispage pt-5 pb-3">
-    <i class="fas fa-list"></i> On this page
 </div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+  
+  <div id="rtd-footer-container"></div>
 
-<nav id="bd-toc-nav">
-    <ul class="visible nav section-nav flex-column">
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#install-comet">
-   1. Install Comet
-  </a>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#clone-spark-and-apply-diff">
-   2. Clone Spark and Apply Diff
-  </a>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#run-spark-sql-tests">
-   3. Run Spark SQL Tests
-  </a>
-  <ul class="nav section-nav flex-column">
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#use-the-following-commands-to-run-the-spark-sql-test-suite-locally">
-     Use the following commands to run the Spark SQL test suite locally.
-    </a>
-   </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#steps-to-run-individual-test-suites-through-sbt">
-     Steps to run individual test suites through SBT
-    </a>
-   </li>
-   <li class="toc-h3 nav-item toc-entry">
-    <a class="reference internal nav-link" href="#steps-to-run-individual-test-suites-in-intellij-ide">
-     Steps to run individual test suites in IntelliJ IDE
-    </a>
-   </li>
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">Running...</li>
   </ul>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#creating-a-diff-file-for-a-new-spark-version">
-   Creating a diff file for a new Spark version
-  </a>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#generating-the-diff-file">
-   Generating The Diff File
-  </a>
- </li>
- <li class="toc-h2 nav-item toc-entry">
-  <a class="reference internal nav-link" href="#running-tests-in-ci">
-   Running Tests in CI
-  </a>
- </li>
-</ul>
-
 </nav>
-              </div>
-              
-              <div class="toc-item">
-                
-
-<div class="tocsection editthispage">
-    <a href="https://github.com/apache/datafusion-comet/edit/main/docs/source/contributor-guide/spark-sql-tests.md">
-        <i class="fas fa-pencil-alt"></i> Edit this page
-    </a>
 </div>
-
-              </div>
+      
+    </div>
+  
+  
+</div>
+</div>
               
-            
-          </div>
-          
-
-          
-          
-            
-          
-          <main class="col-12 col-md-9 col-xl-7 py-md-5 pl-md-5 pr-md-4 bd-content" role="main">
               
-              <div>
+              
                 
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
   <!--
 Licensed to the Apache Software Foundation (ASF) under one
 or more contributor license agreements.  See the NOTICE file
@@ -635,7 +734,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 <section id="running-spark-sql-tests">
-<h1>Running Spark SQL Tests<a class="headerlink" href="#running-spark-sql-tests" title="Link to this heading">¶</a></h1>
+<h1>Running Spark SQL Tests<a class="headerlink" href="#running-spark-sql-tests" title="Link to this heading">#</a></h1>
 <p>Running Apache Spark’s SQL tests with Comet enabled is a good way to ensure that Comet produces the same
 results as that version of Spark. To enable this, we apply some changes to the Apache Spark source code so that
 Comet is enabled when we run the tests.</p>
@@ -648,14 +747,14 @@ Comet is enabled when we run the tests.</p>
 </ul>
 <p>Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.4.3 for this example.</p>
 <section id="install-comet">
-<h2>1. Install Comet<a class="headerlink" href="#install-comet" title="Link to this heading">¶</a></h2>
+<h2>1. Install Comet<a class="headerlink" href="#install-comet" title="Link to this heading">#</a></h2>
 <p>Run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release</span></code> in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-3.4&quot;</span><span class="w"> </span>make<span class="w"> </span>release
 </pre></div>
 </div>
 </section>
 <section id="clone-spark-and-apply-diff">
-<h2>2. Clone Spark and Apply Diff<a class="headerlink" href="#clone-spark-and-apply-diff" title="Link to this heading">¶</a></h2>
+<h2>2. Clone Spark and Apply Diff<a class="headerlink" href="#clone-spark-and-apply-diff" title="Link to this heading">#</a></h2>
 <p>Clone Apache Spark locally and apply the diff file from Comet.</p>
 <p>Note: this is a shallow clone of a tagged Spark commit and is not suitable for general Spark development.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>-b<span class="w"> </span><span class="s1">&#39;v3.4.3&#39;</span><span class="w"> </span>--single-branch<span class="w"> </span>--depth<span class="w"> </span><span class="m">1</span><span class="w"> </span>git@github.com:apache/spark.git<span class="w"> </span>apache-spark
@@ -665,9 +764,9 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </div>
 </section>
 <section id="run-spark-sql-tests">
-<h2>3. Run Spark SQL Tests<a class="headerlink" href="#run-spark-sql-tests" title="Link to this heading">¶</a></h2>
+<h2>3. Run Spark SQL Tests<a class="headerlink" href="#run-spark-sql-tests" title="Link to this heading">#</a></h2>
 <section id="use-the-following-commands-to-run-the-spark-sql-test-suite-locally">
-<h3>Use the following commands to run the Spark SQL test suite locally.<a class="headerlink" href="#use-the-following-commands-to-run-the-spark-sql-test-suite-locally" title="Link to this heading">¶</a></h3>
+<h3>Use the following commands to run the Spark SQL test suite locally.<a class="headerlink" href="#use-the-following-commands-to-run-the-spark-sql-test-suite-locally" title="Link to this heading">#</a></h3>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span>catalyst/test
 <span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest&quot;</span>
 <span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest&quot;</span>
@@ -679,7 +778,7 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </div>
 </section>
 <section id="steps-to-run-individual-test-suites-through-sbt">
-<h3>Steps to run individual test suites through SBT<a class="headerlink" href="#steps-to-run-individual-test-suites-through-sbt" title="Link to this heading">¶</a></h3>
+<h3>Steps to run individual test suites through SBT<a class="headerlink" href="#steps-to-run-individual-test-suites-through-sbt" title="Link to this heading">#</a></h3>
 <ol class="arabic simple">
 <li><p>Open SBT with Comet enabled</p></li>
 </ol>
@@ -694,7 +793,7 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </div>
 </section>
 <section id="steps-to-run-individual-test-suites-in-intellij-ide">
-<h3>Steps to run individual test suites in IntelliJ IDE<a class="headerlink" href="#steps-to-run-individual-test-suites-in-intellij-ide" title="Link to this heading">¶</a></h3>
+<h3>Steps to run individual test suites in IntelliJ IDE<a class="headerlink" href="#steps-to-run-individual-test-suites-in-intellij-ide" title="Link to this heading">#</a></h3>
 <ol class="arabic simple">
 <li><p>Add below configuration in VM Options for your test case (apache-spark repository)</p></li>
 </ol>
@@ -709,7 +808,7 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </section>
 </section>
 <section id="creating-a-diff-file-for-a-new-spark-version">
-<h2>Creating a diff file for a new Spark version<a class="headerlink" href="#creating-a-diff-file-for-a-new-spark-version" title="Link to this heading">¶</a></h2>
+<h2>Creating a diff file for a new Spark version<a class="headerlink" href="#creating-a-diff-file-for-a-new-spark-version" title="Link to this heading">#</a></h2>
 <p>Once Comet has support for a new Spark version, we need to create a diff file that can be applied to that version
 of Apache Spark to enable Comet when running tests. This is a highly manual process and the process can
 vary depending on the changes in the new version of Spark, but here is a general guide to the process.</p>
@@ -751,7 +850,7 @@ command generated the following files.</p>
 </div>
 </section>
 <section id="generating-the-diff-file">
-<h2>Generating The Diff File<a class="headerlink" href="#generating-the-diff-file" title="Link to this heading">¶</a></h2>
+<h2>Generating The Diff File<a class="headerlink" href="#generating-the-diff-file" title="Link to this heading">#</a></h2>
 <p>The diff file can be generated using the <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">diff</span></code> command. It may be necessary to set the <code class="docutils literal notranslate"><span class="pre">core.abbrev</span></code>
 configuration setting to use 11 digits hashes for consistency with existing diff files.</p>
 <p>Note that there is an <code class="docutils literal notranslate"><span class="pre">IgnoreComet.scala</span></code> that is not part of the Spark codebase, and therefore needs to be added
@@ -763,7 +862,7 @@ git<span class="w"> </span>diff<span class="w"> </span>v3.5.6<span class="w"> </
 </div>
 </section>
 <section id="running-tests-in-ci">
-<h2>Running Tests in CI<a class="headerlink" href="#running-tests-in-ci" title="Link to this heading">¶</a></h2>
+<h2>Running Tests in CI<a class="headerlink" href="#running-tests-in-ci" title="Link to this heading">#</a></h2>
 <p>The easiest way to run the tests is to create a PR against Comet and let CI run the tests. When working with a
 new Spark version, the <code class="docutils literal notranslate"><span class="pre">spark_sql_test.yaml</span></code> and <code class="docutils literal notranslate"><span class="pre">spark_sql_test_ansi.yaml</span></code> files will need updating with the
 new version.</p>
@@ -771,50 +870,57 @@ new version.</p>
 </section>
 
 
-              </div>
+                </article>
               
               
-              <!-- Previous / next buttons -->
-<div class='prev-next-area'>
-    <a class='left-prev' id="prev-link" href="profiling_native_code.html" title="previous page">
-        <i class="fas fa-angle-left"></i>
-        <div class="prev-next-info">
-            <p class="prev-next-subtitle">previous</p>
-            <p class="prev-next-title">Profiling Native Code</p>
-        </div>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="profiling_native_code.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Profiling Native Code</p>
+      </div>
     </a>
-    <a class='right-next' id="next-link" href="roadmap.html" title="next page">
-    <div class="prev-next-info">
+    <a class="right-next"
+       href="roadmap.html"
+       title="next page">
+      <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
         <p class="prev-next-title">Comet Roadmap</p>
-    </div>
-    <i class="fas fa-angle-right"></i>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
     </a>
 </div>
+                </footer>
               
-          </main>
-          
-
-      </div>
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
     </div>
+  </div>
   
-    <script src="../_static/scripts/pydata-sphinx-theme.js?digest=1999514e3f237ded88cf"></script>
-  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
 <!-- Based on pydata_sphinx_theme/footer.html -->
 <footer class="footer mt-5 mt-md-0">
   <div class="container">
-    
-    <div class="footer-item">
-      <p class="copyright">
-    &copy; Copyright 2023-2024, Apache Software Foundation.<br>
-</p>
-    </div>
-    
-    <div class="footer-item">
-      <p class="sphinx-version">
-Created using <a href="http://sphinx-doc.org/">Sphinx</a> 8.1.3.<br>
-</p>
-    </div>
     
     <div class="footer-item">
       <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
