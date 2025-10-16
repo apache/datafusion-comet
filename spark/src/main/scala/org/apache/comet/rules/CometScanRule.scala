@@ -271,8 +271,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
         val fallbackReasons = new ListBuffer[String]()
 
+        val typeChecker = CometScanTypeChecker(SCAN_NATIVE_DATAFUSION)
         val schemaSupported =
-          CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
+          typeChecker.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
 
         if (!schemaSupported) {
           fallbackReasons += "Comet extension is not enabled for " +

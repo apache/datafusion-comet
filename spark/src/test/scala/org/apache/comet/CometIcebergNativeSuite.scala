@@ -884,6 +884,102 @@ class CometIcebergNativeSuite extends CometTestBase {
     }
   }
 
+  test("complex type - array") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.array_test (
+            id INT,
+            name STRING,
+            values ARRAY<INT>
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.array_test
+          VALUES (1, 'Alice', array(1, 2, 3)), (2, 'Bob', array(4, 5, 6))
+        """)
+
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.array_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.array_test")
+      }
+    }
+  }
+
+  test("complex type - map") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.map_test (
+            id INT,
+            name STRING,
+            properties MAP<STRING, INT>
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.map_test
+          VALUES (1, 'Alice', map('age', 30, 'score', 95)), (2, 'Bob', map('age', 25, 'score', 87))
+        """)
+
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.map_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.map_test")
+      }
+    }
+  }
+
+  test("complex type - struct") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.struct_test (
+            id INT,
+            name STRING,
+            address STRUCT<city: STRING, zip: INT>
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.struct_test
+          VALUES (1, 'Alice', struct('NYC', 10001)), (2, 'Bob', struct('LA', 90001))
+        """)
+
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.struct_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.struct_test")
+      }
+    }
+  }
+
   // Helper to create temp directory
   def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile

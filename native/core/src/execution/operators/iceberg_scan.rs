@@ -30,7 +30,6 @@ use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
@@ -39,6 +38,10 @@ use futures::{ready, FutureExt, Stream, StreamExt, TryStreamExt};
 use iceberg::io::FileIO;
 
 use crate::execution::operators::ExecutionError;
+use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
+use datafusion::datasource::schema_adapter::SchemaAdapterFactory;
+use datafusion_comet_spark_expr::EvalMode;
 
 /// Native Iceberg scan operator that uses iceberg-rust to read Iceberg tables.
 ///
@@ -65,6 +68,7 @@ impl IcebergScanExec {
         file_task_groups: Option<Vec<Vec<iceberg::scan::FileScanTask>>>,
         num_partitions: usize,
     ) -> Result<Self, ExecutionError> {
+        // Don't normalize - just use the schema as provided by Spark
         let output_schema = schema;
 
         let plan_properties = Self::compute_properties(Arc::clone(&output_schema), num_partitions);
@@ -261,14 +265,41 @@ impl IcebergFileStream {
                 DataFusionError::Execution(format!("Failed to read Iceberg task: {}", e))
             })?;
 
-            // Map errors and wrap minimally - RecordBatchStreamAdapter is needed to provide schema
-            let mapped_stream = stream
-                .map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)));
+            // Clone schema for transformation
+            let target_schema = Arc::clone(&schema);
 
-            Ok(
-                Box::pin(RecordBatchStreamAdapter::new(schema, mapped_stream))
-                    as SendableRecordBatchStream,
-            )
+            // Apply schema adaptation to each batch (same approach as regular Parquet scans)
+            // This handles differences in field names ("element" vs "item", "key_value" vs "entries")
+            // and metadata (PARQUET:field_id) just like regular Parquet scans
+            let mapped_stream = stream
+                .map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)))
+                .and_then(move |batch| {
+                    // Use SparkSchemaAdapter to transform the batch
+                    let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+                    let adapter_factory = SparkSchemaAdapterFactory::new(spark_options, None);
+                    let file_schema = batch.schema();
+                    let adapter = adapter_factory
+                        .create(Arc::clone(&target_schema), Arc::clone(&file_schema));
+
+                    // Apply the schema mapping
+                    let result = match adapter.map_schema(file_schema.as_ref()) {
+                        Ok((schema_mapper, _projection)) => {
+                            schema_mapper.map_batch(batch).map_err(|e| {
+                                DataFusionError::Execution(format!("Batch mapping failed: {}", e))
+                            })
+                        }
+                        Err(e) => Err(DataFusionError::Execution(format!(
+                            "Schema mapping failed: {}",
+                            e
+                        ))),
+                    };
+                    futures::future::ready(result)
+                });
+
+            Ok(Box::pin(IcebergStreamWrapper {
+                inner: mapped_stream,
+                schema,
+            }) as SendableRecordBatchStream)
         }))
     }
 
@@ -374,6 +405,34 @@ impl Stream for IcebergFileStream {
 
 impl RecordBatchStream for IcebergFileStream {
     fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+}
+
+/// Wrapper around iceberg-rust's stream that reports Comet's schema without validation.
+/// This avoids strict schema checks that would reject batches with PARQUET:field_id metadata.
+struct IcebergStreamWrapper<S> {
+    inner: S,
+    schema: SchemaRef,
+}
+
+impl<S> Stream for IcebergStreamWrapper<S>
+where
+    S: Stream<Item = DFResult<RecordBatch>> + Unpin,
+{
+    type Item = DFResult<RecordBatch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.poll_next_unpin(cx)
+    }
+}
+
+impl<S> RecordBatchStream for IcebergStreamWrapper<S>
+where
+    S: Stream<Item = DFResult<RecordBatch>> + Unpin,
+{
+    fn schema(&self) -> SchemaRef {
+        // Return Comet's schema, not the batch schema with metadata
         Arc::clone(&self.schema)
     }
 }

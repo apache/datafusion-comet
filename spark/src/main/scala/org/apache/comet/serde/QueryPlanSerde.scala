@@ -1133,6 +1133,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           val field = SparkStructField
             .newBuilder()
             .setName(attr.name)
+            .setNullable(attr.nullable)
           serializeDataType(attr.dataType).foreach(field.setDataType)
           icebergScanBuilder.addRequiredSchema(field.build())
         }
