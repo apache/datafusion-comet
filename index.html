@@ -27,7 +27,7 @@ under the License.
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Apache DataFusion Comet &#8212; Apache DataFusion Comet  documentation</title>
+    <title>Comet Accelerator for Apache Spark and Apache Iceberg &#8212; Apache DataFusion Comet  documentation</title>
   
   
   
@@ -660,12 +660,12 @@ under the License.
 
 <nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
   <div class="bd-toc-item active">
-    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Overview:</span></p>
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Overview</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="overview.html">Comet Overview</a></li>
 <li class="toctree-l1"><a class="reference internal" href="gluten_comparison.html">Comparison with Gluten</a></li>
 </ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guides:</span></p>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guides</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="user-guide/latest/index.html">0.12.0-SNAPSHOT</a></li>
 <li class="toctree-l1"><a class="reference internal" href="user-guide/0.11/index.html">0.11.x</a></li>
@@ -726,28 +726,98 @@ under the License.
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <section id="apache-datafusion-comet">
-<h1>Apache DataFusion Comet<a class="headerlink" href="#apache-datafusion-comet" title="Link to this heading">#</a></h1>
+  <!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<section id="comet-accelerator-for-apache-spark-and-apache-iceberg">
+<h1>Comet Accelerator for Apache Spark and Apache Iceberg<a class="headerlink" href="#comet-accelerator-for-apache-spark-and-apache-iceberg" title="Link to this heading">#</a></h1>
+<!-- Code from https://buttons.github.io/ -->
 <p>
   <!-- Place this tag where you want the button to render. -->
   <a class="github-button" href="https://github.com/apache/datafusion-comet" data-size="large" data-show-count="true" aria-label="Star apache/datafusion-comet on GitHub">Star</a>
   <!-- Place this tag where you want the button to render. -->
    <a class="github-button" href="https://github.com/apache/datafusion-comet/fork" data-size="large" data-show-count="true" aria-label="Fork apache/datafusion-comet on GitHub">Fork</a>
-</p><p>Apache DataFusion Comet is an Apache Spark plugin that uses Apache DataFusion
-as a native runtime to achieve improvement in terms of query efficiency and query runtime.</p>
-<div class="toctree-wrapper compound" id="toc-main-links">
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">Overview:</span></p>
-<ul>
-<li class="toctree-l1"><a class="reference internal" href="overview.html">Comet Overview</a></li>
-<li class="toctree-l1"><a class="reference internal" href="gluten_comparison.html">Comparison with Gluten</a></li>
-</ul>
+</p>
+<p>Apache DataFusion Comet is a high-performance accelerator for Apache Spark, built on top of the powerful
+<a class="reference external" href="https://datafusion.apache.org">Apache DataFusion</a> query engine. Comet is designed to significantly enhance the
+performance of Apache Spark workloads while leveraging commodity hardware and seamlessly integrating with the
+Spark ecosystem without requiring any code changes.</p>
+<p>Comet also accelerates Apache Iceberg, when performing Parquet scans from Spark.</p>
+<section id="run-spark-queries-at-datafusion-speeds">
+<h2>Run Spark Queries at DataFusion Speeds<a class="headerlink" href="#run-spark-queries-at-datafusion-speeds" title="Link to this heading">#</a></h2>
+<p>Comet delivers a performance speedup for many queries, enabling faster data processing and shorter time-to-insights.</p>
+<p>The following chart shows the time it takes to run the 22 TPC-H queries against 100 GB of data in Parquet format
+using a single executor with 8 cores. See the <a class="reference external" href="https://datafusion.apache.org/comet/contributor-guide/benchmarking.html">Comet Benchmarking Guide</a>
+for details of the environment used for these benchmarks.</p>
+<p>When using Comet, the overall run time is reduced from 652 seconds to 268 seconds, a 2.4x speedup.</p>
+<p><img alt="" src="_images/tpch_allqueries.png" /></p>
+<p>Here is a breakdown showing relative performance of Spark and Comet for each TPC-H query.</p>
+<p><img alt="" src="_images/tpch_queries_compare.png" /></p>
+<p>These benchmarks can be reproduced in any environment using the documentation in the
+<a class="reference internal" href="contributor-guide/benchmarking.html"><span class="std std-doc">Comet Benchmarking Guide</span></a>. We encourage
+you to run your own benchmarks.</p>
+</section>
+<section id="use-commodity-hardware">
+<h2>Use Commodity Hardware<a class="headerlink" href="#use-commodity-hardware" title="Link to this heading">#</a></h2>
+<p>Comet leverages commodity hardware, eliminating the need for costly hardware upgrades or
+specialized hardware accelerators, such as GPUs or FPGA. By maximizing the utilization of commodity hardware, Comet
+ensures cost-effectiveness and scalability for your Spark deployments.</p>
+</section>
+<section id="spark-compatibility">
+<h2>Spark Compatibility<a class="headerlink" href="#spark-compatibility" title="Link to this heading">#</a></h2>
+<p>Comet aims for 100% compatibility with all supported versions of Apache Spark, allowing you to integrate Comet into
+your existing Spark deployments and workflows seamlessly. With no code changes required, you can immediately harness
+the benefits of Comet’s acceleration capabilities without disrupting your Spark applications.</p>
+</section>
+<section id="tight-integration-with-apache-datafusion">
+<h2>Tight Integration with Apache DataFusion<a class="headerlink" href="#tight-integration-with-apache-datafusion" title="Link to this heading">#</a></h2>
+<p>Comet tightly integrates with the core Apache DataFusion project, leveraging its powerful execution engine. With
+seamless interoperability between Comet and DataFusion, you can achieve optimal performance and efficiency in your
+Spark workloads.</p>
+</section>
+<section id="active-community">
+<h2>Active Community<a class="headerlink" href="#active-community" title="Link to this heading">#</a></h2>
+<p>Comet boasts a vibrant and active community of developers, contributors, and users dedicated to advancing the
+capabilities of Apache DataFusion and accelerating the performance of Apache Spark.</p>
+</section>
+<section id="getting-started">
+<h2>Getting Started<a class="headerlink" href="#getting-started" title="Link to this heading">#</a></h2>
+<p>To get started with Apache DataFusion Comet, follow the
+<a class="reference external" href="https://datafusion.apache.org/comet/user-guide/installation.html">installation instructions</a>. Join the
+<a class="reference external" href="https://datafusion.apache.org/contributor-guide/communication.html">DataFusion Slack and Discord channels</a> to connect
+with other users, ask questions, and share your experiences with Comet.</p>
+<p>Follow <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/overview.html">Apache DataFusion Comet Overview</a> to get more detailed information</p>
+</section>
+<section id="contributing">
+<h2>Contributing<a class="headerlink" href="#contributing" title="Link to this heading">#</a></h2>
+<p>We welcome contributions from the community to help improve and enhance Apache DataFusion Comet. Whether it’s fixing
+bugs, adding new features, writing documentation, or optimizing performance, your contributions are invaluable in
+shaping the future of Comet. Check out our
+<a class="reference external" href="https://datafusion.apache.org/comet/contributor-guide/contributing.html">contributor guide</a> to get started.</p>
+<div class="toctree-wrapper compound">
 </div>
-<div class="toctree-wrapper compound" id="toc-user-guide-links-versioned">
+<div class="toctree-wrapper compound">
 </div>
-<div class="toctree-wrapper compound" id="toc-contributor-guide-links">
+<div class="toctree-wrapper compound">
 </div>
-<div class="toctree-wrapper compound" id="toc-asf-links">
+<div class="toctree-wrapper compound">
 </div>
+</section>
 </section>
 
 
