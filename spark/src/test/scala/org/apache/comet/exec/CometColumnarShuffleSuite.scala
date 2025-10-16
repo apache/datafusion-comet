@@ -19,8 +19,7 @@
 
 package org.apache.comet.exec
 
-import java.nio.file.Files
-import java.nio.file.Paths
+import java.nio.file.{Files, Paths}
 
 import scala.reflect.runtime.universe._
 import scala.util.Random
@@ -168,8 +167,13 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
                 .repartition(numPartitions, $"_1", $"_2")
                 .sortWithinPartitions($"_2")
 
-              // Array map key array element fallback to Spark shuffle for now
-              checkShuffleAnswer(df, 0)
+              if (isSpark40Plus) {
+                // https://github.com/apache/datafusion-comet/issues/1941
+                // Spark 4.0 introduces a mapsort which falls back
+                checkShuffleAnswer(df, 0)
+              } else {
+                checkShuffleAnswer(df, 1)
+              }
             }
 
             withParquetTable((0 until 50).map(i => (Map(i -> Seq(i, i + 1)), i + 1)), "tbl") {
@@ -178,8 +182,13 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
                 .repartition(numPartitions, $"_1", $"_2")
                 .sortWithinPartitions($"_2")
 
-              // Array map value array element fallback to Spark shuffle for now
-              checkShuffleAnswer(df, 0)
+              if (isSpark40Plus) {
+                // https://github.com/apache/datafusion-comet/issues/1941
+                // Spark 4.0 introduces a mapsort which falls back
+                checkShuffleAnswer(df, 0)
+              } else {
+                checkShuffleAnswer(df, 1)
+              }
             }
 
             withParquetTable((0 until 50).map(i => (Map((i, i.toString) -> i), i + 1)), "tbl") {
@@ -188,8 +197,13 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
                 .repartition(numPartitions, $"_1", $"_2")
                 .sortWithinPartitions($"_2")
 
-              // Struct map key array element fallback to Spark shuffle for now
-              checkShuffleAnswer(df, 0)
+              if (isSpark40Plus) {
+                // https://github.com/apache/datafusion-comet/issues/1941
+                // Spark 4.0 introduces a mapsort which falls back
+                checkShuffleAnswer(df, 0)
+              } else {
+                checkShuffleAnswer(df, 1)
+              }
             }
 
             withParquetTable((0 until 50).map(i => (Map(i -> (i, i.toString)), i + 1)), "tbl") {
@@ -198,8 +212,13 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
                 .repartition(numPartitions, $"_1", $"_2")
                 .sortWithinPartitions($"_2")
 
-              // Struct map value array element fallback to Spark shuffle for now
-              checkShuffleAnswer(df, 0)
+              if (isSpark40Plus) {
+                // https://github.com/apache/datafusion-comet/issues/1941
+                // Spark 4.0 introduces a mapsort which falls back
+                checkShuffleAnswer(df, 0)
+              } else {
+                checkShuffleAnswer(df, 1)
+              }
             }
           }
         }
@@ -222,8 +241,13 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
                 .repartition(numPartitions, $"_1", $"_2")
                 .sortWithinPartitions($"_2")
 
-              // Map array element fallback to Spark shuffle for now
-              checkShuffleAnswer(df, 0)
+              if (isSpark40Plus) {
+                // https://github.com/apache/datafusion-comet/issues/1941
+                // Spark 4.0 introduces a mapsort which falls back
+                checkShuffleAnswer(df, 0)
+              } else {
+                checkShuffleAnswer(df, 1)
+              }
             }
           }
         }
@@ -469,8 +493,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
                 .repartition(numPartitions, $"_1", $"_2")
                 .sortWithinPartitions($"_1")
 
-              // Nested array fallback to Spark shuffle for now
-              checkShuffleAnswer(df, 0)
+              checkShuffleAnswer(df, 1)
             }
           }
         }
@@ -983,6 +1006,7 @@ class DisableAQECometAsyncShuffleSuite extends CometColumnarShuffleSuite {
 }
 
 class CometShuffleEncryptionSuite extends CometTestBase {
+
   import testImplicits._
 
   override protected def sparkConf: SparkConf = {
@@ -1034,6 +1058,7 @@ class CometShuffleManagerSuite extends CometTestBase {
         shuffleWriterProcessor = null,
         partitioner = new Partitioner {
           override def numPartitions: Int = 50
+
           override def getPartition(key: Any): Int = key.asInstanceOf[Int]
         },
         decodeTime = null)

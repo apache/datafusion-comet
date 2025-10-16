@@ -85,11 +85,32 @@ autosummary_generate = True
 #
 html_theme = 'pydata_sphinx_theme'
 
+html_logo = "_static/images/DataFusionComet-Logo-Light.png"
+
 html_theme_options = {
-    "use_edit_page_button": True,
+    "logo": {
+        "image_light": "_static/images/DataFusionComet-Logo-Light.png",
+        "image_dark": "_static/images/DataFusionComet-Logo-Dark.png",
+    },
+
+    "use_edit_page_button": False,
+    "secondary_sidebar_items": [],
+    "collapse_navigation": True,
+    "navbar_start": ["navbar-logo"],
+    "navbar_center": ["navbar-nav"],
+    "navbar_end": ["navbar-icon-links", "theme-switcher"],
+    "icon_links": [
+        {
+            "name": "GitHub",
+            "url": "https://github.com/apache/datafusion-comet",
+            "icon": "fa-brands fa-github",
+        },
+    ],
+
 }
 
 html_context = {
+    "default_mode": "light",
     "github_user": "apache",
     "github_repo": "datafusion-comet",
     "github_version": "main",
@@ -100,8 +121,6 @@ html_context = {
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
-
-html_logo = "_static/images/DataFusionComet-Logo-Light.png"
 
 html_css_files = [
     "theme_overrides.css"

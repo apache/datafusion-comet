@@ -15,9 +15,6 @@
 .. specific language governing permissions and limitations
 .. under the License.
 
-.. image:: _static/images/DataFusionComet-Logo-Light.png
-  :alt: DataFusion Comet Logo
-
 =======================
 Apache DataFusion Comet
 =======================
@@ -49,10 +46,11 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    :caption: User Guides:
    :hidden:
 
-   Comet 0.11.0-SNAPSHOT <user-guide/latest/index>
-   Comet 0.10.x <user-guide/0.10/index>
-   Comet 0.9.x <user-guide/0.9/index>
-   Comet 0.8.x <user-guide/0.8/index>
+   0.12.0-SNAPSHOT <user-guide/latest/index>
+   0.11.x <user-guide/0.11/index>
+   0.10.x <user-guide/0.10/index>
+   0.9.x <user-guide/0.9/index>
+   0.8.x <user-guide/0.8/index>
 
 .. _toc.contributor-guide-links:
 .. toctree::

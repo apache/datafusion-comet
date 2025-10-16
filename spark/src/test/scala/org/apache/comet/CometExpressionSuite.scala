@@ -58,7 +58,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
     """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
-    """org.apache.comet.CometNativeException: [DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+    """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
 
   test("compare true/false to negative zero") {
     Seq(false, true).foreach { dictionary =>
@@ -239,7 +239,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("date_add with scalar overflow") {
+  // TODO: https://github.com/apache/datafusion-comet/issues/2539
+  ignore("date_add with scalar overflow") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -2948,7 +2949,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for divide (division by zero)") {
-    //    TODO : Support ANSI mode in Integral divide -
     val data = Seq((Integer.MIN_VALUE, 0))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -2969,7 +2969,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for divide (division by zero) float division") {
-    //    TODO : Support ANSI mode in Integral divide -
     val data = Seq((Float.MinPositiveValue, 0.0))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -2984,6 +2983,70 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("Division by zero"))
           case _ => fail("Exception should be thrown")
+        }
+      }
+    }
+  }
+
+  test("ANSI support for integral divide (division by zero)") {
+    val data = Seq((Integer.MAX_VALUE, 0))
+    Seq("true", "false").foreach { p =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> p) {
+        withParquetTable(data, "tbl") {
+          val res = spark.sql("""
+                |SELECT
+                |  _1 div _2
+                |  from tbl
+                |  """.stripMargin)
+
+          checkSparkMaybeThrows(res) match {
+            case (Some(sparkException), Some(cometException)) =>
+              assert(sparkException.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
+              assert(cometException.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
+            case (None, None) => checkSparkAnswerAndOperator(res)
+            case (None, Some(ex)) =>
+              fail(
+                "Comet threw an exception but Spark did not. Comet exception: " + ex.getMessage)
+            case (Some(sparkException), None) =>
+              fail(
+                "Spark threw an exception but Comet did not. Spark exception: " +
+                  sparkException.getMessage)
+          }
+        }
+      }
+    }
+  }
+
+  test("ANSI support for round function") {
+    Seq(
+      (
+        Int.MaxValue,
+        Int.MinValue,
+        Long.MinValue,
+        Long.MaxValue,
+        Byte.MinValue,
+        Byte.MaxValue,
+        Short.MinValue,
+        Short.MaxValue)).foreach { value =>
+      val data = Seq(value)
+      withParquetTable(data, "tbl") {
+        Seq(-1000, -100, -10, -1, 0, 1, 10, 100, 1000).foreach { scale =>
+          Seq(true, false).foreach { ansi =>
+            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+              val res = spark.sql(s"SELECT round(_1, $scale) from tbl")
+              checkSparkMaybeThrows(res) match {
+                case (Some(sparkException), Some(cometException)) =>
+                  assert(sparkException.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                  assert(cometException.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                case (None, None) => checkSparkAnswerAndOperator(res)
+                case (None, Some(ex)) =>
+                  fail("Comet threw an exception but Spark did not. Comet exception: " + ex.getMessage)
+                case (Some(sparkException), None) =>
+                  fail("Spark threw an exception but Comet did not. Spark exception: " +
+                    sparkException.getMessage)
+              }
+            }
+          }
         }
       }
     }

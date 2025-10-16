@@ -20,7 +20,7 @@ use arrow::compute::cast;
 use arrow::datatypes::DataType;
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_spark_expr::{spark_decimal_div, spark_decimal_integral_div};
+use datafusion_comet_spark_expr::{spark_decimal_div, spark_decimal_integral_div, EvalMode};
 use std::hint::black_box;
 use std::sync::Arc;
 
@@ -48,6 +48,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             black_box(spark_decimal_div(
                 black_box(&args),
                 black_box(&DataType::Decimal128(10, 4)),
+                EvalMode::Legacy,
             ))
         })
     });
@@ -57,6 +58,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             black_box(spark_decimal_integral_div(
                 black_box(&args),
                 black_box(&DataType::Decimal128(10, 4)),
+                EvalMode::Legacy,
             ))
         })
     });

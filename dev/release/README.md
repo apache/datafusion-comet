@@ -150,6 +150,24 @@ git push apache 0.1.0-rc1
 Note that pushing a release candidate tag will trigger a GitHub workflow that will build a Docker image and publish
 it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pkgs/container/datafusion-comet
 
+### Publishing Documentation
+
+In `docs` directory:
+
+- Update `docs/source/index.rst` and add a new navigation menu link for the new release in the section `_toc.user-guide-links-versioned`
+- Add a new line to `build.sh` to delete the locally cloned `comet-*` branch for the new release e.g. `comet-0.11`
+- Update the main method in `generate-versions.py`:
+
+```python
+    latest_released_version = "0.11.0"
+    previous_versions = ["0.8.0", "0.9.1", "0.10.1"]
+```
+
+Test the documentation build locally, following the instructions in `docs/README.md`.
+
+Note that the download links in the installation guide will not work until the release is finalized, but having the
+documentation available could be useful for anyone testing out the release candidate during the voting period.
+
 ## Publishing the Release Candidate
 
 This part of the process can mostly only be performed by a PMC member.

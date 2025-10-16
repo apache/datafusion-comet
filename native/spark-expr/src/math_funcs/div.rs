@@ -16,29 +16,33 @@
 // under the License.
 
 use crate::math_funcs::utils::get_precision_scale;
+use crate::{divide_by_zero_error, EvalMode};
 use arrow::array::{Array, Decimal128Array};
 use arrow::datatypes::{DataType, DECIMAL128_MAX_PRECISION};
+use arrow::error::ArrowError;
 use arrow::{
     array::{ArrayRef, AsArray},
     datatypes::Decimal128Type,
 };
 use datafusion::common::DataFusionError;
 use datafusion::physical_plan::ColumnarValue;
-use num::{BigInt, Signed, ToPrimitive};
+use num::{BigInt, Signed, ToPrimitive, Zero};
 use std::sync::Arc;
 
 pub fn spark_decimal_div(
     args: &[ColumnarValue],
     data_type: &DataType,
+    eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
-    spark_decimal_div_internal(args, data_type, false)
+    spark_decimal_div_internal(args, data_type, false, eval_mode)
 }
 
 pub fn spark_decimal_integral_div(
     args: &[ColumnarValue],
     data_type: &DataType,
+    eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
-    spark_decimal_div_internal(args, data_type, true)
+    spark_decimal_div_internal(args, data_type, true, eval_mode)
 }
 
 // Let Decimal(p3, s3) as return type i.e. Decimal(p1, s1) / Decimal(p2, s2) = Decimal(p3, s3).
@@ -50,6 +54,7 @@ fn spark_decimal_div_internal(
     args: &[ColumnarValue],
     data_type: &DataType,
     is_integral_div: bool,
+    eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
     let left = &args[0];
     let right = &args[1];
@@ -80,9 +85,12 @@ fn spark_decimal_div_internal(
         let r_mul = ten.pow(r_exp);
         let five = BigInt::from(5);
         let zero = BigInt::from(0);
-        arrow::compute::kernels::arity::binary(left, right, |l, r| {
+        arrow::compute::kernels::arity::try_binary(left, right, |l, r| {
             let l = BigInt::from(l) * &l_mul;
             let r = BigInt::from(r) * &r_mul;
+            if eval_mode == EvalMode::Ansi && is_integral_div && r.is_zero() {
+                return Err(ArrowError::ComputeError(divide_by_zero_error().to_string()));
+            }
             let div = if r.eq(&zero) { zero.clone() } else { &l / &r };
             let res = if is_integral_div {
                 div
@@ -91,14 +99,17 @@ fn spark_decimal_div_internal(
             } else {
                 div + &five
             } / &ten;
-            res.to_i128().unwrap_or(i128::MAX)
+            Ok(res.to_i128().unwrap_or(i128::MAX))
         })?
     } else {
         let l_mul = 10_i128.pow(l_exp);
         let r_mul = 10_i128.pow(r_exp);
-        arrow::compute::kernels::arity::binary(left, right, |l, r| {
+        arrow::compute::kernels::arity::try_binary(left, right, |l, r| {
             let l = l * l_mul;
             let r = r * r_mul;
+            if eval_mode == EvalMode::Ansi && is_integral_div && r.is_zero() {
+                return Err(ArrowError::ComputeError(divide_by_zero_error().to_string()));
+            }
             let div = if r == 0 { 0 } else { l / r };
             let res = if is_integral_div {
                 div
@@ -107,7 +118,7 @@ fn spark_decimal_div_internal(
             } else {
                 div + 5
             } / 10;
-            res.to_i128().unwrap_or(i128::MAX)
+            Ok(res.to_i128().unwrap_or(i128::MAX))
         })?
     };
     let result = result.with_data_type(DataType::Decimal128(p3, s3));

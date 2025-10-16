@@ -15,9 +15,10 @@
 # specific language governing permissions and limitations
 # under the License.
 
-sphinx
+setuptools
+sphinx>=7.0,<8.0
 sphinx-reredirects
-pydata-sphinx-theme==0.8.0
-myst-parser
+pydata-sphinx-theme>=0.15.0,<0.16.0
+myst-parser>=2.0,<4.0
 maturin
 jinja2
