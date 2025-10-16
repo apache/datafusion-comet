@@ -155,7 +155,7 @@ it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pk
 In `docs` directory:
 
 - Update `docs/source/index.rst` and add a new navigation menu link for the new release in the section `_toc.user-guide-links-versioned`
-- Add a new line to `build.sh` to delete the locally cloned `comet-*` branch for the new release e.g. `comet-0.11.0`
+- Add a new line to `build.sh` to delete the locally cloned `comet-*` branch for the new release e.g. `comet-0.11`
 - Update the main method in `generate-versions.py`:
 
 ```python
