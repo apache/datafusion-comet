@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Unhex}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Unhex}
 import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -136,6 +136,25 @@ object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
     val optExpr =
       scalarFunctionExprToProtoWithReturnType(
         "unhex",
+        expr.dataType,
+        false,
+        childExpr,
+        failOnErrorExpr)
+    optExprWithInfo(optExpr, expr, expr.child)
+  }
+}
+
+object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
+  override def convert(
+      expr: Abs,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val failOnErrorExpr = exprToProtoInternal(Literal(expr.failOnError), inputs, binding)
+
+    val optExpr =
+      scalarFunctionExprToProtoWithReturnType(
+        "abs",
         expr.dataType,
         false,
         childExpr,
