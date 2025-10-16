@@ -164,7 +164,10 @@ In `docs` directory:
 ```
 
 Test the documentation build locally, following the instructions in `docs/README.md`.
- 
+
+Note that the download links in the installation guide will not work until the release is finalized, but having the
+documentation available could be useful for anyone testing out the release candidate during the voting period.
+
 ## Publishing the Release Candidate
 
 This part of the process can mostly only be performed by a PMC member.

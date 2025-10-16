@@ -59,7 +59,9 @@ Cloud Service Providers.
 Comet jar files are available in [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion) for amd64 and arm64 architectures for Linux. For Apple macOS, it
 is currently necessary to build from source.
 
-Here are the direct links for downloading the Comet $COMET_VERSION jar file. Note that these links are not valid if you are viewing the documentation for the latest `SNAPSHOT` release.
+Here are the direct links for downloading the Comet $COMET_VERSION jar file. Note that these links are not valid if
+you are viewing the documentation for the latest `SNAPSHOT` release, or for the latest release while it is still going
+through the release vote. Release candidate jars can be found [here](https://repository.apache.org/#nexus-search;quick~org.apache.datafusion).
 
 - [Comet plugin for Spark 3.4 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.12/$COMET_VERSION/comet-spark-spark3.4_2.12-$COMET_VERSION.jar)
 - [Comet plugin for Spark 3.4 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.13/$COMET_VERSION/comet-spark-spark3.4_2.13-$COMET_VERSION.jar)
