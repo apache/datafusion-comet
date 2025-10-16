@@ -50,6 +50,7 @@ as a native runtime to achieve improvement in terms of query efficiency and quer
    :hidden:
 
    0.12.0-SNAPSHOT <user-guide/latest/index>
+   0.11.x <user-guide/0.11/index>
    0.10.x <user-guide/0.10/index>
    0.9.x <user-guide/0.9/index>
    0.8.x <user-guide/0.8/index>
