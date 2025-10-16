@@ -125,6 +125,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_ICEBERG_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.icebergNative.enabled")
+      .category(CATEGORY_SCAN)
       .doc(
         "Whether to enable native Iceberg scan using iceberg-rust. When enabled, Comet will " +
           "replace Spark's Iceberg BatchScanExec with CometIcebergNativeScanExec. Iceberg " +
