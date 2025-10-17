@@ -20,7 +20,6 @@
 package org.apache.spark.shuffle.comet;
 
 import org.apache.spark.SparkConf;
-import org.apache.spark.memory.MemoryMode;
 import org.apache.spark.memory.TaskMemoryManager;
 
 /**
@@ -28,7 +27,7 @@ import org.apache.spark.memory.TaskMemoryManager;
  * CometUnifiedShuffleMemoryAllocator (off-heap mode).
  */
 public final class CometShuffleMemoryAllocator {
-  private static CometShuffleMemoryAllocatorTrait INSTANCE;
+  //  private static CometShuffleMemoryAllocatorTrait INSTANCE;
 
   /**
    * Returns the singleton instance of `CometShuffleMemoryAllocator`. This method should be used
@@ -38,18 +37,20 @@ public final class CometShuffleMemoryAllocator {
   public static CometShuffleMemoryAllocatorTrait getInstance(
       SparkConf conf, TaskMemoryManager taskMemoryManager, long pageSize) {
 
-    if (taskMemoryManager.getTungstenMemoryMode() == MemoryMode.OFF_HEAP) {
-      // CometShuffleMemoryAllocator stores pages in TaskMemoryManager which is not singleton,
-      // but one instance per task. So we need to create a new instance for each task.
-      return new CometUnifiedShuffleMemoryAllocator(taskMemoryManager, pageSize);
-    }
+    //    if (taskMemoryManager.getTungstenMemoryMode() == MemoryMode.OFF_HEAP) {
+    // CometShuffleMemoryAllocator stores pages in TaskMemoryManager which is not singleton,
+    // but one instance per task. So we need to create a new instance for each task.
+    return new CometUnifiedShuffleMemoryAllocator(
+        taskMemoryManager, taskMemoryManager.getTungstenMemoryMode(), pageSize);
+    //    }
 
-    synchronized (CometShuffleMemoryAllocator.class) {
-      if (INSTANCE == null) {
-        // CometBoundedShuffleMemoryAllocator handles pages by itself so it can be a singleton.
-        INSTANCE = new CometBoundedShuffleMemoryAllocator(conf, taskMemoryManager, pageSize);
-      }
-    }
-    return INSTANCE;
+    //    synchronized (CometShuffleMemoryAllocator.class) {
+    //      if (INSTANCE == null) {
+    //        // CometBoundedShuffleMemoryAllocator handles pages by itself so it can be a
+    // singleton.
+    //        INSTANCE = new CometBoundedShuffleMemoryAllocator(conf, taskMemoryManager, pageSize);
+    //      }
+    //    }
+    //    return INSTANCE;
   }
 }

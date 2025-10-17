@@ -38,12 +38,14 @@ import org.apache.spark.unsafe.memory.MemoryBlock;
  */
 public final class CometUnifiedShuffleMemoryAllocator extends CometShuffleMemoryAllocatorTrait {
 
-  CometUnifiedShuffleMemoryAllocator(TaskMemoryManager taskMemoryManager, long pageSize) {
-    super(taskMemoryManager, pageSize, MemoryMode.OFF_HEAP);
-    if (taskMemoryManager.getTungstenMemoryMode() != MemoryMode.OFF_HEAP) {
+  CometUnifiedShuffleMemoryAllocator(
+      TaskMemoryManager taskMemoryManager, MemoryMode memoryMode, long pageSize) {
+    super(taskMemoryManager, pageSize, memoryMode);
+    if (taskMemoryManager.getTungstenMemoryMode() != memoryMode) {
       throw new IllegalArgumentException(
-          "CometUnifiedShuffleMemoryAllocator should be used with off-heap "
-              + "memory mode, but got "
+          "CometUnifiedShuffleMemoryAllocator should be used with "
+              + memoryMode
+              + " memory mode, but got "
               + taskMemoryManager.getTungstenMemoryMode());
     }
   }
