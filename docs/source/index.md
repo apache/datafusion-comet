@@ -97,52 +97,11 @@ shaping the future of Comet. Check out our
 
 ```{toctree}
 :maxdepth: 1
-:caption: Overview
+:caption: Index
 :hidden:
 
-Comet Overview <overview>
-Comparison with Gluten <gluten_comparison>
-```
-
-```{toctree}
-:maxdepth: 2
-:caption: User Guides
-:hidden:
-
-0.12.0-SNAPSHOT <user-guide/latest/index>
-0.11.x <user-guide/0.11/index>
-0.10.x <user-guide/0.10/index>
-0.9.x <user-guide/0.9/index>
-0.8.x <user-guide/0.8/index>
-```
-
-```{toctree}
-:maxdepth: 1
-:caption: Contributor Guide
-:hidden:
-
-Getting Started <contributor-guide/contributing>
-Comet Plugin Overview <contributor-guide/plugin_overview>
-Development Guide <contributor-guide/development>
-Debugging Guide <contributor-guide/debugging>
-Benchmarking Guide <contributor-guide/benchmarking>
-Adding a New Expression <contributor-guide/adding_a_new_expression>
-Tracing <contributor-guide/tracing>
-Profiling Native Code <contributor-guide/profiling_native_code>
-Spark SQL Tests <contributor-guide/spark-sql-tests.md>
-Roadmap <contributor-guide/roadmap.md>
-Github and Issue Tracker <https://github.com/apache/datafusion-comet>
-```
-
-```{toctree}
-:maxdepth: 1
-:caption: ASF Links
-:hidden:
-
-Apache Software Foundation <https://apache.org>
-License <https://www.apache.org/licenses/>
-Donate <https://www.apache.org/foundation/sponsorship.html>
-Thanks <https://www.apache.org/foundation/thanks.html>
-Security <https://www.apache.org/security/>
-Code of conduct <https://www.apache.org/foundation/policies/conduct.html>
+Comet <overview/index>
+User Guide <user-guide/index>
+Contributor Guide <contributor-guide/index>
+ASF Links <asf/index>
 ```
