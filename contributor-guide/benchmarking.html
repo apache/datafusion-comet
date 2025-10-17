@@ -470,20 +470,28 @@ under the License.
 -->
 <section id="comet-benchmarking-guide">
 <h1>Comet Benchmarking Guide<a class="headerlink" href="#comet-benchmarking-guide" title="Link to this heading">#</a></h1>
-<p>To track progress on performance, we regularly run benchmarks derived from TPC-H and TPC-DS. Data generation and
-benchmarking documentation and scripts are available in the <a class="reference external" href="https://github.com/apache/datafusion-benchmarks">DataFusion Benchmarks</a> GitHub repository.</p>
+<p>To track progress on performance, we regularly run benchmarks derived from TPC-H and TPC-DS.</p>
+<p>The benchmarking scripts are contained at <a class="github reference external" href="https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks">apache/datafusion-comet</a>.</p>
+<p>Data generation scripts are available in the <a class="reference external" href="https://github.com/apache/datafusion-benchmarks">DataFusion Benchmarks</a> GitHub repository.</p>
+<section id="current-benchmark-results">
+<h2>Current Benchmark Results<a class="headerlink" href="#current-benchmark-results" title="Link to this heading">#</a></h2>
+<p>The published benchmarks are performed on a Linux workstation with PCIe 5, AMD 7950X CPU (16 cores), 128 GB RAM, and
+data stored locally in Parquet format on NVMe storage. Performance characteristics will vary in different environments
+and we encourage you to run these benchmarks in your own environments.</p>
+<p>The operating system used was Ubuntu 22.04.5 LTS.</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="benchmark-results/tpc-h.html"><span class="doc std std-doc">Benchmarks derived from TPC-H</span></a></p></li>
+<li><p><a class="reference internal" href="benchmark-results/tpc-ds.html"><span class="doc std std-doc">Benchmarks derived from TPC-DS</span></a></p></li>
+</ul>
+</section>
+<section id="benchmarking-guides">
+<h2>Benchmarking Guides<a class="headerlink" href="#benchmarking-guides" title="Link to this heading">#</a></h2>
 <p>Available benchmarking guides:</p>
 <ul class="simple">
 <li><p><a class="reference internal" href="benchmarking_macos.html"><span class="std std-doc">Benchmarking on macOS</span></a></p></li>
 <li><p><a class="reference internal" href="benchmarking_aws_ec2.html"><span class="doc std std-doc">Benchmarking on AWS EC2</span></a></p></li>
 </ul>
 <p>We also have many micro benchmarks that can be run from an IDE located <a class="reference external" href="https://github.com/apache/datafusion-comet/tree/main/spark/src/test/scala/org/apache/spark/sql/benchmark">here</a>.</p>
-<section id="current-benchmark-results">
-<h2>Current Benchmark Results<a class="headerlink" href="#current-benchmark-results" title="Link to this heading">#</a></h2>
-<ul class="simple">
-<li><p><a class="reference internal" href="benchmark-results/tpc-h.html"><span class="doc std std-doc">Benchmarks derived from TPC-H</span></a></p></li>
-<li><p><a class="reference internal" href="benchmark-results/tpc-ds.html"><span class="doc std std-doc">Benchmarks derived from TPC-DS</span></a></p></li>
-</ul>
 </section>
 </section>
 
