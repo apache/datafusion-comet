@@ -100,7 +100,7 @@ shaping the future of Comet. Check out our
 :caption: Index
 :hidden:
 
-Comet <overview/index>
+Comet Overview <about/index>
 User Guide <user-guide/index>
 Contributor Guide <contributor-guide/index>
 ASF Links <asf/index>
