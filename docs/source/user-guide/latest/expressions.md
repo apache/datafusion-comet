@@ -118,6 +118,7 @@ incompatible expressions.
 
 | Expression     | SQL       | Spark-Compatible? | Compatibility Notes               |
 |----------------|-----------|-------------------|-----------------------------------|
+| Abs            | `abs`     | Yes               |                                   |
 | Acos           | `acos`    | Yes               |                                   |
 | Add            | `+`       | Yes               |                                   |
 | Asin           | `asin`    | Yes               |                                   |
