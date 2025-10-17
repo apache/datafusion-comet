@@ -460,7 +460,11 @@ mod tests {
             let fail_on_error_arg =
                 ColumnarValue::Scalar(ScalarValue::Boolean(Some(fail_on_error)));
             match abs(&[args, fail_on_error_arg]) {
-                Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(Some(result), precision, scale))) => {
+                Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(
+                    Some(result),
+                    precision,
+                    scale,
+                ))) => {
                     assert_eq!(result, i128::MIN);
                     assert_eq!(precision, 18);
                     assert_eq!(scale, 10);
@@ -489,7 +493,11 @@ mod tests {
             let fail_on_error_arg =
                 ColumnarValue::Scalar(ScalarValue::Boolean(Some(fail_on_error)));
             match abs(&[args, fail_on_error_arg]) {
-                Ok(ColumnarValue::Scalar(ScalarValue::Decimal256(Some(result), precision, scale))) => {
+                Ok(ColumnarValue::Scalar(ScalarValue::Decimal256(
+                    Some(result),
+                    precision,
+                    scale,
+                ))) => {
                     assert_eq!(result, i256::MIN);
                     assert_eq!(precision, 10);
                     assert_eq!(scale, 2);
