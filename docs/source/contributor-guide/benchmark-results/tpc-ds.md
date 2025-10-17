@@ -23,6 +23,8 @@ The following benchmarks were performed on a Linux workstation with PCIe 5, AMD 
 data stored locally in Parquet format on NVMe storage. Performance characteristics will vary in different environments
 and we encourage you to run these benchmarks in your own environments.
 
+The operating system is Ubuntu 22.04.5 LTS.
+
 The tracking issue for improving TPC-DS performance is [#858](https://github.com/apache/datafusion-comet/issues/858).
 
 ![](../../_static/images/benchmark-results/0.11.0/tpcds_allqueries.png)
