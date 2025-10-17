@@ -248,7 +248,9 @@ object CometSparkSessionExtensions extends Logging {
    */
   def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
     assert(!isOffHeapEnabled(sparkConf))
-    ConfigHelpers.byteFromString(sparkConf.get(COMET_MEMORY_OVERHEAD.key), ByteUnit.MiB)
+    ConfigHelpers.byteFromString(
+      sparkConf.get(COMET_MEMORY_OVERHEAD.key, COMET_MEMORY_OVERHEAD.defaultValueString),
+      ByteUnit.MiB)
   }
 
   private def getBooleanConf(conf: SparkConf, entry: ConfigEntry[Boolean]) =
