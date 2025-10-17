@@ -538,7 +538,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_EXEC_ONHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] = conf(
     "spark.comet.exec.onHeap.memoryPool")
-    .category(CATEGORY_TUNING)
+    .category(CATEGORY_TESTING)
     .doc(
       "The type of memory pool to be used for Comet native execution " +
         "when running Spark in on-heap mode. Available pool types are `greedy`, `fair_spill`, " +
