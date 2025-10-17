@@ -76,9 +76,9 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
 
   def getBytesFromMib(mib: Long): Long = mib * 1024 * 1024
 
-  test("Minimum Comet memory overhead") {
+  test("Default Comet memory overhead") {
     val conf = new SparkConf()
-    assert(getCometMemoryOverhead(conf) == getBytesFromMib(384))
+    assert(getCometMemoryOverhead(conf) == getBytesFromMib(1024))
   }
 
   test("Comet memory overhead") {
@@ -106,6 +106,6 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     // Minimum Comet memory overhead is 384MB
     assert(
       getCometShuffleMemorySize(conf, sqlConf) ==
-        getBytesFromMib((384 * 0.2).toLong))
+        getBytesFromMib((1024 * 0.2).toLong))
   }
 }

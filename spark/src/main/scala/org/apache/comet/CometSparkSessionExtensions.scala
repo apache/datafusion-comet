@@ -247,7 +247,11 @@ object CometSparkSessionExtensions extends Logging {
    * on-heap mode.
    */
   def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
-    assert(!isOffHeapEnabled(sparkConf))
+    if (isOffHeapEnabled(sparkConf)) {
+      // when running in off-heap mode we use unified memory management to share
+      // off-heap memory with Spark so do not add overhead
+      return 0
+    }
     ConfigHelpers.byteFromString(
       sparkConf.get(COMET_MEMORY_OVERHEAD.key, COMET_MEMORY_OVERHEAD.defaultValueString),
       ByteUnit.MiB)
