@@ -91,7 +91,7 @@ object CometSha1 extends CometExpressionSerde[Sha1] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     if (!HashUtils.isSupportedType(expr)) {
-      withInfo(expr, s"HashUtils doesn't support $expr")
+      withInfo(expr, s"HashUtils doesn't support ${expr.child.dataType}")
       return None
     }
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
