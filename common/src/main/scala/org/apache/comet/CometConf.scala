@@ -272,10 +272,7 @@ object CometConf extends ShimCometConf {
     .category(CATEGORY_TESTING)
     .doc(
       "The amount of additional memory to be allocated per executor process for Comet, in MiB, " +
-        "when running Spark in on-heap mode. " +
-        "This config is optional. If this is not specified, it will be set to " +
-        s"`spark.comet.memory.overhead.factor` * `spark.executor.memory`. $TUNING_GUIDE.")
-    .internal()
+        "when running Spark in on-heap mode.")
     .bytesConf(ByteUnit.MiB)
     .createWithDefault(1024)
 
@@ -402,7 +399,6 @@ object CometConf extends ShimCometConf {
 
   val COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.columnar.shuffle.memory.factor")
-      .internal()
       .category(CATEGORY_TESTING)
       .doc("Fraction of Comet memory to be allocated per executor process for columnar shuffle " +
         s"when running in on-heap mode. $TUNING_GUIDE.")
@@ -489,7 +485,6 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC_EXPLAIN)
       .doc("When this setting is enabled, Comet will log all plan transformations performed " +
         "in physical optimizer rules. Default: false")
-      .internal()
       .booleanConf
       .createWithDefault(false)
 
@@ -528,7 +523,6 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.onHeap.enabled")
       .category(CATEGORY_TESTING)
       .doc("Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests.")
-      .internal()
       .booleanConf
       .createWithDefault(sys.env.getOrElse("ENABLE_COMET_ONHEAP", "false").toBoolean)
 
@@ -550,7 +544,6 @@ object CometConf extends ShimCometConf {
         "when running Spark in on-heap mode. Available pool types are `greedy`, `fair_spill`, " +
         "`greedy_task_shared`, `fair_spill_task_shared`, `greedy_global`, `fair_spill_global`, " +
         "and `unbounded`.")
-    .internal()
     .stringConf
     .createWithDefault("greedy_task_shared")
 
