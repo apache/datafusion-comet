@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans._
+import org.apache.spark.sql.catalyst.plans.physical.KeyGroupedPartitioning
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet._
@@ -50,7 +51,7 @@ import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
-import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
+import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator, SparkStructField}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
@@ -1089,6 +1090,304 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
+      // Iceberg scan with native execution enabled -
+      // detected by CometBatchScanExec wrapping SparkBatchQueryScan
+      case scan: CometBatchScanExec
+          if CometConf.COMET_ICEBERG_NATIVE_ENABLED.get() &&
+            CometConf.COMET_EXEC_ENABLED.get() &&
+            scan.wrapped.scan.getClass.getName ==
+            "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
+        val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
+
+        // Extract metadata location for native execution
+        val metadataLocation =
+          try {
+            CometIcebergNativeScanExec.extractMetadataLocation(scan.wrapped)
+          } catch {
+            case e: Exception =>
+              logWarning(
+                s"Failed to extract metadata location from Iceberg scan: ${e.getMessage}")
+              return None
+          }
+
+        // Set metadata location
+        icebergScanBuilder.setMetadataLocation(metadataLocation)
+
+        // Serialize catalog properties (for authentication - currently empty)
+        // TODO: Extract credentials, S3 config, etc.
+
+        // Determine number of partitions from Iceberg's output partitioning
+        // TODO: Add a test case for both partitioning schemes
+        val numParts = scan.wrapped.outputPartitioning match {
+          case p: KeyGroupedPartitioning =>
+            p.numPartitions
+          case _ =>
+            scan.wrapped.inputRDD.getNumPartitions
+        }
+
+        // Set number of partitions
+        icebergScanBuilder.setNumPartitions(numParts)
+
+        // Set required_schema from output
+        scan.output.foreach { attr =>
+          val field = SparkStructField
+            .newBuilder()
+            .setName(attr.name)
+            .setNullable(attr.nullable)
+          serializeDataType(attr.dataType).foreach(field.setDataType)
+          icebergScanBuilder.addRequiredSchema(field.build())
+        }
+
+        // Extract FileScanTasks from the InputPartitions in the RDD
+        // (Same logic as the previous CometIcebergNativeScanExec case)
+        var actualNumPartitions = 0
+        try {
+          scan.wrapped.inputRDD match {
+            case rdd: org.apache.spark.sql.execution.datasources.v2.DataSourceRDD =>
+              val partitions = rdd.partitions
+              partitions.foreach { partition =>
+                val partitionBuilder = OperatorOuterClass.IcebergFilePartition.newBuilder()
+
+                val inputPartitions = partition
+                  .asInstanceOf[
+                    org.apache.spark.sql.execution.datasources.v2.DataSourceRDDPartition]
+                  .inputPartitions
+
+                inputPartitions.foreach { inputPartition =>
+                  val inputPartClass = inputPartition.getClass
+
+                  try {
+                    val taskGroupMethod = inputPartClass.getDeclaredMethod("taskGroup")
+                    taskGroupMethod.setAccessible(true)
+                    val taskGroup = taskGroupMethod.invoke(inputPartition)
+
+                    val taskGroupClass = taskGroup.getClass
+                    val tasksMethod = taskGroupClass.getMethod("tasks")
+                    val tasksCollection =
+                      tasksMethod.invoke(taskGroup).asInstanceOf[java.util.Collection[_]]
+
+                    import scala.jdk.CollectionConverters._
+                    tasksCollection.asScala.foreach { task =>
+                      try {
+                        val taskBuilder = OperatorOuterClass.IcebergFileScanTask.newBuilder()
+
+                        // scalastyle:off classforname
+                        val contentScanTaskClass =
+                          Class.forName("org.apache.iceberg.ContentScanTask")
+                        val fileScanTaskClass = Class.forName("org.apache.iceberg.FileScanTask")
+                        val contentFileClass = Class.forName("org.apache.iceberg.ContentFile")
+                        // scalastyle:on classforname
+
+                        val fileMethod = contentScanTaskClass.getMethod("file")
+                        val dataFile = fileMethod.invoke(task)
+
+                        val filePath =
+                          try {
+                            val locationMethod = contentFileClass.getMethod("location")
+                            locationMethod.invoke(dataFile).asInstanceOf[String]
+                          } catch {
+                            case _: NoSuchMethodException =>
+                              val pathMethod = contentFileClass.getMethod("path")
+                              pathMethod.invoke(dataFile).asInstanceOf[CharSequence].toString
+                          }
+                        taskBuilder.setDataFilePath(filePath)
+
+                        val startMethod = contentScanTaskClass.getMethod("start")
+                        val start = startMethod.invoke(task).asInstanceOf[Long]
+                        taskBuilder.setStart(start)
+
+                        val lengthMethod = contentScanTaskClass.getMethod("length")
+                        val length = lengthMethod.invoke(task).asInstanceOf[Long]
+                        taskBuilder.setLength(length)
+
+                        try {
+                          val schemaMethod = fileScanTaskClass.getMethod("schema")
+                          val schema = schemaMethod.invoke(task)
+
+                          // scalastyle:off classforname
+                          val schemaParserClass = Class.forName("org.apache.iceberg.SchemaParser")
+                          val schemaClass = Class.forName("org.apache.iceberg.Schema")
+                          // scalastyle:on classforname
+                          val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
+                          toJsonMethod.setAccessible(true)
+                          val schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
+                          taskBuilder.setSchemaJson(schemaJson)
+
+                          val columnsMethod = schema.getClass.getMethod("columns")
+                          val columns =
+                            columnsMethod.invoke(schema).asInstanceOf[java.util.List[_]]
+
+                          val nameToFieldId = scala.collection.mutable.Map[String, Int]()
+                          columns.forEach { column =>
+                            try {
+                              val nameMethod = column.getClass.getMethod("name")
+                              val name = nameMethod.invoke(column).asInstanceOf[String]
+
+                              val fieldIdMethod = column.getClass.getMethod("fieldId")
+                              val fieldId = fieldIdMethod.invoke(column).asInstanceOf[Int]
+
+                              nameToFieldId(name) = fieldId
+                            } catch {
+                              case e: Exception =>
+                                logWarning(
+                                  s"Failed to extract field ID from column: ${e.getMessage}")
+                            }
+                          }
+
+                          scan.output.foreach { attr =>
+                            nameToFieldId.get(attr.name) match {
+                              case Some(fieldId) =>
+                                taskBuilder.addProjectFieldIds(fieldId)
+                              case None =>
+                            }
+                          }
+                        } catch {
+                          case e: Exception =>
+                            logWarning(
+                              s"Failed to extract schema from FileScanTask: ${e.getMessage}")
+                        }
+
+                        try {
+                          val formatMethod = contentFileClass.getMethod("format")
+                          val format = formatMethod.invoke(dataFile)
+                          taskBuilder.setDataFileFormat(format.toString)
+                        } catch {
+                          case e: Exception =>
+                            logWarning(
+                              "Failed to extract file format from FileScanTask," +
+                                s"defaulting to PARQUET: ${e.getMessage}")
+                            taskBuilder.setDataFileFormat("PARQUET")
+                        }
+
+                        try {
+                          val deletesMethod = fileScanTaskClass.getMethod("deletes")
+                          val deletes = deletesMethod
+                            .invoke(task)
+                            .asInstanceOf[java.util.List[_]]
+
+                          deletes.asScala.foreach { deleteFile =>
+                            try {
+                              // scalastyle:off classforname
+                              val deleteFileClass = Class.forName("org.apache.iceberg.DeleteFile")
+                              // scalastyle:on classforname
+
+                              val deletePath =
+                                try {
+                                  val locationMethod = contentFileClass.getMethod("location")
+                                  locationMethod.invoke(deleteFile).asInstanceOf[String]
+                                } catch {
+                                  case _: NoSuchMethodException =>
+                                    val pathMethod = contentFileClass.getMethod("path")
+                                    pathMethod
+                                      .invoke(deleteFile)
+                                      .asInstanceOf[CharSequence]
+                                      .toString
+                                }
+
+                              val deleteBuilder =
+                                OperatorOuterClass.IcebergDeleteFile.newBuilder()
+                              deleteBuilder.setFilePath(deletePath)
+
+                              val contentType =
+                                try {
+                                  val contentMethod = deleteFileClass.getMethod("content")
+                                  val content = contentMethod.invoke(deleteFile)
+                                  content.toString match {
+                                    case "POSITION_DELETES" => "POSITION_DELETES"
+                                    case "EQUALITY_DELETES" => "EQUALITY_DELETES"
+                                    case other => other
+                                  }
+                                } catch {
+                                  case _: Exception =>
+                                    "POSITION_DELETES"
+                                }
+                              deleteBuilder.setContentType(contentType)
+
+                              val specId =
+                                try {
+                                  val specIdMethod = deleteFileClass.getMethod("specId")
+                                  specIdMethod.invoke(deleteFile).asInstanceOf[Int]
+                                } catch {
+                                  case _: Exception =>
+                                    0
+                                }
+                              deleteBuilder.setPartitionSpecId(specId)
+
+                              try {
+                                val equalityIdsMethod =
+                                  deleteFileClass.getMethod("equalityFieldIds")
+                                val equalityIds = equalityIdsMethod
+                                  .invoke(deleteFile)
+                                  .asInstanceOf[java.util.List[Integer]]
+                                equalityIds.forEach(id => deleteBuilder.addEqualityIds(id))
+                              } catch {
+                                case _: Exception =>
+                              }
+
+                              taskBuilder.addDeleteFiles(deleteBuilder.build())
+                            } catch {
+                              case e: Exception =>
+                                logWarning(s"Failed to serialize delete file: ${e.getMessage}")
+                            }
+                          }
+                        } catch {
+                          case e: Exception =>
+                            logWarning(
+                              s"Failed to extract deletes from FileScanTask: ${e.getMessage}")
+                        }
+
+                        try {
+                          val residualMethod = contentScanTaskClass.getMethod("residual")
+                          val residualExpr = residualMethod.invoke(task)
+
+                          val catalystExpr = convertIcebergExpression(residualExpr, scan.output)
+
+                          catalystExpr
+                            .flatMap { expr =>
+                              exprToProto(expr, scan.output, binding = false)
+                            }
+                            .foreach { protoExpr =>
+                              taskBuilder.setResidual(protoExpr)
+                            }
+                        } catch {
+                          case e: Exception =>
+                            logWarning(
+                              "Failed to extract residual expression from FileScanTask: " +
+                                s"${e.getMessage}")
+                        }
+
+                        partitionBuilder.addFileScanTasks(taskBuilder.build())
+                      } catch {
+                        case e: Exception =>
+                          logWarning(s"Failed to serialize FileScanTask: ${e.getMessage}")
+                      }
+                    }
+                  } catch {
+                    case e: Exception =>
+                      logWarning(
+                        s"Failed to extract FileScanTasks from InputPartition: ${e.getMessage}")
+                  }
+                }
+
+                val builtPartition = partitionBuilder.build()
+                icebergScanBuilder.addFilePartitions(builtPartition)
+                actualNumPartitions += 1
+              }
+            case _ =>
+            // Not a DataSourceRDD, cannot extract tasks
+          }
+        } catch {
+          case e: Exception =>
+            logWarning(s"Failed to extract FileScanTasks from Iceberg scan RDD: ${e.getMessage}")
+        }
+
+        val numPartitions =
+          if (actualNumPartitions > 0) actualNumPartitions else numParts
+        icebergScanBuilder.setNumPartitions(numPartitions)
+
+        builder.clearChildren()
+        Some(builder.setIcebergScan(icebergScanBuilder).build())
+
       case FilterExec(condition, child) if CometConf.COMET_EXEC_FILTER_ENABLED.get(conf) =>
         val cond = exprToProto(condition, child.output)
 
@@ -1733,6 +2032,159 @@ object QueryPlanSerde extends Logging with CometExprShim {
       partitionBuilder.addPartitionedFile(fileBuilder.build())
     })
     nativeScanBuilder.addFilePartitions(partitionBuilder.build())
+  }
+
+  /**
+   * Converts Iceberg Expression objects to Spark Catalyst expressions.
+   *
+   * This is used to extract per-file residual expressions from Iceberg FileScanTasks. Residuals
+   * are created by Iceberg's ResidualEvaluator through partial evaluation of scan filters against
+   * each file's partition data. These residuals enable row-group level filtering in the Parquet
+   * reader.
+   *
+   * The conversion uses reflection because Iceberg expressions are not directly accessible from
+   * Spark's classpath during query planning.
+   */
+  private def convertIcebergExpression(
+      icebergExpr: Any,
+      output: Seq[Attribute]): Option[Expression] = {
+    try {
+      val exprClass = icebergExpr.getClass
+      val attributeMap = output.map(attr => attr.name -> attr).toMap
+
+      // Check for UnboundPredicate
+      if (exprClass.getName.endsWith("UnboundPredicate")) {
+        val opMethod = exprClass.getMethod("op")
+        val termMethod = exprClass.getMethod("term")
+        val operation = opMethod.invoke(icebergExpr)
+        val term = termMethod.invoke(icebergExpr)
+
+        // Get column name from term
+        val refMethod = term.getClass.getMethod("ref")
+        val ref = refMethod.invoke(term)
+        val nameMethod = ref.getClass.getMethod("name")
+        val columnName = nameMethod.invoke(ref).asInstanceOf[String]
+
+        val attr = attributeMap.get(columnName)
+        if (attr.isEmpty) {
+          return None
+        }
+
+        val opName = operation.toString
+
+        opName match {
+          case "IS_NULL" =>
+            Some(IsNull(attr.get))
+
+          case "IS_NOT_NULL" | "NOT_NULL" =>
+            Some(IsNotNull(attr.get))
+
+          case "EQ" =>
+            val literalMethod = exprClass.getMethod("literal")
+            val literal = literalMethod.invoke(icebergExpr)
+            val value = convertIcebergLiteral(literal, attr.get.dataType)
+            Some(EqualTo(attr.get, value))
+
+          case "NOT_EQ" =>
+            val literalMethod = exprClass.getMethod("literal")
+            val literal = literalMethod.invoke(icebergExpr)
+            val value = convertIcebergLiteral(literal, attr.get.dataType)
+            Some(Not(EqualTo(attr.get, value)))
+
+          case "LT" =>
+            val literalMethod = exprClass.getMethod("literal")
+            val literal = literalMethod.invoke(icebergExpr)
+            val value = convertIcebergLiteral(literal, attr.get.dataType)
+            Some(LessThan(attr.get, value))
+
+          case "LT_EQ" =>
+            val literalMethod = exprClass.getMethod("literal")
+            val literal = literalMethod.invoke(icebergExpr)
+            val value = convertIcebergLiteral(literal, attr.get.dataType)
+            Some(LessThanOrEqual(attr.get, value))
+
+          case "GT" =>
+            val literalMethod = exprClass.getMethod("literal")
+            val literal = literalMethod.invoke(icebergExpr)
+            val value = convertIcebergLiteral(literal, attr.get.dataType)
+            Some(GreaterThan(attr.get, value))
+
+          case "GT_EQ" =>
+            val literalMethod = exprClass.getMethod("literal")
+            val literal = literalMethod.invoke(icebergExpr)
+            val value = convertIcebergLiteral(literal, attr.get.dataType)
+            Some(GreaterThanOrEqual(attr.get, value))
+
+          case "IN" =>
+            val literalsMethod = exprClass.getMethod("literals")
+            val literals = literalsMethod.invoke(icebergExpr).asInstanceOf[java.util.List[_]]
+            val values =
+              literals.asScala.map(lit => convertIcebergLiteral(lit, attr.get.dataType))
+            Some(In(attr.get, values.toSeq))
+
+          case "NOT_IN" =>
+            val literalsMethod = exprClass.getMethod("literals")
+            val literals = literalsMethod.invoke(icebergExpr).asInstanceOf[java.util.List[_]]
+            val values =
+              literals.asScala.map(lit => convertIcebergLiteral(lit, attr.get.dataType))
+            Some(Not(In(attr.get, values.toSeq)))
+
+          case _ =>
+            None
+        }
+      } else if (exprClass.getName.endsWith("And")) {
+        val leftMethod = exprClass.getMethod("left")
+        val rightMethod = exprClass.getMethod("right")
+        val left = leftMethod.invoke(icebergExpr)
+        val right = rightMethod.invoke(icebergExpr)
+
+        (convertIcebergExpression(left, output), convertIcebergExpression(right, output)) match {
+          case (Some(l), Some(r)) => Some(And(l, r))
+          case _ => None
+        }
+      } else if (exprClass.getName.endsWith("Or")) {
+        val leftMethod = exprClass.getMethod("left")
+        val rightMethod = exprClass.getMethod("right")
+        val left = leftMethod.invoke(icebergExpr)
+        val right = rightMethod.invoke(icebergExpr)
+
+        (convertIcebergExpression(left, output), convertIcebergExpression(right, output)) match {
+          case (Some(l), Some(r)) => Some(Or(l, r))
+          case _ => None
+        }
+      } else if (exprClass.getName.endsWith("Not")) {
+        val childMethod = exprClass.getMethod("child")
+        val child = childMethod.invoke(icebergExpr)
+
+        convertIcebergExpression(child, output).map(Not)
+      } else {
+        None
+      }
+    } catch {
+      case _: Exception =>
+        None
+    }
+  }
+
+  /**
+   * Converts an Iceberg Literal to a Spark Literal
+   */
+  private def convertIcebergLiteral(icebergLiteral: Any, sparkType: DataType): Literal = {
+    // Load Literal interface to get value() method (use interface to avoid package-private issues)
+    // scalastyle:off classforname
+    val literalClass = Class.forName("org.apache.iceberg.expressions.Literal")
+    // scalastyle:on classforname
+    val valueMethod = literalClass.getMethod("value")
+    val value = valueMethod.invoke(icebergLiteral)
+
+    // Convert Java types to Spark internal types
+    val sparkValue = (value, sparkType) match {
+      case (s: String, _: StringType) =>
+        org.apache.spark.unsafe.types.UTF8String.fromString(s)
+      case (v, _) => v
+    }
+
+    Literal(sparkValue, sparkType)
   }
 }
 

@@ -98,6 +98,47 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
     }
   }
 
+  def icebergScanBenchmark(values: Int, dataType: DataType): Unit = {
+    // Benchmarks running through spark sql.
+    val sqlBenchmark =
+      new Benchmark(s"SQL Single ${dataType.sql} Iceberg Column Scan", values, output = output)
+
+    withTempPath { dir =>
+      withTempTable("icebergTable") {
+        prepareIcebergTable(
+          dir,
+          spark.sql(s"SELECT CAST(value as ${dataType.sql}) id FROM $tbl"),
+          "icebergTable")
+
+        val query = dataType match {
+          case BooleanType => "sum(cast(id as bigint))"
+          case _ => "sum(id)"
+        }
+
+        sqlBenchmark.addCase("SQL Iceberg - Spark") { _ =>
+          withSQLConf(
+            "spark.memory.offHeap.enabled" -> "true",
+            "spark.memory.offHeap.size" -> "10g") {
+            spark.sql(s"select $query from icebergTable").noop()
+          }
+        }
+
+        sqlBenchmark.addCase("SQL Iceberg - Comet Iceberg-Rust") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            "spark.memory.offHeap.enabled" -> "true",
+            "spark.memory.offHeap.size" -> "10g",
+            CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+            spark.sql(s"select $query from icebergTable").noop()
+          }
+        }
+
+        sqlBenchmark.run()
+      }
+    }
+  }
+
   def encryptedScanBenchmark(values: Int, dataType: DataType): Unit = {
     // Benchmarks running through spark sql.
     val sqlBenchmark =
@@ -649,6 +690,13 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
       Seq(BooleanType, ByteType, ShortType, IntegerType, LongType, FloatType, DoubleType)
         .foreach { dataType =>
           numericScanBenchmark(v, dataType)
+        }
+    }
+
+    runBenchmarkWithTable("SQL Single Numeric Iceberg Column Scan", 1024 * 1024 * 128) { v =>
+      Seq(BooleanType, ByteType, ShortType, IntegerType, LongType, FloatType, DoubleType)
+        .foreach { dataType =>
+          icebergScanBenchmark(v, dataType)
         }
     }
 

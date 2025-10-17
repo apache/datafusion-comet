@@ -45,7 +45,7 @@ import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
+import org.apache.comet.parquet.{CometParquetScan, Native}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.shims.CometTypeShim
 
@@ -265,25 +265,23 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           withInfos(scanExec, fallbackReasons.toSet)
         }
 
-      // Iceberg scan
-      case s: SupportsComet =>
+      // Iceberg scan - detected by class name (works with unpatched Iceberg)
+      case _
+          if scanExec.scan.getClass.getName ==
+            "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
         val fallbackReasons = new ListBuffer[String]()
 
-        if (!s.isCometEnabled) {
-          fallbackReasons += "Comet extension is not enabled for " +
-            s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side"
-        }
-
+        val typeChecker = CometScanTypeChecker(SCAN_NATIVE_DATAFUSION)
         val schemaSupported =
-          CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
+          typeChecker.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
 
         if (!schemaSupported) {
           fallbackReasons += "Comet extension is not enabled for " +
             s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
         }
 
-        if (s.isCometEnabled && schemaSupported) {
-          // When reading from Iceberg, we automatically enable type promotion
+        if (schemaSupported) {
+          // When reading from Iceberg, automatically enable type promotion
           SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
