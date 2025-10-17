@@ -81,37 +81,11 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     assert(getCometMemoryOverhead(conf) == getBytesFromMib(384))
   }
 
-  test("Comet memory overhead factor with executor memory") {
-    val sparkConf = new SparkConf()
-    sparkConf.set("spark.executor.memory", "16g")
-    sparkConf.set(CometConf.COMET_MEMORY_OVERHEAD_FACTOR.key, "0.5")
-
-    assert(getCometMemoryOverhead(sparkConf) == getBytesFromMib(8 * 1024))
-  }
-
-  test("Comet memory overhead factor with default executor memory") {
-    val sparkConf = new SparkConf()
-    sparkConf.set(CometConf.COMET_MEMORY_OVERHEAD_FACTOR.key, "0.5")
-    assert(getCometMemoryOverhead(sparkConf) == getBytesFromMib(512))
-  }
-
   test("Comet memory overhead") {
     val sparkConf = new SparkConf()
     sparkConf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "10g")
     assert(getCometMemoryOverhead(sparkConf) == getBytesFromMib(1024 * 10))
     assert(shouldOverrideMemoryConf(sparkConf))
-  }
-
-  test("Comet memory overhead (min)") {
-    val sparkConf = new SparkConf()
-    sparkConf.set(CometConf.COMET_MEMORY_OVERHEAD_MIN_MIB.key, "2g")
-    assert(getCometMemoryOverhead(sparkConf) == getBytesFromMib(1024 * 2))
-  }
-
-  test("Comet memory overhead (factor)") {
-    val sparkConf = new SparkConf()
-    sparkConf.set(CometConf.COMET_MEMORY_OVERHEAD_FACTOR.key, "0.5")
-    assert(getCometMemoryOverhead(sparkConf) == getBytesFromMib(512))
   }
 
   test("Comet memory overhead (off heap)") {
@@ -133,40 +107,5 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     assert(
       getCometShuffleMemorySize(conf, sqlConf) ==
         getBytesFromMib((384 * 0.2).toLong))
-
-    conf.set(CometConf.COMET_MEMORY_OVERHEAD_FACTOR.key, "0.5")
-    assert(
-      getCometShuffleMemorySize(conf, sqlConf) ==
-        getBytesFromMib((1024 * 0.5 * 0.2).toLong))
-  }
-
-  test("Comet shuffle memory") {
-    val conf = new SparkConf()
-    val sqlConf = new SQLConf
-    conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
-    sqlConf.setConfString(CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.key, "512m")
-
-    assert(getCometShuffleMemorySize(conf, sqlConf) == getBytesFromMib(512))
-  }
-
-  test("Comet shuffle memory (off-heap)") {
-    val conf = new SparkConf()
-    val sqlConf = new SQLConf
-    conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
-    conf.set("spark.memory.offHeap.enabled", "true")
-    conf.set("spark.memory.offHeap.size", "10g")
-    sqlConf.setConfString(CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.key, "512m")
-
-    assertThrows[AssertionError] {
-      getCometShuffleMemorySize(conf, sqlConf)
-    }
-  }
-
-  test("Comet shuffle memory cannot be larger than Comet memory overhead") {
-    val conf = new SparkConf()
-    val sqlConf = new SQLConf
-    conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "1g")
-    sqlConf.setConfString(CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.key, "10g")
-    assert(getCometShuffleMemorySize(conf, sqlConf) == getBytesFromMib(1024))
   }
 }

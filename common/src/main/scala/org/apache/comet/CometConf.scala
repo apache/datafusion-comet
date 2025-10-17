@@ -268,7 +268,7 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(false)
 
-  val COMET_MEMORY_OVERHEAD: OptionalConfigEntry[Long] = conf("spark.comet.memoryOverhead")
+  val COMET_MEMORY_OVERHEAD: ConfigEntry[Long] = conf("spark.comet.memoryOverhead")
     .category(CATEGORY_TESTING)
     .doc(
       "The amount of additional memory to be allocated per executor process for Comet, in MiB, " +
@@ -277,32 +277,7 @@ object CometConf extends ShimCometConf {
         s"`spark.comet.memory.overhead.factor` * `spark.executor.memory`. $TUNING_GUIDE.")
     .internal()
     .bytesConf(ByteUnit.MiB)
-    .createOptional
-
-  val COMET_MEMORY_OVERHEAD_FACTOR: ConfigEntry[Double] =
-    conf("spark.comet.memory.overhead.factor")
-      .category(CATEGORY_TESTING)
-      .doc(
-        "Fraction of executor memory to be allocated as additional memory for Comet " +
-          "when running Spark in on-heap mode. " +
-          s"$TUNING_GUIDE.")
-      .internal()
-      .doubleConf
-      .checkValue(
-        factor => factor > 0,
-        "Ensure that Comet memory overhead factor is a double greater than 0")
-      .createWithDefault(0.2)
-
-  val COMET_MEMORY_OVERHEAD_MIN_MIB: ConfigEntry[Long] = conf("spark.comet.memory.overhead.min")
-    .category(CATEGORY_TESTING)
-    .doc("Minimum amount of additional memory to be allocated per executor process for Comet, " +
-      s"in MiB, when running Spark in on-heap mode. $TUNING_GUIDE.")
-    .internal()
-    .bytesConf(ByteUnit.MiB)
-    .checkValue(
-      _ >= 0,
-      "Ensure that Comet memory overhead min is a long greater than or equal to 0")
-    .createWithDefault(384)
+    .createWithDefault(1024)
 
   val COMET_EXEC_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
@@ -424,15 +399,6 @@ object CometConf extends ShimCometConf {
       .internal()
       .intConf
       .createWithDefault(Int.MaxValue)
-
-  val COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE: OptionalConfigEntry[Long] =
-    conf("spark.comet.columnar.shuffle.memorySize")
-      .internal()
-      .category(CATEGORY_TESTING)
-      .doc("Amount of memory to reserve for columnar shuffle when running in on-heap mode. " +
-        s"$TUNING_GUIDE.")
-      .bytesConf(ByteUnit.MiB)
-      .createOptional
 
   val COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.columnar.shuffle.memory.factor")
