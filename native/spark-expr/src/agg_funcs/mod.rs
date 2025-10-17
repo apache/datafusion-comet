@@ -21,6 +21,7 @@ mod correlation;
 mod covariance;
 mod stddev;
 mod sum_decimal;
+mod sum_int;
 mod variance;
 
 pub use avg::Avg;
