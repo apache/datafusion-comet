@@ -268,7 +268,7 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(false)
 
-  val COMET_MEMORY_OVERHEAD: ConfigEntry[Long] = conf("spark.comet.memoryOverhead")
+  val COMET_ONHEAP_MEMORY_OVERHEAD: ConfigEntry[Long] = conf("spark.comet.memoryOverhead")
     .category(CATEGORY_TESTING)
     .doc(
       "The amount of additional memory to be allocated per executor process for Comet, in MiB, " +
@@ -397,7 +397,7 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(Int.MaxValue)
 
-  val COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR: ConfigEntry[Double] =
+  val COMET_ONHEAP_SHUFFLE_MEMORY_FACTOR: ConfigEntry[Double] =
     conf("spark.comet.columnar.shuffle.memory.factor")
       .category(CATEGORY_TESTING)
       .doc("Fraction of Comet memory to be allocated per executor process for columnar shuffle " +
@@ -519,14 +519,14 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_ENABLE_ONHEAP_MODE: ConfigEntry[Boolean] =
+  val COMET_ONHEAP_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.onHeap.enabled")
       .category(CATEGORY_TESTING)
       .doc("Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests.")
       .booleanConf
       .createWithDefault(sys.env.getOrElse("ENABLE_COMET_ONHEAP", "false").toBoolean)
 
-  val COMET_EXEC_OFFHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] =
+  val COMET_OFFHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] =
     conf("spark.comet.exec.memoryPool")
       .category(CATEGORY_TUNING)
       .doc(
@@ -536,7 +536,7 @@ object CometConf extends ShimCometConf {
       .stringConf
       .createWithDefault("fair_unified")
 
-  val COMET_EXEC_ONHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] = conf(
+  val COMET_ONHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] = conf(
     "spark.comet.exec.onHeap.memoryPool")
     .category(CATEGORY_TESTING)
     .doc(
@@ -547,7 +547,7 @@ object CometConf extends ShimCometConf {
     .stringConf
     .createWithDefault("greedy_task_shared")
 
-  val COMET_EXEC_MEMORY_POOL_FRACTION: ConfigEntry[Double] =
+  val COMET_OFFHEAP_MEMORY_POOL_FRACTION: ConfigEntry[Double] =
     conf("spark.comet.exec.memoryPool.fraction")
       .category(CATEGORY_TUNING)
       .doc(

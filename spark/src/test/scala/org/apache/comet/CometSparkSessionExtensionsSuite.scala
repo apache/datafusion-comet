@@ -83,14 +83,14 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
 
   test("Comet memory overhead") {
     val sparkConf = new SparkConf()
-    sparkConf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "10g")
+    sparkConf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "10g")
     assert(getCometMemoryOverhead(sparkConf) == getBytesFromMib(1024 * 10))
     assert(shouldOverrideMemoryConf(sparkConf))
   }
 
   test("Comet memory overhead (off heap)") {
     val sparkConf = new SparkConf()
-    sparkConf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "64g")
+    sparkConf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "64g")
     sparkConf.set("spark.memory.offHeap.enabled", "true")
     sparkConf.set("spark.memory.offHeap.size", "10g")
     assert(getCometMemoryOverhead(sparkConf) == 0)
@@ -101,7 +101,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     val conf = new SparkConf()
 
     val sqlConf = new SQLConf
-    sqlConf.setConfString(CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR.key, "0.2")
+    sqlConf.setConfString(CometConf.COMET_ONHEAP_SHUFFLE_MEMORY_FACTOR.key, "0.2")
 
     // Minimum Comet memory overhead is 384MB
     assert(

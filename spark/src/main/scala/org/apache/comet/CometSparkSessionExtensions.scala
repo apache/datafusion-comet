@@ -253,7 +253,9 @@ object CometSparkSessionExtensions extends Logging {
       return 0
     }
     ConfigHelpers.byteFromString(
-      sparkConf.get(COMET_MEMORY_OVERHEAD.key, COMET_MEMORY_OVERHEAD.defaultValueString),
+      sparkConf.get(
+        COMET_ONHEAP_MEMORY_OVERHEAD.key,
+        COMET_ONHEAP_MEMORY_OVERHEAD.defaultValueString),
       ByteUnit.MiB)
   }
 
@@ -277,7 +279,7 @@ object CometSparkSessionExtensions extends Logging {
 
     val cometMemoryOverhead = getCometMemoryOverheadInMiB(sparkConf)
 
-    val overheadFactor = COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR.get(conf)
+    val overheadFactor = COMET_ONHEAP_SHUFFLE_MEMORY_FACTOR.get(conf)
 
     val shuffleMemorySize = (overheadFactor * cometMemoryOverhead).toLong
     if (shuffleMemorySize > cometMemoryOverhead) {
