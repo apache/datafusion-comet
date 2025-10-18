@@ -3219,4 +3219,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("test concat function - strings") {
+    withTable("t1") {
+      sql(
+        "create table t1 using parquet as select uuid() c1, uuid() c2, uuid() c3, uuid() c4, cast(null as string) c5 from range(10)")
+      checkSparkAnswerAndOperator("select concat(c1, c2) AS x FROM t1")
+      checkSparkAnswerAndOperator("select concat(c1, c2, c3) AS x FROM t1")
+      checkSparkAnswerAndOperator("select concat(c1, c2, c3, c5) AS x FROM t1")
+      //checkSparkAnswerAndOperator("select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1")
+    }
+  }
+
 }
