@@ -779,9 +779,10 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
 
                 // if we wrote a spill file for this partition then copy the
                 // contents into the shuffle file
-                if let Some(spill_data) = self.partition_writers[i].spill_file.as_ref() {
-                    let mut spill_file =
-                        BufReader::new(File::open(spill_data.temp_file.path()).map_err(to_df_err)?);
+                if let Some(spill_data) = self.partition_writers[i].spill_file.as_mut() {
+                    let file = &mut spill_data.file;
+                    file.seek(SeekFrom::Start(0))?;
+                    let mut spill_file = BufReader::new(file);
                     let mut write_timer = self.metrics.write_time.timer();
                     std::io::copy(&mut spill_file, &mut output_data).map_err(to_df_err)?;
                     write_timer.stop();
@@ -1114,6 +1115,7 @@ struct PartitionWriter {
 }
 
 struct SpillFile {
+    #[allow(dead_code)]
     temp_file: RefCountedTempFile,
     file: File,
 }
@@ -1169,6 +1171,7 @@ impl PartitionWriter {
             let spill_data = OpenOptions::new()
                 .write(true)
                 .create(true)
+                .read(true)
                 .truncate(true)
                 .open(spill_file.path())
                 .map_err(|e| {
