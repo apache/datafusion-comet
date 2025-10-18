@@ -256,12 +256,13 @@ trait CommonStringExprs {
         // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
         // for invalid strings.
         // Left child is the binary expression.
-        CometCast.castToProto(
-          expr,
-          None,
-          DataTypes.StringType,
-          exprToProtoInternal(bin, inputs, binding).get,
-          CometEvalMode.TRY)
+        val binExpr = exprToProtoInternal(bin, inputs, binding)
+        if (binExpr.isDefined) {
+          CometCast.castToProto(expr, None, DataTypes.StringType, binExpr.get, CometEvalMode.TRY)
+        } else {
+          withInfo(expr, bin)
+          None
+        }
       case _ =>
         withInfo(expr, "Comet only supports decoding with 'utf-8'.")
         None
