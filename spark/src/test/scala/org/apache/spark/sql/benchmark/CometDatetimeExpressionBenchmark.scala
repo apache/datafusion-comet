@@ -39,7 +39,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
             s"select cast(timestamp_micros(cast(value/100000 as integer)) as date) as dt FROM $tbl"))
         Seq("YEAR", "YYYY", "YY", "MON", "MONTH", "MM").foreach { level =>
           val isDictionary = if (useDictionary) "(Dictionary)" else ""
-          runWithComet(s"Date Truncate $isDictionary - $level", values) {
+          runWithComet(s"Date Truncate $isDictionary - $level", values.toLong) {
             spark.sql(s"select trunc(dt, '$level') from parquetV1Table").noop()
           }
         }
@@ -68,7 +68,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
           "WEEK",
           "QUARTER").foreach { level =>
           val isDictionary = if (useDictionary) "(Dictionary)" else ""
-          runWithComet(s"Timestamp Truncate $isDictionary - $level", values) {
+          runWithComet(s"Timestamp Truncate $isDictionary - $level", values.toLong) {
             spark.sql(s"select date_trunc('$level', ts) from parquetV1Table").noop()
           }
         }

@@ -71,7 +71,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     val benchmark =
       new Benchmark(
         s"SQL ${dataType.sql} shuffle on array ($partitionNum Partition)",
-        values,
+        values.toLong,
         output = output)
 
     withTempPath { dir =>
@@ -123,7 +123,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     val benchmark =
       new Benchmark(
         s"SQL ${dataType.sql} shuffle on struct ($partitionNum Partition)",
-        values,
+        values.toLong,
         output = output)
 
     withTempPath { dir =>
@@ -182,7 +182,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     val benchmark =
       new Benchmark(
         s"SQL ${dataType.sql} Dictionary Shuffle($partitionNum Partition)",
-        values,
+        values.toLong,
         output = output)
 
     withTempPath { dir =>
@@ -273,7 +273,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     val benchmark =
       new Benchmark(
         s"SQL Single ${dataType.sql} Shuffle($partitionNum Partition) $randomTitle",
-        values,
+        values.toLong,
         output = output)
 
     withTempPath { dir =>
@@ -359,7 +359,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     val benchmark =
       new Benchmark(
         s"SQL Wide ($width cols) ${dataType.sql} Shuffle($partitionNum Partition)",
-        values,
+        values.toLong,
         output = output)
 
     val projection = (1 to width)
@@ -429,7 +429,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     val benchmark =
       new Benchmark(
         s"SQL Wide ($width cols) ${dataType.sql} Range Partition Shuffle($partitionNum Partition)",
-        values,
+        values.toLong,
         output = output)
 
     val projection = (1 to width)
