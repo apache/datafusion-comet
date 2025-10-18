@@ -25,6 +25,7 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.catalyst.expressions.Cast
 
+import org.apache.comet.CometConf.COMET_ONHEAP_MEMORY_OVERHEAD
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde}
 
@@ -78,7 +79,13 @@ object GenerateDocs {
                 if (conf.defaultValue.isEmpty) {
                   w.write(s"| `${conf.key}` | $doc | |\n".getBytes)
                 } else {
-                  w.write(s"| `${conf.key}` | $doc | ${conf.defaultValueString} |\n".getBytes)
+                  val isBytesConf = conf.key == COMET_ONHEAP_MEMORY_OVERHEAD.key
+                  if (isBytesConf) {
+                    val bytes = conf.defaultValue.get.asInstanceOf[Long]
+                    w.write(s"| `${conf.key}` | $doc | $bytes MiB |\n".getBytes)
+                  } else {
+                    w.write(s"| `${conf.key}` | $doc | ${conf.defaultValueString} |\n".getBytes)
+                  }
                 }
               }
           }
