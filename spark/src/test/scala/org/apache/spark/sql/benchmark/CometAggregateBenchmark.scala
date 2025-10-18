@@ -168,7 +168,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_MEMORY_OVERHEAD.key -> "1G") {
+            CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key -> "1G") {
             spark.sql(query).noop()
           }
         }

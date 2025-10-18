@@ -243,14 +243,8 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   /**
-   * Calculates required memory overhead in MB per executor process for Comet when running in
+   * Determines required memory overhead in MB per executor process for Comet when running in
    * on-heap mode.
-   *
-   * If `COMET_MEMORY_OVERHEAD` is defined then that value will be used, otherwise the overhead
-   * will be calculated by multiplying executor memory (`spark.executor.memory`) by
-   * `COMET_MEMORY_OVERHEAD_FACTOR`.
-   *
-   * In either case, a minimum value of `COMET_MEMORY_OVERHEAD_MIN_MIB` will be returned.
    */
   def getCometMemoryOverheadInMiB(sparkConf: SparkConf): Long = {
     if (isOffHeapEnabled(sparkConf)) {
@@ -258,30 +252,15 @@ object CometSparkSessionExtensions extends Logging {
       // off-heap memory with Spark so do not add overhead
       return 0
     }
-
-    // `spark.executor.memory` default value is 1g
-    val baseMemoryMiB = ConfigHelpers
-      .byteFromString(sparkConf.get("spark.executor.memory", "1024MB"), ByteUnit.MiB)
-
-    val cometMemoryOverheadMinAsString = sparkConf.get(
-      COMET_MEMORY_OVERHEAD_MIN_MIB.key,
-      COMET_MEMORY_OVERHEAD_MIN_MIB.defaultValueString)
-
-    val minimum = ConfigHelpers.byteFromString(cometMemoryOverheadMinAsString, ByteUnit.MiB)
-    val overheadFactor = getDoubleConf(sparkConf, COMET_MEMORY_OVERHEAD_FACTOR)
-
-    val overHeadMemFromConf = sparkConf
-      .getOption(COMET_MEMORY_OVERHEAD.key)
-      .map(ConfigHelpers.byteFromString(_, ByteUnit.MiB))
-
-    overHeadMemFromConf.getOrElse(math.max((overheadFactor * baseMemoryMiB).toLong, minimum))
+    ConfigHelpers.byteFromString(
+      sparkConf.get(
+        COMET_ONHEAP_MEMORY_OVERHEAD.key,
+        COMET_ONHEAP_MEMORY_OVERHEAD.defaultValueString),
+      ByteUnit.MiB)
   }
 
   private def getBooleanConf(conf: SparkConf, entry: ConfigEntry[Boolean]) =
     conf.getBoolean(entry.key, entry.defaultValue.get)
-
-  private def getDoubleConf(conf: SparkConf, entry: ConfigEntry[Double]) =
-    conf.getDouble(entry.key, entry.defaultValue.get)
 
   /**
    * Calculates required memory overhead in bytes per executor process for Comet when running in
@@ -300,11 +279,9 @@ object CometSparkSessionExtensions extends Logging {
 
     val cometMemoryOverhead = getCometMemoryOverheadInMiB(sparkConf)
 
-    val overheadFactor = COMET_COLUMNAR_SHUFFLE_MEMORY_FACTOR.get(conf)
-    val cometShuffleMemoryFromConf = COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.get(conf)
+    val overheadFactor = COMET_ONHEAP_SHUFFLE_MEMORY_FACTOR.get(conf)
 
-    val shuffleMemorySize =
-      cometShuffleMemoryFromConf.getOrElse((overheadFactor * cometMemoryOverhead).toLong)
+    val shuffleMemorySize = (overheadFactor * cometMemoryOverhead).toLong
     if (shuffleMemorySize > cometMemoryOverhead) {
       logWarning(
         s"Configured shuffle memory size $shuffleMemorySize is larger than Comet memory overhead " +
