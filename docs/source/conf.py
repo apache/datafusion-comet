@@ -141,7 +141,7 @@ myst_heading_anchors = 3
 myst_enable_extensions = ["colon_fence", "deflist", "tasklist"]
 
 redirects = {
-    "overview.html": "about/overview.html",
+    "overview.html": "about/index.html",
     "gluten_comparison.html": "about/gluten_comparison.html",
     "user-guide/overview.html": "../about/overview.html",
     "user-guide/gluten_comparison.html": "../about/gluten_comparison.html",
