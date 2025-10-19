@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.types.{ByteType, IntegerType, LongType}
+import org.apache.spark.sql.types.LongType
 
 import org.apache.comet.serde.QueryPlanSerde._
 
