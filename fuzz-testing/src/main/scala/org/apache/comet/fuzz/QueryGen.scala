@@ -24,7 +24,8 @@ import java.io.{BufferedWriter, FileWriter}
 import scala.collection.mutable
 import scala.util.Random
 
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.types._
 
 object QueryGen {
 
@@ -86,14 +87,44 @@ object QueryGen {
     val tableName = s"test${r.nextInt(numFiles)}"
     val table = spark.table(tableName)
 
-    val func = Utils.randomChoice(Meta.scalarFunc, r)
-    val args = Range(0, func.numArgs)
-      .map(_ => Utils.randomChoice(table.columns, r))
+    val f = Utils.randomChoice(Meta.scalarFunc, r)
+    val args = f match {
+      case func: FunctionWithArgCount =>
+        Range(0, func.numArgs).map(_ => Utils.randomChoice(table.columns, r))
+      case func: FunctionWithSignature =>
+        val signature = Utils.randomChoice(func.signatures, r)
+        signature.inputTypes.map(x => pickRandomColumn(r, table, x))
+    }
 
     // Example SELECT c0, log(c0) as x FROM test0
-    s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
+    s"SELECT ${args.mkString(", ")}, ${f.name}(${args.mkString(", ")}) AS x " +
       s"FROM $tableName " +
       s"ORDER BY ${args.mkString(", ")};"
+  }
+
+  private def pickRandomColumn(r: Random, df: DataFrame, targetType: SparkType): String = {
+    targetType match {
+      case SparkByteType =>
+        val candidates = df.schema.fields.filter(_.dataType == ByteType)
+        Utils.randomChoice(candidates, r).name
+      case SparkShortType =>
+        val candidates = df.schema.fields.filter(_.dataType == ShortType)
+        Utils.randomChoice(candidates, r).name
+      case SparkIntType =>
+        val candidates = df.schema.fields.filter(_.dataType == IntegerType)
+        Utils.randomChoice(candidates, r).name
+      case SparkLongType =>
+        val candidates = df.schema.fields.filter(_.dataType == LongType)
+        Utils.randomChoice(candidates, r).name
+      case SparkStringType =>
+        val candidates = df.schema.fields.filter(_.dataType == StringType)
+        Utils.randomChoice(candidates, r).name
+      case SparkTypeOneOf(choices) =>
+        pickRandomColumn(r, df, Utils.randomChoice(choices, r))
+      case _ =>
+        throw new IllegalStateException(targetType.toString)
+    }
+
   }
 
   private def generateUnaryArithmetic(r: Random, spark: SparkSession, numFiles: Int): String = {
