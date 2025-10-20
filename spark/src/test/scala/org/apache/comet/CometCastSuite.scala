@@ -21,6 +21,7 @@ package org.apache.comet
 
 import java.io.File
 
+import scala.collection.mutable.ListBuffer
 import scala.util.Random
 import scala.util.matching.Regex
 
@@ -30,10 +31,11 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, DataTypes, DecimalType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
+import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.Compatible
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -517,8 +519,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // CAST from DecimalType(10,2)
 
-  ignore("cast DecimalType(10,2) to BooleanType") {
-    // Arrow error: Cast error: Casting from Decimal128(38, 18) to Boolean not supported
+  test("cast DecimalType(10,2) to BooleanType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.BooleanType)
   }
 
@@ -1046,6 +1047,31 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(10, 0))
   }
 
+  test("cast ArrayType to StringType") {
+    val hasIncompatibleType = (dt: DataType) =>
+      if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == "auto") {
+        true
+      } else {
+        !CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
+          .isTypeSupported(dt, "a", ListBuffer.empty)
+      }
+    Seq(
+      BooleanType,
+      StringType,
+      ByteType,
+      IntegerType,
+      LongType,
+      ShortType,
+      //      FloatType,
+      //      DoubleType,
+      DecimalType(10, 2),
+      DecimalType(38, 18),
+      BinaryType).foreach { dt =>
+      val input = generateArrays(100, dt)
+      castTest(input, StringType, hasIncompatibleType = hasIncompatibleType(input.schema))
+    }
+  }
+
   private def generateFloats(): DataFrame = {
     withNulls(gen.generateFloats(dataSize)).toDF("a")
   }
@@ -1072,6 +1098,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private def generateLongs(): DataFrame = {
     withNulls(gen.generateLongs(dataSize)).toDF("a")
+  }
+
+  private def generateArrays(rowSize: Int, elementType: DataType): DataFrame = {
+    import scala.collection.JavaConverters._
+    val schema = StructType(Seq(StructField("a", ArrayType(elementType), true)))
+    spark.createDataFrame(gen.generateRows(rowSize, schema).asJava, schema)
   }
 
   // https://github.com/apache/datafusion-comet/issues/2038

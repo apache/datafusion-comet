@@ -20,7 +20,8 @@ use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
 use arrow::array::{
-    Decimal128Builder, DictionaryArray, GenericByteArray, StringArray, StructArray,
+    BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray, StringArray,
+    StructArray,
 };
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{
@@ -52,7 +53,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use num::{
     cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
-    ToPrimitive,
+    ToPrimitive, Zero,
 };
 use regex::Regex;
 use std::str::FromStr;
@@ -1020,6 +1021,7 @@ fn cast_array(
         {
             spark_cast_nonintegral_numeric_to_integral(&array, eval_mode, from_type, to_type)
         }
+        (Decimal128(_p, _s), Boolean) => spark_cast_decimal_to_boolean(&array),
         (Utf8View, Utf8) => Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?),
         (Struct(_), Utf8) => Ok(casts_struct_to_string(array.as_struct(), cast_options)?),
         (Struct(_), Struct(_)) => Ok(cast_struct_to_struct(
@@ -1028,6 +1030,7 @@ fn cast_array(
             to_type,
             cast_options,
         )?),
+        (List(_), Utf8) => Ok(cast_array_to_string(array.as_list(), cast_options)?),
         (List(_), List(_)) if can_cast_types(from_type, to_type) => {
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
@@ -1238,6 +1241,52 @@ fn cast_struct_to_struct(
         }
         _ => unreachable!(),
     }
+}
+
+fn cast_array_to_string(
+    array: &ListArray,
+    spark_cast_options: &SparkCastOptions,
+) -> DataFusionResult<ArrayRef> {
+    let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
+    let mut str = String::with_capacity(array.len() * 16);
+
+    let casted_values = cast_array(
+        Arc::clone(array.values()),
+        &DataType::Utf8,
+        spark_cast_options,
+    )?;
+    let string_values = casted_values
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("Casted values should be StringArray");
+
+    let offsets = array.offsets();
+    for row_index in 0..array.len() {
+        if array.is_null(row_index) {
+            builder.append_null();
+        } else {
+            str.clear();
+            let start = offsets[row_index] as usize;
+            let end = offsets[row_index + 1] as usize;
+
+            str.push('[');
+            let mut first = true;
+            for idx in start..end {
+                if !first {
+                    str.push_str(", ");
+                }
+                if string_values.is_null(idx) {
+                    str.push_str(&spark_cast_options.null_string);
+                } else {
+                    str.push_str(string_values.value(idx));
+                }
+                first = false;
+            }
+            str.push(']');
+            builder.append_value(&str);
+        }
+    }
+    Ok(Arc::new(builder.finish()))
 }
 
 fn casts_struct_to_string(
@@ -1629,6 +1678,19 @@ where
         .collect::<Result<BooleanArray, _>>()?;
 
     Ok(Arc::new(output_array))
+}
+
+fn spark_cast_decimal_to_boolean(array: &dyn Array) -> SparkResult<ArrayRef> {
+    let decimal_array = array.as_primitive::<Decimal128Type>();
+    let mut result = BooleanBuilder::with_capacity(decimal_array.len());
+    for i in 0..decimal_array.len() {
+        if decimal_array.is_null(i) {
+            result.append_null()
+        } else {
+            result.append_value(!decimal_array.value(i).is_zero());
+        }
+    }
+    Ok(Arc::new(result.finish()))
 }
 
 fn spark_cast_nonintegral_numeric_to_integral(
@@ -2927,5 +2989,56 @@ mod tests {
         assert!(casted.is_null(7));
         assert!(casted.is_null(8));
         assert!(casted.is_null(9));
+    }
+
+    #[test]
+    fn test_cast_string_array_to_string() {
+        use arrow::array::ListArray;
+        use arrow::buffer::OffsetBuffer;
+        let values_array =
+            StringArray::from(vec![Some("a"), Some("b"), Some("c"), Some("a"), None, None]);
+        let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 3, 5, 6, 6].into());
+        let item_field = Arc::new(Field::new("item", DataType::Utf8, true));
+        let list_array = Arc::new(ListArray::new(
+            item_field,
+            offsets_buffer,
+            Arc::new(values_array),
+            None,
+        ));
+        let string_array = cast_array_to_string(
+            &list_array,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
+        let string_array = string_array.as_string::<i32>();
+        assert_eq!(r#"[a, b, c]"#, string_array.value(0));
+        assert_eq!(r#"[a, null]"#, string_array.value(1));
+        assert_eq!(r#"[null]"#, string_array.value(2));
+        assert_eq!(r#"[]"#, string_array.value(3));
+    }
+
+    #[test]
+    fn test_cast_i32_array_to_string() {
+        use arrow::array::ListArray;
+        use arrow::buffer::OffsetBuffer;
+        let values_array = Int32Array::from(vec![Some(1), Some(2), Some(3), Some(1), None, None]);
+        let offsets_buffer = OffsetBuffer::<i32>::new(vec![0, 3, 5, 6, 6].into());
+        let item_field = Arc::new(Field::new("item", DataType::Int32, true));
+        let list_array = Arc::new(ListArray::new(
+            item_field,
+            offsets_buffer,
+            Arc::new(values_array),
+            None,
+        ));
+        let string_array = cast_array_to_string(
+            &list_array,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
+        let string_array = string_array.as_string::<i32>();
+        assert_eq!(r#"[1, 2, 3]"#, string_array.value(0));
+        assert_eq!(r#"[1, null]"#, string_array.value(1));
+        assert_eq!(r#"[null]"#, string_array.value(2));
+        assert_eq!(r#"[]"#, string_array.value(3));
     }
 }

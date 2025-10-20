@@ -19,7 +19,7 @@
 
 package org.apache.comet.expressions
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType}
 
 import org.apache.comet.CometConf
@@ -49,19 +49,30 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
   // https://github.com/apache/datafusion-comet/issues/378
 
   override def getSupportLevel(cast: Cast): SupportLevel = {
-    isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
+    if (cast.child.isInstanceOf[Literal]) {
+      // casting from literal is compatible because we delegate to Spark
+      // further data type checks will be performed by CometLiteral
+      Compatible()
+    } else {
+      isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
+    }
   }
 
   override def convert(
       cast: Cast,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(cast.child, inputs, binding)
-    if (childExpr.isDefined) {
-      castToProto(cast, cast.timeZoneId, cast.dataType, childExpr.get, evalMode(cast))
-    } else {
-      withInfo(cast, cast.child)
-      None
+    cast.child match {
+      case _: Literal =>
+        exprToProtoInternal(Literal.create(cast.eval(), cast.dataType), inputs, binding)
+      case _ =>
+        val childExpr = exprToProtoInternal(cast.child, inputs, binding)
+        if (childExpr.isDefined) {
+          castToProto(cast, cast.timeZoneId, cast.dataType, childExpr.get, evalMode(cast))
+        } else {
+          withInfo(cast, cast.child)
+          None
+        }
     }
   }
 
@@ -105,6 +116,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
 
     (fromType, toType) match {
       case (dt: ArrayType, _: ArrayType) if dt.elementType == NullType => Compatible()
+      case (dt: ArrayType, DataTypes.StringType) =>
+        isSupported(dt.elementType, DataTypes.StringType, timeZoneId, evalMode)
       case (dt: ArrayType, dt1: ArrayType) =>
         isSupported(dt.elementType, dt1.elementType, timeZoneId, evalMode)
       case (dt: DataType, _) if dt.typeName == "timestamp_ntz" =>
@@ -325,7 +338,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
 
   private def canCastFromDecimal(toType: DataType): SupportLevel = toType match {
     case DataTypes.FloatType | DataTypes.DoubleType | DataTypes.ByteType | DataTypes.ShortType |
-        DataTypes.IntegerType | DataTypes.LongType =>
+        DataTypes.IntegerType | DataTypes.LongType | DataTypes.BooleanType =>
       Compatible()
     case _ => Unsupported(Some(s"Cast from DecimalType to $toType is not supported"))
   }

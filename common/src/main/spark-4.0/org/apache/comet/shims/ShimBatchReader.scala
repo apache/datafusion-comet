@@ -32,6 +32,5 @@ object ShimBatchReader {
       -1,
       Array.empty[String],
       0,
-      0
-    )
+      0)
 }
