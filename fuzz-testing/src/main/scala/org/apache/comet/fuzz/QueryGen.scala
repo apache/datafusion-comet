@@ -116,6 +116,9 @@ object QueryGen {
       case SparkLongType =>
         val candidates = df.schema.fields.filter(_.dataType == LongType)
         Utils.randomChoice(candidates, r).name
+      case SparkNumericType =>
+        val candidates = df.schema.fields.filter(f => isNumeric(f.dataType))
+        Utils.randomChoice(candidates, r).name
       case SparkStringType =>
         val candidates = df.schema.fields.filter(_.dataType == StringType)
         Utils.randomChoice(candidates, r).name
@@ -133,7 +136,17 @@ object QueryGen {
 
   }
 
+  private def isNumeric(d: DataType): Boolean = {
+    d match {
+      case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
+          _: DoubleType | _: DecimalType =>
+        true
+      case _ => false
+    }
+  }
+
   private def typeMatch(s: SparkType, d: DataType): Boolean = {
+    // TODO
     false
   }
 
