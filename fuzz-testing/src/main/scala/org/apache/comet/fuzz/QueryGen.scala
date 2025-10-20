@@ -121,10 +121,20 @@ object QueryGen {
         Utils.randomChoice(candidates, r).name
       case SparkTypeOneOf(choices) =>
         pickRandomColumn(r, df, Utils.randomChoice(choices, r))
+      case SparkArrayType(elementType) =>
+        val candidates = df.schema.fields.filter(_.dataType match {
+          case ArrayType(x, _) if typeMatch(elementType, x) => true
+          case _ => false
+        })
+        Utils.randomChoice(candidates, r).name
       case _ =>
         throw new IllegalStateException(targetType.toString)
     }
 
+  }
+
+  private def typeMatch(s: SparkType, d: DataType): Boolean = {
+    false
   }
 
   private def generateUnaryArithmetic(r: Random, spark: SparkSession, numFiles: Int): String = {
