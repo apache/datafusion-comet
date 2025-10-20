@@ -22,23 +22,26 @@ package org.apache.comet.fuzz
 import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.types.DataTypes
 
-sealed trait InputType
-case class SparkType(dataType: DataType) extends InputType
-case class SparkTypeOneOf(dataTypes: Seq[InputType]) extends InputType
-case object SparkBinaryType extends InputType
-case object SparkStringType extends InputType
-case object SparkIntegralType extends InputType
-case object SparkByteType extends InputType
-case object SparkShortType extends InputType
-case object SparkIntType extends InputType
-case object SparkLongType extends InputType
-case object SparkFloatType extends InputType
-case object SparkDoubleType extends InputType
-case class SparkDecimalType(p: Int, s: Int) extends InputType
-case object SparkNumericType extends InputType
-case object SparkAnyType extends InputType
+sealed trait SparkType
+case class SparkTypeOneOf(dataTypes: Seq[SparkType]) extends SparkType
+case object SparkBinaryType extends SparkType
+case object SparkStringType extends SparkType
+case object SparkIntegralType extends SparkType
+case object SparkByteType extends SparkType
+case object SparkShortType extends SparkType
+case object SparkIntType extends SparkType
+case object SparkLongType extends SparkType
+case object SparkFloatType extends SparkType
+case object SparkDoubleType extends SparkType
+case class SparkDecimalType(p: Int, s: Int) extends SparkType
+case object SparkNumericType extends SparkType
+case object SparkDateType extends SparkType
+case object SparkTimestampType extends SparkType
+case object SparkDateOrTimestampType extends SparkType
+case class SparkArrayType(elementType: SparkType) extends SparkType
+case object SparkAnyType extends SparkType
 
-case class FunctionSignature(inputTypes: Seq[InputType])
+case class FunctionSignature(inputTypes: Seq[SparkType])
 
 sealed trait Function {
 
@@ -85,7 +88,7 @@ object Meta {
 
   private def createFunctionWithInputs(
       name: String,
-      inputs: Seq[InputType]): FunctionWithSignature = {
+      inputs: Seq[SparkType]): FunctionWithSignature = {
     FunctionWithSignature(name, Seq(FunctionSignature(inputs)))
   }
 
@@ -99,12 +102,16 @@ object Meta {
     createFunctionWithInputs(name, Seq(SparkStringType))
   }
 
+  private def createUnaryNumericFunction(name: String): FunctionWithSignature = {
+    createFunctionWithInputs(name, Seq(SparkNumericType))
+  }
+
   val stringScalarFunc: Seq[Function] = Seq(
-    createFunction("substring", 3),
+    createFunctionWithInputs("substring", Seq(SparkStringType, SparkIntType, SparkIntType)),
     createUnaryStringFunction("coalesce"),
     createFunctionWithInputs("starts_with", Seq(SparkStringType, SparkStringType)),
-    createFunction("ends_with", 2),
-    createFunction("contains", 2),
+    createFunctionWithInputs("ends_with", Seq(SparkStringType, SparkStringType)),
+    createFunctionWithInputs("contains", Seq(SparkStringType, SparkStringType)),
     createUnaryStringFunction("ascii"),
     createUnaryStringFunction("bit_length"),
     createUnaryStringFunction("octet_length"),
@@ -124,46 +131,56 @@ object Meta {
     createFunctionWithInputs(
       "hex",
       Seq(SparkTypeOneOf(Seq(SparkStringType, SparkBinaryType, SparkIntType, SparkLongType)))),
-    createFunction("unhex", 1),
-    createFunction("xxhash64", 1),
-    createFunction("sha1", 1),
+    createUnaryStringFunction("unhex"),
+    createFunctionWithInputs("xxhash64", Seq(SparkAnyType)), // TODO can take multiple columns
+    createFunctionWithInputs("sha1", Seq(SparkAnyType)),
     // createFunction("sha2", 1), -- needs a second argument for number of bits
-    createFunction("substring", 3),
-    createFunction("btrim", 1),
+    createFunctionWithInputs("substring", Seq(SparkStringType, SparkIntType, SparkIntType)),
+    createUnaryStringFunction("btrim"),
     createFunction("concat_ws", 2),
     createFunction("repeat", 2),
-    createFunction("length", 1),
-    createFunction("reverse", 1),
-    createFunction("instr", 2),
-    createFunction("replace", 2),
-    createFunction("translate", 2))
+    createFunctionWithInputs(
+      "length",
+      Seq(SparkTypeOneOf(Seq(SparkStringType, SparkBinaryType)))),
+    createFunctionWithSignatures(
+      "reverse",
+      Seq(
+        FunctionSignature(Seq(SparkStringType)),
+        FunctionSignature(Seq(SparkArrayType(SparkAnyType))))),
+    createFunctionWithInputs("instr", Seq(SparkStringType, SparkStringType)),
+    createFunctionWithSignatures(
+      "replace",
+      Seq(
+        FunctionSignature(Seq(SparkStringType, SparkStringType)),
+        FunctionSignature(Seq(SparkStringType, SparkStringType, SparkStringType)))),
+    createFunctionWithInputs("translate", Seq(SparkStringType, SparkStringType)))
 
   val dateScalarFunc: Seq[Function] =
     Seq(
-      createFunction("year", 1),
-      createFunction("hour", 1),
-      createFunction("minute", 1),
-      createFunction("second", 1))
+      createFunctionWithInputs("year", Seq(SparkDateOrTimestampType)),
+      createFunctionWithInputs("hour", Seq(SparkDateOrTimestampType)),
+      createFunctionWithInputs("minute", Seq(SparkDateOrTimestampType)),
+      createFunctionWithInputs("second", Seq(SparkDateOrTimestampType)))
 
   val mathScalarFunc: Seq[Function] = Seq(
-    createFunction("abs", 1),
-    createFunction("acos", 1),
-    createFunction("asin", 1),
-    createFunction("atan", 1),
-    createFunction("Atan2", 1),
-    createFunction("Cos", 1),
-    createFunction("Exp", 2),
-    createFunction("Ln", 1),
-    createFunction("Log10", 1),
-    createFunction("Log2", 1),
-    createFunction("Pow", 2),
-    createFunction("Round", 1),
-    createFunction("Signum", 1),
-    createFunction("Sin", 1),
-    createFunction("Sqrt", 1),
-    createFunction("Tan", 1),
-    createFunction("Ceil", 1),
-    createFunction("Floor", 1),
+    createUnaryNumericFunction("abs"),
+    createUnaryNumericFunction("acos"),
+    createUnaryNumericFunction("asin"),
+    createUnaryNumericFunction("atan"),
+    createUnaryNumericFunction("Atan2"),
+    createUnaryNumericFunction("Cos"),
+    createFunctionWithInputs("Exp", Seq(SparkNumericType, SparkNumericType)),
+    createUnaryNumericFunction("Ln"),
+    createUnaryNumericFunction("Log10"),
+    createUnaryNumericFunction("Log2"),
+    createFunctionWithInputs("Pow", Seq(SparkNumericType, SparkNumericType)),
+    createUnaryNumericFunction("Round"),
+    createUnaryNumericFunction("Signum"),
+    createUnaryNumericFunction("Sin"),
+    createUnaryNumericFunction("Sqrt"),
+    createUnaryNumericFunction("Tan"),
+    createUnaryNumericFunction("Ceil"),
+    createUnaryNumericFunction("Floor"),
     createFunction("bool_and", 1),
     createFunction("bool_or", 1),
     createFunction("bitwise_not", 1))
@@ -186,8 +203,8 @@ object Meta {
     createFunction("min", 1),
     createFunction("max", 1),
     createFunction("count", 1),
-    createFunction("avg", 1),
-    createFunction("sum", 1),
+    createUnaryNumericFunction("avg"),
+    createUnaryNumericFunction("sum"),
     createFunction("first", 1),
     createFunction("last", 1),
     createFunction("var_pop", 1),
