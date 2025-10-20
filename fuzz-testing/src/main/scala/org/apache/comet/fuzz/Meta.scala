@@ -47,20 +47,20 @@ sealed trait Function {
 
   def name: String
 
-  // query generator should generate types based on signature not just on arg count
+  // query generator should choose inputs based on signature not just on arg count
   @deprecated
   def numArgs: Int
 }
 
 @deprecated
 case class FunctionWithArgCount(name: String, argCount: Int) extends Function {
-  // query generator should generate types based on signature not just on arg count
+  // query generator should choose inputs based on signature not just on arg count
   override def numArgs: Int = argCount
 }
 
 case class FunctionWithSignature(name: String, signatures: Seq[FunctionSignature])
     extends Function {
-  // query generator should generate types based on signature not just on arg count
+  // query generator should choose inputs based on signature not just on arg count
   override def numArgs: Int = signatures.head.inputTypes.length
 }
 
