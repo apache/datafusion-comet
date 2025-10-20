@@ -65,7 +65,7 @@ object QueryGen {
     val table = spark.table(tableName)
 
     val func = Utils.randomChoice(Meta.aggFunc, r)
-    val args = Range(0, func.num_args)
+    val args = Range(0, func.numArgs)
       .map(_ => Utils.randomChoice(table.columns, r))
 
     val groupingCols = Range(0, 2).map(_ => Utils.randomChoice(table.columns, r))
@@ -87,7 +87,7 @@ object QueryGen {
     val table = spark.table(tableName)
 
     val func = Utils.randomChoice(Meta.scalarFunc, r)
-    val args = Range(0, func.num_args)
+    val args = Range(0, func.numArgs)
       .map(_ => Utils.randomChoice(table.columns, r))
 
     // Example SELECT c0, log(c0) as x FROM test0
@@ -192,5 +192,3 @@ object QueryGen {
   }
 
 }
-
-case class Function(name: String, num_args: Int)

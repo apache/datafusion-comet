@@ -26,6 +26,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
@@ -768,6 +769,31 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_reverse") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val options = DataGenOptions(
+          allowNull = true,
+          generateNegativeZero = false,
+          generateArray = true,
+          generateStruct = false,
+          generateMap = false)
+        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+      }
+      withTempView("t1") {
+        val table = spark.read.parquet(filename)
+        table.createOrReplaceTempView("t1")
+        for (field <- table.schema.fields.filter(_.dataType.isInstanceOf[ArrayType])) {
+          val sql = s"SELECT ${field.name}, reverse(${field.name}) FROM t1 ORDER BY ${field.name}"
+          checkSparkAnswer(sql)
+        }
+      }
+    }
+  }
+
+  test("array_reverse no native scan") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       val filename = path.toString

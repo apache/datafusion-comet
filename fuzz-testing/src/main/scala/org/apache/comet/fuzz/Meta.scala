@@ -22,6 +22,45 @@ package org.apache.comet.fuzz
 import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.types.DataTypes
 
+sealed trait InputType
+case class SparkType(dataType: DataType) extends InputType
+case class SparkTypeOneOf(dataTypes: Seq[InputType]) extends InputType
+case object SparkBinaryType extends InputType
+case object SparkStringType extends InputType
+case object SparkIntegralType extends InputType
+case object SparkByteType extends InputType
+case object SparkShortType extends InputType
+case object SparkIntType extends InputType
+case object SparkLongType extends InputType
+case object SparkFloatType extends InputType
+case object SparkDoubleType extends InputType
+case class SparkDecimalType(p: Int, s: Int) extends InputType
+case object SparkNumericType extends InputType
+case object SparkAnyType extends InputType
+
+case class FunctionSignature(inputTypes: Seq[InputType])
+
+sealed trait Function {
+
+  def name: String
+
+  // query generator should generate types based on signature not just on arg count
+  @deprecated
+  def numArgs: Int
+}
+
+@deprecated
+case class FunctionWithArgCount(name: String, argCount: Int) extends Function {
+  // query generator should generate types based on signature not just on arg count
+  override def numArgs: Int = argCount
+}
+
+case class FunctionWithSignature(name: String, signatures: Seq[FunctionSignature])
+    extends Function {
+  // query generator should generate types based on signature not just on arg count
+  override def numArgs: Int = signatures.head.inputTypes.length
+}
+
 object Meta {
 
   val dataTypes: Seq[(DataType, Double)] = Seq(
@@ -35,100 +74,129 @@ object Meta {
     (DataTypes.createDecimalType(10, 2), 0.2),
     (DataTypes.DateType, 0.2),
     (DataTypes.TimestampType, 0.2),
-    // TimestampNTZType only in Spark 3.4+
-    // (DataTypes.TimestampNTZType, 0.2),
+    (DataTypes.TimestampNTZType, 0.2),
     (DataTypes.StringType, 0.2),
     (DataTypes.BinaryType, 0.1))
 
+  @deprecated
+  private def createFunction(name: String, argCount: Int): FunctionWithArgCount = {
+    FunctionWithArgCount(name, argCount)
+  }
+
+  private def createFunctionWithInputs(
+      name: String,
+      inputs: Seq[InputType]): FunctionWithSignature = {
+    FunctionWithSignature(name, Seq(FunctionSignature(inputs)))
+  }
+
+  private def createFunctionWithSignatures(
+      name: String,
+      signatures: Seq[FunctionSignature]): FunctionWithSignature = {
+    FunctionWithSignature(name, signatures)
+  }
+
+  private def createUnaryStringFunction(name: String): FunctionWithSignature = {
+    createFunctionWithInputs(name, Seq(SparkStringType))
+  }
+
   val stringScalarFunc: Seq[Function] = Seq(
-    Function("substring", 3),
-    Function("coalesce", 1),
-    Function("starts_with", 2),
-    Function("ends_with", 2),
-    Function("contains", 2),
-    Function("ascii", 1),
-    Function("bit_length", 1),
-    Function("octet_length", 1),
-    Function("upper", 1),
-    Function("lower", 1),
-    Function("chr", 1),
-    Function("init_cap", 1),
-    Function("trim", 1),
-    Function("ltrim", 1),
-    Function("rtrim", 1),
-    Function("string_space", 1),
-    Function("rpad", 2),
-    Function("rpad", 3), // rpad can have 2 or 3 arguments
-    Function("hex", 1),
-    Function("unhex", 1),
-    Function("xxhash64", 1),
-    Function("sha1", 1),
-    // Function("sha2", 1), -- needs a second argument for number of bits
-    Function("substring", 3),
-    Function("btrim", 1),
-    Function("concat_ws", 2),
-    Function("repeat", 2),
-    Function("length", 1),
-    Function("reverse", 1),
-    Function("instr", 2),
-    Function("replace", 2),
-    Function("translate", 2))
+    createFunction("substring", 3),
+    createUnaryStringFunction("coalesce"),
+    createFunctionWithInputs("starts_with", Seq(SparkStringType, SparkStringType)),
+    createFunction("ends_with", 2),
+    createFunction("contains", 2),
+    createUnaryStringFunction("ascii"),
+    createUnaryStringFunction("bit_length"),
+    createUnaryStringFunction("octet_length"),
+    createUnaryStringFunction("upper"),
+    createUnaryStringFunction("lower"),
+    createUnaryStringFunction("chr"),
+    createUnaryStringFunction("init_cap"),
+    createUnaryStringFunction("trim"),
+    createUnaryStringFunction("ltrim"),
+    createUnaryStringFunction("rtrim"),
+    createFunction("string_space", 1),
+    createFunctionWithSignatures(
+      "rpad",
+      Seq(
+        FunctionSignature(Seq(SparkStringType, SparkIntegralType)),
+        FunctionSignature(Seq(SparkStringType, SparkIntegralType, SparkStringType)))),
+    createFunctionWithInputs(
+      "hex",
+      Seq(SparkTypeOneOf(Seq(SparkStringType, SparkBinaryType, SparkIntType, SparkLongType)))),
+    createFunction("unhex", 1),
+    createFunction("xxhash64", 1),
+    createFunction("sha1", 1),
+    // createFunction("sha2", 1), -- needs a second argument for number of bits
+    createFunction("substring", 3),
+    createFunction("btrim", 1),
+    createFunction("concat_ws", 2),
+    createFunction("repeat", 2),
+    createFunction("length", 1),
+    createFunction("reverse", 1),
+    createFunction("instr", 2),
+    createFunction("replace", 2),
+    createFunction("translate", 2))
 
   val dateScalarFunc: Seq[Function] =
-    Seq(Function("year", 1), Function("hour", 1), Function("minute", 1), Function("second", 1))
+    Seq(
+      createFunction("year", 1),
+      createFunction("hour", 1),
+      createFunction("minute", 1),
+      createFunction("second", 1))
 
   val mathScalarFunc: Seq[Function] = Seq(
-    Function("abs", 1),
-    Function("acos", 1),
-    Function("asin", 1),
-    Function("atan", 1),
-    Function("Atan2", 1),
-    Function("Cos", 1),
-    Function("Exp", 2),
-    Function("Ln", 1),
-    Function("Log10", 1),
-    Function("Log2", 1),
-    Function("Pow", 2),
-    Function("Round", 1),
-    Function("Signum", 1),
-    Function("Sin", 1),
-    Function("Sqrt", 1),
-    Function("Tan", 1),
-    Function("Ceil", 1),
-    Function("Floor", 1),
-    Function("bool_and", 1),
-    Function("bool_or", 1),
-    Function("bitwise_not", 1))
+    createFunction("abs", 1),
+    createFunction("acos", 1),
+    createFunction("asin", 1),
+    createFunction("atan", 1),
+    createFunction("Atan2", 1),
+    createFunction("Cos", 1),
+    createFunction("Exp", 2),
+    createFunction("Ln", 1),
+    createFunction("Log10", 1),
+    createFunction("Log2", 1),
+    createFunction("Pow", 2),
+    createFunction("Round", 1),
+    createFunction("Signum", 1),
+    createFunction("Sin", 1),
+    createFunction("Sqrt", 1),
+    createFunction("Tan", 1),
+    createFunction("Ceil", 1),
+    createFunction("Floor", 1),
+    createFunction("bool_and", 1),
+    createFunction("bool_or", 1),
+    createFunction("bitwise_not", 1))
 
   val miscScalarFunc: Seq[Function] =
-    Seq(Function("isnan", 1), Function("isnull", 1), Function("isnotnull", 1))
+    Seq(createFunction("isnan", 1), createFunction("isnull", 1), createFunction("isnotnull", 1))
 
   val arrayScalarFunc: Seq[Function] = Seq(
-    Function("array", 2),
-    Function("array_remove", 2),
-    Function("array_insert", 2),
-    Function("array_contains", 2),
-    Function("array_intersect", 2),
-    Function("array_append", 2))
+    createFunction("array", 2),
+    createFunction("array_remove", 2),
+    createFunction("array_insert", 2),
+    createFunction("array_contains", 2),
+    createFunction("array_intersect", 2),
+    createFunction("array_append", 2))
 
   val scalarFunc: Seq[Function] = stringScalarFunc ++ dateScalarFunc ++
     mathScalarFunc ++ miscScalarFunc ++ arrayScalarFunc
 
   val aggFunc: Seq[Function] = Seq(
-    Function("min", 1),
-    Function("max", 1),
-    Function("count", 1),
-    Function("avg", 1),
-    Function("sum", 1),
-    Function("first", 1),
-    Function("last", 1),
-    Function("var_pop", 1),
-    Function("var_samp", 1),
-    Function("covar_pop", 1),
-    Function("covar_samp", 1),
-    Function("stddev_pop", 1),
-    Function("stddev_samp", 1),
-    Function("corr", 2))
+    createFunction("min", 1),
+    createFunction("max", 1),
+    createFunction("count", 1),
+    createFunction("avg", 1),
+    createFunction("sum", 1),
+    createFunction("first", 1),
+    createFunction("last", 1),
+    createFunction("var_pop", 1),
+    createFunction("var_samp", 1),
+    createFunction("covar_pop", 1),
+    createFunction("covar_samp", 1),
+    createFunction("stddev_pop", 1),
+    createFunction("stddev_samp", 1),
+    createFunction("corr", 2))
 
   val unaryArithmeticOps: Seq[String] = Seq("+", "-")
 
