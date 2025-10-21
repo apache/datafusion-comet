@@ -341,4 +341,13 @@ object Meta {
 
   val comparisonOps: Seq[String] = Seq("=", "<=>", ">", ">=", "<", "<=")
 
+  // TODO make this more comprehensive
+  val comparisonTypes: Seq[SparkType] = Seq(
+    SparkStringType,
+    SparkBinaryType,
+    SparkNumericType,
+    SparkDateType,
+    SparkTimestampType,
+    SparkArrayType(SparkTypeOneOf(Seq(SparkStringType, SparkNumericType, SparkDateType))))
+
 }

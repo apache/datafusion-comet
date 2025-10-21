@@ -187,6 +187,13 @@ object QueryGen {
     }
   }
 
+  def pickTwoRandomColumns(r: Random, df: DataFrame, targetType: SparkType): (String, String) = {
+    val a = pickRandomColumn(r, df, targetType)
+    val df2 = df.drop(a)
+    val b = pickRandomColumn(r, df2, targetType)
+    (a, b)
+  }
+
   /** Select a random field that matches a predicate */
   private def select(r: Random, df: DataFrame, predicate: StructField => Boolean): String = {
     val candidates = df.schema.fields.filter(predicate)
@@ -256,8 +263,7 @@ object QueryGen {
     val table = spark.table(tableName)
 
     val op = Utils.randomChoice(Meta.binaryArithmeticOps, r)
-    val a = pickRandomColumn(r, table, SparkNumericType)
-    val b = pickRandomColumn(r, table, SparkNumericType)
+    val (a, b) = pickTwoRandomColumns(r, table, SparkNumericType)
 
     // Example SELECT a, b, a+b FROM test0
     s"SELECT $a, $b, $a $op $b " +
@@ -270,8 +276,10 @@ object QueryGen {
     val table = spark.table(tableName)
 
     val op = Utils.randomChoice(Meta.comparisonOps, r)
-    val a = pickRandomColumn(r, table, SparkNumericType)
-    val b = pickRandomColumn(r, table, SparkNumericType)
+
+    // pick two columns with the same type
+    val opType = Utils.randomChoice(Meta.comparisonTypes, r)
+    val (a, b) = pickTwoRandomColumns(r, table, opType)
 
     // Example SELECT a, b, a <=> b FROM test0
     s"SELECT $a, $b, $a $op $b " +
@@ -286,10 +294,8 @@ object QueryGen {
     val op = Utils.randomChoice(Meta.comparisonOps, r)
 
     // pick two columns with the same type
-    // TODO make this more comprehensive
-    val opType = Utils.randomChoice(Seq(SparkStringType, SparkNumericType, SparkDateType), r)
-    val a = pickRandomColumn(r, table, opType)
-    val b = pickRandomColumn(r, table, opType)
+    val opType = Utils.randomChoice(Meta.comparisonTypes, r)
+    val (a, b) = pickTwoRandomColumns(r, table, opType)
 
     // Example SELECT a, b, IF(a <=> b, 1, 2), CASE WHEN a <=> b THEN 1 ELSE 2 END FROM test0
     s"SELECT $a, $b, $a $op $b, IF($a $op $b, 1, 2), CASE WHEN $a $op $b THEN 1 ELSE 2 END " +
