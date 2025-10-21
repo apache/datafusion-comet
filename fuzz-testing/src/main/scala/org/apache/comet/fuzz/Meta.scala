@@ -24,6 +24,7 @@ import org.apache.spark.sql.types.DataTypes
 
 sealed trait SparkType
 case class SparkTypeOneOf(dataTypes: Seq[SparkType]) extends SparkType
+case object SparkBooleanType extends SparkType
 case object SparkBinaryType extends SparkType
 case object SparkStringType extends SparkType
 case object SparkIntegralType extends SparkType
@@ -39,6 +40,8 @@ case object SparkDateType extends SparkType
 case object SparkTimestampType extends SparkType
 case object SparkDateOrTimestampType extends SparkType
 case class SparkArrayType(elementType: SparkType) extends SparkType
+case class SparkMapType(keyType: SparkType, valueType: SparkType) extends SparkType
+case class SparkStructType(fields: Seq[SparkType]) extends SparkType
 case object SparkAnyType extends SparkType
 
 case class FunctionSignature(inputTypes: Seq[SparkType])
@@ -104,13 +107,17 @@ object Meta {
       Seq(
         FunctionSignature(Seq(SparkStringType, SparkIntegralType)),
         FunctionSignature(Seq(SparkStringType, SparkIntegralType, SparkStringType)))),
+    createFunctions(
+      "lpad",
+      Seq(
+        FunctionSignature(Seq(SparkStringType, SparkIntegralType)),
+        FunctionSignature(Seq(SparkStringType, SparkIntegralType, SparkStringType)))),
     createFunctionWithInputs(
       "hex",
       Seq(SparkTypeOneOf(Seq(SparkStringType, SparkBinaryType, SparkIntType, SparkLongType)))),
     createUnaryStringFunction("unhex"),
     createFunctionWithInputs("xxhash64", Seq(SparkAnyType)), // TODO can take multiple columns
     createFunctionWithInputs("sha1", Seq(SparkAnyType)),
-    // createFunction("sha2", 1), -- needs a second argument for number of bits
     createFunctionWithInputs("substring", Seq(SparkStringType, SparkIntType, SparkIntType)),
     createUnaryStringFunction("btrim"),
     createFunctionWithInputs("concat_ws", Seq(SparkStringType, SparkStringType)),
@@ -129,56 +136,160 @@ object Meta {
       Seq(
         FunctionSignature(Seq(SparkStringType, SparkStringType)),
         FunctionSignature(Seq(SparkStringType, SparkStringType, SparkStringType)))),
-    createFunctionWithInputs("translate", Seq(SparkStringType, SparkStringType)))
+    createFunctionWithInputs("translate", Seq(SparkStringType, SparkStringType)),
+    createFunctionWithInputs("like", Seq(SparkStringType, SparkStringType)),
+    createFunctionWithInputs("rlike", Seq(SparkStringType, SparkStringType)),
+    createFunctions(
+      "regexp_replace",
+      Seq(
+        FunctionSignature(Seq(SparkStringType, SparkStringType, SparkStringType)),
+        FunctionSignature(Seq(SparkStringType, SparkStringType, SparkStringType, SparkIntType)))))
 
   val dateScalarFunc: Seq[Function] =
     Seq(
       createFunctionWithInputs("year", Seq(SparkDateOrTimestampType)),
+      createFunctionWithInputs("month", Seq(SparkDateOrTimestampType)),
+      createFunctionWithInputs("day", Seq(SparkDateOrTimestampType)),
+      createFunctionWithInputs("dayofmonth", Seq(SparkDateOrTimestampType)),
+      createFunctionWithInputs("dayofweek", Seq(SparkDateOrTimestampType)),
+      createFunctionWithInputs("dayofyear", Seq(SparkDateOrTimestampType)),
+      createFunctionWithInputs("weekday", Seq(SparkDateOrTimestampType)),
+      createFunctionWithInputs("weekofyear", Seq(SparkDateOrTimestampType)),
+      createFunctionWithInputs("quarter", Seq(SparkDateOrTimestampType)),
       createFunctionWithInputs("hour", Seq(SparkDateOrTimestampType)),
       createFunctionWithInputs("minute", Seq(SparkDateOrTimestampType)),
-      createFunctionWithInputs("second", Seq(SparkDateOrTimestampType)))
+      createFunctionWithInputs("second", Seq(SparkDateOrTimestampType)),
+      createFunctionWithInputs("date_add", Seq(SparkDateType, SparkIntType)),
+      createFunctionWithInputs("date_sub", Seq(SparkDateType, SparkIntType)),
+      createFunctionWithInputs("trunc", Seq(SparkDateOrTimestampType, SparkStringType)),
+      createFunctions(
+        "from_unixtime",
+        Seq(
+          FunctionSignature(Seq(SparkLongType)),
+          FunctionSignature(Seq(SparkLongType, SparkStringType)))))
 
   val mathScalarFunc: Seq[Function] = Seq(
     createUnaryNumericFunction("abs"),
     createUnaryNumericFunction("acos"),
     createUnaryNumericFunction("asin"),
     createUnaryNumericFunction("atan"),
-    createUnaryNumericFunction("Atan2"),
-    createUnaryNumericFunction("Cos"),
-    createFunctionWithInputs("Exp", Seq(SparkNumericType, SparkNumericType)),
-    createUnaryNumericFunction("Ln"),
-    createUnaryNumericFunction("Log10"),
-    createUnaryNumericFunction("Log2"),
-    createFunctionWithInputs("Pow", Seq(SparkNumericType, SparkNumericType)),
-    createUnaryNumericFunction("Round"),
-    createUnaryNumericFunction("Signum"),
-    createUnaryNumericFunction("Sin"),
-    createUnaryNumericFunction("Sqrt"),
-    createUnaryNumericFunction("Tan"),
-    createUnaryNumericFunction("Ceil"),
-    createUnaryNumericFunction("Floor"),
-    createFunctionWithInputs("bool_and", Seq(SparkAnyType)),
-    createFunctionWithInputs("bool_or", Seq(SparkAnyType)),
-    createFunctionWithInputs("bitwise_not", Seq(SparkIntegralType)))
+    createFunctionWithInputs("atan2", Seq(SparkNumericType, SparkNumericType)),
+    createUnaryNumericFunction("cos"),
+    createUnaryNumericFunction("exp"),
+    createUnaryNumericFunction("expm1"),
+    createFunctionWithInputs("log", Seq(SparkNumericType, SparkNumericType)),
+    createUnaryNumericFunction("log10"),
+    createUnaryNumericFunction("log2"),
+    createFunctionWithInputs("pow", Seq(SparkNumericType, SparkNumericType)),
+    createFunctions(
+      "round",
+      Seq(
+        FunctionSignature(Seq(SparkNumericType)),
+        FunctionSignature(Seq(SparkNumericType, SparkIntType)))),
+    createUnaryNumericFunction("signum"),
+    createUnaryNumericFunction("sin"),
+    createUnaryNumericFunction("sqrt"),
+    createUnaryNumericFunction("tan"),
+    createUnaryNumericFunction("ceil"),
+    createUnaryNumericFunction("floor"),
+    createFunctionWithInputs("remainder", Seq(SparkNumericType, SparkNumericType)),
+    createFunctionWithInputs("unary_minus", Seq(SparkNumericType)))
+
+  val hashScalarFunc: Seq[Function] = Seq(
+    createFunctionWithInputs("md5", Seq(SparkAnyType)),
+    createFunctionWithInputs("murmur3_hash", Seq(SparkAnyType)), // TODO can take multiple columns
+    createFunctionWithInputs("sha2", Seq(SparkAnyType, SparkIntType)))
+
+  val bitwiseScalarFunc: Seq[Function] = Seq(
+    createFunctionWithInputs("bitwise_and", Seq(SparkIntegralType, SparkIntegralType)),
+    createFunctionWithInputs("bitwise_or", Seq(SparkIntegralType, SparkIntegralType)),
+    createFunctionWithInputs("bitwise_xor", Seq(SparkIntegralType, SparkIntegralType)),
+    createFunctionWithInputs("bitwise_not", Seq(SparkIntegralType)),
+    createFunctionWithInputs("bitwise_count", Seq(SparkIntegralType)),
+    createFunctionWithInputs("bitwise_get", Seq(SparkIntegralType, SparkIntType)),
+    createFunctionWithInputs("shift_left", Seq(SparkIntegralType, SparkIntType)),
+    createFunctionWithInputs("shift_right", Seq(SparkIntegralType, SparkIntType)))
+
+  val predicateScalarFunc: Seq[Function] = Seq(
+    createFunctionWithInputs("and", Seq(SparkBooleanType, SparkBooleanType)),
+    createFunctionWithInputs("or", Seq(SparkBooleanType, SparkBooleanType)),
+    createFunctionWithInputs("not", Seq(SparkBooleanType)),
+    createFunctionWithInputs("in", Seq(SparkAnyType, SparkAnyType))
+  ) // TODO: variadic
+
+  val conditionalScalarFunc: Seq[Function] = Seq(
+    createFunctionWithInputs("if", Seq(SparkBooleanType, SparkAnyType, SparkAnyType)))
 
   val miscScalarFunc: Seq[Function] =
     Seq(
       createFunctionWithInputs("isnan", Seq(SparkNumericType)),
       createFunctionWithInputs("isnull", Seq(SparkAnyType)),
-      createFunctionWithInputs("isnotnull", Seq(SparkAnyType)))
+      createFunctionWithInputs("isnotnull", Seq(SparkAnyType)),
+      createFunctionWithInputs("coalesce", Seq(SparkAnyType, SparkAnyType))
+    ) // TODO: variadic
 
   val arrayScalarFunc: Seq[Function] = Seq(
-    createFunctionWithInputs("array", Seq(SparkAnyType, SparkAnyType)),
-    createFunctionWithInputs("array_remove", Seq(SparkArrayType(SparkAnyType), SparkAnyType)),
-    createFunctionWithInputs("array_insert", Seq(SparkArrayType(SparkAnyType), SparkIntType)),
+    createFunctionWithInputs("array", Seq(SparkAnyType, SparkAnyType)), // TODO: variadic
+    createFunctionWithInputs("array_append", Seq(SparkArrayType(SparkAnyType), SparkAnyType)),
+    createFunctionWithInputs("array_compact", Seq(SparkArrayType(SparkAnyType))),
     createFunctionWithInputs("array_contains", Seq(SparkArrayType(SparkAnyType), SparkAnyType)),
+    createFunctionWithInputs("array_distinct", Seq(SparkArrayType(SparkAnyType))),
+    createFunctionWithInputs(
+      "array_except",
+      Seq(SparkArrayType(SparkAnyType), SparkArrayType(SparkAnyType))),
+    createFunctionWithInputs(
+      "array_insert",
+      Seq(SparkArrayType(SparkAnyType), SparkIntType, SparkAnyType)),
     createFunctionWithInputs(
       "array_intersect",
       Seq(SparkArrayType(SparkAnyType), SparkArrayType(SparkAnyType))),
-    createFunctionWithInputs("array_append", Seq(SparkArrayType(SparkAnyType), SparkAnyType)))
+    createFunctions(
+      "array_join",
+      Seq(
+        FunctionSignature(Seq(SparkArrayType(SparkAnyType), SparkStringType)),
+        FunctionSignature(Seq(SparkArrayType(SparkAnyType), SparkStringType, SparkStringType)))),
+    createFunctionWithInputs("array_max", Seq(SparkArrayType(SparkAnyType))),
+    createFunctionWithInputs("array_min", Seq(SparkArrayType(SparkAnyType))),
+    createFunctionWithInputs("array_remove", Seq(SparkArrayType(SparkAnyType), SparkAnyType)),
+    createFunctionWithInputs("array_repeat", Seq(SparkAnyType, SparkIntType)),
+    createFunctionWithInputs(
+      "arrays_overlap",
+      Seq(SparkArrayType(SparkAnyType), SparkArrayType(SparkAnyType))),
+    createFunctionWithInputs(
+      "array_union",
+      Seq(SparkArrayType(SparkAnyType), SparkArrayType(SparkAnyType))),
+    createFunctionWithInputs(
+      "element_at",
+      Seq(
+        SparkTypeOneOf(
+          Seq(SparkArrayType(SparkAnyType), SparkMapType(SparkAnyType, SparkAnyType))),
+        SparkAnyType)),
+    createFunctionWithInputs("flatten", Seq(SparkArrayType(SparkArrayType(SparkAnyType)))),
+    createFunctionWithInputs("get_array_item", Seq(SparkArrayType(SparkAnyType), SparkIntType)))
+
+  val mapScalarFunc: Seq[Function] = Seq(
+    createFunctionWithInputs(
+      "map_extract",
+      Seq(SparkMapType(SparkAnyType, SparkAnyType), SparkAnyType)),
+    createFunctionWithInputs("map_keys", Seq(SparkMapType(SparkAnyType, SparkAnyType))),
+    createFunctionWithInputs("map_values", Seq(SparkMapType(SparkAnyType, SparkAnyType))),
+    createFunctionWithInputs("map_entries", Seq(SparkMapType(SparkAnyType, SparkAnyType))),
+    createFunctionWithInputs(
+      "map_from_arrays",
+      Seq(SparkArrayType(SparkAnyType), SparkArrayType(SparkAnyType))))
+
+  val structScalarFunc: Seq[Function] = Seq(
+    createFunctionWithInputs(
+      "create_named_struct",
+      Seq(SparkStringType, SparkAnyType)
+    ), // TODO: variadic name/value pairs
+    createFunctionWithInputs(
+      "get_struct_field",
+      Seq(SparkStructType(Seq(SparkAnyType)), SparkStringType)))
 
   val scalarFunc: Seq[Function] = stringScalarFunc ++ dateScalarFunc ++
-    mathScalarFunc ++ miscScalarFunc ++ arrayScalarFunc
+    mathScalarFunc ++ hashScalarFunc ++ bitwiseScalarFunc ++ predicateScalarFunc ++
+    conditionalScalarFunc ++ miscScalarFunc ++ arrayScalarFunc ++ mapScalarFunc ++ structScalarFunc
 
   val aggFunc: Seq[Function] = Seq(
     createFunctionWithInputs("min", Seq(SparkAnyType)),
@@ -190,11 +301,14 @@ object Meta {
     createFunctionWithInputs("last", Seq(SparkAnyType)),
     createFunctionWithInputs("var_pop", Seq(SparkNumericType)),
     createFunctionWithInputs("var_samp", Seq(SparkNumericType)),
-    createFunctionWithInputs("covar_pop", Seq(SparkNumericType)),
-    createFunctionWithInputs("covar_samp", Seq(SparkNumericType)),
+    createFunctionWithInputs("covar_pop", Seq(SparkNumericType, SparkNumericType)),
+    createFunctionWithInputs("covar_samp", Seq(SparkNumericType, SparkNumericType)),
     createFunctionWithInputs("stddev_pop", Seq(SparkNumericType)),
     createFunctionWithInputs("stddev_samp", Seq(SparkNumericType)),
-    createFunctionWithInputs("corr", Seq(SparkNumericType, SparkNumericType)))
+    createFunctionWithInputs("corr", Seq(SparkNumericType, SparkNumericType)),
+    createFunctionWithInputs("bit_and", Seq(SparkIntegralType)),
+    createFunctionWithInputs("bit_or", Seq(SparkIntegralType)),
+    createFunctionWithInputs("bit_xor", Seq(SparkIntegralType)))
 
   val unaryArithmeticOps: Seq[String] = Seq("+", "-")
 
