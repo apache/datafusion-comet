@@ -321,8 +321,9 @@ object Meta {
     createFunctionWithInputs("count", Seq(SparkAnyType)),
     createUnaryNumericFunction("avg"),
     createUnaryNumericFunction("sum"),
-    createFunctionWithInputs("first", Seq(SparkAnyType)),
-    createFunctionWithInputs("last", Seq(SparkAnyType)),
+    // first/last are non-deterministic and known to be incompatible with Spark
+//    createFunctionWithInputs("first", Seq(SparkAnyType)),
+//    createFunctionWithInputs("last", Seq(SparkAnyType)),
     createFunctionWithInputs("var_pop", Seq(SparkNumericType)),
     createFunctionWithInputs("var_samp", Seq(SparkNumericType)),
     createFunctionWithInputs("covar_pop", Seq(SparkNumericType, SparkNumericType)),
