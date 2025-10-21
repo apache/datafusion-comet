@@ -4126,7 +4126,7 @@ dependencies = [
  "arrow-schema",
  "chrono",
  "half",
- "indexmap",
+ "indexmap 2.11.4",
  "simdutf8",
  "uuid",
 ]

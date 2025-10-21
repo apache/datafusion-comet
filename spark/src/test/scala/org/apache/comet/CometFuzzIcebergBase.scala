@@ -109,17 +109,17 @@ class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
-      super.test(testName, testTags: _*) {
-        withSQLConf(
-          "spark.sql.catalog.hadoop_catalog" -> "org.apache.iceberg.spark.SparkCatalog",
-          "spark.sql.catalog.hadoop_catalog.type" -> "hadoop",
-          "spark.sql.catalog.hadoop_catalog.warehouse" -> warehouseDir.getAbsolutePath,
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
-          testFun
-        }
+    super.test(testName, testTags: _*) {
+      withSQLConf(
+        "spark.sql.catalog.hadoop_catalog" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.hadoop_catalog.type" -> "hadoop",
+        "spark.sql.catalog.hadoop_catalog.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        testFun
       }
+    }
   }
 
   def collectIcebergNativeScans(plan: SparkPlan): Seq[CometIcebergNativeScanExec] = {
