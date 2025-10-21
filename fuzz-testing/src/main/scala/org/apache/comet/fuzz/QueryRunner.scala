@@ -105,6 +105,13 @@ object QueryRunner {
                     s"Comet produced ${cometRows.length} rows.\n")
               }
 
+              // check that the plan contains Comet operators
+              if (!cometPlan.contains("Comet")) {
+                success = false
+                showSQL(w, sql)
+                showPlans(w, sparkPlan, cometPlan)
+              }
+
               if (success) {
                 cometSuccessCount += 1
               } else {
@@ -116,6 +123,9 @@ object QueryRunner {
                 // the query worked in Spark but failed in Comet, so this is likely a bug in Comet
                 cometFailureCount += 1
                 showSQL(w, sql)
+                w.write("### Spark Plan\n")
+                w.write(s"```\n$sparkPlan\n```\n")
+
                 w.write(s"[ERROR] Query failed in Comet: ${e.getMessage}:\n")
                 w.write("```\n")
                 val sw = new StringWriter()

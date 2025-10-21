@@ -44,24 +44,7 @@ object FuzzDataGenerator {
   val defaultBaseDate: Long =
     new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("3333-05-25 12:34:56").getTime
 
-  private val primitiveTypes = Seq(
-    DataTypes.BooleanType,
-    DataTypes.ByteType,
-    DataTypes.ShortType,
-    DataTypes.IntegerType,
-    DataTypes.LongType,
-    DataTypes.FloatType,
-    DataTypes.DoubleType,
-    DataTypes.createDecimalType(10, 2),
-    DataTypes.createDecimalType(36, 18),
-    DataTypes.DateType,
-    DataTypes.TimestampType,
-    DataTypes.TimestampNTZType,
-    DataTypes.StringType,
-    DataTypes.BinaryType)
-
-  private def filteredPrimitives(excludeTypes: Seq[DataType]) = {
-
+  private def filteredPrimitives(primitiveTypes: Seq[DataType], excludeTypes: Seq[DataType]) = {
     primitiveTypes.filterNot { dataType =>
       excludeTypes.exists {
         case _: DecimalType =>
@@ -79,7 +62,7 @@ object FuzzDataGenerator {
       numRows: Int,
       options: DataGenOptions): DataFrame = {
 
-    val filteredPrimitiveTypes = filteredPrimitives(options.excludeTypes)
+    val filteredPrimitiveTypes = filteredPrimitives(options.primitiveTypes, options.excludeTypes)
     val dataTypes = ListBuffer[DataType]()
     dataTypes.appendAll(filteredPrimitiveTypes)
 
@@ -248,6 +231,21 @@ object FuzzDataGenerator {
 }
 
 case class DataGenOptions(
+    primitiveTypes: Seq[DataType] = Seq(
+      DataTypes.BooleanType,
+      DataTypes.ByteType,
+      DataTypes.ShortType,
+      DataTypes.IntegerType,
+      DataTypes.LongType,
+      DataTypes.FloatType,
+      DataTypes.DoubleType,
+      DataTypes.createDecimalType(10, 2),
+      DataTypes.createDecimalType(36, 18),
+      DataTypes.DateType,
+      DataTypes.TimestampType,
+      DataTypes.TimestampNTZType,
+      DataTypes.StringType,
+      DataTypes.BinaryType),
     allowNull: Boolean = true,
     generateNegativeZero: Boolean = true,
     baseDate: Long = FuzzDataGenerator.defaultBaseDate,
