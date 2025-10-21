@@ -67,9 +67,6 @@ object QueryRunner {
             // execute with Comet
             try {
               spark.conf.set("spark.comet.enabled", "true")
-              // complex type support until we support it natively
-              spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
-              spark.conf.set("spark.comet.convert.parquet.enabled", "true")
               val df = spark.sql(sql)
               val cometRows = df.collect()
               val cometPlan = df.queryExecution.executedPlan.toString
@@ -133,6 +130,9 @@ object QueryRunner {
   }
 
   private def same(l: Any, r: Any): Boolean = {
+    if (l == null || r == null) {
+      return l == null && r == null
+    }
     (l, r) match {
       case (a: Float, b: Float) if a.isInfinity => b.isInfinity
       case (a: Float, b: Float) if a.isNaN => b.isNaN
@@ -144,7 +144,11 @@ object QueryRunner {
         a.length == b.length && a.zip(b).forall(x => same(x._1, x._2))
       case (a: WrappedArray[_], b: WrappedArray[_]) =>
         a.length == b.length && a.zip(b).forall(x => same(x._1, x._2))
+      case (a: Row, b: Row) =>
+        // struct support
+        format(a) == format(b)
       case (a, b) => a == b
+
     }
   }
 
@@ -153,6 +157,7 @@ object QueryRunner {
       case null => "NULL"
       case v: WrappedArray[_] => s"[${v.map(format).mkString(",")}]"
       case v: Array[Byte] => s"[${v.mkString(",")}]"
+      case r: Row => formatRow(r)
       case other => other.toString
     }
   }
