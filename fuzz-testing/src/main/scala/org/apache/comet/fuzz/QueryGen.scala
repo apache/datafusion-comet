@@ -104,36 +104,46 @@ object QueryGen {
 
   private def pickRandomColumn(r: Random, df: DataFrame, targetType: SparkType): String = {
     targetType match {
+      case SparkAnyType =>
+        Utils.randomChoice(df.schema.fields, r).name
       case SparkByteType =>
-        val candidates = df.schema.fields.filter(_.dataType == ByteType)
-        Utils.randomChoice(candidates, r).name
+        select(r, df, _.dataType == ByteType)
       case SparkShortType =>
-        val candidates = df.schema.fields.filter(_.dataType == ShortType)
-        Utils.randomChoice(candidates, r).name
+        select(r, df, _.dataType == ShortType)
       case SparkIntType =>
-        val candidates = df.schema.fields.filter(_.dataType == IntegerType)
-        Utils.randomChoice(candidates, r).name
+        select(r, df, _.dataType == IntegerType)
       case SparkLongType =>
-        val candidates = df.schema.fields.filter(_.dataType == LongType)
-        Utils.randomChoice(candidates, r).name
+        select(r, df, _.dataType == LongType)
       case SparkNumericType =>
-        val candidates = df.schema.fields.filter(f => isNumeric(f.dataType))
-        Utils.randomChoice(candidates, r).name
+        select(r, df, f => isNumeric(f.dataType))
       case SparkStringType =>
-        val candidates = df.schema.fields.filter(_.dataType == StringType)
-        Utils.randomChoice(candidates, r).name
+        select(r, df, _.dataType == StringType)
+      case SparkBinaryType =>
+        select(r, df, _.dataType == BinaryType)
+      case SparkDateType =>
+        select(r, df, _.dataType == DateType)
+      case SparkTimestampType =>
+        select(r, df, _.dataType == TimestampType)
+      case SparkDateOrTimestampType =>
+        select(r, df, f => f.dataType == DateType || f.dataType == TimestampType)
       case SparkTypeOneOf(choices) =>
         pickRandomColumn(r, df, Utils.randomChoice(choices, r))
       case SparkArrayType(elementType) =>
-        val candidates = df.schema.fields.filter(_.dataType match {
-          case ArrayType(x, _) if typeMatch(elementType, x) => true
-          case _ => false
-        })
-        Utils.randomChoice(candidates, r).name
+        select(
+          r,
+          df,
+          _.dataType match {
+            case ArrayType(x, _) if typeMatch(elementType, x) => true
+            case _ => false
+          })
       case _ =>
         throw new IllegalStateException(targetType.toString)
     }
+  }
 
+  /** Select a random field that matches a predicate */
+  private def select(r: Random, df: DataFrame, predicate: StructField => Boolean): String = {
+    Utils.randomChoice(df.schema.fields.filter(predicate), r).name
   }
 
   private def isNumeric(d: DataType): Boolean = {
