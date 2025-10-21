@@ -43,19 +43,10 @@ case object SparkAnyType extends SparkType
 
 case class FunctionSignature(inputTypes: Seq[SparkType])
 
-sealed trait Function {
-
-  def name: String
-
+case class Function(name: String, signatures: Seq[FunctionSignature]) {
   // query generator should choose inputs based on signature not just on arg count
   @deprecated
-  def numArgs: Int
-}
-
-case class FunctionWithSignature(name: String, signatures: Seq[FunctionSignature])
-    extends Function {
-  // query generator should choose inputs based on signature not just on arg count
-  override def numArgs: Int = signatures.head.inputTypes.length
+  def numArgs: Int = signatures.head.inputTypes.length
 }
 
 object Meta {
@@ -75,23 +66,19 @@ object Meta {
     (DataTypes.StringType, 0.2),
     (DataTypes.BinaryType, 0.1))
 
-  private def createFunctionWithInputs(
-      name: String,
-      inputs: Seq[SparkType]): FunctionWithSignature = {
-    FunctionWithSignature(name, Seq(FunctionSignature(inputs)))
+  private def createFunctionWithInputs(name: String, inputs: Seq[SparkType]): Function = {
+    Function(name, Seq(FunctionSignature(inputs)))
   }
 
-  private def createFunctionWithSignatures(
-      name: String,
-      signatures: Seq[FunctionSignature]): FunctionWithSignature = {
-    FunctionWithSignature(name, signatures)
+  private def createFunctions(name: String, signatures: Seq[FunctionSignature]): Function = {
+    Function(name, signatures)
   }
 
-  private def createUnaryStringFunction(name: String): FunctionWithSignature = {
+  private def createUnaryStringFunction(name: String): Function = {
     createFunctionWithInputs(name, Seq(SparkStringType))
   }
 
-  private def createUnaryNumericFunction(name: String): FunctionWithSignature = {
+  private def createUnaryNumericFunction(name: String): Function = {
     createFunctionWithInputs(name, Seq(SparkNumericType))
   }
 
@@ -112,7 +99,7 @@ object Meta {
     createUnaryStringFunction("ltrim"),
     createUnaryStringFunction("rtrim"),
     createFunctionWithInputs("string_space", Seq(SparkIntType)),
-    createFunctionWithSignatures(
+    createFunctions(
       "rpad",
       Seq(
         FunctionSignature(Seq(SparkStringType, SparkIntegralType)),
@@ -131,13 +118,13 @@ object Meta {
     createFunctionWithInputs(
       "length",
       Seq(SparkTypeOneOf(Seq(SparkStringType, SparkBinaryType)))),
-    createFunctionWithSignatures(
+    createFunctions(
       "reverse",
       Seq(
         FunctionSignature(Seq(SparkStringType)),
         FunctionSignature(Seq(SparkArrayType(SparkAnyType))))),
     createFunctionWithInputs("instr", Seq(SparkStringType, SparkStringType)),
-    createFunctionWithSignatures(
+    createFunctions(
       "replace",
       Seq(
         FunctionSignature(Seq(SparkStringType, SparkStringType)),

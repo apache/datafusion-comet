@@ -87,15 +87,12 @@ object QueryGen {
     val tableName = s"test${r.nextInt(numFiles)}"
     val table = spark.table(tableName)
 
-    val f = Utils.randomChoice(Meta.scalarFunc, r)
-    val args = f match {
-      case func: FunctionWithSignature =>
-        val signature = Utils.randomChoice(func.signatures, r)
-        signature.inputTypes.map(x => pickRandomColumn(r, table, x))
-    }
+    val func = Utils.randomChoice(Meta.scalarFunc, r)
+    val signature = Utils.randomChoice(func.signatures, r)
+    val args = signature.inputTypes.map(x => pickRandomColumn(r, table, x))
 
     // Example SELECT c0, log(c0) as x FROM test0
-    s"SELECT ${args.mkString(", ")}, ${f.name}(${args.mkString(", ")}) AS x " +
+    s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
       s"FROM $tableName " +
       s"ORDER BY ${args.mkString(", ")};"
   }
