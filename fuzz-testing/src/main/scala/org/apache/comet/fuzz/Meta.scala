@@ -52,12 +52,6 @@ sealed trait Function {
   def numArgs: Int
 }
 
-@deprecated
-case class FunctionWithArgCount(name: String, argCount: Int) extends Function {
-  // query generator should choose inputs based on signature not just on arg count
-  override def numArgs: Int = argCount
-}
-
 case class FunctionWithSignature(name: String, signatures: Seq[FunctionSignature])
     extends Function {
   // query generator should choose inputs based on signature not just on arg count
@@ -80,11 +74,6 @@ object Meta {
     (DataTypes.TimestampNTZType, 0.2),
     (DataTypes.StringType, 0.2),
     (DataTypes.BinaryType, 0.1))
-
-  @deprecated
-  private def createFunction(name: String, argCount: Int): FunctionWithArgCount = {
-    FunctionWithArgCount(name, argCount)
-  }
 
   private def createFunctionWithInputs(
       name: String,
@@ -122,7 +111,7 @@ object Meta {
     createUnaryStringFunction("trim"),
     createUnaryStringFunction("ltrim"),
     createUnaryStringFunction("rtrim"),
-    createFunction("string_space", 1),
+    createFunctionWithInputs("string_space", Seq(SparkIntType)),
     createFunctionWithSignatures(
       "rpad",
       Seq(
@@ -137,8 +126,8 @@ object Meta {
     // createFunction("sha2", 1), -- needs a second argument for number of bits
     createFunctionWithInputs("substring", Seq(SparkStringType, SparkIntType, SparkIntType)),
     createUnaryStringFunction("btrim"),
-    createFunction("concat_ws", 2),
-    createFunction("repeat", 2),
+    createFunctionWithInputs("concat_ws", Seq(SparkStringType, SparkStringType)),
+    createFunctionWithInputs("repeat", Seq(SparkStringType, SparkIntType)),
     createFunctionWithInputs(
       "length",
       Seq(SparkTypeOneOf(Seq(SparkStringType, SparkBinaryType)))),
@@ -181,39 +170,44 @@ object Meta {
     createUnaryNumericFunction("Tan"),
     createUnaryNumericFunction("Ceil"),
     createUnaryNumericFunction("Floor"),
-    createFunction("bool_and", 1),
-    createFunction("bool_or", 1),
-    createFunction("bitwise_not", 1))
+    createFunctionWithInputs("bool_and", Seq(SparkAnyType)),
+    createFunctionWithInputs("bool_or", Seq(SparkAnyType)),
+    createFunctionWithInputs("bitwise_not", Seq(SparkIntegralType)))
 
   val miscScalarFunc: Seq[Function] =
-    Seq(createFunction("isnan", 1), createFunction("isnull", 1), createFunction("isnotnull", 1))
+    Seq(
+      createFunctionWithInputs("isnan", Seq(SparkNumericType)),
+      createFunctionWithInputs("isnull", Seq(SparkAnyType)),
+      createFunctionWithInputs("isnotnull", Seq(SparkAnyType)))
 
   val arrayScalarFunc: Seq[Function] = Seq(
-    createFunction("array", 2),
-    createFunction("array_remove", 2),
-    createFunction("array_insert", 2),
-    createFunction("array_contains", 2),
-    createFunction("array_intersect", 2),
-    createFunction("array_append", 2))
+    createFunctionWithInputs("array", Seq(SparkAnyType, SparkAnyType)),
+    createFunctionWithInputs("array_remove", Seq(SparkArrayType(SparkAnyType), SparkAnyType)),
+    createFunctionWithInputs("array_insert", Seq(SparkArrayType(SparkAnyType), SparkIntType)),
+    createFunctionWithInputs("array_contains", Seq(SparkArrayType(SparkAnyType), SparkAnyType)),
+    createFunctionWithInputs(
+      "array_intersect",
+      Seq(SparkArrayType(SparkAnyType), SparkArrayType(SparkAnyType))),
+    createFunctionWithInputs("array_append", Seq(SparkArrayType(SparkAnyType), SparkAnyType)))
 
   val scalarFunc: Seq[Function] = stringScalarFunc ++ dateScalarFunc ++
     mathScalarFunc ++ miscScalarFunc ++ arrayScalarFunc
 
   val aggFunc: Seq[Function] = Seq(
-    createFunction("min", 1),
-    createFunction("max", 1),
-    createFunction("count", 1),
+    createFunctionWithInputs("min", Seq(SparkAnyType)),
+    createFunctionWithInputs("max", Seq(SparkAnyType)),
+    createFunctionWithInputs("count", Seq(SparkAnyType)),
     createUnaryNumericFunction("avg"),
     createUnaryNumericFunction("sum"),
-    createFunction("first", 1),
-    createFunction("last", 1),
-    createFunction("var_pop", 1),
-    createFunction("var_samp", 1),
-    createFunction("covar_pop", 1),
-    createFunction("covar_samp", 1),
-    createFunction("stddev_pop", 1),
-    createFunction("stddev_samp", 1),
-    createFunction("corr", 2))
+    createFunctionWithInputs("first", Seq(SparkAnyType)),
+    createFunctionWithInputs("last", Seq(SparkAnyType)),
+    createFunctionWithInputs("var_pop", Seq(SparkNumericType)),
+    createFunctionWithInputs("var_samp", Seq(SparkNumericType)),
+    createFunctionWithInputs("covar_pop", Seq(SparkNumericType)),
+    createFunctionWithInputs("covar_samp", Seq(SparkNumericType)),
+    createFunctionWithInputs("stddev_pop", Seq(SparkNumericType)),
+    createFunctionWithInputs("stddev_samp", Seq(SparkNumericType)),
+    createFunctionWithInputs("corr", Seq(SparkNumericType, SparkNumericType)))
 
   val unaryArithmeticOps: Seq[String] = Seq("+", "-")
 

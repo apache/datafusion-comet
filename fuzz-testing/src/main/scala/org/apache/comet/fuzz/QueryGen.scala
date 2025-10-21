@@ -89,8 +89,6 @@ object QueryGen {
 
     val f = Utils.randomChoice(Meta.scalarFunc, r)
     val args = f match {
-      case func: FunctionWithArgCount =>
-        Range(0, func.numArgs).map(_ => Utils.randomChoice(table.columns, r))
       case func: FunctionWithSignature =>
         val signature = Utils.randomChoice(func.signatures, r)
         signature.inputTypes.map(x => pickRandomColumn(r, table, x))
