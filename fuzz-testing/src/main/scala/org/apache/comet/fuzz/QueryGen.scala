@@ -43,19 +43,25 @@ object QueryGen {
     val uniqueQueries = mutable.HashSet[String]()
 
     for (_ <- 0 until numQueries) {
-      val sql = r.nextInt().abs % 8 match {
-        case 0 => generateJoin(r, spark, numFiles)
-        case 1 => generateAggregate(r, spark, numFiles)
-        case 2 => generateScalar(r, spark, numFiles)
-        case 3 => generateCast(r, spark, numFiles)
-        case 4 => generateUnaryArithmetic(r, spark, numFiles)
-        case 5 => generateBinaryArithmetic(r, spark, numFiles)
-        case 6 => generateBinaryComparison(r, spark, numFiles)
-        case _ => generateConditional(r, spark, numFiles)
-      }
-      if (!uniqueQueries.contains(sql)) {
-        uniqueQueries += sql
-        w.write(sql + "\n")
+      try {
+        val sql = r.nextInt().abs % 8 match {
+          case 0 => generateJoin(r, spark, numFiles)
+          case 1 => generateAggregate(r, spark, numFiles)
+          case 2 => generateScalar(r, spark, numFiles)
+          case 3 => generateCast(r, spark, numFiles)
+          case 4 => generateUnaryArithmetic(r, spark, numFiles)
+          case 5 => generateBinaryArithmetic(r, spark, numFiles)
+          case 6 => generateBinaryComparison(r, spark, numFiles)
+          case _ => generateConditional(r, spark, numFiles)
+        }
+        if (!uniqueQueries.contains(sql)) {
+          uniqueQueries += sql
+          w.write(sql + "\n")
+        }
+      } catch {
+        case e: Exception =>
+          // scalastyle:off
+          println(s"Failed to generate query: ${e.getMessage}")
       }
     }
     w.close()
@@ -88,13 +94,20 @@ object QueryGen {
     val table = spark.table(tableName)
 
     val func = Utils.randomChoice(Meta.scalarFunc, r)
-    val signature = Utils.randomChoice(func.signatures, r)
-    val args = signature.inputTypes.map(x => pickRandomColumn(r, table, x))
+    try {
+      val signature = Utils.randomChoice(func.signatures, r)
+      val args = signature.inputTypes.map(x => pickRandomColumn(r, table, x))
 
-    // Example SELECT c0, log(c0) as x FROM test0
-    s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
-      s"FROM $tableName " +
-      s"ORDER BY ${args.mkString(", ")};"
+      // Example SELECT c0, log(c0) as x FROM test0
+      s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
+        s"FROM $tableName " +
+        s"ORDER BY ${args.mkString(", ")};"
+    } catch {
+      case e: Exception =>
+        throw new IllegalStateException(
+          s"Failed to generate SQL for scalar function ${func.name}",
+          e)
+    }
   }
 
   private def pickRandomColumn(r: Random, df: DataFrame, targetType: SparkType): String = {
@@ -169,7 +182,11 @@ object QueryGen {
 
   /** Select a random field that matches a predicate */
   private def select(r: Random, df: DataFrame, predicate: StructField => Boolean): String = {
-    Utils.randomChoice(df.schema.fields.filter(predicate), r).name
+    val candidates = df.schema.fields.filter(predicate)
+    if (candidates.isEmpty) {
+      throw new IllegalStateException("Failed to find suitable column")
+    }
+    Utils.randomChoice(candidates, r).name
   }
 
   private def isNumeric(d: DataType): Boolean = {
