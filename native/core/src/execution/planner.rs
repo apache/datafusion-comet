@@ -287,8 +287,6 @@ impl PhysicalPlanner {
                 )
             }
             ExprStruct::IntegralDivide(expr) => {
-                // TODO respect eval mode
-                // https://github.com/apache/datafusion-comet/issues/533
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 self.create_binary_expr_with_options(
                     expr.left.as_ref().unwrap(),
@@ -987,11 +985,12 @@ impl PhysicalPlanner {
                 } else {
                     "decimal_div"
                 };
-                let fun_expr = create_comet_physical_fun(
+                let fun_expr = create_comet_physical_fun_with_eval_mode(
                     func_name,
                     data_type.clone(),
                     &self.session_ctx.state(),
                     None,
+                    eval_mode,
                 )?;
                 Ok(Arc::new(ScalarFunctionExpr::new(
                     func_name,
@@ -1358,6 +1357,8 @@ impl PhysicalPlanner {
                     default_values,
                     scan.session_timezone.as_str(),
                     scan.case_sensitive,
+                    self.session_ctx(),
+                    scan.encryption_enabled,
                 )?;
                 Ok((
                     vec![],
@@ -2477,7 +2478,7 @@ impl PhysicalPlanner {
             fun_name,
             data_type.clone(),
             &self.session_ctx.state(),
-            None,
+            Some(expr.fail_on_error),
         )?;
 
         let args = args
@@ -3345,6 +3346,7 @@ mod tests {
                         func: "make_array".to_string(),
                         args: vec![array_col, array_col_1],
                         return_type: None,
+                        fail_on_error: false,
                     })),
                 }],
             })),
@@ -3463,6 +3465,7 @@ mod tests {
                         func: "array_repeat".to_string(),
                         args: vec![array_col, array_col_1],
                         return_type: None,
+                        fail_on_error: false,
                     })),
                 }],
             })),

@@ -29,8 +29,43 @@
   --pst-color-h2: var(--color-text-base);
   /* Use softer blue from bootstrap's default info color */
   --pst-color-info: 23, 162, 184;
-  --pst-header-height: 0px;
+  --pst-content-max-width: 100%; /* center column */
+  --pst-font-size-base: 0.9rem;
 }
+
+/* Scale down the logo in the top navbar */
+.bd-header .navbar-brand img.logo__image {
+  height: 40px;
+  width: auto;
+  margin-right: 0.25rem;
+  vertical-align: middle;
+}
+
+/* --- remove the right (secondary) sidebar entirely --- */
+.bd-sidebar-secondary { display: none !important; }
+
+/* Some versions still reserve the grid column for it — collapse it */
+.bd-main {
+  /* left sidebar + content only */
+  grid-template-columns: 20rem minmax(0, 1fr) !important;
+}
+
+/* --- make the left (primary) sidebar small --- */
+.bd-sidebar-primary {
+  width: 20rem !important;
+  flex: 0 0 20rem !important;
+}
+
+/* Optional: make its text a bit tighter */
+.bd-sidebar-primary .bd-sidebar {
+  font-size: 0.9rem;
+}
+
+/* --- let the center content use all remaining width --- */
+.bd-content, .bd-article-container {
+  max-width: none !important;   /* remove internal cap */
+}
+
 
 code {
   color: rgb(215, 70, 51);

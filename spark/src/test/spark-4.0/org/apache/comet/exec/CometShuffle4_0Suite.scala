@@ -77,9 +77,9 @@ class CometShuffle4_0Suite extends CometColumnarShuffleSuite {
   }
 
   private def createJoinTestDF(
-       keys: Seq[(String, String)],
-       extraColumns: Seq[String] = Nil,
-       joinType: String = ""): DataFrame = {
+      keys: Seq[(String, String)],
+      extraColumns: Seq[String] = Nil,
+      joinType: String = ""): DataFrame = {
     val extraColList = if (extraColumns.isEmpty) "" else extraColumns.mkString(", ", ", ", "")
     sql(s"""
            |${selectWithMergeJoinHint("i", "p")}

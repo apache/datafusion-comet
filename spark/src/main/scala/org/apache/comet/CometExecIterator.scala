@@ -24,14 +24,18 @@ import java.lang.management.ManagementFactory
 
 import scala.util.matching.Regex
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
+import org.apache.spark.util.SerializableConfiguration
 
-import org.apache.comet.CometConf.{COMET_BATCH_SIZE, COMET_DEBUG_ENABLED, COMET_EXEC_MEMORY_POOL_TYPE, COMET_EXPLAIN_NATIVE_ENABLED, COMET_METRICS_UPDATE_INTERVAL}
+import org.apache.comet.CometConf._
 import org.apache.comet.Tracing.withTrace
+import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.vector.NativeUtil
 
@@ -52,6 +56,8 @@ import org.apache.comet.vector.NativeUtil
  *   The number of partitions.
  * @param partitionIndex
  *   The index of the partition.
+ * @param encryptedFilePaths
+ *   Paths to encrypted Parquet files that need key unwrapping.
  */
 class CometExecIterator(
     val id: Long,
@@ -60,7 +66,9 @@ class CometExecIterator(
     protobufQueryPlan: Array[Byte],
     nativeMetrics: CometMetricNode,
     numParts: Int,
-    partitionIndex: Int)
+    partitionIndex: Int,
+    broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
+    encryptedFilePaths: Seq[String] = Seq.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -73,34 +81,32 @@ class CometExecIterator(
   private val cometBatchIterators = inputs.map { iterator =>
     new CometBatchIterator(iterator, nativeUtil)
   }.toArray
+
   private val plan = {
     val conf = SparkEnv.get.conf
     val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
 
-    val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
-    val memoryLimit = if (offHeapMode) {
-      // in unified mode we share off-heap memory with Spark
-      ByteUnit.MiB.toBytes(conf.getSizeAsMb("spark.memory.offHeap.size"))
-    } else {
-      // we'll use the built-in memory pool from DF, and initializes with `memory_limit`
-      // and `memory_fraction` below.
-      CometSparkSessionExtensions.getCometMemoryOverhead(conf)
-    }
-
-    // serialize Spark conf in protobuf format
+    // serialize Comet related Spark configs in protobuf format
     val builder = ConfigMap.newBuilder()
-    conf.getAll.foreach { case (k, v) =>
+    conf.getAll.filter(_._1.startsWith(CometConf.COMET_PREFIX)).foreach { case (k, v) =>
       builder.putEntries(k, v)
     }
     val protobufSparkConfigs = builder.build().toByteArray
 
-    val memoryLimitPerTask = if (offHeapMode) {
-      // this per-task limit is not used in native code when using unified memory
-      // so we can skip calculating it and avoid logging irrelevant information
-      0
+    // Create keyUnwrapper if encryption is enabled
+    val keyUnwrapper = if (encryptedFilePaths.nonEmpty) {
+      val unwrapper = new CometFileKeyUnwrapper()
+      val hadoopConf: Configuration = broadcastedHadoopConfForEncryption.get.value.value
+
+      encryptedFilePaths.foreach(filePath =>
+        unwrapper.storeDecryptionKeyRetriever(filePath, hadoopConf))
+
+      unwrapper
     } else {
-      getMemoryLimitPerTask(conf)
+      null
     }
+
+    val memoryConfig = CometExecIterator.getMemoryConfig(conf)
 
     nativeLib.createPlan(
       id,
@@ -113,47 +119,18 @@ class CometExecIterator(
       cometTaskMemoryManager,
       localDiskDirs,
       batchSize = COMET_BATCH_SIZE.get(),
-      offHeapMode,
-      memoryPoolType = COMET_EXEC_MEMORY_POOL_TYPE.get(),
-      memoryLimit,
-      memoryLimitPerTask,
+      memoryConfig.offHeapMode,
+      memoryConfig.memoryPoolType,
+      memoryConfig.memoryLimit,
+      memoryConfig.memoryLimitPerTask,
       taskAttemptId,
-      debug = COMET_DEBUG_ENABLED.get(),
-      explain = COMET_EXPLAIN_NATIVE_ENABLED.get(),
-      tracingEnabled)
+      keyUnwrapper)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
   private var prevBatch: ColumnarBatch = null
   private var currentBatch: ColumnarBatch = null
   private var closed: Boolean = false
-
-  private def getMemoryLimitPerTask(conf: SparkConf): Long = {
-    val numCores = numDriverOrExecutorCores(conf).toFloat
-    val maxMemory = CometSparkSessionExtensions.getCometMemoryOverhead(conf)
-    val coresPerTask = conf.get("spark.task.cpus", "1").toFloat
-    // example 16GB maxMemory * 16 cores with 4 cores per task results
-    // in memory_limit_per_task = 16 GB * 4 / 16 = 16 GB / 4 = 4GB
-    val limit = (maxMemory.toFloat * coresPerTask / numCores).toLong
-    logInfo(
-      s"Calculated per-task memory limit of $limit ($maxMemory * $coresPerTask / $numCores)")
-    limit
-  }
-
-  private def numDriverOrExecutorCores(conf: SparkConf): Int = {
-    def convertToInt(threads: String): Int = {
-      if (threads == "*") Runtime.getRuntime.availableProcessors() else threads.toInt
-    }
-    val LOCAL_N_REGEX = """local\[([0-9]+|\*)\]""".r
-    val LOCAL_N_FAILURES_REGEX = """local\[([0-9]+|\*)\s*,\s*([0-9]+)\]""".r
-    val master = conf.get("spark.master")
-    master match {
-      case "local" => 1
-      case LOCAL_N_REGEX(threads) => convertToInt(threads)
-      case LOCAL_N_FAILURES_REGEX(threads, _) => convertToInt(threads)
-      case _ => conf.get("spark.executor.cores", "1").toInt
-    }
-  }
 
   private def getNextBatch: Option[ColumnarBatch] = {
     assert(partitionIndex >= 0 && partitionIndex < numParts)
@@ -226,6 +203,8 @@ class CometExecIterator(
 
     nextBatch = getNextBatch
 
+    logTrace(s"Task $taskAttemptId memory pool usage is ${cometTaskMemoryManager.getUsed} bytes")
+
     if (nextBatch.isEmpty) {
       close()
       false
@@ -264,25 +243,11 @@ class CometExecIterator(
         traceMemoryUsage()
       }
 
-      // The allocator thoughts the exported ArrowArray and ArrowSchema structs are not released,
-      // so it will report:
-      // Caused by: java.lang.IllegalStateException: Memory was leaked by query.
-      // Memory leaked: (516) Allocator(ROOT) 0/516/808/9223372036854775807 (res/actual/peak/limit)
-      // Suspect this seems a false positive leak, because there is no reported memory leak at JVM
-      // when profiling. `allocator` reports a leak because it calculates the accumulated number
-      // of memory allocated for ArrowArray and ArrowSchema. But these exported ones will be
-      // released in native side later.
-      // More to clarify it. For ArrowArray and ArrowSchema, Arrow will put a release field into the
-      // memory region which is a callback function pointer (C function) that could be called to
-      // release these structs in native code too. Once we wrap their memory addresses at native
-      // side using FFI ArrowArray and ArrowSchema, and drop them later, the callback function will
-      // be called to release the memory.
-      // But at JVM, the allocator doesn't know about this fact so it still keeps the accumulated
-      // number.
-      // Tried to manually do `release` and `close` that can make the allocator happy, but it will
-      // cause JVM runtime failure.
+      val memInUse = cometTaskMemoryManager.getUsed
+      if (memInUse != 0) {
+        logWarning(s"CometExecIterator closed with non-zero memory usage : $memInUse")
+      }
 
-      // allocator.close()
       closed = true
     }
   }
@@ -297,3 +262,74 @@ class CometExecIterator(
     nativeLib.logMemoryUsage(s"task_memory_spark_$threadId", sparkTaskMemory)
   }
 }
+
+object CometExecIterator extends Logging {
+
+  def getMemoryConfig(conf: SparkConf): MemoryConfig = {
+    val numCores = numDriverOrExecutorCores(conf)
+    val coresPerTask = conf.get("spark.task.cpus", "1").toInt
+    // there are different paths for on-heap vs off-heap mode
+    val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
+    if (offHeapMode) {
+      // in off-heap mode, Comet uses unified memory management to share off-heap memory with Spark
+      val offHeapSize = ByteUnit.MiB.toBytes(conf.getSizeAsMb("spark.memory.offHeap.size"))
+      val memoryFraction = CometConf.COMET_EXEC_MEMORY_POOL_FRACTION.get()
+      val memoryLimit = (offHeapSize * memoryFraction).toLong
+      val memoryLimitPerTask = (memoryLimit.toDouble * coresPerTask / numCores).toLong
+      val memoryPoolType = COMET_EXEC_OFFHEAP_MEMORY_POOL_TYPE.get()
+      logInfo(
+        s"memoryPoolType=$memoryPoolType, " +
+          s"offHeapSize=${toMB(offHeapSize)}, " +
+          s"memoryFraction=$memoryFraction, " +
+          s"memoryLimit=${toMB(memoryLimit)}, " +
+          s"memoryLimitPerTask=${toMB(memoryLimitPerTask)}")
+      MemoryConfig(offHeapMode, memoryPoolType = memoryPoolType, memoryLimit, memoryLimitPerTask)
+    } else {
+      // we'll use the built-in memory pool from DF, and initializes with `memory_limit`
+      // and `memory_fraction` below.
+      val memoryLimit = CometSparkSessionExtensions.getCometMemoryOverhead(conf)
+      // example 16GB maxMemory * 16 cores with 4 cores per task results
+      // in memory_limit_per_task = 16 GB * 4 / 16 = 16 GB / 4 = 4GB
+      val memoryLimitPerTask = (memoryLimit.toDouble * coresPerTask / numCores).toLong
+      val memoryPoolType = COMET_EXEC_ONHEAP_MEMORY_POOL_TYPE.get()
+      logInfo(
+        s"memoryPoolType=$memoryPoolType, " +
+          s"memoryLimit=${toMB(memoryLimit)}, " +
+          s"memoryLimitPerTask=${toMB(memoryLimitPerTask)}")
+      MemoryConfig(offHeapMode, memoryPoolType = memoryPoolType, memoryLimit, memoryLimitPerTask)
+    }
+  }
+
+  private def numDriverOrExecutorCores(conf: SparkConf): Int = {
+    def convertToInt(threads: String): Int = {
+      if (threads == "*") Runtime.getRuntime.availableProcessors() else threads.toInt
+    }
+
+    // If running in local mode, get number of threads from the spark.master setting.
+    // See https://spark.apache.org/docs/latest/submitting-applications.html#master-urls
+    // for supported formats
+
+    // `local[*]` means using all available cores and `local[2]` means using 2 cores.
+    val LOCAL_N_REGEX = """local\[([0-9]+|\*)\]""".r
+    // Also handle format `local[num-worker-threads, max-failures]
+    val LOCAL_N_FAILURES_REGEX = """local\[([0-9]+|\*)\s*,\s*([0-9]+)\]""".r
+
+    val master = conf.get("spark.master")
+    master match {
+      case "local" => 1
+      case LOCAL_N_REGEX(threads) => convertToInt(threads)
+      case LOCAL_N_FAILURES_REGEX(threads, _) => convertToInt(threads)
+      case _ => conf.get("spark.executor.cores", "1").toInt
+    }
+  }
+
+  private def toMB(n: Long): String = {
+    s"${(n.toDouble / 1024.0 / 1024.0).toLong} MB"
+  }
+}
+
+case class MemoryConfig(
+    offHeapMode: Boolean,
+    memoryPoolType: String,
+    memoryLimit: Long,
+    memoryLimitPerTask: Long)

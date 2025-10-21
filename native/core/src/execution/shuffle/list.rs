@@ -17,12 +17,18 @@
 
 use crate::{
     errors::CometError,
-    execution::shuffle::row::{append_field, SparkUnsafeObject, SparkUnsafeRow},
+    execution::shuffle::{
+        map::append_map_elements,
+        row::{append_field, downcast_builder_ref, SparkUnsafeObject, SparkUnsafeRow},
+    },
 };
-use arrow::array::builder::{
-    ArrayBuilder, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float32Builder,
-    Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder, ListBuilder,
-    StringBuilder, StructBuilder, TimestampMicrosecondBuilder,
+use arrow::array::{
+    builder::{
+        ArrayBuilder, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder,
+        Float32Builder, Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder,
+        ListBuilder, StringBuilder, StructBuilder, TimestampMicrosecondBuilder,
+    },
+    MapBuilder,
 };
 use arrow::datatypes::{DataType, TimeUnit};
 
@@ -86,258 +92,183 @@ impl SparkUnsafeArray {
     }
 }
 
-/// A macro defines a function that appends the given list stored in `SparkUnsafeArray` into
-/// `ListBuilder`.
-macro_rules! define_append_element {
-    ($func:ident, $builder_type:ty, $accessor:expr) => {
-        #[allow(clippy::redundant_closure_call)]
-        fn $func(
-            list_builder: &mut ListBuilder<$builder_type>,
-            list: &SparkUnsafeArray,
-            idx: usize,
-        ) {
-            let element_builder: &mut $builder_type = list_builder.values();
-            let is_null = list.is_null_at(idx);
+pub fn append_to_builder<const NULLABLE: bool>(
+    data_type: &DataType,
+    builder: &mut dyn ArrayBuilder,
+    array: &SparkUnsafeArray,
+) -> Result<(), CometError> {
+    macro_rules! add_values {
+        ($builder_type:ty, $add_value:expr, $add_null:expr) => {
+            let builder = downcast_builder_ref!($builder_type, builder);
+            for idx in 0..array.get_num_elements() {
+                if NULLABLE && array.is_null_at(idx) {
+                    $add_null(builder);
+                } else {
+                    $add_value(builder, array, idx);
+                }
+            }
+        };
+    }
 
-            if is_null {
-                // Append a null value to the element builder.
-                element_builder.append_null();
-            } else {
-                $accessor(element_builder, list, idx);
+    match data_type {
+        DataType::Boolean => {
+            add_values!(
+                BooleanBuilder,
+                |builder: &mut BooleanBuilder, values: &SparkUnsafeArray, idx: usize| builder
+                    .append_value(values.get_boolean(idx)),
+                |builder: &mut BooleanBuilder| builder.append_null()
+            );
+        }
+        DataType::Int8 => {
+            add_values!(
+                Int8Builder,
+                |builder: &mut Int8Builder, values: &SparkUnsafeArray, idx: usize| builder
+                    .append_value(values.get_byte(idx)),
+                |builder: &mut Int8Builder| builder.append_null()
+            );
+        }
+        DataType::Int16 => {
+            add_values!(
+                Int16Builder,
+                |builder: &mut Int16Builder, values: &SparkUnsafeArray, idx: usize| builder
+                    .append_value(values.get_short(idx)),
+                |builder: &mut Int16Builder| builder.append_null()
+            );
+        }
+        DataType::Int32 => {
+            add_values!(
+                Int32Builder,
+                |builder: &mut Int32Builder, values: &SparkUnsafeArray, idx: usize| builder
+                    .append_value(values.get_int(idx)),
+                |builder: &mut Int32Builder| builder.append_null()
+            );
+        }
+        DataType::Int64 => {
+            add_values!(
+                Int64Builder,
+                |builder: &mut Int64Builder, values: &SparkUnsafeArray, idx: usize| builder
+                    .append_value(values.get_long(idx)),
+                |builder: &mut Int64Builder| builder.append_null()
+            );
+        }
+        DataType::Float32 => {
+            add_values!(
+                Float32Builder,
+                |builder: &mut Float32Builder, values: &SparkUnsafeArray, idx: usize| builder
+                    .append_value(values.get_float(idx)),
+                |builder: &mut Float32Builder| builder.append_null()
+            );
+        }
+        DataType::Float64 => {
+            add_values!(
+                Float64Builder,
+                |builder: &mut Float64Builder, values: &SparkUnsafeArray, idx: usize| builder
+                    .append_value(values.get_double(idx)),
+                |builder: &mut Float64Builder| builder.append_null()
+            );
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            add_values!(
+                TimestampMicrosecondBuilder,
+                |builder: &mut TimestampMicrosecondBuilder,
+                 values: &SparkUnsafeArray,
+                 idx: usize| builder.append_value(values.get_timestamp(idx)),
+                |builder: &mut TimestampMicrosecondBuilder| builder.append_null()
+            );
+        }
+        DataType::Date32 => {
+            add_values!(
+                Date32Builder,
+                |builder: &mut Date32Builder, values: &SparkUnsafeArray, idx: usize| builder
+                    .append_value(values.get_date(idx)),
+                |builder: &mut Date32Builder| builder.append_null()
+            );
+        }
+        DataType::Binary => {
+            add_values!(
+                BinaryBuilder,
+                |builder: &mut BinaryBuilder, values: &SparkUnsafeArray, idx: usize| builder
+                    .append_value(values.get_binary(idx)),
+                |builder: &mut BinaryBuilder| builder.append_null()
+            );
+        }
+        DataType::Utf8 => {
+            add_values!(
+                StringBuilder,
+                |builder: &mut StringBuilder, values: &SparkUnsafeArray, idx: usize| builder
+                    .append_value(values.get_string(idx)),
+                |builder: &mut StringBuilder| builder.append_null()
+            );
+        }
+        DataType::List(field) => {
+            let builder = downcast_builder_ref!(ListBuilder<Box<dyn ArrayBuilder>>, builder);
+            for idx in 0..array.get_num_elements() {
+                if NULLABLE && array.is_null_at(idx) {
+                    builder.append_null();
+                } else {
+                    let nested_array = array.get_array(idx);
+                    append_list_element(field.data_type(), builder, &nested_array)?;
+                };
             }
         }
-    };
-}
+        DataType::Struct(fields) => {
+            let builder = downcast_builder_ref!(StructBuilder, builder);
+            for idx in 0..array.get_num_elements() {
+                let nested_row = if NULLABLE && array.is_null_at(idx) {
+                    builder.append_null();
+                    SparkUnsafeRow::default()
+                } else {
+                    builder.append(true);
+                    array.get_struct(idx, fields.len())
+                };
 
-define_append_element!(
-    append_boolean_element,
-    BooleanBuilder,
-    |builder: &mut BooleanBuilder, list: &SparkUnsafeArray, idx: usize| builder
-        .append_value(list.get_boolean(idx))
-);
-define_append_element!(
-    append_int8_element,
-    Int8Builder,
-    |builder: &mut Int8Builder, list: &SparkUnsafeArray, idx: usize| builder
-        .append_value(list.get_byte(idx))
-);
-define_append_element!(
-    append_int16_element,
-    Int16Builder,
-    |builder: &mut Int16Builder, list: &SparkUnsafeArray, idx: usize| builder
-        .append_value(list.get_short(idx))
-);
-define_append_element!(
-    append_int32_element,
-    Int32Builder,
-    |builder: &mut Int32Builder, list: &SparkUnsafeArray, idx: usize| builder
-        .append_value(list.get_int(idx))
-);
-define_append_element!(
-    append_int64_element,
-    Int64Builder,
-    |builder: &mut Int64Builder, list: &SparkUnsafeArray, idx: usize| builder
-        .append_value(list.get_long(idx))
-);
-define_append_element!(
-    append_float32_element,
-    Float32Builder,
-    |builder: &mut Float32Builder, list: &SparkUnsafeArray, idx: usize| builder
-        .append_value(list.get_float(idx))
-);
-define_append_element!(
-    append_float64_element,
-    Float64Builder,
-    |builder: &mut Float64Builder, list: &SparkUnsafeArray, idx: usize| builder
-        .append_value(list.get_double(idx))
-);
-define_append_element!(
-    append_date32_element,
-    Date32Builder,
-    |builder: &mut Date32Builder, list: &SparkUnsafeArray, idx: usize| builder
-        .append_value(list.get_date(idx))
-);
-define_append_element!(
-    append_timestamp_element,
-    TimestampMicrosecondBuilder,
-    |builder: &mut TimestampMicrosecondBuilder, list: &SparkUnsafeArray, idx: usize| builder
-        .append_value(list.get_timestamp(idx))
-);
-define_append_element!(
-    append_binary_element,
-    BinaryBuilder,
-    |builder: &mut BinaryBuilder, list: &SparkUnsafeArray, idx: usize| builder
-        .append_value(list.get_binary(idx))
-);
-define_append_element!(
-    append_string_element,
-    StringBuilder,
-    |builder: &mut StringBuilder, list: &SparkUnsafeArray, idx: usize| builder
-        .append_value(list.get_string(idx))
-);
+                for (field_idx, field) in fields.into_iter().enumerate() {
+                    append_field(field.data_type(), builder, &nested_row, field_idx)?;
+                }
+            }
+        }
+        DataType::Decimal128(p, _) => {
+            add_values!(
+                Decimal128Builder,
+                |builder: &mut Decimal128Builder, values: &SparkUnsafeArray, idx: usize| builder
+                    .append_value(values.get_decimal(idx, *p)),
+                |builder: &mut Decimal128Builder| builder.append_null()
+            );
+        }
+        DataType::Map(field, _) => {
+            let builder = downcast_builder_ref!(
+                MapBuilder<Box<dyn ArrayBuilder>, Box<dyn ArrayBuilder>>,
+                builder
+            );
+            for idx in 0..array.get_num_elements() {
+                if NULLABLE && array.is_null_at(idx) {
+                    builder.append(false)?;
+                } else {
+                    let nested_map = array.get_map(idx);
+                    append_map_elements(field, builder, &nested_map)?;
+                };
+            }
+        }
+        _ => {
+            return Err(CometError::Internal(format!(
+                "Unsupported map data type: {:?}",
+                data_type
+            )))
+        }
+    }
+
+    Ok(())
+}
 
 /// Appending the given list stored in `SparkUnsafeArray` into `ListBuilder`.
 /// `element_dt` is the data type of the list element. `list_builder` is the list builder.
 /// `list` is the list stored in `SparkUnsafeArray`.
-pub fn append_list_element<T: ArrayBuilder>(
+pub fn append_list_element(
     element_dt: &DataType,
-    list_builder: &mut ListBuilder<T>,
+    list_builder: &mut ListBuilder<Box<dyn ArrayBuilder>>,
     list: &SparkUnsafeArray,
 ) -> Result<(), CometError> {
-    for idx in 0..list.get_num_elements() {
-        match element_dt {
-            DataType::Boolean => append_boolean_element(
-                list_builder
-                    .as_any_mut()
-                    .downcast_mut::<ListBuilder<BooleanBuilder>>()
-                    .expect("ListBuilder<BooleanBuilder>"),
-                list,
-                idx,
-            ),
-            DataType::Int8 => append_int8_element(
-                list_builder
-                    .as_any_mut()
-                    .downcast_mut::<ListBuilder<Int8Builder>>()
-                    .expect("ListBuilder<Int8Builder>"),
-                list,
-                idx,
-            ),
-            DataType::Int16 => append_int16_element(
-                list_builder
-                    .as_any_mut()
-                    .downcast_mut::<ListBuilder<Int16Builder>>()
-                    .expect("ListBuilder<Int16Builder>"),
-                list,
-                idx,
-            ),
-            DataType::Int32 => append_int32_element(
-                list_builder
-                    .as_any_mut()
-                    .downcast_mut::<ListBuilder<Int32Builder>>()
-                    .expect("ListBuilder<Int32Builder>"),
-                list,
-                idx,
-            ),
-            DataType::Int64 => append_int64_element(
-                list_builder
-                    .as_any_mut()
-                    .downcast_mut::<ListBuilder<Int64Builder>>()
-                    .expect("ListBuilder<Int64Builder>"),
-                list,
-                idx,
-            ),
-            DataType::Float32 => append_float32_element(
-                list_builder
-                    .as_any_mut()
-                    .downcast_mut::<ListBuilder<Float32Builder>>()
-                    .expect("ListBuilder<Float32Builder>"),
-                list,
-                idx,
-            ),
-            DataType::Float64 => append_float64_element(
-                list_builder
-                    .as_any_mut()
-                    .downcast_mut::<ListBuilder<Float64Builder>>()
-                    .expect("ListBuilder<Float64Builder>"),
-                list,
-                idx,
-            ),
-            DataType::Date32 => append_date32_element(
-                list_builder
-                    .as_any_mut()
-                    .downcast_mut::<ListBuilder<Date32Builder>>()
-                    .expect("ListBuilder<Date32Builder>"),
-                list,
-                idx,
-            ),
-            DataType::Timestamp(TimeUnit::Microsecond, _) => append_timestamp_element(
-                list_builder
-                    .as_any_mut()
-                    .downcast_mut::<ListBuilder<TimestampMicrosecondBuilder>>()
-                    .expect("ListBuilder<TimestampMicrosecondBuilder>"),
-                list,
-                idx,
-            ),
-            DataType::Binary => append_binary_element(
-                list_builder
-                    .as_any_mut()
-                    .downcast_mut::<ListBuilder<BinaryBuilder>>()
-                    .expect("ListBuilder<BinaryBuilder>"),
-                list,
-                idx,
-            ),
-            DataType::Utf8 => append_string_element(
-                list_builder
-                    .as_any_mut()
-                    .downcast_mut::<ListBuilder<StringBuilder>>()
-                    .expect("ListBuilder<StringBuilder>"),
-                list,
-                idx,
-            ),
-            DataType::Decimal128(p, _) => {
-                let element_builder: &mut Decimal128Builder = list_builder
-                    .values()
-                    .as_any_mut()
-                    .downcast_mut::<Decimal128Builder>()
-                    .expect("ListBuilder<Decimal128Builder>");
-                let is_null = list.is_null_at(idx);
-
-                if is_null {
-                    // Append a null value to element builder.
-                    element_builder.append_null();
-                } else {
-                    element_builder.append_value(list.get_decimal(idx, *p))
-                }
-            }
-            // TODO: support nested list
-            // If the element is a list, we need to get the nested list builder by
-            // `list_builder.values()` and downcast to correct type, i.e., ListBuilder<U>.
-            // But we don't know the type `U` so we cannot downcast to correct type
-            // and recursively call `append_list_element`. Later once we upgrade to
-            // latest Arrow, the `T` of `ListBuilder<T>` could be `Box<dyn ArrowBuilder>`
-            // which erase the deep type of the builder.
-            /*
-            DataType::List(field) => {
-                let element_builder: &mut ListBuilder<_> = list_builder
-                    .values()
-                    .as_any_mut()
-                    .downcast_mut::<ListBuilder<_>>()
-                    .unwrap();
-                let is_null = list.is_null_at(idx);
-
-                if is_null {
-                    element_builder.append_null();
-                } else {
-                    append_list_element(field.data_type(), element_builder, list);
-                }
-            }
-             */
-            DataType::Struct(fields) => {
-                let struct_builder: &mut StructBuilder = list_builder
-                    .values()
-                    .as_any_mut()
-                    .downcast_mut::<StructBuilder>()
-                    .expect("StructBuilder");
-                let is_null = list.is_null_at(idx);
-
-                let nested_row = if is_null {
-                    SparkUnsafeRow::default()
-                } else {
-                    list.get_struct(idx, fields.len())
-                };
-
-                struct_builder.append(!is_null);
-                for (field_idx, field) in fields.into_iter().enumerate() {
-                    append_field(field.data_type(), struct_builder, &nested_row, field_idx)?;
-                }
-            }
-            _ => {
-                return Err(CometError::Internal(format!(
-                    "Unsupported data type in list element: {element_dt:?}"
-                )))
-            }
-        }
-    }
+    append_to_builder::<true>(element_dt, list_builder.values(), list)?;
     list_builder.append(true);
 
     Ok(())

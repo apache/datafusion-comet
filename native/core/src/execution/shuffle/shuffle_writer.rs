@@ -983,23 +983,24 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
         self.output_data_writer.flush(&self.metrics.write_time)?;
 
         // Write index file. It should only contain 2 entries: 0 and the total number of bytes written
-        let mut index_file = OpenOptions::new()
+        let index_file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(self.output_index_path.clone())
             .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
+        let mut index_buf_writer = BufWriter::new(index_file);
         let data_file_length = self
             .output_data_writer
             .writer
             .stream_position()
             .map_err(to_df_err)?;
         for offset in [0, data_file_length] {
-            index_file
+            index_buf_writer
                 .write_all(&(offset as i64).to_le_bytes()[..])
                 .map_err(to_df_err)?;
         }
-        index_file.flush()?;
+        index_buf_writer.flush()?;
 
         self.metrics
             .baseline

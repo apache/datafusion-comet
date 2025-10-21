@@ -180,14 +180,6 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
 object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with MathBase {
 
-  override def getSupportLevel(expr: IntegralDivide): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
-
   override def convert(
       expr: IntegralDivide,
       inputs: Seq[Attribute],
@@ -206,9 +198,9 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       if (expr.right.dataType.isInstanceOf[DecimalType]) expr.right
       else Cast(expr.right, DecimalType(19, 0))
 
-    val rightExpr = nullIfWhenPrimitive(right)
+    val rightExpr = if (expr.evalMode != EvalMode.ANSI) nullIfWhenPrimitive(right) else right
 
-    val dataType = (left.dataType, right.dataType) match {
+    val dataType = (left.dataType, rightExpr.dataType) match {
       case (l: DecimalType, r: DecimalType) =>
         // copy from IntegralDivide.resultDecimalType
         val intDig = l.precision - l.scale + r.scale
@@ -252,14 +244,6 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
 
 object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 
-  override def getSupportLevel(expr: Remainder): SupportLevel = {
-    if (expr.evalMode == EvalMode.ANSI) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
-
   override def convert(
       expr: Remainder,
       inputs: Seq[Attribute],
@@ -286,14 +270,6 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 }
 
 object CometRound extends CometExpressionSerde[Round] {
-
-  override def getSupportLevel(expr: Round): SupportLevel = {
-    if (expr.ansiEnabled) {
-      Incompatible(Some("ANSI mode is not supported"))
-    } else {
-      Compatible(None)
-    }
-  }
 
   override def convert(
       r: Round,
@@ -333,7 +309,12 @@ object CometRound extends CometExpressionSerde[Round] {
         // `scale` must be Int64 type in DataFusion
         val scaleExpr = exprToProtoInternal(Literal(_scale.toLong, LongType), inputs, binding)
         val optExpr =
-          scalarFunctionExprToProtoWithReturnType("round", r.dataType, childExpr, scaleExpr)
+          scalarFunctionExprToProtoWithReturnType(
+            "round",
+            r.dataType,
+            r.ansiEnabled,
+            childExpr,
+            scaleExpr)
         optExprWithInfo(optExpr, r, r.child)
     }
 

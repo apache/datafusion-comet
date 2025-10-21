@@ -26,7 +26,7 @@ import scala.collection.mutable.ListBuffer
 import org.apache.spark.sql.catalyst.expressions.Cast
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{Compatible, Incompatible}
+import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -37,29 +37,52 @@ object GenerateDocs {
 
   private def userGuideLocation = "docs/source/user-guide/latest/"
 
+  val publicConfigs: Set[ConfigEntry[_]] = CometConf.allConfs.filter(_.isPublic).toSet
+
   def main(args: Array[String]): Unit = {
     generateConfigReference()
     generateCompatibilityGuide()
   }
 
   private def generateConfigReference(): Unit = {
+    val pattern = "<!--BEGIN:CONFIG_TABLE\\[(.*)]-->".r
     val filename = s"$userGuideLocation/configs.md"
     val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))
     for (line <- lines) {
       w.write(s"${line.stripTrailing()}\n".getBytes)
-      if (line.trim == "<!--BEGIN:CONFIG_TABLE-->") {
-        val publicConfigs = CometConf.allConfs.filter(_.isPublic)
-        val confs = publicConfigs.sortBy(_.key)
-        w.write("| Config | Description | Default Value |\n".getBytes)
-        w.write("|--------|-------------|---------------|\n".getBytes)
-        for (conf <- confs) {
-          if (conf.defaultValue.isEmpty) {
-            w.write(s"| ${conf.key} | ${conf.doc.trim} | |\n".getBytes)
-          } else {
-            w.write(s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
+      line match {
+        case pattern(category) =>
+          w.write("| Config | Description | Default Value |\n".getBytes)
+          w.write("|--------|-------------|---------------|\n".getBytes)
+          category match {
+            case "enable_expr" =>
+              for (expr <- QueryPlanSerde.exprSerdeMap.keys.map(_.getSimpleName).toList.sorted) {
+                val config = s"spark.comet.expression.$expr.enabled"
+                w.write(
+                  s"| `$config` | Enable Comet acceleration for `$expr` | true |\n".getBytes)
+              }
+            case "enable_agg_expr" =>
+              for (expr <- QueryPlanSerde.aggrSerdeMap.keys.map(_.getSimpleName).toList.sorted) {
+                val config = s"spark.comet.expression.$expr.enabled"
+                w.write(
+                  s"| `$config` | Enable Comet acceleration for `$expr` | true |\n".getBytes)
+              }
+            case _ =>
+              val urlPattern = """Comet\s+(Compatibility|Tuning|Tracing)\s+Guide\s+\(""".r
+              val confs = publicConfigs.filter(_.category == category).toList.sortBy(_.key)
+              for (conf <- confs) {
+                // convert links to Markdown
+                val doc =
+                  urlPattern.replaceAllIn(conf.doc.trim, m => s"[Comet ${m.group(1)} Guide](")
+                if (conf.defaultValue.isEmpty) {
+                  w.write(s"| `${conf.key}` | $doc | |\n".getBytes)
+                } else {
+                  w.write(s"| `${conf.key}` | $doc | ${conf.defaultValueString} |\n".getBytes)
+                }
+              }
           }
-        }
+        case _ =>
       }
     }
     w.close()

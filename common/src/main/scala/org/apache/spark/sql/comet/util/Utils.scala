@@ -223,9 +223,9 @@ object Utils extends CometTypeShim {
       writer.close()
 
       if (out.size() > 0) {
-        (batch.numRows(), cbbos.toChunkedByteBuffer)
+        (batch.numRows().toLong, cbbos.toChunkedByteBuffer)
       } else {
-        (batch.numRows(), new ChunkedByteBuffer(Array.empty[ByteBuffer]))
+        (batch.numRows().toLong, new ChunkedByteBuffer(Array.empty[ByteBuffer]))
       }
     }
   }
