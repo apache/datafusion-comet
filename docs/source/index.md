@@ -17,65 +17,49 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Apache DataFusion Comet
+# Comet Accelerator for Apache Spark and Apache Iceberg
 
-[![Apache licensed][license-badge]][license-url]
-[![Discord chat][discord-badge]][discord-url]
-
-[license-badge]: https://img.shields.io/badge/license-Apache%20v2-blue.svg
-[license-url]: https://github.com/apache/datafusion-comet/blob/main/LICENSE.txt
-[discord-badge]: https://img.shields.io/discord/885562378132000778.svg?logo=discord&style=flat-square
-[discord-url]: https://discord.gg/3EAr4ZX6JK
-
-<img src="docs/source/_static/images/DataFusionComet-Logo-Light.png" width="512" alt="logo"/>
+<!-- Code from https://buttons.github.io/ -->
+<p>
+  <!-- Place this tag where you want the button to render. -->
+  <a class="github-button" href="https://github.com/apache/datafusion-comet" data-size="large" data-show-count="true" aria-label="Star apache/datafusion-comet on GitHub">Star</a>
+  <!-- Place this tag where you want the button to render. -->
+   <a class="github-button" href="https://github.com/apache/datafusion-comet/fork" data-size="large" data-show-count="true" aria-label="Fork apache/datafusion-comet on GitHub">Fork</a>
+</p>
 
 Apache DataFusion Comet is a high-performance accelerator for Apache Spark, built on top of the powerful
 [Apache DataFusion] query engine. Comet is designed to significantly enhance the
 performance of Apache Spark workloads while leveraging commodity hardware and seamlessly integrating with the
 Spark ecosystem without requiring any code changes.
 
-Comet also accelerates Apache Iceberg, when performing Parquet scans from Spark. 
+Comet also accelerates Apache Iceberg, when performing Parquet scans from Spark.
 
 [Apache DataFusion]: https://datafusion.apache.org
-
-# Benefits of Using Comet
 
 ## Run Spark Queries at DataFusion Speeds
 
 Comet delivers a performance speedup for many queries, enabling faster data processing and shorter time-to-insights.
 
-The following chart shows the time it takes to run the 22 TPC-H queries against 100 GB of data in Parquet format 
+The following chart shows the time it takes to run the 22 TPC-H queries against 100 GB of data in Parquet format
 using a single executor with 8 cores. See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html)
 for details of the environment used for these benchmarks.
 
 When using Comet, the overall run time is reduced from 687 seconds to 302 seconds, a 2.2x speedup.
 
-![](docs/source/_static/images/benchmark-results/0.11.0/tpch_allqueries.png)
+![](_static/images/benchmark-results/0.11.0/tpch_allqueries.png)
 
 Here is a breakdown showing relative performance of Spark and Comet for each TPC-H query.
 
-![](docs/source/_static/images/benchmark-results/0.11.0/tpch_queries_compare.png)
+![](_static/images/benchmark-results/0.11.0/tpch_queries_compare.png)
 
-The following charts shows how much Comet currently accelerates each query from the benchmark.
-
-### Relative speedup
-
-![](docs/source/_static/images/benchmark-results/0.11.0/tpch_queries_speedup_rel.png)
-
-### Absolute speedup
-
-![](docs/source/_static/images/benchmark-results/0.11.0/tpch_queries_speedup_abs.png)
-
-These benchmarks can be reproduced in any environment using the documentation in the 
-[Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html). We encourage 
+These benchmarks can be reproduced in any environment using the documentation in the
+[Comet Benchmarking Guide](/contributor-guide/benchmarking.md). We encourage
 you to run your own benchmarks.
-
-Results for our benchmark derived from TPC-DS are available in the [benchmarking guide](https://datafusion.apache.org/comet/contributor-guide/benchmark-results/tpc-ds.html).
 
 ## Use Commodity Hardware
 
 Comet leverages commodity hardware, eliminating the need for costly hardware upgrades or
-specialized hardware accelerators, such as GPUs or FPGA. By maximizing the utilization of commodity hardware, Comet 
+specialized hardware accelerators, such as GPUs or FPGA. By maximizing the utilization of commodity hardware, Comet
 ensures cost-effectiveness and scalability for your Spark deployments.
 
 ## Spark Compatibility
@@ -102,7 +86,7 @@ To get started with Apache DataFusion Comet, follow the
 [DataFusion Slack and Discord channels](https://datafusion.apache.org/contributor-guide/communication.html) to connect
 with other users, ask questions, and share your experiences with Comet.
 
-Follow [Apache DataFusion Comet Overview](https://datafusion.apache.org/comet/user-guide/overview.html) to get more detailed information 
+Follow [Apache DataFusion Comet Overview](https://datafusion.apache.org/comet/user-guide/overview.html) to get more detailed information
 
 ## Contributing
 
@@ -111,11 +95,13 @@ bugs, adding new features, writing documentation, or optimizing performance, you
 shaping the future of Comet. Check out our
 [contributor guide](https://datafusion.apache.org/comet/contributor-guide/contributing.html) to get started.
 
-## License
+```{toctree}
+:maxdepth: 1
+:caption: Index
+:hidden:
 
-Apache DataFusion Comet is licensed under the Apache License 2.0. See the [LICENSE.txt](LICENSE.txt) file for details.
-
-## Acknowledgments
-
-We would like to express our gratitude to the Apache DataFusion community for their support and contributions to
-Comet. Together, we're building a faster, more efficient future for big data processing with Apache Spark.
+Comet Overview <about/index>
+User Guide <user-guide/index>
+Contributor Guide <contributor-guide/index>
+ASF Links <asf/index>
+```
