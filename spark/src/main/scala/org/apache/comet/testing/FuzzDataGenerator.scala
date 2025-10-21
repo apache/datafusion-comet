@@ -117,7 +117,7 @@ object FuzzDataGenerator {
     // generate schema using random data types
     val fields = dataTypes.zipWithIndex
       .map(i => StructField(s"c${i._2}", i._1, nullable = true))
-    val schema = StructType(fields)
+    val schema = StructType(fields.toSeq)
 
     // generate columnar data
     val cols: Seq[Seq[Any]] =
@@ -147,7 +147,7 @@ object FuzzDataGenerator {
             list += Range(0, r.nextInt(5)).map(j => values((i + j) % values.length)).toArray
           }
         }
-        list
+        list.toSeq
       case StructType(fields) =>
         val values = fields.map(f => generateColumn(r, f.dataType, numRows, options))
         Range(0, numRows).map(i => Row(values.indices.map(j => values(j)(i)): _*))
