@@ -243,7 +243,7 @@ object QueryGen {
     val table = spark.table(tableName)
 
     val op = Utils.randomChoice(Meta.unaryArithmeticOps, r)
-    val a = Utils.randomChoice(table.columns, r)
+    val a = pickRandomColumn(r, table, SparkNumericType)
 
     // Example SELECT a, -a FROM test0
     s"SELECT $a, $op$a " +
@@ -256,8 +256,8 @@ object QueryGen {
     val table = spark.table(tableName)
 
     val op = Utils.randomChoice(Meta.binaryArithmeticOps, r)
-    val a = Utils.randomChoice(table.columns, r)
-    val b = Utils.randomChoice(table.columns, r)
+    val a = pickRandomColumn(r, table, SparkNumericType)
+    val b = pickRandomColumn(r, table, SparkNumericType)
 
     // Example SELECT a, b, a+b FROM test0
     s"SELECT $a, $b, $a $op $b " +
@@ -270,8 +270,8 @@ object QueryGen {
     val table = spark.table(tableName)
 
     val op = Utils.randomChoice(Meta.comparisonOps, r)
-    val a = Utils.randomChoice(table.columns, r)
-    val b = Utils.randomChoice(table.columns, r)
+    val a = pickRandomColumn(r, table, SparkNumericType)
+    val b = pickRandomColumn(r, table, SparkNumericType)
 
     // Example SELECT a, b, a <=> b FROM test0
     s"SELECT $a, $b, $a $op $b " +
@@ -284,8 +284,12 @@ object QueryGen {
     val table = spark.table(tableName)
 
     val op = Utils.randomChoice(Meta.comparisonOps, r)
-    val a = Utils.randomChoice(table.columns, r)
-    val b = Utils.randomChoice(table.columns, r)
+
+    // pick two columns with the same type
+    // TODO make this more comprehensive
+    val opType = Utils.randomChoice(Seq(SparkStringType, SparkNumericType, SparkDateType), r)
+    val a = pickRandomColumn(r, table, opType)
+    val b = pickRandomColumn(r, table, opType)
 
     // Example SELECT a, b, IF(a <=> b, 1, 2), CASE WHEN a <=> b THEN 1 ELSE 2 END FROM test0
     s"SELECT $a, $b, $a $op $b, IF($a $op $b, 1, 2), CASE WHEN $a $op $b THEN 1 ELSE 2 END " +

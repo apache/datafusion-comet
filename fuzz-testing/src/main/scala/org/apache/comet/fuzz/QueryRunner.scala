@@ -34,6 +34,11 @@ object QueryRunner {
       filename: String,
       showFailedSparkQueries: Boolean = false): Unit = {
 
+    var queryCount = 0
+    var invalidQueryCount = 0
+    var cometFailureCount = 0
+    var cometSuccessCount = 0
+
     val outputFilename = s"results-${System.currentTimeMillis()}.md"
     // scalastyle:off println
     println(s"Writing results to $outputFilename")
@@ -56,7 +61,7 @@ object QueryRunner {
       querySource
         .getLines()
         .foreach(sql => {
-
+          queryCount += 1
           try {
             // execute with Spark
             spark.conf.set("spark.comet.enabled", "false")
@@ -71,6 +76,7 @@ object QueryRunner {
               val cometRows = df.collect()
               val cometPlan = df.queryExecution.executedPlan.toString
 
+              var success = true
               if (sparkRows.length == cometRows.length) {
                 var i = 0
                 while (i < sparkRows.length) {
@@ -79,6 +85,7 @@ object QueryRunner {
                   assert(l.length == r.length)
                   for (j <- 0 until l.length) {
                     if (!same(l(j), r(j))) {
+                      success = false
                       showSQL(w, sql)
                       showPlans(w, sparkPlan, cometPlan)
                       w.write(s"First difference at row $i:\n")
@@ -90,15 +97,24 @@ object QueryRunner {
                   i += 1
                 }
               } else {
+                success = false
                 showSQL(w, sql)
                 showPlans(w, sparkPlan, cometPlan)
                 w.write(
                   s"[ERROR] Spark produced ${sparkRows.length} rows and " +
                     s"Comet produced ${cometRows.length} rows.\n")
               }
+
+              if (success) {
+                cometSuccessCount += 1
+              } else {
+                cometFailureCount += 1
+              }
+
             } catch {
               case e: Exception =>
                 // the query worked in Spark but failed in Comet, so this is likely a bug in Comet
+                cometFailureCount += 1
                 showSQL(w, sql)
                 w.write(s"[ERROR] Query failed in Comet: ${e.getMessage}:\n")
                 w.write("```\n")
@@ -116,12 +132,18 @@ object QueryRunner {
           } catch {
             case e: Exception =>
               // we expect many generated queries to be invalid
+              invalidQueryCount += 1
               if (showFailedSparkQueries) {
                 showSQL(w, sql)
                 w.write(s"Query failed in Spark: ${e.getMessage}\n")
               }
           }
         })
+
+      w.write("# Summary\n")
+      w.write(
+        s"Total queries: $queryCount; Invalid queries: $invalidQueryCount; " +
+          s"Comet failed: $cometFailureCount; Comet succeeded: $cometSuccessCount\n")
 
     } finally {
       w.close()
