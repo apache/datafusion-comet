@@ -77,7 +77,7 @@ abstract class CometTestBase
     conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "1g")
     conf.set(SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key, "1g")
     conf.set(CometConf.COMET_ENABLED.key, "true")
-    conf.set(CometConf.COMET_ENABLE_ONHEAP_MODE.key, "true")
+    conf.set(CometConf.COMET_ONHEAP_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_HASH_JOIN_ENABLED.key, "true")
@@ -86,7 +86,7 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key, "true")
-    conf.set(CometConf.COMET_MEMORY_OVERHEAD.key, "2g")
+    conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
     conf
   }
