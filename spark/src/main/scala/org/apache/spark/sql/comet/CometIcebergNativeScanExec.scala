@@ -159,8 +159,6 @@ object CometIcebergNativeScanExec {
   /**
    * Extracts metadata location from Iceberg table.
    *
-   * TODO: Also extract catalog properties (credentials, S3 config, etc.) for authentication
-   *
    * @param scanExec
    *   The Spark BatchScanExec containing an Iceberg scan
    * @return

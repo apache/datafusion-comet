@@ -269,6 +269,57 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[VariancePop] -> CometVariancePop,
     classOf[VarianceSamp] -> CometVarianceSamp)
 
+  /**
+   * Transforms Hadoop S3A configuration keys to Iceberg FileIO property keys.
+   *
+   * Iceberg-rust's FileIO expects Iceberg-format keys (e.g., s3.access-key-id), not Hadoop keys
+   * (e.g., fs.s3a.access.key). This function converts Hadoop keys extracted from Spark's
+   * configuration to the format expected by iceberg-rust.
+   *
+   * @param hadoopProps
+   *   Map of Hadoop configuration properties (fs.s3a.* keys)
+   * @return
+   *   Map with keys transformed to Iceberg format (s3.* keys)
+   */
+  private def hadoopToIcebergS3Properties(
+      hadoopProps: Map[String, String]): Map[String, String] = {
+    hadoopProps.flatMap { case (key, value) =>
+      key match {
+        // Global S3A configuration keys
+        case "fs.s3a.access.key" => Some("s3.access-key-id" -> value)
+        case "fs.s3a.secret.key" => Some("s3.secret-access-key" -> value)
+        case "fs.s3a.endpoint" => Some("s3.endpoint" -> value)
+        case "fs.s3a.path.style.access" => Some("s3.path-style-access" -> value)
+        case "fs.s3a.endpoint.region" => Some("s3.region" -> value)
+
+        // Per-bucket configuration keys (e.g., fs.s3a.bucket.mybucket.access.key)
+        // Extract bucket name and property, then transform to s3.* format
+        case k if k.startsWith("fs.s3a.bucket.") =>
+          val parts = k.stripPrefix("fs.s3a.bucket.").split("\\.", 2)
+          if (parts.length == 2) {
+            val bucket = parts(0)
+            val property = parts(1)
+            property match {
+              case "access.key" => Some(s"s3.bucket.$bucket.access-key-id" -> value)
+              case "secret.key" => Some(s"s3.bucket.$bucket.secret-access-key" -> value)
+              case "endpoint" => Some(s"s3.bucket.$bucket.endpoint" -> value)
+              case "path.style.access" => Some(s"s3.bucket.$bucket.path-style-access" -> value)
+              case "endpoint.region" => Some(s"s3.bucket.$bucket.region" -> value)
+              case _ => None // Ignore unrecognized per-bucket properties
+            }
+          } else {
+            None
+          }
+
+        // Pass through any keys that are already in Iceberg format
+        case k if k.startsWith("s3.") => Some(key -> value)
+
+        // Ignore all other keys
+        case _ => None
+      }
+    }
+  }
+
   def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
@@ -1113,8 +1164,26 @@ object QueryPlanSerde extends Logging with CometExprShim {
         // Set metadata location
         icebergScanBuilder.setMetadataLocation(metadataLocation)
 
-        // Serialize catalog properties (for authentication - currently empty)
-        // TODO: Extract credentials, S3 config, etc.
+        val catalogProperties =
+          try {
+            val session = org.apache.spark.sql.SparkSession.active
+            val hadoopConf = session.sessionState.newHadoopConf()
+
+            val metadataUri = new java.net.URI(metadataLocation)
+            val hadoopS3Options =
+              NativeConfig.extractObjectStoreOptions(hadoopConf, metadataUri)
+
+            hadoopToIcebergS3Properties(hadoopS3Options)
+          } catch {
+            case e: Exception =>
+              logWarning(
+                s"Failed to extract catalog properties from Iceberg scan: ${e.getMessage}")
+              e.printStackTrace()
+              Map.empty[String, String]
+          }
+        catalogProperties.foreach { case (key, value) =>
+          icebergScanBuilder.putCatalogProperties(key, value)
+        }
 
         // Determine number of partitions from Iceberg's output partitioning
         // TODO: Add a test case for both partitioning schemes

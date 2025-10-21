@@ -19,84 +19,16 @@
 
 package org.apache.comet.parquet
 
-import java.net.URI
-
-import scala.util.Try
-
-import org.testcontainers.containers.MinIOContainer
-import org.testcontainers.utility.DockerImageName
-
-import org.apache.spark.SparkConf
-import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.DataFrame
-import org.apache.spark.sql.SaveMode
-import org.apache.spark.sql.comet.CometNativeScanExec
-import org.apache.spark.sql.comet.CometScanExec
+import org.apache.spark.sql.{DataFrame, SaveMode}
+import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, expr, max, sum}
 
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
-import software.amazon.awssdk.services.s3.S3Client
-import software.amazon.awssdk.services.s3.model.CreateBucketRequest
-import software.amazon.awssdk.services.s3.model.HeadBucketRequest
+import org.apache.comet.CometS3TestBase
 
-class ParquetReadFromS3Suite extends CometTestBase with AdaptiveSparkPlanHelper {
+class ParquetReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelper {
 
-  private var minioContainer: MinIOContainer = _
-  private val userName = "minio-test-user"
-  private val password = "minio-test-password"
-  private val testBucketName = "test-bucket"
-
-  override def beforeAll(): Unit = {
-    // Start MinIO container
-    minioContainer = new MinIOContainer(DockerImageName.parse("minio/minio:latest"))
-      .withUserName(userName)
-      .withPassword(password)
-    minioContainer.start()
-    createBucketIfNotExists(testBucketName)
-
-    // Initialize Spark session
-    super.beforeAll()
-  }
-
-  override def afterAll(): Unit = {
-    super.afterAll()
-    if (minioContainer != null) {
-      minioContainer.stop()
-    }
-  }
-
-  override protected def sparkConf: SparkConf = {
-    val conf = super.sparkConf
-    conf.set("spark.hadoop.fs.s3a.access.key", userName)
-    conf.set("spark.hadoop.fs.s3a.secret.key", password)
-    conf.set("spark.hadoop.fs.s3a.endpoint", minioContainer.getS3URL)
-    conf.set("spark.hadoop.fs.s3a.path.style.access", "true")
-  }
-
-  private def createBucketIfNotExists(bucketName: String): Unit = {
-    val credentials = AwsBasicCredentials.create(userName, password)
-    val s3Client = S3Client
-      .builder()
-      .endpointOverride(URI.create(minioContainer.getS3URL))
-      .credentialsProvider(StaticCredentialsProvider.create(credentials))
-      .forcePathStyle(true)
-      .build()
-    try {
-      val bucketExists = Try {
-        s3Client.headBucket(HeadBucketRequest.builder().bucket(bucketName).build())
-        true
-      }.getOrElse(false)
-
-      if (!bucketExists) {
-        val request = CreateBucketRequest.builder().bucket(bucketName).build()
-        s3Client.createBucket(request)
-      }
-    } finally {
-      s3Client.close()
-    }
-  }
+  override protected val testBucketName = "test-bucket"
 
   private def writeTestParquetFile(filePath: String): Unit = {
     val df = spark.range(0, 1000)
