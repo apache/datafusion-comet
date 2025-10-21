@@ -120,6 +120,23 @@ object Meta {
     createUnaryStringFunction("ascii"),
     createUnaryStringFunction("bit_length"),
     createUnaryStringFunction("chr"),
+    createFunctionWithInputs(
+      "concat",
+      Seq(
+        SparkTypeOneOf(
+          Seq(
+            SparkStringType,
+            SparkNumericType,
+            SparkBinaryType,
+            SparkArrayType(
+              SparkTypeOneOf(Seq(SparkStringType, SparkNumericType, SparkBinaryType))))),
+        SparkTypeOneOf(
+          Seq(
+            SparkStringType,
+            SparkNumericType,
+            SparkBinaryType,
+            SparkArrayType(
+              SparkTypeOneOf(Seq(SparkStringType, SparkNumericType, SparkBinaryType))))))),
     createFunctionWithInputs("concat_ws", Seq(SparkStringType, SparkStringType)),
     createFunctionWithInputs("contains", Seq(SparkStringType, SparkStringType)),
     createFunctionWithInputs("ends_with", Seq(SparkStringType, SparkStringType)),
