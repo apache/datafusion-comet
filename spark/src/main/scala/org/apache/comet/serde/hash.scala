@@ -99,7 +99,7 @@ object CometSha1 extends CometExpressionSerde[Sha1] {
       return None
     }
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
-    scalarFunctionExprToProtoWithReturnType("sha1", StringType, childExpr)
+    scalarFunctionExprToProtoWithReturnType("sha1", StringType, false, childExpr)
   }
 }
 
