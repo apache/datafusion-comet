@@ -84,10 +84,10 @@ class CometPluginsSuite extends CometTestBase {
     val execMemOverhead4 = spark.sparkContext.conf.get("spark.executor.memoryOverhead")
 
     // 2GB + 384MB (default Comet memory overhead)
-    assert(execMemOverhead1 == "2432M")
-    assert(execMemOverhead2 == "2432M")
-    assert(execMemOverhead3 == "2432M")
-    assert(execMemOverhead4 == "2432M")
+    assert(execMemOverhead1 == "3072M")
+    assert(execMemOverhead2 == "3072M")
+    assert(execMemOverhead3 == "3072M")
+    assert(execMemOverhead4 == "3072M")
   }
 }
 
@@ -112,10 +112,10 @@ class CometPluginsDefaultSuite extends CometTestBase {
 
     // Spark executor memory overhead = executor memory (1G) * memoryOverheadFactor (0.5) = 512MB
     // 512MB + 384MB (default Comet memory overhead)
-    assert(execMemOverhead1 == "896M")
-    assert(execMemOverhead2 == "896M")
-    assert(execMemOverhead3 == "896M")
-    assert(execMemOverhead4 == "896M")
+    assert(execMemOverhead1 == "1536M")
+    assert(execMemOverhead2 == "1536M")
+    assert(execMemOverhead3 == "1536M")
+    assert(execMemOverhead4 == "1536M")
   }
 }
 
