@@ -134,9 +134,13 @@ object QueryRunner {
       return l == null && r == null
     }
     (l, r) match {
+      case (a: Float, b: Float) if a.isPosInfinity => b.isPosInfinity
+      case (a: Float, b: Float) if a.isNegInfinity => b.isNegInfinity
       case (a: Float, b: Float) if a.isInfinity => b.isInfinity
       case (a: Float, b: Float) if a.isNaN => b.isNaN
       case (a: Float, b: Float) => (a - b).abs <= 0.000001f
+      case (a: Double, b: Double) if a.isPosInfinity => b.isPosInfinity
+      case (a: Double, b: Double) if a.isNegInfinity => b.isNegInfinity
       case (a: Double, b: Double) if a.isInfinity => b.isInfinity
       case (a: Double, b: Double) if a.isNaN => b.isNaN
       case (a: Double, b: Double) => (a - b).abs <= 0.000001
@@ -145,10 +149,10 @@ object QueryRunner {
       case (a: WrappedArray[_], b: WrappedArray[_]) =>
         a.length == b.length && a.zip(b).forall(x => same(x._1, x._2))
       case (a: Row, b: Row) =>
-        // struct support
-        format(a) == format(b)
+        val aa = a.toSeq
+        val bb = b.toSeq
+        aa.length == bb.length && aa.zip(bb).forall(x => same(x._1, x._2))
       case (a, b) => a == b
-
     }
   }
 
