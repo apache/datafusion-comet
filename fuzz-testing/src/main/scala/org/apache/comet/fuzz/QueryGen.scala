@@ -101,6 +101,8 @@ object QueryGen {
     targetType match {
       case SparkAnyType =>
         Utils.randomChoice(df.schema.fields, r).name
+      case SparkBooleanType =>
+        select(r, df, _.dataType == BooleanType)
       case SparkByteType =>
         select(r, df, _.dataType == ByteType)
       case SparkShortType =>
@@ -109,6 +111,19 @@ object QueryGen {
         select(r, df, _.dataType == IntegerType)
       case SparkLongType =>
         select(r, df, _.dataType == LongType)
+      case SparkFloatType =>
+        select(r, df, _.dataType == FloatType)
+      case SparkDoubleType =>
+        select(r, df, _.dataType == DoubleType)
+      case SparkDecimalType(_, _) =>
+        select(r, df, _.dataType.isInstanceOf[DecimalType])
+      case SparkIntegralType =>
+        select(
+          r,
+          df,
+          f =>
+            f.dataType == ByteType || f.dataType == ShortType ||
+              f.dataType == IntegerType || f.dataType == LongType)
       case SparkNumericType =>
         select(r, df, f => isNumeric(f.dataType))
       case SparkStringType =>
@@ -131,6 +146,22 @@ object QueryGen {
             case ArrayType(x, _) if typeMatch(elementType, x) => true
             case _ => false
           })
+      case SparkMapType(keyType, valueType) =>
+        select(
+          r,
+          df,
+          _.dataType match {
+            case MapType(k, v, _) if typeMatch(keyType, k) && typeMatch(valueType, v) => true
+            case _ => false
+          })
+      case SparkStructType(fields) =>
+        select(
+          r,
+          df,
+          _.dataType match {
+            case StructType(structFields) if structFields.length == fields.length => true
+            case _ => false
+          })
       case _ =>
         throw new IllegalStateException(targetType.toString)
     }
@@ -151,8 +182,36 @@ object QueryGen {
   }
 
   private def typeMatch(s: SparkType, d: DataType): Boolean = {
-    // TODO
-    false
+    (s, d) match {
+      case (SparkAnyType, _) => true
+      case (SparkBooleanType, BooleanType) => true
+      case (SparkByteType, ByteType) => true
+      case (SparkShortType, ShortType) => true
+      case (SparkIntType, IntegerType) => true
+      case (SparkLongType, LongType) => true
+      case (SparkFloatType, FloatType) => true
+      case (SparkDoubleType, DoubleType) => true
+      case (SparkDecimalType(_, _), _: DecimalType) => true
+      case (SparkIntegralType, ByteType | ShortType | IntegerType | LongType) => true
+      case (SparkNumericType, _) if isNumeric(d) => true
+      case (SparkStringType, StringType) => true
+      case (SparkBinaryType, BinaryType) => true
+      case (SparkDateType, DateType) => true
+      case (SparkTimestampType, TimestampType | TimestampNTZType) => true
+      case (SparkDateOrTimestampType, DateType | TimestampType | TimestampNTZType) => true
+      case (SparkArrayType(elementType), ArrayType(elementDataType, _)) =>
+        typeMatch(elementType, elementDataType)
+      case (SparkMapType(keyType, valueType), MapType(keyDataType, valueDataType, _)) =>
+        typeMatch(keyType, keyDataType) && typeMatch(valueType, valueDataType)
+      case (SparkStructType(fields), StructType(structFields)) =>
+        fields.length == structFields.length &&
+        fields.zip(structFields.map(_.dataType)).forall { case (sparkType, dataType) =>
+          typeMatch(sparkType, dataType)
+        }
+      case (SparkTypeOneOf(choices), _) =>
+        choices.exists(choice => typeMatch(choice, d))
+      case _ => false
+    }
   }
 
   private def generateUnaryArithmetic(r: Random, spark: SparkSession, numFiles: Int): String = {
