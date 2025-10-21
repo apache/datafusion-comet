@@ -91,7 +91,7 @@ object QueryGen {
     } catch {
       case e: Exception =>
         throw new IllegalStateException(
-          s"Failed to generate SQL for scalar function ${func.name}",
+          s"Failed to generate SQL for aggregate function ${func.name}",
           e)
     }
   }
