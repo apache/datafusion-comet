@@ -72,20 +72,27 @@ object QueryGen {
     val table = spark.table(tableName)
 
     val func = Utils.randomChoice(Meta.aggFunc, r)
-    val args = Range(0, func.numArgs)
-      .map(_ => Utils.randomChoice(table.columns, r))
+    try {
+      val signature = Utils.randomChoice(func.signatures, r)
+      val args = signature.inputTypes.map(x => pickRandomColumn(r, table, x))
 
-    val groupingCols = Range(0, 2).map(_ => Utils.randomChoice(table.columns, r))
+      val groupingCols = Range(0, 2).map(_ => Utils.randomChoice(table.columns, r))
 
-    if (groupingCols.isEmpty) {
-      s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
-        s"FROM $tableName " +
-        s"ORDER BY ${args.mkString(", ")};"
-    } else {
-      s"SELECT ${groupingCols.mkString(", ")}, ${func.name}(${args.mkString(", ")}) " +
-        s"FROM $tableName " +
-        s"GROUP BY ${groupingCols.mkString(",")} " +
-        s"ORDER BY ${groupingCols.mkString(", ")};"
+      if (groupingCols.isEmpty) {
+        s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
+          s"FROM $tableName " +
+          s"ORDER BY ${args.mkString(", ")};"
+      } else {
+        s"SELECT ${groupingCols.mkString(", ")}, ${func.name}(${args.mkString(", ")}) " +
+          s"FROM $tableName " +
+          s"GROUP BY ${groupingCols.mkString(",")} " +
+          s"ORDER BY ${groupingCols.mkString(", ")};"
+      }
+    } catch {
+      case e: Exception =>
+        throw new IllegalStateException(
+          s"Failed to generate SQL for scalar function ${func.name}",
+          e)
     }
   }
 

@@ -46,11 +46,7 @@ case object SparkAnyType extends SparkType
 
 case class FunctionSignature(inputTypes: Seq[SparkType])
 
-case class Function(name: String, signatures: Seq[FunctionSignature]) {
-  // query generator should choose inputs based on signature not just on arg count
-  @deprecated
-  def numArgs: Int = signatures.head.inputTypes.length
-}
+case class Function(name: String, signatures: Seq[FunctionSignature])
 
 object Meta {
 
