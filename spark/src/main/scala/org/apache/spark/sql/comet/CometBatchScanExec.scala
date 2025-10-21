@@ -51,6 +51,14 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
   override lazy val inputRDD: RDD[InternalRow] = wrappedScan.inputRDD
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    val rdd = inputRDD.asInstanceOf[RDD[ColumnarBatch]]
+
+    // Can skip the following logic if we're using different metrics to calculate this,
+    // e.g., Datafusion reader metrics.
+    if (Seq("numOutputRows", "scanTime").exists(metric => !metrics.contains(metric))) {
+      return rdd
+    }
+
     val numOutputRows = longMetric("numOutputRows")
     val scanTime = longMetric("scanTime")
     inputRDD.asInstanceOf[RDD[ColumnarBatch]].mapPartitionsInternal { batches =>
@@ -137,16 +145,10 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
     wrapped
   }
 
-  override lazy val metrics: Map[String, SQLMetric] = Map(
-    "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
-    "scanTime" -> SQLMetrics.createNanoTimingMetric(
-      sparkContext,
-      "scan time")) ++ wrapped.customMetrics ++ {
-    wrapped.scan match {
-      case s: MetricsSupport => s.initMetrics(sparkContext)
-      case _ => Map.empty
-    }
-  }
+  override lazy val metrics: Map[String, SQLMetric] = wrapped.customMetrics ++ (scan match {
+    case s: MetricsSupport => s.getMetrics
+    case _ => Map.empty
+  })
 
   @transient override lazy val partitions: Seq[Seq[InputPartition]] = wrappedScan.partitions
 
