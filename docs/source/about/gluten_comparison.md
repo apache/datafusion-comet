@@ -84,7 +84,7 @@ real-world queries, especially for ETL use cases. For example, there are no comp
 manipulation, regular expressions, or other advanced expressions. We recommend running your own benchmarks based
 on your existing Spark jobs. 
 
-![tpch_allqueries_comet_gluten.png](/_static/images//benchmark-results/0.9.0/tpch_spark_comet_gluten.png)
+![tpch_allqueries_comet_gluten.png](/_static/images/tpch_allqueries_comet_gluten.png)
 
 The scripts that were used to generate these results can be found [here](https://github.com/apache/datafusion-comet/tree/main/dev/benchmarks).
 
