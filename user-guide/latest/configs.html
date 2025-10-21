@@ -645,15 +645,19 @@ under the License.
 <td><p>When this setting is enabled, Comet will provide a tree representation of the native query plan before execution and again after execution, with metrics.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.verbose.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.rules</span></code></p></td>
+<td><p>When this setting is enabled, Comet will log all plan transformations performed in physical optimizer rules. Default: false</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.verbose.enabled</span></code></p></td>
 <td><p>When this setting is enabled, Comet’s extended explain output will provide the full query plan annotated with fallback reasons as well as a summary of how much of the plan was accelerated by Comet. When this setting is disabled, a list of fallback reasons will be provided instead.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explainFallback.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explainFallback.enabled</span></code></p></td>
 <td><p>When this setting is enabled, Comet will provide logging explaining the reason(s) why a query stage cannot be executed natively. Set this to false to reduce the amount of logging.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.logFallbackReasons.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.logFallbackReasons.enabled</span></code></p></td>
 <td><p>When this setting is enabled, Comet will log warnings for all fallback reasons.</p></td>
 <td><p>false</p></td>
 </tr>
@@ -750,6 +754,39 @@ under the License.
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.tracing.enabled</span></code></p></td>
 <td><p>Enable fine-grained tracing of events and memory usage. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/tracing.html">Comet Tracing Guide</a>.</p></td>
 <td><p>false</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="development-testing-settings">
+<h2>Development &amp; Testing Settings<a class="headerlink" href="#development-testing-settings" title="Link to this heading">#</a></h2>
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+<!--BEGIN:CONFIG_TABLE[testing]-->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.memory.factor</span></code></p></td>
+<td><p>Fraction of Comet memory to be allocated per executor process for columnar shuffle when running in on-heap mode. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/tuning.html">Comet Tuning Guide</a>.</p></td>
+<td><p>1.0</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.onHeap.enabled</span></code></p></td>
+<td><p>Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.onHeap.memoryPool</span></code></p></td>
+<td><p>The type of memory pool to be used for Comet native execution when running Spark in on-heap mode. Available pool types are <code class="docutils literal notranslate"><span class="pre">greedy</span></code>, <code class="docutils literal notranslate"><span class="pre">fair_spill</span></code>, <code class="docutils literal notranslate"><span class="pre">greedy_task_shared</span></code>, <code class="docutils literal notranslate"><span class="pre">fair_spill_task_shared</span></code>, <code class="docutils literal notranslate"><span class="pre">greedy_global</span></code>, <code class="docutils literal notranslate"><span class="pre">fair_spill_global</span></code>, and <code class="docutils literal notranslate"><span class="pre">unbounded</span></code>.</p></td>
+<td><p>greedy_task_shared</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code></p></td>
+<td><p>The amount of additional memory to be allocated per executor process for Comet, in MiB, when running Spark in on-heap mode.</p></td>
+<td><p>1024 MiB</p></td>
 </tr>
 </tbody>
 </table>
