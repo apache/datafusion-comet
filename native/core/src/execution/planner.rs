@@ -2778,11 +2778,12 @@ fn parse_file_scan_tasks(
     let results: Result<Vec<_>, _> = proto_tasks
         .iter()
         .map(|proto_task| {
-            // Parse schema from JSON using iceberg's built-in parser
+            // Parse schema from JSON (already contains partition values injected on Scala side)
             let schema: iceberg::spec::Schema = serde_json::from_str(&proto_task.schema_json)
                 .map_err(|e| {
                     ExecutionError::GeneralError(format!("Failed to parse schema JSON: {}", e))
                 })?;
+
             let schema_ref = Arc::new(schema);
 
             // Parse file format

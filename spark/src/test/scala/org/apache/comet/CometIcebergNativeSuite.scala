@@ -921,6 +921,60 @@ class CometIcebergNativeSuite extends CometTestBase {
     }
   }
 
+  test("migration - hive-style partitioned table has partition values") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val sourceName = "parquet_partitioned_source"
+        val destName = "test_cat.db.iceberg_partitioned"
+        val dataPath = s"${warehouseDir.getAbsolutePath}/partitioned_data"
+
+        // Hive-style partitioning stores partition values in directory paths, not in data files
+        spark
+          .range(10)
+          .selectExpr(
+            "CAST(id AS INT) as partition_col",
+            "CONCAT('data_', CAST(id AS STRING)) as data")
+          .write
+          .mode("overwrite")
+          .partitionBy("partition_col")
+          .option("path", dataPath)
+          .saveAsTable(sourceName)
+
+        try {
+          val actionsClass = Class.forName("org.apache.iceberg.spark.actions.SparkActions")
+          val getMethod = actionsClass.getMethod("get")
+          val actions = getMethod.invoke(null)
+          val snapshotMethod = actions.getClass.getMethod("snapshotTable", classOf[String])
+          val snapshotAction = snapshotMethod.invoke(actions, sourceName)
+          val asMethod = snapshotAction.getClass.getMethod("as", classOf[String])
+          val snapshotWithDest = asMethod.invoke(snapshotAction, destName)
+          val executeMethod = snapshotWithDest.getClass.getMethod("execute")
+          executeMethod.invoke(snapshotWithDest)
+
+          // Partition columns must have actual values from manifests, not NULL
+          checkIcebergNativeScan(s"SELECT * FROM $destName ORDER BY partition_col")
+          checkIcebergNativeScan(
+            s"SELECT partition_col, data FROM $destName WHERE partition_col < 5 ORDER BY partition_col")
+
+          spark.sql(s"DROP TABLE $destName")
+          spark.sql(s"DROP TABLE $sourceName")
+        } catch {
+          case _: ClassNotFoundException =>
+            cancel("Iceberg Actions API not available - requires iceberg-spark-runtime")
+        }
+      }
+    }
+  }
+
   test("projection - column subset, reordering, and duplication") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 

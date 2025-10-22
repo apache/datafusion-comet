@@ -1262,6 +1262,90 @@ object QueryPlanSerde extends Logging with CometExprShim {
                           }
                         taskBuilder.setDataFilePath(filePath)
 
+                        // Extract partition values for Hive-style partitioning
+                        // These values are needed to populate partition columns
+                        // that don't exist in data files
+                        var partitionJsonOpt: Option[String] = None
+                        try {
+                          val partitionMethod = contentFileClass.getMethod("partition")
+                          val partitionStruct = partitionMethod.invoke(dataFile)
+
+                          if (partitionStruct != null) {
+                            // scalastyle:off classforname
+                            val structLikeClass = Class.forName("org.apache.iceberg.StructLike")
+                            // scalastyle:on classforname
+                            val sizeMethod = structLikeClass.getMethod("size")
+                            val getMethod =
+                              structLikeClass.getMethod("get", classOf[Int], classOf[Class[_]])
+
+                            val partitionSize =
+                              sizeMethod.invoke(partitionStruct).asInstanceOf[Int]
+
+                            if (partitionSize > 0) {
+                              // Get the partition spec directly from the task
+                              // PartitionScanTask has a spec() method
+                              // scalastyle:off classforname
+                              val partitionScanTaskClass =
+                                Class.forName("org.apache.iceberg.PartitionScanTask")
+                              // scalastyle:on classforname
+                              val specMethod = partitionScanTaskClass.getMethod("spec")
+                              val partitionSpec = specMethod.invoke(task)
+
+                              // Build JSON representation of partition values using json4s
+                              // Format: {"field_id": value, ...}
+                              import org.json4s._
+                              import org.json4s.jackson.JsonMethods._
+
+                              val partitionMap = scala.collection.mutable.Map[String, JValue]()
+
+                              if (partitionSpec != null) {
+                                // Get the list of partition fields from the spec
+                                val fieldsMethod = partitionSpec.getClass.getMethod("fields")
+                                val fields = fieldsMethod
+                                  .invoke(partitionSpec)
+                                  .asInstanceOf[java.util.List[_]]
+
+                                for (i <- 0 until partitionSize) {
+                                  val value =
+                                    getMethod.invoke(partitionStruct, Int.box(i), classOf[Object])
+
+                                  // Get the source field ID from the partition spec
+                                  val partitionField = fields.get(i)
+                                  val sourceIdMethod =
+                                    partitionField.getClass.getMethod("sourceId")
+                                  val sourceFieldId =
+                                    sourceIdMethod.invoke(partitionField).asInstanceOf[Int]
+
+                                  // Convert value to appropriate JValue type
+                                  val jsonValue: JValue = if (value == null) {
+                                    JNull
+                                  } else {
+                                    value match {
+                                      case s: String => JString(s)
+                                      case i: java.lang.Integer => JInt(BigInt(i.intValue()))
+                                      case l: java.lang.Long => JInt(BigInt(l.longValue()))
+                                      case d: java.lang.Double => JDouble(d.doubleValue())
+                                      case f: java.lang.Float => JDouble(f.doubleValue())
+                                      case b: java.lang.Boolean => JBool(b.booleanValue())
+                                      case n: Number => JDecimal(BigDecimal(n.toString))
+                                      case other => JString(other.toString)
+                                    }
+                                  }
+
+                                  partitionMap(sourceFieldId.toString) = jsonValue
+                                }
+                              }
+
+                              val partitionJson = compact(render(JObject(partitionMap.toList)))
+                              partitionJsonOpt = Some(partitionJson)
+                            }
+                          }
+                        } catch {
+                          case e: Exception =>
+                            logWarning(
+                              s"Failed to extract partition values from DataFile: ${e.getMessage}")
+                        }
+
                         val startMethod = contentScanTaskClass.getMethod("start")
                         val start = startMethod.invoke(task).asInstanceOf[Long]
                         taskBuilder.setStart(start)
@@ -1280,7 +1364,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
                           // scalastyle:on classforname
                           val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
                           toJsonMethod.setAccessible(true)
-                          val schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
+                          var schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
+
+                          // Inject partition values into schema if present
+                          partitionJsonOpt.foreach { partitionJson =>
+                            schemaJson =
+                              injectPartitionValuesIntoSchemaJson(schemaJson, partitionJson)
+                          }
+
                           taskBuilder.setSchemaJson(schemaJson)
 
                           val columnsMethod = schema.getClass.getMethod("columns")
@@ -2255,6 +2346,64 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
 
     Literal(sparkValue, sparkType)
+  }
+
+  /**
+   * Injects partition values into Iceberg schema JSON as "initial-default" values.
+   *
+   * For Hive-style partitioned tables migrated to Iceberg, partition values are stored in
+   * directory structure, not in data files. This function adds those values to the schema so
+   * iceberg-rust's RecordBatchTransformer can populate partition columns.
+   *
+   * @param schemaJson
+   *   The Iceberg schema as JSON string
+   * @param partitionJson
+   *   The partition values as JSON string: {"field_id": value, ...}
+   * @return
+   *   Modified schema JSON with initial-default values injected
+   */
+  private def injectPartitionValuesIntoSchemaJson(
+      schemaJson: String,
+      partitionJson: String): String = {
+    import org.json4s._
+    import org.json4s.jackson.JsonMethods._
+
+    try {
+      // Parse both JSONs
+      implicit val formats: Formats = DefaultFormats
+      val schemaValue = parse(schemaJson)
+      val partitionMap = parse(partitionJson).extract[Map[String, JValue]]
+
+      // Transform the schema fields to inject initial-default values
+      val transformedSchema = schemaValue.transformField { case ("fields", JArray(fields)) =>
+        val updatedFields = fields.map {
+          case fieldObj: JObject =>
+            // Check if this field has a partition value
+            fieldObj \ "id" match {
+              case JInt(fieldId) =>
+                partitionMap.get(fieldId.toString) match {
+                  case Some(partitionValue) =>
+                    // Add "initial-default" to this field
+                    fieldObj merge JObject("initial-default" -> partitionValue)
+                  case None =>
+                    fieldObj
+                }
+              case _ =>
+                fieldObj
+            }
+          case other => other
+        }
+        ("fields", JArray(updatedFields))
+      }
+
+      // Serialize back to JSON
+      compact(render(transformedSchema))
+    } catch {
+      case e: Exception =>
+        logWarning(s"Failed to inject partition values into schema JSON: ${e.getMessage}")
+        // Return original schema on error
+        schemaJson
+    }
   }
 }
 
