@@ -51,9 +51,16 @@ class CometStringExpressionSuite extends CometTestBase {
     // test all combinations of scalar and array arguments
     for (str <- Seq("'hello'", "str")) {
       for (len <- Seq("6", "len % 10")) {
-        for (pad <- Seq("'x'", "pad")) {
-          val sql = s"SELECT $str, $len, $expr($str, $len, $pad) FROM t1 ORDER BY str, len, pad"
-          if (str == "'hello'" || pad == "pad") {
+        for (pad <- Seq(Some("'x'"), Some("'zzz'"), Some("pad"), None)) {
+          val sql = pad match {
+            case Some(p) =>
+              // 3 args
+              s"SELECT $str, $len, $expr($str, $len, $p) FROM t1 ORDER BY str, len, pad"
+            case _ =>
+              // 2 args (default pad of ' ')
+              s"SELECT $str, $len, $expr($str, $len) FROM t1 ORDER BY str, len, pad"
+          }
+          if (str == "'hello'" || pad.contains("pad")) {
             // Comet does not support literal for str argument
             // Comet only supports literals for pad argument
             checkSparkAnswer(sql)
