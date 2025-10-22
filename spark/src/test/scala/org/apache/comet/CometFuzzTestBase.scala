@@ -35,7 +35,7 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -58,15 +58,20 @@ class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "false",
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
-      val options =
-        DataGenOptions(
-          generateArray = true,
-          generateStruct = true,
-          generateNegativeZero = false,
-          // override base date due to known issues with experimental scans
-          baseDate =
-            new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime)
-      ParquetGenerator.makeParquetFile(random, spark, filename, 1000, options)
+      val schemaGenOptions =
+        SchemaGenOptions(generateArray = true, generateStruct = true)
+      val dataGenOptions = DataGenOptions(
+        generateNegativeZero = false,
+        // override base date due to known issues with experimental scans
+        baseDate =
+          new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime)
+      ParquetGenerator.makeParquetFile(
+        random,
+        spark,
+        filename,
+        1000,
+        schemaGenOptions,
+        dataGenOptions)
     }
   }
 
