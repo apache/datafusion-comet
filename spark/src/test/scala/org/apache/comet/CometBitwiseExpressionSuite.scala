@@ -25,7 +25,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -99,12 +99,8 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
           spark,
           filename,
           100,
-          DataGenOptions(
-            allowNull = true,
-            generateNegativeZero = true,
-            generateArray = false,
-            generateStruct = false,
-            generateMap = false))
+          SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false),
+          DataGenOptions(allowNull = true, generateNegativeZero = true))
       }
       val table = spark.read.parquet(filename)
       checkSparkAnswerAndOperator(
@@ -174,12 +170,8 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
           spark,
           filename,
           10,
-          DataGenOptions(
-            allowNull = true,
-            generateNegativeZero = true,
-            generateArray = false,
-            generateStruct = false,
-            generateMap = false))
+          SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false),
+          DataGenOptions(allowNull = true, generateNegativeZero = true))
       }
       val table = spark.read.parquet(filename)
       val df =
