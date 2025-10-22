@@ -48,8 +48,7 @@ object FuzzDataGenerator {
   val unicodeSpecialChars: String = Seq(
     "é", // unicode 'e\\u{301}'
     "é", // unicode '\\u{e9}'
-    "తెలుగు"
-  ).mkString
+    "తెలుగు").mkString
   // scalastyle:on
 
   def generateSchema(options: SchemaGenOptions): StructType = {
