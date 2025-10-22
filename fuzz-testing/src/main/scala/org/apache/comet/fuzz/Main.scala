@@ -25,9 +25,8 @@ import org.rogach.scallop.{ScallopConf, Subcommand}
 import org.rogach.scallop.ScallopOption
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.types.DataTypes
 
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
   object generateData extends Subcommand("data") {
@@ -79,36 +78,23 @@ object Main {
           case Some(seed) => new Random(seed)
           case None => new Random()
         }
-        // create two columns of each primitive type
-        val x = Seq(
-          DataTypes.BooleanType,
-          DataTypes.ByteType,
-          DataTypes.ShortType,
-          DataTypes.IntegerType,
-          DataTypes.LongType,
-          DataTypes.FloatType,
-          DataTypes.DoubleType,
-          DataTypes.createDecimalType(10, 2),
-          DataTypes.createDecimalType(36, 18),
-          DataTypes.DateType,
-          DataTypes.TimestampType,
-          DataTypes.TimestampNTZType,
-          DataTypes.StringType,
-          DataTypes.BinaryType)
-        val options = DataGenOptions(
-          primitiveTypes = x ++ x,
-          allowNull = true,
-          generateArray = conf.generateData.generateArrays(),
-          generateStruct = conf.generateData.generateStructs(),
-          generateMap = conf.generateData.generateMaps(),
-          generateNegativeZero = !conf.generateData.excludeNegativeZero())
         for (i <- 0 until conf.generateData.numFiles()) {
           ParquetGenerator.makeParquetFile(
             r,
             spark,
             s"test$i.parquet",
             numRows = conf.generateData.numRows(),
-            options)
+            SchemaGenOptions(
+              generateArray = conf.generateData.generateArrays(),
+              generateStruct = conf.generateData.generateStructs(),
+              generateMap = conf.generateData.generateMaps(),
+              // create two columns of each primitive type so that they can be used in binary
+              // expressions such as `a + b` and `a <  b`
+              primitiveTypes = SchemaGenOptions.defaultPrimitiveTypes ++
+                SchemaGenOptions.defaultPrimitiveTypes),
+            DataGenOptions(
+              allowNull = true,
+              generateNegativeZero = !conf.generateData.excludeNegativeZero()))
         }
       case Some(conf.generateQueries) =>
         val r = conf.generateQueries.randomSeed.toOption match {

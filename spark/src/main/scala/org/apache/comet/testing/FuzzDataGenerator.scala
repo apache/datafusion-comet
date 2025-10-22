@@ -44,33 +44,16 @@ object FuzzDataGenerator {
   val defaultBaseDate: Long =
     new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("3333-05-25 12:34:56").getTime
 
-  private def filteredPrimitives(primitiveTypes: Seq[DataType], excludeTypes: Seq[DataType]) = {
-    primitiveTypes.filterNot { dataType =>
-      excludeTypes.exists {
-        case _: DecimalType =>
-          // For DecimalType, match if the type is also a DecimalType (ignore precision/scale)
-          dataType.isInstanceOf[DecimalType]
-        case excludeType =>
-          dataType == excludeType
-      }
-    }
-  }
-
-  def generateDataFrame(
-      r: Random,
-      spark: SparkSession,
-      numRows: Int,
-      options: DataGenOptions): DataFrame = {
-
-    val filteredPrimitiveTypes = filteredPrimitives(options.primitiveTypes, options.excludeTypes)
+  def generateSchema(options: SchemaGenOptions): StructType = {
+    val primitiveTypes = options.primitiveTypes
     val dataTypes = ListBuffer[DataType]()
-    dataTypes.appendAll(filteredPrimitiveTypes)
+    dataTypes.appendAll(primitiveTypes)
 
-    val arraysOfPrimitives = filteredPrimitiveTypes.map(DataTypes.createArrayType)
+    val arraysOfPrimitives = primitiveTypes.map(DataTypes.createArrayType)
 
     if (options.generateStruct) {
-      dataTypes += StructType(filteredPrimitiveTypes.zipWithIndex.map(x =>
-        StructField(s"c${x._2}", x._1, nullable = true)))
+      dataTypes += StructType(
+        primitiveTypes.zipWithIndex.map(x => StructField(s"c${x._2}", x._1, nullable = true)))
 
       if (options.generateArray) {
         dataTypes += StructType(arraysOfPrimitives.zipWithIndex.map(x =>
@@ -86,9 +69,8 @@ object FuzzDataGenerator {
       dataTypes.appendAll(arraysOfPrimitives)
 
       if (options.generateStruct) {
-        dataTypes += DataTypes.createArrayType(
-          StructType(filteredPrimitiveTypes.zipWithIndex.map(x =>
-            StructField(s"c${x._2}", x._1, nullable = true))))
+        dataTypes += DataTypes.createArrayType(StructType(primitiveTypes.zipWithIndex.map(x =>
+          StructField(s"c${x._2}", x._1, nullable = true))))
       }
 
       if (options.generateMap) {
@@ -100,7 +82,15 @@ object FuzzDataGenerator {
     // generate schema using random data types
     val fields = dataTypes.zipWithIndex
       .map(i => StructField(s"c${i._2}", i._1, nullable = true))
-    val schema = StructType(fields.toSeq)
+    StructType(fields.toSeq)
+  }
+
+  def generateDataFrame(
+      r: Random,
+      spark: SparkSession,
+      schema: StructType,
+      numRows: Int,
+      options: DataGenOptions): DataFrame = {
 
     // generate columnar data
     val cols: Seq[Seq[Any]] =
@@ -230,26 +220,31 @@ object FuzzDataGenerator {
   }
 }
 
-case class DataGenOptions(
-    primitiveTypes: Seq[DataType] = Seq(
-      DataTypes.BooleanType,
-      DataTypes.ByteType,
-      DataTypes.ShortType,
-      DataTypes.IntegerType,
-      DataTypes.LongType,
-      DataTypes.FloatType,
-      DataTypes.DoubleType,
-      DataTypes.createDecimalType(10, 2),
-      DataTypes.createDecimalType(36, 18),
-      DataTypes.DateType,
-      DataTypes.TimestampType,
-      DataTypes.TimestampNTZType,
-      DataTypes.StringType,
-      DataTypes.BinaryType),
-    allowNull: Boolean = true,
-    generateNegativeZero: Boolean = true,
-    baseDate: Long = FuzzDataGenerator.defaultBaseDate,
+object SchemaGenOptions {
+  val defaultPrimitiveTypes: Seq[DataType] = Seq(
+    DataTypes.BooleanType,
+    DataTypes.ByteType,
+    DataTypes.ShortType,
+    DataTypes.IntegerType,
+    DataTypes.LongType,
+    DataTypes.FloatType,
+    DataTypes.DoubleType,
+    DataTypes.createDecimalType(10, 2),
+    DataTypes.createDecimalType(36, 18),
+    DataTypes.DateType,
+    DataTypes.TimestampType,
+    DataTypes.TimestampNTZType,
+    DataTypes.StringType,
+    DataTypes.BinaryType)
+}
+
+case class SchemaGenOptions(
     generateArray: Boolean = false,
     generateStruct: Boolean = false,
     generateMap: Boolean = false,
-    excludeTypes: Seq[DataType] = Seq.empty)
+    primitiveTypes: Seq[DataType] = SchemaGenOptions.defaultPrimitiveTypes)
+
+case class DataGenOptions(
+    allowNull: Boolean = true,
+    generateNegativeZero: Boolean = true,
+    baseDate: Long = FuzzDataGenerator.defaultBaseDate)
