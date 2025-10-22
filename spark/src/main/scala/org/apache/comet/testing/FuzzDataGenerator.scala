@@ -44,6 +44,11 @@ object FuzzDataGenerator {
   val defaultBaseDate: Long =
     new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("3333-05-25 12:34:56").getTime
 
+  val unicodeSpecialChars: String = Seq(
+    "é", // unicode 'e\\u{301}'
+    "é" // unicode '\\u{e9}'
+  ).mkString
+
   def generateSchema(options: SchemaGenOptions): StructType = {
     val primitiveTypes = options.primitiveTypes
     val dataTypes = ListBuffer[DataType]()
@@ -195,6 +200,7 @@ object FuzzDataGenerator {
             case 2 => r.nextLong().toString
             case 3 => r.nextDouble().toString
             case 4 => RandomStringUtils.randomAlphabetic(options.maxStringLength)
+            case 5 => unicodeSpecialChars
             case _ => r.nextString(options.maxStringLength)
           }
         })
