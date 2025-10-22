@@ -110,7 +110,7 @@ object QueryRunner {
                 success = false
                 showSQL(w, sql)
                 showPlans(w, sparkPlan, cometPlan)
-                w.write(s"[ERROR] Comet did not accelerate any part of the plan\n")
+                w.write("[ERROR] Comet did not accelerate any part of the plan\n")
               }
 
               if (success) {
