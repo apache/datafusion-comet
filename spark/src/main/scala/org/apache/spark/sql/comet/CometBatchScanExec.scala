@@ -141,10 +141,12 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
     wrapped
   }
 
-  override lazy val metrics: Map[String, SQLMetric] = wrapped.customMetrics ++ (scan match {
-    case s: MetricsSupport => s.getMetrics
-    case _ => Map.empty
-  })
+  override lazy val metrics: Map[String, SQLMetric] =
+    wrappedScan.customMetrics ++ CometMetricNode.baseScanMetrics(
+      session.sparkContext) ++ (scan match {
+      case s: MetricsSupport => s.getMetrics
+      case _ => Map.empty
+    })
 
   @transient override lazy val partitions: Seq[Seq[InputPartition]] = wrappedScan.partitions
 

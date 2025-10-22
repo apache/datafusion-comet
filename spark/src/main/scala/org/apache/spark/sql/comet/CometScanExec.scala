@@ -247,7 +247,8 @@ case class CometScanExec(
   }
 
   override lazy val metrics: Map[String, SQLMetric] =
-    wrapped.driverMetrics ++ (relation.fileFormat match {
+    wrapped.driverMetrics ++ CometMetricNode.baseScanMetrics(
+      session.sparkContext) ++ (relation.fileFormat match {
       case m: MetricsSupport => m.getMetrics
       case _ => Map.empty
     })

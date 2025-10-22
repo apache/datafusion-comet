@@ -98,6 +98,22 @@ object CometMetricNode {
         "total time (in ms) spent in this operator"))
   }
 
+  /**
+   * Base SQL Metrics for ScanExec and BatchScanExec These are needed for various Spark systems to
+   * function properly, and are calculated on the general iterator created by the scan operator,
+   * regardless of which scan implementation is used.
+   */
+  def baseScanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "numOutputRows" -> SQLMetrics.createMetric(sc, "number of output rows"),
+      "scanTime" -> SQLMetrics.createNanoTimingMetric(sc, "scan time"))
+  }
+
+  /**
+   * Metrics specific to Parquet format in scan operators. This provides some statistics about the
+   * read files, as well as some meta filtering occuring. These metrics are independent of the
+   * native reader metrics.
+   */
   def parquetScanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
       "ParquetRowGroups" -> SQLMetrics.createMetric(sc, "num of Parquet row groups read"),
@@ -121,12 +137,11 @@ object CometMetricNode {
         "read throughput when reading Parquet file from storage (MB/sec)"))
   }
 
+  /**
+   * SQL Metrics from the native Datafusion reader.
+   */
   def nativeScanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
-      // Spark metrics for streaming pipelines
-      "numOutputRows" -> SQLMetrics.createMetric(sc, "number of output rows"),
-      "scanTime" -> SQLMetrics.createNanoTimingMetric(sc, "scan time"),
-      // Datafusion reader metrics
       "output_rows" -> SQLMetrics.createMetric(sc, "number of output rows"),
       "time_elapsed_opening" ->
         SQLMetrics.createNanoTimingMetric(sc, "Wall clock time elapsed for file opening"),
