@@ -21,11 +21,13 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.types.{DateType, IntegerType}
-
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde._
+import org.apache.spark.unsafe.types.UTF8String
+
+import java.util.Locale
 
 private object CometGetDateField extends Enumeration {
   type CometGetDateField = Value
@@ -256,6 +258,22 @@ object CometDateAdd extends CometScalarFunction[DateAdd]("date_add")
 object CometDateSub extends CometScalarFunction[DateSub]("date_sub")
 
 object CometTruncDate extends CometExpressionSerde[TruncDate] {
+
+  val supportedFormats: Seq[String] = Seq("year", "yyyy", "yy", "quarter", "mon", "month", "mm", "week")
+
+  override def getSupportLevel(expr: TruncDate): SupportLevel = {
+    expr.format match {
+      case Literal(fmt: UTF8String, _) =>
+        if (supportedFormats.contains(fmt.toString.toLowerCase(Locale.ROOT))) {
+          Compatible()
+        } else {
+          Unsupported(Some(s"Format $fmt is not supported"))
+        }
+      case _ =>
+        Compatible()
+    }
+  }
+
   override def convert(
       expr: TruncDate,
       inputs: Seq[Attribute],
