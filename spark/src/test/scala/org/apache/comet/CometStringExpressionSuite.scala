@@ -55,7 +55,7 @@ class CometStringExpressionSuite extends CometTestBase {
 
     // test all combinations of scalar and array arguments
     for (str <- Seq("'hello'", "str")) {
-      for (len <- Seq("6", "len % 10")) {
+      for (len <- Seq("6", "-6", "0", "len % 10")) {
         for (pad <- Seq(Some("'x'"), Some("'zzz'"), Some("pad"), None)) {
           val sql = pad match {
             case Some(p) =>
