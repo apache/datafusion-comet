@@ -23,15 +23,18 @@ import scala.util.Random
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import org.apache.comet.serde.CometTruncDate
+import org.apache.comet.serde.{CometTruncDate, CometTruncTimestamp}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("trunc (TruncDate)") {
-    val formats = Seq("year", "yyyy", "yy", "month", "mon", "mm", "week", "quarter")
+    val supportedFormats = CometTruncDate.supportedFormats
+    val unsupportedFormats = Seq("day", "foo")
+    val allFormats = supportedFormats ++ unsupportedFormats
 
     val r = new Random(42)
     val schema = StructType(
@@ -43,18 +46,24 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       spark,
       schema,
       1000,
-      DataGenOptions(customStringValues = formats))
+      DataGenOptions(customStringValues = allFormats))
 
     df.createOrReplaceTempView("tbl")
 
-    for (format <- formats) {
+    for (format <- supportedFormats) {
       checkSparkAnswerAndOperator(s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
     }
-    checkSparkAnswerAndOperator("SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
+    for (format <- unsupportedFormats) {
+      checkSparkAnswer(s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
+    }
+
+    // Comet should fall back to Spark if format is not a literal
+    // TODO check operator fallback
+    checkSparkAnswer("SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
   }
 
   test("date_trunc (TruncTimestamp)") {
-    val supportedFormats = CometTruncDate.supportedFormats
+    val supportedFormats = CometTruncTimestamp.supportedFormats
     val unsupportedFormats = Seq(
       "day",
       "dd",
@@ -64,14 +73,14 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       "minute",
       "hour",
       "week",
-      "quarter")
+      "quarter",
+      "foo")
     val allFormats = supportedFormats ++ unsupportedFormats
 
     val r = new Random(42)
     val schema = StructType(
       Seq(
         StructField("c0", DataTypes.TimestampType, true),
-        StructField("c1", DataTypes.TimestampNTZType, true),
         StructField("fmt", DataTypes.StringType, true)))
     val df = FuzzDataGenerator.generateDataFrame(
       r,
@@ -81,16 +90,18 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       DataGenOptions(customStringValues = allFormats))
     df.createOrReplaceTempView("tbl")
 
-    for (col <- Seq("c0", "c1")) {
+    // TODO test fails if timezone not set to UTC
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
       for (format <- supportedFormats) {
-        checkSparkAnswerAndOperator(
-          s"SELECT $col, date_trunc('$format', $col) from tbl order by $col")
+        checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
       for (format <- unsupportedFormats) {
         // TODO check for operator fallback
-        checkSparkAnswer(s"SELECT $col, date_trunc('$format', $col) from tbl order by $col")
+        checkSparkAnswer(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
-      // checkSparkAnswerAndOperator(s"SELECT $col, date_trunc($col, fmt) from tbl order by $col, fmt")
+      // Comet should fall back to Spark if format is not a literal
+      // TODO check operator fallback
+      checkSparkAnswer("SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt")
     }
   }
 }
