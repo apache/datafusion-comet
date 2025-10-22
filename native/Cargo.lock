@@ -3151,7 +3151,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.7.0"
-source = "git+https://github.com/mbutrovich/iceberg-rust?branch=df50#19381f662f0bab83ff8424b6f0a8a42908c4b88e"
+source = "git+https://github.com/mbutrovich/iceberg-rust?branch=df50#e59f1b1ecb46e95531f8a490b5609ed400821a28"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -3334,7 +3334,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b0f83760fb341a774ed326568e19f5a863af4a952def8c39f9ab92fd95b88e5"
 dependencies = [
  "equivalent",
- "hashbrown 0.16.0",
+ "hashbrown 0.15.5",
  "serde",
  "serde_core",
 ]
