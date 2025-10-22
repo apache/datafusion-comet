@@ -786,12 +786,7 @@ class CometIcebergNativeSuite extends CometTestBase {
     }
   }
 
-  // TODO: Re-enable when iceberg-rust supports schema evolution in projections
-  // Currently iceberg-rust errors when projecting columns that don't exist in old files.
-  // See: https://github.com/apache/iceberg-rust/blob/main/crates/iceberg/src/arrow/reader.rs#L586-L601
-  // The strict validation at line 586: `if column_map.len() != leaf_field_ids.len()`
-  // prevents reading new columns from evolved schemas as NULL values.
-  ignore("schema evolution - add column") {
+  test("schema evolution - add column") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withTempIcebergDir { warehouseDir =>
@@ -826,6 +821,102 @@ class CometIcebergNativeSuite extends CometTestBase {
           "SELECT id, age FROM test_cat.db.schema_evolution WHERE age IS NOT NULL ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.schema_evolution")
+      }
+    }
+  }
+
+  test("schema evolution - drop column") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.drop_column_test (
+            id INT,
+            name STRING,
+            age INT
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.drop_column_test VALUES (1, 'Alice', 30), (2, 'Bob', 25)
+        """)
+
+        // Drop the age column
+        spark.sql("ALTER TABLE test_cat.db.drop_column_test DROP COLUMN age")
+
+        // Insert new data without the age column
+        spark.sql("""
+          INSERT INTO test_cat.db.drop_column_test VALUES (3, 'Charlie'), (4, 'Diana')
+        """)
+
+        // Read all data - must handle old files (with age) and new files (without age)
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.drop_column_test ORDER BY id")
+        checkIcebergNativeScan("SELECT id, name FROM test_cat.db.drop_column_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.drop_column_test")
+      }
+    }
+  }
+
+  test("migration - basic read after migration (fallback for no field ID)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val sourceName = "parquet_source"
+        val destName = "test_cat.db.iceberg_dest"
+        val dataPath = s"${warehouseDir.getAbsolutePath}/source_data"
+
+        // Step 1: Create regular Parquet table (without field IDs)
+        spark
+          .range(10)
+          .selectExpr(
+            "CAST(id AS INT) as id",
+            "CONCAT('name_', CAST(id AS STRING)) as name",
+            "CAST(id * 2 AS DOUBLE) as value")
+          .write
+          .mode("overwrite")
+          .option("path", dataPath)
+          .saveAsTable(sourceName)
+
+        // Step 2: Snapshot the Parquet table into Iceberg using SparkActions API
+        try {
+          val actionsClass = Class.forName("org.apache.iceberg.spark.actions.SparkActions")
+          val getMethod = actionsClass.getMethod("get")
+          val actions = getMethod.invoke(null)
+          val snapshotMethod = actions.getClass.getMethod("snapshotTable", classOf[String])
+          val snapshotAction = snapshotMethod.invoke(actions, sourceName)
+          val asMethod = snapshotAction.getClass.getMethod("as", classOf[String])
+          val snapshotWithDest = asMethod.invoke(snapshotAction, destName)
+          val executeMethod = snapshotWithDest.getClass.getMethod("execute")
+          executeMethod.invoke(snapshotWithDest)
+
+          // Step 3: Read the Iceberg table - Parquet files have no field IDs, so position-based mapping is used
+          checkIcebergNativeScan(s"SELECT * FROM $destName ORDER BY id")
+          checkIcebergNativeScan(s"SELECT id, name FROM $destName ORDER BY id")
+          checkIcebergNativeScan(s"SELECT value FROM $destName WHERE id < 5 ORDER BY id")
+
+          spark.sql(s"DROP TABLE $destName")
+          spark.sql(s"DROP TABLE $sourceName")
+        } catch {
+          case _: ClassNotFoundException =>
+            cancel("Iceberg Actions API not available - requires iceberg-spark-runtime")
+        }
       }
     }
   }

@@ -3151,7 +3151,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.7.0"
-source = "git+https://github.com/mbutrovich/iceberg-rust?branch=df50#d822f5efee8a56ed8389c3602472d240205b4a0a"
+source = "git+https://github.com/mbutrovich/iceberg-rust?branch=df50#662cb58879145d796e5f0461a038da3739b6aeca"
 dependencies = [
  "anyhow",
  "apache-avro",
