@@ -208,7 +208,7 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
                 match string {
                     Some(string) => {
                         if length < 0 {
-                            builder.append_value("".to_owned());
+                            builder.append_value("");
                         } else {
                             builder.append_value(add_padding_string(
                                 string.parse().unwrap(),

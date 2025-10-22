@@ -49,7 +49,7 @@ class CometStringExpressionSuite extends CometTestBase {
       r,
       spark,
       schema,
-      100,
+      1000,
       DataGenOptions(maxStringLength = 6))
     df.createOrReplaceTempView("t1")
 
