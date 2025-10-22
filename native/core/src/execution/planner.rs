@@ -63,7 +63,7 @@ use datafusion::{
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, create_modulo_expr,
     create_negate_expr, BinaryOutputStyle, BloomFilterAgg, BloomFilterMightContain, EvalMode,
-    SparkHour, SparkMinute, SparkSecond,
+    SparkHour, SparkMinute, SparkSecond, SumInteger,
 };
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -1831,6 +1831,17 @@ impl PhysicalPlanner {
                 let builder = match datatype {
                     DataType::Decimal128(_, _) => {
                         let func = AggregateUDF::new_from_impl(SumDecimal::try_new(datatype)?);
+                        AggregateExprBuilder::new(Arc::new(func), vec![child])
+                    }
+                    DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
+                        // let eval_mode = let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                        let eval_mode = if expr.fail_on_error {
+                            EvalMode::Ansi
+                        } else {
+                            EvalMode::Legacy
+                        };
+                        let func =
+                            AggregateUDF::new_from_impl(SumInteger::try_new(datatype, eval_mode)?);
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
                     _ => {

@@ -30,4 +30,5 @@ pub use correlation::Correlation;
 pub use covariance::Covariance;
 pub use stddev::Stddev;
 pub use sum_decimal::SumDecimal;
+pub use sum_int::SumInteger;
 pub use variance::Variance;
