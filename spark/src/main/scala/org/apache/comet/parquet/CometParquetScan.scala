@@ -86,8 +86,8 @@ object CometParquetScan {
       partitionFilters = scan.partitionFilters,
       dataFilters = scan.dataFilters) with CometParquetScan
 
-    // TODO: Change this when we support DataFusion reader for Parquet in V2
-    newScan.metrics = CometMetricNode.parquetScanMetrics(session.sparkContext)
+    newScan.metrics = CometMetricNode.nativeScanMetrics(session.sparkContext) ++ CometMetricNode
+      .parquetScanMetrics(session.sparkContext)
 
     newScan
   }

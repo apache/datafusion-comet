@@ -61,11 +61,9 @@ class CometParquetFileFormat(session: SparkSession, scanImpl: String)
     extends ParquetFileFormat
     with MetricsSupport
     with ShimSQLConf {
-  if (scanImpl == CometConf.SCAN_NATIVE_COMET) {
-    metrics = CometMetricNode.parquetScanMetrics(session.sparkContext)
-  } else {
-    metrics = CometMetricNode.nativeScanMetrics(session.sparkContext)
-  }
+  metrics =
+    CometMetricNode.nativeScanMetrics(session.sparkContext) ++ CometMetricNode.parquetScanMetrics(
+      session.sparkContext)
 
   override def shortName(): String = "parquet"
   override def toString: String = "CometParquet"

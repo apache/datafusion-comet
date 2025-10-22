@@ -53,15 +53,11 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val rdd = inputRDD.asInstanceOf[RDD[ColumnarBatch]]
 
-    // Can skip the following logic if we're using different metrics to calculate this,
-    // e.g., Datafusion reader metrics.
-    if (Seq("numOutputRows", "scanTime").exists(metric => !metrics.contains(metric))) {
-      return rdd
-    }
-
+    // These metrics are important for streaming solutions.
+    // despite there being similar metrics published by the native reader.
     val numOutputRows = longMetric("numOutputRows")
     val scanTime = longMetric("scanTime")
-    inputRDD.asInstanceOf[RDD[ColumnarBatch]].mapPartitionsInternal { batches =>
+    rdd.mapPartitionsInternal { batches =>
       new Iterator[ColumnarBatch] {
 
         override def hasNext: Boolean = {

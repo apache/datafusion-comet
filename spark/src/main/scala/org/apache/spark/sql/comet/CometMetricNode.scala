@@ -98,19 +98,8 @@ object CometMetricNode {
         "total time (in ms) spent in this operator"))
   }
 
-  /**
-   * SQL Metrics for Comet native ScanExec
-   */
-  def scanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
-    Map(
-      "cast_time" ->
-        SQLMetrics.createNanoTimingMetric(sc, "Total time for casting columns"))
-  }
-
   def parquetScanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
-      "numOutputRows" -> SQLMetrics.createMetric(sc, "number of output rows"),
-      "scanTime" -> SQLMetrics.createNanoTimingMetric(sc, "scan time"),
       "ParquetRowGroups" -> SQLMetrics.createMetric(sc, "num of Parquet row groups read"),
       "ParquetNativeDecodeTime" -> SQLMetrics.createNanoTimingMetric(
         sc,
@@ -134,6 +123,10 @@ object CometMetricNode {
 
   def nativeScanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
+      // Spark metrics for streaming pipelines
+      "numOutputRows" -> SQLMetrics.createMetric(sc, "number of output rows"),
+      "scanTime" -> SQLMetrics.createNanoTimingMetric(sc, "scan time"),
+      // Datafusion reader metrics
       "output_rows" -> SQLMetrics.createMetric(sc, "number of output rows"),
       "time_elapsed_opening" ->
         SQLMetrics.createNanoTimingMetric(sc, "Wall clock time elapsed for file opening"),
