@@ -20,13 +20,13 @@
 package org.apache.comet
 
 import scala.util.Random
+
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
-import org.apache.spark.sql.comet.CometProjectExec
-import org.apache.spark.sql.execution.ProjectExec
 
 class CometStringExpressionSuite extends CometTestBase {
 
@@ -39,7 +39,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   private def testPadding(expr: String): Unit = {
-    val r = new Random()
+    val r = new Random(42)
     val schema = StructType(
       Seq(
         StructField("str", DataTypes.StringType, true),
