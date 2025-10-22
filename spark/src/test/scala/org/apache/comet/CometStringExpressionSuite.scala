@@ -43,12 +43,16 @@ class CometStringExpressionSuite extends CometTestBase {
     val schema = StructType(
       Seq(
         StructField("str", DataTypes.StringType, true),
+        StructField("len", DataTypes.IntegerType, true),
         StructField("pad", DataTypes.StringType, true)))
     val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 100, DataGenOptions())
     df.createOrReplaceTempView("t1")
 
-    checkSparkAnswer(s"SELECT str, $expr(str, 4, pad) FROM t1 ORDER BY str, pad")
-    checkSparkAnswerAndOperator(s"SELECT str, $expr(str, 4, 'x') FROM t1 ORDER BY str")
+    // we expect Comet to fall back to Spark if the pad argument is not a literal
+//    checkSparkAnswer(s"SELECT str, $expr(str, 4, pad) FROM t1 ORDER BY str, pad")
+//    checkSparkAnswerAndOperator(s"SELECT str, $expr(str, 4, 'x') FROM t1 ORDER BY str")
+    checkSparkAnswerAndOperator(s"SELECT str, len % 10, $expr(str, len % 10, 'x') FROM t1 ORDER BY str, len")
+//    checkSparkAnswerAndOperator(s"SELECT len, len % 10 FROM t1 ORDER BY len")
   }
 
   test("Various String scalar functions") {
