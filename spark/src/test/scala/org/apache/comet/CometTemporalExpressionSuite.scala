@@ -19,23 +19,24 @@
 
 package org.apache.comet
 
-import org.apache.comet.serde.CometTruncDate
-import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
+import scala.util.Random
+
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import scala.util.Random
+import org.apache.comet.serde.CometTruncDate
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
-  test("trunc_date") {
+  test("trunc (TruncDate)") {
     val formats = Seq("year", "yyyy", "yy", "month", "mon", "mm", "week", "quarter")
 
     val r = new Random(42)
     val schema = StructType(
       Seq(
-        StructField("c0", DataTypes.TimestampType, true),
+        StructField("c0", DataTypes.DateType, true),
         StructField("c1", DataTypes.StringType, true)))
     val df = FuzzDataGenerator.generateDataFrame(
       r,
@@ -49,20 +50,29 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     for (format <- formats) {
       checkSparkAnswerAndOperator(s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
     }
-    // checkSparkAnswerAndOperator(s"SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
+    checkSparkAnswerAndOperator("SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
   }
 
-  test("trunc") {
+  test("date_trunc (TruncTimestamp)") {
     val supportedFormats = CometTruncDate.supportedFormats
-    val unsupportedFormats = Seq("day", "dd", "microsecond", "millisecond", "second",
-      "minute", "hour", "week", "quarter")
+    val unsupportedFormats = Seq(
+      "day",
+      "dd",
+      "microsecond",
+      "millisecond",
+      "second",
+      "minute",
+      "hour",
+      "week",
+      "quarter")
     val allFormats = supportedFormats ++ unsupportedFormats
 
     val r = new Random(42)
     val schema = StructType(
       Seq(
-        StructField("c0", DataTypes.DateType, true),
-        StructField("c1", DataTypes.StringType, true)))
+        StructField("c0", DataTypes.TimestampType, true),
+        StructField("c1", DataTypes.TimestampNTZType, true),
+        StructField("fmt", DataTypes.StringType, true)))
     val df = FuzzDataGenerator.generateDataFrame(
       r,
       spark,
@@ -70,12 +80,17 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       1000,
       DataGenOptions(customStringValues = allFormats))
     df.createOrReplaceTempView("tbl")
-    for (format <- supportedFormats) {
-      checkSparkAnswerAndOperator(s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
+
+    for (col <- Seq("c0", "c1")) {
+      for (format <- supportedFormats) {
+        checkSparkAnswerAndOperator(
+          s"SELECT $col, date_trunc('$format', $col) from tbl order by $col")
+      }
+      for (format <- unsupportedFormats) {
+        // TODO check for operator fallback
+        checkSparkAnswer(s"SELECT $col, date_trunc('$format', $col) from tbl order by $col")
+      }
+      // checkSparkAnswerAndOperator(s"SELECT $col, date_trunc($col, fmt) from tbl order by $col, fmt")
     }
-    for (format <- unsupportedFormats) {
-      checkSparkAnswer(s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
-    }
-    // checkSparkAnswerAndOperator(s"SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
   }
 }
