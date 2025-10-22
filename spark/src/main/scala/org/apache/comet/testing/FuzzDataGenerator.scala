@@ -78,7 +78,6 @@ object FuzzDataGenerator {
       spark: SparkSession,
       numRows: Int,
       options: DataGenOptions): DataFrame = {
-
     val filteredPrimitiveTypes = filteredPrimitives(options.excludeTypes)
     val dataTypes = ListBuffer[DataType]()
     dataTypes.appendAll(filteredPrimitiveTypes)
@@ -118,6 +117,16 @@ object FuzzDataGenerator {
     val fields = dataTypes.zipWithIndex
       .map(i => StructField(s"c${i._2}", i._1, nullable = true))
     val schema = StructType(fields.toSeq)
+
+    generateDataFrame(r, spark, schema, numRows, options)
+  }
+
+  def generateDataFrame(
+      r: Random,
+      spark: SparkSession,
+      schema: StructType,
+      numRows: Int,
+      options: DataGenOptions): DataFrame = {
 
     // generate columnar data
     val cols: Seq[Seq[Any]] =
