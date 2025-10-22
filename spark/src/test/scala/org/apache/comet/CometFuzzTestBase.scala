@@ -35,7 +35,7 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{ParquetDataGenOptions, ParquetGenerator}
 
 class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -59,7 +59,7 @@ class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
       CometConf.COMET_ENABLED.key -> "false",
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
       val options =
-        DataGenOptions(
+        ParquetDataGenOptions(
           generateArray = true,
           generateStruct = true,
           generateNegativeZero = false,

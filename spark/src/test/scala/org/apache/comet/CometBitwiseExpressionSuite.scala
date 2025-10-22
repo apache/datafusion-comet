@@ -25,7 +25,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{ParquetDataGenOptions, ParquetGenerator}
 
 class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -99,7 +99,7 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
           spark,
           filename,
           100,
-          DataGenOptions(
+          ParquetDataGenOptions(
             allowNull = true,
             generateNegativeZero = true,
             generateArray = false,
@@ -174,7 +174,7 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
           spark,
           filename,
           10,
-          DataGenOptions(
+          ParquetDataGenOptions(
             allowNull = true,
             generateNegativeZero = true,
             generateArray = false,

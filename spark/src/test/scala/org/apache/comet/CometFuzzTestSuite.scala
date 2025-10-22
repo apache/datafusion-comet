@@ -28,7 +28,7 @@ import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{ParquetDataGenOptions, ParquetGenerator}
 
 class CometFuzzTestSuite extends CometFuzzTestBase {
 
@@ -262,7 +262,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
       generateStruct: Boolean = true): Unit = {
 
     val options =
-      DataGenOptions(
+      ParquetDataGenOptions(
         generateArray = generateArray,
         generateStruct = generateStruct,
         generateNegativeZero = false)
