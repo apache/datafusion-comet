@@ -296,7 +296,24 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
 object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
 
   val supportedFormats: Seq[String] =
-    Seq("year", "yyyy", "yy", "quarter", "mon", "month", "mm", "week")
+    Seq(
+      "year",
+      "yyyy",
+      "yy",
+      "quarter",
+      "mon",
+      "month",
+      "mm",
+      "week",
+      "day",
+      "dd",
+      "microsecond",
+      "millisecond",
+      "second",
+      "minute",
+      "hour",
+      "week",
+      "quarter")
 
   override def getSupportLevel(expr: TruncTimestamp): SupportLevel = {
     expr.format match {

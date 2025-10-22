@@ -143,8 +143,6 @@ abstract class CometTestBase
   }
 
   protected def checkSparkAnswer(query: String): (SparkPlan, SparkPlan) = {
-    // scalastyle:off
-    println(query)
     checkSparkAnswer(sql(query))
   }
 
@@ -169,8 +167,6 @@ abstract class CometTestBase
   }
 
   protected def checkSparkAnswerAndOperator(query: String, excludedClasses: Class[_]*): Unit = {
-    // scalastyle:off println
-    println(query)
     checkSparkAnswerAndOperator(sql(query), excludedClasses: _*)
   }
 
