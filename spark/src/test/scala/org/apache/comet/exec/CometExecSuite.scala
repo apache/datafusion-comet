@@ -50,7 +50,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
-import org.apache.comet.testing.{ParquetGenerator, ParquetGeneratorOptions}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometExecSuite extends CometTestBase {
 
@@ -2052,13 +2052,16 @@ class CometExecSuite extends CometTestBase {
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val options = ParquetGeneratorOptions(
-          allowNull = true,
-          generateNegativeZero = true,
-          generateArray = true,
-          generateStruct = true,
-          generateMap = true)
-        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+        val schemaGenOptions =
+          SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = true)
+        val dataGenOptions = DataGenOptions(allowNull = true, generateNegativeZero = true)
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          schemaGenOptions,
+          dataGenOptions)
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",

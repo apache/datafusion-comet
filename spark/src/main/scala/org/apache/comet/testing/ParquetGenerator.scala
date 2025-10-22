@@ -22,7 +22,7 @@ package org.apache.comet.testing
 import scala.util.Random
 
 import org.apache.spark.sql.{SaveMode, SparkSession}
-import org.apache.spark.sql.types.{DataType, StructType}
+import org.apache.spark.sql.types.StructType
 
 object ParquetGenerator {
 
@@ -32,20 +32,9 @@ object ParquetGenerator {
       spark: SparkSession,
       filename: String,
       numRows: Int,
-      options: ParquetGeneratorOptions): Unit = {
-
-    val schemaGenOptions = SchemaGenOptions(
-      generateArray = options.generateArray,
-      generateStruct = options.generateStruct,
-      generateMap = options.generateMap,
-      primitiveTypes = options.primitiveTypes)
+      schemaGenOptions: SchemaGenOptions,
+      dataGenOptions: DataGenOptions): Unit = {
     val schema = FuzzDataGenerator.generateSchema(schemaGenOptions)
-
-    val dataGenOptions = DataGenOptions(
-      allowNull = options.allowNull,
-      generateNegativeZero = options.generateNegativeZero,
-      baseDate = options.baseDate)
-
     makeParquetFile(r, spark, filename, schema, numRows, dataGenOptions)
   }
 
@@ -62,13 +51,3 @@ object ParquetGenerator {
   }
 
 }
-
-/** Schema and Data generation options */
-case class ParquetGeneratorOptions(
-    allowNull: Boolean = true,
-    generateNegativeZero: Boolean = true,
-    baseDate: Long = FuzzDataGenerator.defaultBaseDate,
-    generateArray: Boolean = false,
-    generateStruct: Boolean = false,
-    generateMap: Boolean = false,
-    primitiveTypes: Seq[DataType] = SchemaGenOptions.defaultPrimitiveTypes)
