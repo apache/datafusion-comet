@@ -194,8 +194,8 @@ object FuzzDataGenerator {
             case 1 => r.nextInt().toByte.toString
             case 2 => r.nextLong().toString
             case 3 => r.nextDouble().toString
-            case 4 => RandomStringUtils.randomAlphabetic(8)
-            case _ => r.nextString(8)
+            case 4 => RandomStringUtils.randomAlphabetic(options.maxStringLength)
+            case _ => r.nextString(options.maxStringLength)
           }
         })
       case DataTypes.BinaryType =>
@@ -247,4 +247,5 @@ case class SchemaGenOptions(
 case class DataGenOptions(
     allowNull: Boolean = true,
     generateNegativeZero: Boolean = true,
-    baseDate: Long = FuzzDataGenerator.defaultBaseDate)
+    baseDate: Long = FuzzDataGenerator.defaultBaseDate,
+    maxStringLength: Int = 8)

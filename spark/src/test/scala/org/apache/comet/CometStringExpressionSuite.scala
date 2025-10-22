@@ -19,11 +19,37 @@
 
 package org.apache.comet
 
+import scala.util.Random
+
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometStringExpressionSuite extends CometTestBase {
+
+  test("lpad") {
+    testPadding("lpad")
+  }
+
+  test("rpad") {
+    testPadding("rpad")
+  }
+
+  private def testPadding(expr: String): Unit = {
+    val r = new Random()
+    val schema = StructType(
+      Seq(
+        StructField("str", DataTypes.StringType, true),
+        StructField("pad", DataTypes.StringType, true)))
+    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 100, DataGenOptions())
+    df.createOrReplaceTempView("t1")
+
+    checkSparkAnswer(s"SELECT str, $expr(str, 4, pad) FROM t1 ORDER BY str, pad")
+    checkSparkAnswerAndOperator(s"SELECT str, $expr(str, 4, 'x') FROM t1 ORDER BY str")
+  }
 
   test("Various String scalar functions") {
     val table = "names"
