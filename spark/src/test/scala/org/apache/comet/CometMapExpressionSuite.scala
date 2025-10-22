@@ -26,7 +26,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.testing.{ParquetDataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{ParquetGenerator, ParquetGeneratorOptions}
 
 class CometMapExpressionSuite extends CometTestBase {
 
@@ -108,7 +108,7 @@ class CometMapExpressionSuite extends CometTestBase {
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val options = ParquetDataGenOptions(
+        val options = ParquetGeneratorOptions(
           allowNull = false,
           generateNegativeZero = false,
           generateArray = true,

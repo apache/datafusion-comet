@@ -27,7 +27,36 @@ import org.apache.spark.sql.types.{DataType, DataTypes, MapType, StructField, St
 
 object ParquetGenerator {
 
-  def makeParquetSchema(options: ParquetDataGenOptions): StructType = {
+  /** Generate a Parquet file using a generated schema */
+  def makeParquetFile(
+      r: Random,
+      spark: SparkSession,
+      filename: String,
+      numRows: Int,
+      options: ParquetGeneratorOptions): Unit = {
+    val schema = generateSchema(options)
+
+    val dataGenOptions = DataGenOptions(
+      allowNull = options.allowNull,
+      generateNegativeZero = options.generateNegativeZero,
+      baseDate = options.baseDate)
+
+    makeParquetFile(r, spark, filename, schema, numRows, dataGenOptions)
+  }
+
+  /** Generate a Parquet file using the provided schema */
+  def makeParquetFile(
+      r: Random,
+      spark: SparkSession,
+      filename: String,
+      schema: StructType,
+      numRows: Int,
+      options: DataGenOptions): Unit = {
+    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, numRows, options)
+    df.write.mode(SaveMode.Overwrite).parquet(filename)
+  }
+
+  private def generateSchema(options: ParquetGeneratorOptions): StructType = {
     val primitiveTypes = options.primitiveTypes
     val dataTypes = ListBuffer[DataType]()
     dataTypes.appendAll(primitiveTypes)
@@ -67,28 +96,10 @@ object ParquetGenerator {
       .map(i => StructField(s"c${i._2}", i._1, nullable = true))
     StructType(fields.toSeq)
   }
-
-  def makeParquetFile(
-      r: Random,
-      spark: SparkSession,
-      filename: String,
-      numRows: Int,
-      options: ParquetDataGenOptions): Unit = {
-
-    val schema = makeParquetSchema(options)
-
-    val x = DataGenOptions2(
-      allowNull = options.allowNull,
-      generateNegativeZero = options.generateNegativeZero,
-      baseDate = options.baseDate)
-
-    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, numRows, x)
-
-    df.write.mode(SaveMode.Overwrite).parquet(filename)
-  }
 }
 
-case class ParquetDataGenOptions(
+/** Schema and Data generation options */
+case class ParquetGeneratorOptions(
     allowNull: Boolean = true,
     generateNegativeZero: Boolean = true,
     baseDate: Long = FuzzDataGenerator.defaultBaseDate,

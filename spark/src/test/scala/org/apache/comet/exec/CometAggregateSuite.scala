@@ -31,7 +31,7 @@ import org.apache.spark.sql.functions.{avg, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
-import org.apache.comet.testing.{ParquetDataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{ParquetGenerator, ParquetGeneratorOptions}
 
 /**
  * Test suite dedicated to Comet native aggregate operator
@@ -45,7 +45,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        ParquetGenerator.makeParquetFile(random, spark, filename, 10000, ParquetDataGenOptions())
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          10000,
+          ParquetGeneratorOptions())
       }
       val tableName = "avg_decimal"
       withTable(tableName) {

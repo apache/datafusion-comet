@@ -49,7 +49,7 @@ object FuzzDataGenerator {
       spark: SparkSession,
       schema: StructType,
       numRows: Int,
-      options: DataGenOptions2): DataFrame = {
+      options: DataGenOptions): DataFrame = {
 
     // generate columnar data
     val cols: Seq[Seq[Any]] =
@@ -67,7 +67,7 @@ object FuzzDataGenerator {
       r: Random,
       dataType: DataType,
       numRows: Int,
-      options: DataGenOptions2): Seq[Any] = {
+      options: DataGenOptions): Seq[Any] = {
     dataType match {
       case ArrayType(elementType, _) =>
         val values = generateColumn(r, elementType, numRows, options)
@@ -179,7 +179,7 @@ object FuzzDataGenerator {
   }
 }
 
-case class DataGenOptions2(
+case class DataGenOptions(
     allowNull: Boolean = true,
     generateNegativeZero: Boolean = true,
     baseDate: Long = FuzzDataGenerator.defaultBaseDate)

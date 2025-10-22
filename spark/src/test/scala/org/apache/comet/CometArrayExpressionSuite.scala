@@ -30,7 +30,7 @@ import org.apache.spark.sql.functions._
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CometArrayExcept, CometArrayRemove, CometArrayReverse, CometFlatten}
-import org.apache.comet.testing.{ParquetDataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{ParquetGenerator, ParquetGeneratorOptions}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -64,7 +64,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             spark,
             filename,
             100,
-            ParquetDataGenOptions(
+            ParquetGeneratorOptions(
               allowNull = true,
               generateNegativeZero = true,
               generateArray = false,
@@ -95,7 +95,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         val filename = path.toString
         val random = new Random(42)
         withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-          val options = ParquetDataGenOptions(
+          val options = ParquetGeneratorOptions(
             allowNull = true,
             generateNegativeZero = true,
             generateArray = true,
@@ -266,7 +266,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             spark,
             filename,
             100,
-            ParquetDataGenOptions(
+            ParquetGeneratorOptions(
               allowNull = true,
               generateNegativeZero = true,
               generateArray = true,
@@ -310,7 +310,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             spark,
             filename,
             100,
-            ParquetDataGenOptions(
+            ParquetGeneratorOptions(
               allowNull = true,
               generateNegativeZero = true,
               generateArray = false,
@@ -340,7 +340,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           spark,
           filename,
           100,
-          ParquetDataGenOptions(
+          ParquetGeneratorOptions(
             allowNull = true,
             generateNegativeZero = true,
             generateArray = true,
@@ -588,7 +588,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           spark,
           filename,
           100,
-          ParquetDataGenOptions(
+          ParquetGeneratorOptions(
             allowNull = true,
             generateNegativeZero = true,
             generateArray = false,
@@ -622,7 +622,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val options = ParquetDataGenOptions(
+        val options = ParquetGeneratorOptions(
           allowNull = true,
           generateNegativeZero = true,
           generateArray = true,
@@ -692,7 +692,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             spark,
             filename,
             100,
-            ParquetDataGenOptions(
+            ParquetGeneratorOptions(
               allowNull = true,
               generateNegativeZero = true,
               generateArray = false,
@@ -720,7 +720,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val options = ParquetDataGenOptions(
+        val options = ParquetGeneratorOptions(
           allowNull = true,
           generateNegativeZero = true,
           generateArray = true,
@@ -773,7 +773,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val options = ParquetDataGenOptions(
+        val options = ParquetGeneratorOptions(
           allowNull = true,
           generateNegativeZero = true,
           generateArray = true,

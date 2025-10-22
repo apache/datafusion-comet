@@ -26,7 +26,7 @@ import org.rogach.scallop.ScallopOption
 
 import org.apache.spark.sql.SparkSession
 
-import org.apache.comet.testing.{ParquetDataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{ParquetGenerator, ParquetGeneratorOptions}
 
 class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
   object generateData extends Subcommand("data") {
@@ -78,7 +78,7 @@ object Main {
           case Some(seed) => new Random(seed)
           case None => new Random()
         }
-        val options = ParquetDataGenOptions(
+        val options = ParquetGeneratorOptions(
           allowNull = true,
           generateArray = conf.generateData.generateArrays(),
           generateStruct = conf.generateData.generateStructs(),
