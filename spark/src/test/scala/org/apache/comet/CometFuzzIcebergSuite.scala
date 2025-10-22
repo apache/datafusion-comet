@@ -27,7 +27,7 @@ import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
 
@@ -162,11 +162,17 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
       generateArray: Boolean = true,
       generateStruct: Boolean = true): Unit = {
 
-    val options =
-      DataGenOptions(
+    val schema = FuzzDataGenerator.generateSchema(
+      SchemaGenOptions(
         generateArray = generateArray,
         generateStruct = generateStruct,
-        generateNegativeZero = false)
+        primitiveTypes = SchemaGenOptions.defaultPrimitiveTypes.filterNot { dataType =>
+          // Disable decimals - iceberg-rust doesn't support FIXED_LEN_BYTE_ARRAY in page index yet
+          dataType.isInstanceOf[DecimalType]
+        }))
+
+    val options =
+      DataGenOptions(generateNegativeZero = false)
 
     withTempPath { filename =>
       val random = new Random(42)
@@ -174,7 +180,7 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
         CometConf.COMET_ENABLED.key -> "false",
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> outputTimestampType.toString,
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
-        ParquetGenerator.makeParquetFile(random, spark, filename.toString, 100, options)
+        ParquetGenerator.makeParquetFile(random, spark, filename.toString, schema, 100, options)
       }
 
       Seq(defaultTimezone, "UTC", "America/Denver").foreach { tz =>

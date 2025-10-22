@@ -35,7 +35,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
-import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -72,18 +72,23 @@ class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
       "spark.sql.catalog.hadoop_catalog.warehouse" -> warehouseDir.getAbsolutePath,
       CometConf.COMET_ENABLED.key -> "false",
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
-      val options =
-        DataGenOptions(
+
+      val schema = FuzzDataGenerator.generateSchema(
+        SchemaGenOptions(
           generateArray = true,
           generateStruct = true,
+          primitiveTypes = SchemaGenOptions.defaultPrimitiveTypes.filterNot { dataType =>
+            // Disable decimals - iceberg-rust doesn't support FIXED_LEN_BYTE_ARRAY in page index yet
+            dataType.isInstanceOf[DecimalType]
+          }))
+
+      val options =
+        DataGenOptions(
           generateNegativeZero = false,
-          // Disable decimals - iceberg-rust doesn't support FIXED_LEN_BYTE_ARRAY in page index yet
-          excludeTypes = Seq(DecimalType(10, 2)),
-          // override base date due to known issues with experimental scans
           baseDate =
             new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime)
 
-      val df = FuzzDataGenerator.generateDataFrame(random, spark, 1000, options)
+      val df = FuzzDataGenerator.generateDataFrame(random, spark, schema, 1000, options)
       df.writeTo(icebergTableName).using("iceberg").create()
     }
   }
@@ -102,6 +107,7 @@ class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
         }
         file.delete()
       }
+
       deleteRecursively(warehouseDir)
     }
     super.afterAll()
