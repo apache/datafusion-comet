@@ -20,13 +20,13 @@
 package org.apache.comet
 
 import scala.util.Random
-
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
-
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
+import org.apache.spark.sql.comet.CometProjectExec
+import org.apache.spark.sql.execution.ProjectExec
 
 class CometStringExpressionSuite extends CometTestBase {
 
@@ -48,12 +48,21 @@ class CometStringExpressionSuite extends CometTestBase {
     val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 100, DataGenOptions())
     df.createOrReplaceTempView("t1")
 
-    // we expect Comet to fall back to Spark if the pad argument is not a literal
-//    checkSparkAnswer(s"SELECT str, $expr(str, 4, pad) FROM t1 ORDER BY str, pad")
-//    checkSparkAnswerAndOperator(s"SELECT str, $expr(str, 4, 'x') FROM t1 ORDER BY str")
-    checkSparkAnswerAndOperator(
-      s"SELECT str, len % 10, $expr(str, len % 10, 'x') FROM t1 ORDER BY str, len")
-//    checkSparkAnswerAndOperator(s"SELECT len, len % 10 FROM t1 ORDER BY len")
+    // test all combinations of scalar and array arguments
+    for (str <- Seq("'hello'", "str")) {
+      for (len <- Seq("6", "len % 10")) {
+        for (pad <- Seq("'x'", "pad")) {
+          val sql = s"SELECT $str, $len, $expr($str, $len, $pad) FROM t1 ORDER BY str, len, pad"
+          if (str == "'hello'" || pad == "pad") {
+            // Comet does not support literal for str argument
+            // Comet only supports literals for pad argument
+            checkSparkAnswer(sql)
+          } else {
+            checkSparkAnswerAndOperator(sql)
+          }
+        }
+      }
+    }
   }
 
   test("Various String scalar functions") {

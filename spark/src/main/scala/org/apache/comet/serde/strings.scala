@@ -163,6 +163,9 @@ object CometRLike extends CometExpressionSerde[RLike] {
 object CometStringRPad extends CometExpressionSerde[StringRPad] {
 
   override def getSupportLevel(expr: StringRPad): SupportLevel = {
+    if (expr.str.isInstanceOf[Literal]) {
+      return Unsupported(Some("Scalar values are not supported for the str argument"))
+    }
     if (!expr.pad.isInstanceOf[Literal]) {
       return Unsupported(Some("Only scalar values are supported for the pad argument"))
     }
@@ -185,6 +188,9 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] {
 object CometStringLPad extends CometExpressionSerde[StringLPad] {
 
   override def getSupportLevel(expr: StringLPad): SupportLevel = {
+    if (expr.str.isInstanceOf[Literal]) {
+      return Unsupported(Some("Scalar values are not supported for the str argument"))
+    }
     if (!expr.pad.isInstanceOf[Literal]) {
       return Unsupported(Some("Only scalar values are supported for the pad argument"))
     }
