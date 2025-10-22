@@ -45,7 +45,12 @@ class CometStringExpressionSuite extends CometTestBase {
         StructField("str", DataTypes.StringType, true),
         StructField("len", DataTypes.IntegerType, true),
         StructField("pad", DataTypes.StringType, true)))
-    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 100, DataGenOptions())
+    val df = FuzzDataGenerator.generateDataFrame(
+      r,
+      spark,
+      schema,
+      100,
+      DataGenOptions(maxStringLength = 6))
     df.createOrReplaceTempView("t1")
 
     // test all combinations of scalar and array arguments
