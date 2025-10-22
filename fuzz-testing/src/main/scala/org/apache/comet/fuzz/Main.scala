@@ -61,6 +61,17 @@ class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
       opt[Int](required = false, descr = "Number of input files to use")
   }
   addSubcommand(runQueries)
+  object runTPCQueries extends Subcommand("runTPC") {
+    val dataFolder: ScallopOption[String] =
+      opt[String](
+        required = true,
+        descr = "Folder for input data. Expected folder struct `$dataFolder/tableName/*.parquet`")
+    val queriesFolder: ScallopOption[String] =
+      opt[String](
+        required = true,
+        descr = "Folder for test queries. Expected folder struct `$queriesFolder/*.sql`")
+  }
+  addSubcommand(runTPCQueries)
   verify()
 }
 
@@ -108,6 +119,11 @@ object Main {
           conf.generateQueries.numQueries())
       case Some(conf.runQueries) =>
         QueryRunner.runQueries(spark, conf.runQueries.numFiles(), conf.runQueries.filename())
+      case Some(conf.runTPCQueries) =>
+        QueryRunner.runTPCQueries(
+          spark,
+          conf.runTPCQueries.dataFolder(),
+          conf.runTPCQueries.queriesFolder())
       case _ =>
         // scalastyle:off println
         println("Invalid subcommand")
