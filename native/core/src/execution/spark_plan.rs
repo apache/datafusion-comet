@@ -42,12 +42,11 @@ impl SparkPlan {
         native_plan: Arc<dyn ExecutionPlan>,
         children: Vec<Arc<SparkPlan>>,
     ) -> Self {
-        let mut additional_native_plans: Vec<Arc<dyn ExecutionPlan>> = vec![];
         Self {
             plan_id,
             native_plan,
             children,
-            additional_native_plans,
+            additional_native_plans: vec![],
         }
     }
 
