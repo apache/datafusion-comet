@@ -207,9 +207,7 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
                 let length = length.unwrap();
                 match string {
                     Some(string) => {
-                        if length < 0 {
-                            builder.append_value("");
-                        } else {
+                        if length >= 0 {
                             builder.append_value(add_padding_string(
                                 string.parse().unwrap(),
                                 length as usize,
@@ -217,6 +215,8 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
                                 pad_string,
                                 is_left_pad,
                             )?)
+                        } else {
+                            builder.append_value("");
                         }
                     }
                     _ => builder.append_null(),
