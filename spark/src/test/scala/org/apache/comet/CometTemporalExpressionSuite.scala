@@ -50,14 +50,14 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     for (format <- unsupportedFormats) {
       // Comet should fall back to Spark for unsupported or invalid formats
       checkSparkAnswerAndFallbackReason(
-        s"Format $format is not supported",
-        s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
+        s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1",
+        s"Format $format is not supported")
     }
 
     // Comet should fall back to Spark if format is not a literal
     checkSparkAnswerAndFallbackReason(
-      "Format must be a literal",
-      "SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
+      "SELECT c0, trunc(c0, c1) from tbl order by c0, c1",
+      "Format must be a literal")
   }
 
   test("date_trunc (TruncTimestamp)") {
@@ -80,13 +80,13 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       for (format <- unsupportedFormats) {
         // Comet should fall back to Spark for unsupported or invalid formats
         checkSparkAnswerAndFallbackReason(
-          s"Format $format is not supported",
-          s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
+          s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
+          s"Format $format is not supported")
       }
       // Comet should fall back to Spark if format is not a literal
       checkSparkAnswerAndFallbackReason(
-        "Format must be a literal",
-        "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt")
+        "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt",
+        "Format must be a literal")
     }
   }
 

@@ -167,7 +167,7 @@ abstract class CometTestBase
   }
 
   /** Check for the correct results as well as the expected fallback reason */
-  def checkSparkAnswerAndFallbackReason(fallbackReason: String, sql: String): Unit = {
+  def checkSparkAnswerAndFallbackReason(sql: String, fallbackReason: String): Unit = {
     val (_, cometPlan) = checkSparkAnswer(sql)
     val explain = new ExtendedExplainInfo().generateVerboseExtendedInfo(cometPlan)
     assert(explain.contains(fallbackReason))
