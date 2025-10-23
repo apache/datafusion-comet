@@ -159,7 +159,7 @@ impl ScanExec {
     ///   do this in Comet but rather let DF to handle it for us.
     fn unpack_dictionary_type(dt: &DataType) -> DataType {
         if let DataType::Dictionary(_, vt) = dt {
-            if !matches!(
+            if matches!(
                 vt.as_ref(),
                 DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
             ) {
