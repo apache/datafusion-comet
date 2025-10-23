@@ -22,8 +22,6 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
-import org.apache.spark.sql.execution.{ProjectExec, RDDScanExec, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -57,7 +55,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
 
     // Comet should fall back to Spark if format is not a literal
-    checkSparkAnswerAndFallbackReason("Format must be a literal", "SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
+    checkSparkAnswerAndFallbackReason(
+      "Format must be a literal",
+      "SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
   }
 
   test("date_trunc (TruncTimestamp)") {
