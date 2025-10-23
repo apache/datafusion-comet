@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::operators::CopyExec;
 use arrow::datatypes::SchemaRef;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
@@ -89,10 +88,7 @@ impl SparkPlan {
 }
 
 fn collect_additional_plans(
-    child: Arc<dyn ExecutionPlan>,
-    additional_native_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
+    _child: Arc<dyn ExecutionPlan>,
+    _additional_native_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
 ) {
-    if child.as_any().is::<CopyExec>() {
-        additional_native_plans.push(Arc::clone(&child));
-    }
 }
