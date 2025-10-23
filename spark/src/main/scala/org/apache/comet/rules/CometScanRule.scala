@@ -280,7 +280,90 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
         }
 
-        if (schemaSupported) {
+        // Check Iceberg table format version
+        val formatVersionSupported = if (schemaSupported) {
+          try {
+            // table() is a protected method in SparkScan,
+            // so we need getDeclaredMethod + setAccessible
+            val tableMethod = scanExec.scan.getClass.getSuperclass.getSuperclass
+              .getDeclaredMethod("table")
+            tableMethod.setAccessible(true)
+            val table = tableMethod.invoke(scanExec.scan)
+
+            // Try to get formatVersion directly from table
+            val formatVersion =
+              try {
+                val formatVersionMethod = table.getClass.getMethod("formatVersion")
+                formatVersionMethod.invoke(table).asInstanceOf[Int]
+              } catch {
+                case _: NoSuchMethodException =>
+                  // If not directly available, access via operations/metadata
+                  val opsMethod = table.getClass.getMethod("operations")
+                  val ops = opsMethod.invoke(table)
+                  val currentMethod = ops.getClass.getMethod("current")
+                  val metadata = currentMethod.invoke(ops)
+                  val formatVersionMethod = metadata.getClass.getMethod("formatVersion")
+                  formatVersionMethod.invoke(metadata).asInstanceOf[Int]
+              }
+
+            if (formatVersion > 2) {
+              fallbackReasons += s"Iceberg table format version " +
+                s"$formatVersion is not supported. " +
+                "Comet only supports Iceberg table format V1 and V2"
+              false
+            } else {
+              true
+            }
+          } catch {
+            case e: Exception =>
+              fallbackReasons += s"Could not verify Iceberg table " +
+                s"format version: ${e.getMessage}"
+              false
+          }
+        } else {
+          false
+        }
+
+        // Check if all files are Parquet format
+        val allParquetFiles = if (schemaSupported && formatVersionSupported) {
+          try {
+            // Use reflection to access the protected tasks() method
+            val tasksMethod = scanExec.scan.getClass.getSuperclass
+              .getDeclaredMethod("tasks")
+            tasksMethod.setAccessible(true)
+            val tasks = tasksMethod.invoke(scanExec.scan).asInstanceOf[java.util.List[_]]
+
+            // scalastyle:off classforname
+            val contentScanTaskClass = Class.forName("org.apache.iceberg.ContentScanTask")
+            val contentFileClass = Class.forName("org.apache.iceberg.ContentFile")
+            // scalastyle:on classforname
+
+            val fileMethod = contentScanTaskClass.getMethod("file")
+            val formatMethod = contentFileClass.getMethod("format")
+
+            // Check that all FileScanTasks are for Parquet files
+            val allParquet = tasks.asScala.forall { task =>
+              val dataFile = fileMethod.invoke(task)
+              val fileFormat = formatMethod.invoke(dataFile)
+              fileFormat.toString == "PARQUET"
+            }
+
+            if (!allParquet) {
+              fallbackReasons += "Iceberg scan contains non-Parquet files (ORC or Avro). " +
+                "Comet only supports Parquet files in Iceberg tables"
+            }
+
+            allParquet
+          } catch {
+            case e: Exception =>
+              fallbackReasons += s"Could not verify file formats: ${e.getMessage}"
+              false
+          }
+        } else {
+          false
+        }
+
+        if (schemaSupported && formatVersionSupported && allParquetFiles) {
           // When reading from Iceberg, automatically enable type promotion
           SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
           CometBatchScanExec(
