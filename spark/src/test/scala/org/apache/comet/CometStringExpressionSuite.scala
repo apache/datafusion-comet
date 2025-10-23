@@ -30,15 +30,23 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometStringExpressionSuite extends CometTestBase {
 
-  test("lpad") {
-    testPadding("lpad")
+  test("lpad string") {
+    testStringPadding("lpad")
   }
 
-  test("rpad") {
-    testPadding("rpad")
+  test("rpad string") {
+    testStringPadding("rpad")
   }
 
-  private def testPadding(expr: String): Unit = {
+  test("lpad binary") {
+    testBinaryPadding("lpad")
+  }
+
+  test("rpad binary") {
+    testBinaryPadding("rpad")
+  }
+
+  private def testStringPadding(expr: String): Unit = {
     val r = new Random(42)
     val schema = StructType(
       Seq(
@@ -88,6 +96,50 @@ class CometStringExpressionSuite extends CometTestBase {
               "Only scalar values are supported for the pad argument")
           } else {
             checkSparkAnswerAndOperator(sql)
+          }
+        }
+      }
+    }
+  }
+
+  private def testBinaryPadding(expr: String): Unit = {
+    val r = new Random(42)
+    val schema = StructType(
+      Seq(
+        StructField("str", DataTypes.BinaryType, nullable = true),
+        StructField("len", DataTypes.IntegerType, nullable = true),
+        StructField("pad", DataTypes.BinaryType, nullable = true)))
+    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
+    df.createOrReplaceTempView("t1")
+
+    // test all combinations of scalar and array arguments
+    for (str <- Seq("unhex('DDEEFF')", "str")) {
+      // Spark does not support negative length for lpad/rpad with binary input and Comet does
+      // not support abs yet, so use `10 + len % 10` to avoid negative length
+      for (len <- Seq("6", "0", "10 + len % 10")) {
+        for (pad <- Seq(Some("unhex('CAFE')"), Some("pad"), None)) {
+
+          val sql = pad match {
+            case Some(p) =>
+              // 3 args
+              s"SELECT $str, $len, $expr($str, $len, $p) FROM t1 ORDER BY str, len, pad"
+            case _ =>
+              // 2 args (default pad of ' ')
+              s"SELECT $str, $len, $expr($str, $len) FROM t1 ORDER BY str, len, pad"
+          }
+
+          val isLiteralStr = str != "str"
+          val isLiteralLen = !len.contains("len")
+          val isLiteralPad = !pad.contains("pad")
+
+          if (isLiteralStr && isLiteralLen && isLiteralPad) {
+            // all arguments are literal, so Spark constant folding will kick in
+            // and pad function will not be evaluated by Comet
+            checkSparkAnswer(sql)
+          } else {
+            // Comet will fall back to Spark because the plan contains a staticinvoke instruction
+            // which is not supported
+            checkSparkAnswerAndFallbackReason(sql, "staticinvoke is not supported")
           }
         }
       }
