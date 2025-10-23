@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::operators::copy_array;
+use crate::execution::operators::{copy_array, copy_or_unpack_array, CopyMode};
 use crate::{
     errors::CometError,
     execution::{
@@ -266,7 +266,7 @@ impl ScanExec {
 
             let array = if arrow_ffi_safe {
                 // ownership of this array has been transferred to native
-                array
+                copy_or_unpack_array(&array, &CopyMode::UnpackOrClone)?
             } else {
                 // it is necessary to copy the array because the contents may be
                 // overwritten on the JVM side in the future
