@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 /// Wrapper around a native plan that maps to a Spark plan and can optionally contain
 /// references to other native plans that should contribute to the Spark SQL metrics
-/// for the root plan (such as CopyExec and ScanExec nodes)
+/// for the root plan (such as ScanExec nodes and additional projections)
 #[derive(Debug, Clone)]
 pub(crate) struct SparkPlan {
     /// Spark plan ID (used for informational purposes only)
@@ -43,9 +43,6 @@ impl SparkPlan {
         children: Vec<Arc<SparkPlan>>,
     ) -> Self {
         let mut additional_native_plans: Vec<Arc<dyn ExecutionPlan>> = vec![];
-        for child in &children {
-            collect_additional_plans(Arc::clone(&child.native_plan), &mut additional_native_plans);
-        }
         Self {
             plan_id,
             native_plan,
@@ -65,9 +62,6 @@ impl SparkPlan {
         for plan in &additional_native_plans {
             accum.push(Arc::clone(plan));
         }
-        for child in &children {
-            collect_additional_plans(Arc::clone(&child.native_plan), &mut accum);
-        }
         Self {
             plan_id,
             native_plan,
@@ -85,10 +79,4 @@ impl SparkPlan {
     pub(crate) fn children(&self) -> &Vec<Arc<SparkPlan>> {
         &self.children
     }
-}
-
-fn collect_additional_plans(
-    _child: Arc<dyn ExecutionPlan>,
-    _additional_native_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
-) {
 }
