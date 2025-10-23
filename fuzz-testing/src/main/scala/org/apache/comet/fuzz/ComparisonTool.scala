@@ -125,7 +125,7 @@ object ComparisonToolMain {
               cometPlan,
               output)
 
-            output.write(s"✓ Subfolder $subfolderName: ${sparkRows.length} rows matched\n\n")
+            output.write(s"Subfolder $subfolderName: ${sparkRows.length} rows matched\n\n")
 
           } catch {
             case e: Exception =>
