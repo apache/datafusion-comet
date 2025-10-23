@@ -21,16 +21,11 @@ package org.apache.comet.fuzz
 
 import java.io.File
 
-import scala.util.Random
-
-import org.rogach.scallop.{ScallopConf, Subcommand}
-import org.rogach.scallop.ScallopOption
+import org.rogach.scallop.{ScallopConf, ScallopOption, Subcommand}
 
 import org.apache.spark.sql.SparkSession
 
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
-
-class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
+class ComparisonToolConf(arguments: Seq[String]) extends ScallopConf(arguments) {
   object compareParquet extends Subcommand("compareParquet") {
     val inputSparkFolder: ScallopOption[String] =
       opt[String](required = true, descr = "Folder with Spark produced results in Parquet format")
@@ -41,14 +36,14 @@ class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
   verify()
 }
 
-object Main {
+object ComparisonToolMain {
 
   lazy val spark: SparkSession = SparkSession
     .builder()
     .getOrCreate()
 
   def main(args: Array[String]): Unit = {
-    val conf = new Conf(args.toIndexedSeq)
+    val conf = new ComparisonToolConf(args.toIndexedSeq)
     conf.subcommand match {
       case Some(conf.compareParquet) =>
         compareParquetFolders(
@@ -92,7 +87,7 @@ object Main {
         .map(_.getName)
         .sorted
 
-      output.write(s"# Comparing Parquet Folders\n\n")
+      output.write("# Comparing Parquet Folders\n\n")
       output.write(s"Spark folder: $sparkFolderPath\n")
       output.write(s"Comet folder: $cometFolderPath\n")
       output.write(s"Found ${sparkSubfolders.length} subfolders to compare\n\n")
@@ -147,7 +142,7 @@ object Main {
         output.flush()
       }
 
-      output.write(s"\n# Comparison Complete\n")
+      output.write("\n# Comparison Complete\n")
       output.write(s"Compared ${sparkSubfolders.length} subfolders\n")
 
     } finally {
