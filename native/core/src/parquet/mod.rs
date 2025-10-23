@@ -42,8 +42,8 @@ use jni::JNIEnv;
 use jni::{
     objects::{GlobalRef, JByteBuffer, JClass},
     sys::{
-        jboolean, jbooleanArray, jbyte, jbyteArray, jdouble, jfloat, jint, jintArray, jlong,
-        jlongArray, jobject, jobjectArray, jshort,
+        jboolean, jbyte, jdouble, jfloat, jint, jlong,
+        jshort,
     },
 };
 
@@ -65,10 +65,8 @@ use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::{poll, StreamExt};
-use jni::objects::{
-    JBooleanArray, JByteArray, JLongArray, JMap, JObject, JPrimitiveArray, JString, ReleaseMode,
-};
-use jni::sys::{jstring, JNI_FALSE};
+use jni::objects::{JBooleanArray, JByteArray, JLongArray, JMap, JObject, JObjectArray, JString, ReleaseMode};
+use jni::sys::{jintArray, JNI_FALSE};
 use object_store::path::Path;
 use read::ColumnReader;
 use util::jni::{convert_column_descriptor, convert_encoding, deserialize_schema};
@@ -86,7 +84,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_initColumnReader(
     primitive_type: jint,
     logical_type: jint,
     read_primitive_type: jint,
-    jni_path: jobjectArray,
+    jni_path: JObjectArray,
     max_dl: jint,
     max_rl: jint,
     bit_width: jint,
@@ -148,7 +146,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setDictionary
     _jclass: JClass,
     handle: jlong,
     page_value_count: jint,
-    page_data: jbyteArray,
+    page_data: JByteArray,
     encoding: jint,
 ) {
     try_unwrap_or_throw(&e, |env| {
@@ -158,10 +156,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setDictionary
         let encoding = convert_encoding(encoding);
 
         // copy the input on-heap buffer to native
-        let page_data_array = unsafe { JPrimitiveArray::from_raw(page_data) };
-        let page_len = env.get_array_length(&page_data_array)?;
+        let page_len = env.get_array_length(&page_data)?;
         let mut buffer = MutableBuffer::from_len_zeroed(page_len as usize);
-        env.get_byte_array_region(&page_data_array, 0, from_u8_slice(buffer.as_slice_mut()))?;
+        env.get_byte_array_region(&page_data, 0, from_u8_slice(buffer.as_slice_mut()))?;
 
         reader.set_dictionary_page(page_value_count as usize, buffer.into(), encoding);
         Ok(())
@@ -176,7 +173,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageV1(
     _jclass: JClass,
     handle: jlong,
     page_value_count: jint,
-    page_data: jbyteArray,
+    page_data: JByteArray,
     value_encoding: jint,
 ) {
     try_unwrap_or_throw(&e, |env| {
@@ -186,10 +183,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageV1(
         let encoding = convert_encoding(value_encoding);
 
         // copy the input on-heap buffer to native
-        let page_data_array = unsafe { JPrimitiveArray::from_raw(page_data) };
-        let page_len = env.get_array_length(&page_data_array)?;
+        let page_len = env.get_array_length(&page_data)?;
         let mut buffer = MutableBuffer::from_len_zeroed(page_len as usize);
-        env.get_byte_array_region(&page_data_array, 0, from_u8_slice(buffer.as_slice_mut()))?;
+        env.get_byte_array_region(&page_data, 0, from_u8_slice(buffer.as_slice_mut()))?;
 
         reader.set_page_v1(page_value_count as usize, buffer.into(), encoding);
         Ok(())
@@ -204,7 +200,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageBuffer
     _jclass: JClass,
     handle: jlong,
     page_value_count: jint,
-    buffer: jobject,
+    buffer: JByteBuffer,
     value_encoding: jint,
 ) {
     try_unwrap_or_throw(&e, |env| {
@@ -214,15 +210,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageBuffer
         // convert value encoding ordinal to the native encoding definition
         let encoding = convert_encoding(value_encoding);
 
-        // Get slices from Java DirectByteBuffer
-        let jbuffer = unsafe { JByteBuffer::from_raw(buffer) };
-
         // Convert the page to global reference so it won't get GC'd by Java. Also free the last
         // page if there is any.
-        ctx.last_data_page = Some(env.new_global_ref(&jbuffer)?);
+        ctx.last_data_page = Some(env.new_global_ref(&buffer)?);
 
-        let buf_slice = env.get_direct_buffer_address(&jbuffer)?;
-        let buf_capacity = env.get_direct_buffer_capacity(&jbuffer)?;
+        let buf_slice = env.get_direct_buffer_address(&buffer)?;
+        let buf_capacity = env.get_direct_buffer_capacity(&buffer)?;
 
         unsafe {
             let page_ptr = NonNull::new_unchecked(buf_slice);
@@ -245,9 +238,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageV2(
     _jclass: JClass,
     handle: jlong,
     page_value_count: jint,
-    def_level_data: jbyteArray,
-    rep_level_data: jbyteArray,
-    value_data: jbyteArray,
+    def_level_data: JByteArray,
+    rep_level_data: JByteArray,
+    value_data: JByteArray,
     value_encoding: jint,
 ) {
     try_unwrap_or_throw(&e, |env| {
@@ -257,20 +250,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setPageV2(
         let encoding = convert_encoding(value_encoding);
 
         // copy the input on-heap buffer to native
-        let def_level_array = unsafe { JPrimitiveArray::from_raw(def_level_data) };
-        let dl_len = env.get_array_length(&def_level_array)?;
+        let dl_len = env.get_array_length(&def_level_data)?;
         let mut dl_buffer = MutableBuffer::from_len_zeroed(dl_len as usize);
-        env.get_byte_array_region(&def_level_array, 0, from_u8_slice(dl_buffer.as_slice_mut()))?;
+        env.get_byte_array_region(&def_level_data, 0, from_u8_slice(dl_buffer.as_slice_mut()))?;
 
-        let rep_level_array = unsafe { JPrimitiveArray::from_raw(rep_level_data) };
-        let rl_len = env.get_array_length(&rep_level_array)?;
+        let rl_len = env.get_array_length(&rep_level_data)?;
         let mut rl_buffer = MutableBuffer::from_len_zeroed(rl_len as usize);
-        env.get_byte_array_region(&rep_level_array, 0, from_u8_slice(rl_buffer.as_slice_mut()))?;
+        env.get_byte_array_region(&rep_level_data, 0, from_u8_slice(rl_buffer.as_slice_mut()))?;
 
-        let value_array = unsafe { JPrimitiveArray::from_raw(value_data) };
-        let v_len = env.get_array_length(&value_array)?;
+        let v_len = env.get_array_length(&value_data)?;
         let mut v_buffer = MutableBuffer::from_len_zeroed(v_len as usize);
-        env.get_byte_array_region(&value_array, 0, from_u8_slice(v_buffer.as_slice_mut()))?;
+        env.get_byte_array_region(&value_data, 0, from_u8_slice(v_buffer.as_slice_mut()))?;
 
         reader.set_page_v2(
             page_value_count as usize,
@@ -401,15 +391,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setBinary(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
-    value: jbyteArray,
+    value: JByteArray,
 ) {
     try_unwrap_or_throw(&e, |env| {
         let reader = get_reader(handle)?;
 
-        let value_array = unsafe { JPrimitiveArray::from_raw(value) };
-        let len = env.get_array_length(&value_array)?;
+        let len = env.get_array_length(&value)?;
         let mut buffer = MutableBuffer::from_len_zeroed(len as usize);
-        env.get_byte_array_region(&value_array, 0, from_u8_slice(buffer.as_slice_mut()))?;
+        env.get_byte_array_region(&value, 0, from_u8_slice(buffer.as_slice_mut()))?;
         reader.set_binary(buffer);
         Ok(())
     })
@@ -422,15 +411,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setDecimal(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
-    value: jbyteArray,
+    value: JByteArray,
 ) {
     try_unwrap_or_throw(&e, |env| {
         let reader = get_reader(handle)?;
 
-        let value_array = unsafe { JPrimitiveArray::from_raw(value) };
-        let len = env.get_array_length(&value_array)?;
+        let len = env.get_array_length(&value)?;
         let mut buffer = MutableBuffer::from_len_zeroed(len as usize);
-        env.get_byte_array_region(&value_array, 0, from_u8_slice(buffer.as_slice_mut()))?;
+        env.get_byte_array_region(&value, 0, from_u8_slice(buffer.as_slice_mut()))?;
         reader.set_decimal_flba(buffer);
         Ok(())
     })
@@ -460,12 +448,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setIndices(
     handle: jlong,
     offset: jlong,
     batch_size: jint,
-    indices: jlongArray,
+    indices: JLongArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         let reader = get_reader(handle)?;
-        let indice_array = unsafe { JLongArray::from_raw(indices) };
-        let indices = unsafe { env.get_array_elements(&indice_array, ReleaseMode::NoCopyBack)? };
+        let indices = unsafe { env.get_array_elements(&indices, ReleaseMode::NoCopyBack)? };
         let len = indices.len();
         // paris alternately contains start index and length of continuous indices
         let pairs = unsafe { core::slice::from_raw_parts_mut(indices.as_ptr(), len) };
@@ -496,15 +483,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_setIsDeleted(
     e: JNIEnv,
     _jclass: JClass,
     handle: jlong,
-    is_deleted: jbooleanArray,
+    is_deleted: JBooleanArray,
 ) {
     try_unwrap_or_throw(&e, |env| {
         let reader = get_reader(handle)?;
 
-        let is_deleted_array = unsafe { JBooleanArray::from_raw(is_deleted) };
-        let len = env.get_array_length(&is_deleted_array)?;
+        let len = env.get_array_length(&is_deleted)?;
         let mut buffer = MutableBuffer::from_len_zeroed(len as usize);
-        env.get_boolean_array_region(&is_deleted_array, 0, buffer.as_slice_mut())?;
+        env.get_boolean_array_region(&is_deleted, 0, buffer.as_slice_mut())?;
         reader.set_is_deleted(buffer);
         Ok(())
     })
@@ -675,20 +661,20 @@ pub fn get_object_store_options(
 pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_validateObjectStoreConfig(
     e: JNIEnv,
     _jclass: JClass,
-    file_path: jstring,
-    object_store_options: jobject,
+    file_path: JString,
+    object_store_options: JObject,
 ) {
-    try_unwrap_or_throw(&e, |mut env| unsafe {
+    try_unwrap_or_throw(&e, |mut env| {
         let session_config = SessionConfig::new();
         let planner =
             PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)), 0);
         let session_ctx = planner.session_ctx();
         let path: String = env
-            .get_string(&JString::from_raw(file_path))
+            .get_string(&file_path)
             .unwrap()
             .into();
         let object_store_config =
-            get_object_store_options(&mut env, JObject::from_raw(object_store_options))?;
+            get_object_store_options(&mut env, object_store_options)?;
         let (_, _) = prepare_object_store_with_configs(
             session_ctx.runtime_env(),
             path.clone(),
@@ -704,17 +690,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_validateObjec
 pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBatchReader(
     e: JNIEnv,
     _jclass: JClass,
-    file_path: jstring,
+    file_path: JString,
     file_size: jlong,
-    starts: jlongArray,
-    lengths: jlongArray,
-    filter: jbyteArray,
-    required_schema: jbyteArray,
-    data_schema: jbyteArray,
-    session_timezone: jstring,
+    starts: JLongArray,
+    lengths: JLongArray,
+    filter: JByteArray,
+    required_schema: JByteArray,
+    data_schema: JByteArray,
+    session_timezone: JString,
     batch_size: jint,
     case_sensitive: jboolean,
-    object_store_options: jobject,
+    object_store_options: JObject,
     key_unwrapper_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
@@ -725,29 +711,26 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let session_ctx = planner.session_ctx();
 
         let path: String = env
-            .get_string(&JString::from_raw(file_path))
+            .get_string(&file_path)
             .unwrap()
             .into();
 
         let object_store_config =
-            get_object_store_options(&mut env, JObject::from_raw(object_store_options))?;
+            get_object_store_options(&mut env, object_store_options)?;
         let (object_store_url, object_store_path) = prepare_object_store_with_configs(
             session_ctx.runtime_env(),
             path.clone(),
             &object_store_config,
         )?;
 
-        let required_schema_array = JByteArray::from_raw(required_schema);
-        let required_schema_buffer = env.convert_byte_array(&required_schema_array)?;
+        let required_schema_buffer = env.convert_byte_array(&required_schema)?;
         let required_schema = Arc::new(deserialize_schema(required_schema_buffer.as_bytes())?);
 
-        let data_schema_array = JByteArray::from_raw(data_schema);
-        let data_schema_buffer = env.convert_byte_array(&data_schema_array)?;
+        let data_schema_buffer = env.convert_byte_array(&data_schema)?;
         let data_schema = Arc::new(deserialize_schema(data_schema_buffer.as_bytes())?);
 
         let data_filters = if !filter.is_null() {
-            let filter_array = JByteArray::from_raw(filter);
-            let filter_buffer = env.convert_byte_array(&filter_array)?;
+            let filter_buffer = env.convert_byte_array(&filter)?;
             let filter_expr = serde::deserialize_expr(filter_buffer.as_slice())?;
             Some(vec![
                 planner.create_expr(&filter_expr, Arc::clone(&data_schema))?
@@ -755,19 +738,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         } else {
             None
         };
-        let starts_array = JLongArray::from_raw(starts);
-        let starts = env.get_array_elements(&starts_array, ReleaseMode::NoCopyBack)?;
+        let starts = env.get_array_elements(&starts, ReleaseMode::NoCopyBack)?;
         let starts = core::slice::from_raw_parts_mut(starts.as_ptr(), starts.len());
 
-        let lengths_array = JLongArray::from_raw(lengths);
-        let lengths = env.get_array_elements(&lengths_array, ReleaseMode::NoCopyBack)?;
+        let lengths = env.get_array_elements(&lengths, ReleaseMode::NoCopyBack)?;
         let lengths = core::slice::from_raw_parts_mut(lengths.as_ptr(), lengths.len());
 
         let file_groups =
             get_file_groups_single_file(&object_store_path, file_size as u64, starts, lengths);
 
         let session_timezone: String = env
-            .get_string(&JString::from_raw(session_timezone))
+            .get_string(&session_timezone)
             .unwrap()
             .into();
 

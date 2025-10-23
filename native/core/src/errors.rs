@@ -522,7 +522,7 @@ mod tests {
 
     use jni::{
         objects::{JClass, JIntArray, JString, JThrowable},
-        sys::{jintArray, jstring},
+        sys::{jstring, jintArray},
         AttachGuard, InitArgsBuilder, JNIEnv, JNIVersion, JavaVM,
     };
 

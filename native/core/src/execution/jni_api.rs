@@ -50,19 +50,15 @@ use datafusion_spark::function::string::char::CharFunc;
 use futures::poll;
 use futures::stream::StreamExt;
 use jni::objects::JByteBuffer;
-use jni::sys::JNI_FALSE;
+use jni::sys::{jlongArray, JNI_FALSE};
 use jni::{
     errors::Result as JNIResult,
     objects::{
-        JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JPrimitiveArray, JString,
-        ReleaseMode,
+        JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JString,
+        ReleaseMode,GlobalRef
     },
-    sys::{jbyteArray, jint, jlong, jlongArray},
+    sys::{jint, jlong, jboolean, jdouble},
     JNIEnv,
-};
-use jni::{
-    objects::GlobalRef,
-    sys::{jboolean, jdouble, jintArray, jobjectArray, jstring},
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -159,17 +155,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     e: JNIEnv,
     _class: JClass,
     id: jlong,
-    iterators: jobjectArray,
-    serialized_query: jbyteArray,
-    serialized_spark_configs: jbyteArray,
+    iterators: JObjectArray,
+    serialized_query: JByteArray,
+    serialized_spark_configs: JByteArray,
     partition_count: jint,
     metrics_node: JObject,
     metrics_update_interval: jlong,
     comet_task_memory_manager_obj: JObject,
-    local_dirs: jobjectArray,
+    local_dirs: JObjectArray,
     batch_size: jint,
     off_heap_mode: jboolean,
-    memory_pool_type: jstring,
+    memory_pool_type: JString,
     memory_limit: jlong,
     memory_limit_per_task: jlong,
     task_attempt_id: jlong,
@@ -177,8 +173,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Deserialize Spark configs
-        let array = unsafe { JPrimitiveArray::from_raw(serialized_spark_configs) };
-        let bytes = env.convert_byte_array(array)?;
+        let bytes = env.convert_byte_array(serialized_spark_configs)?;
         let spark_configs = serde::deserialize_config(bytes.as_slice())?;
         let spark_config: HashMap<String, String> = spark_configs.entries.into_iter().collect();
 
@@ -196,18 +191,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let start = Instant::now();
 
             // Deserialize query plan
-            let array = unsafe { JPrimitiveArray::from_raw(serialized_query) };
-            let bytes = env.convert_byte_array(array)?;
+            let bytes = env.convert_byte_array(serialized_query)?;
             let spark_plan = serde::deserialize_op(bytes.as_slice())?;
 
             let metrics = Arc::new(jni_new_global_ref!(env, metrics_node)?);
 
             // Get the global references of input sources
             let mut input_sources = vec![];
-            let iter_array = JObjectArray::from_raw(iterators);
-            let num_inputs = env.get_array_length(&iter_array)?;
+            let num_inputs = env.get_array_length(&iterators)?;
             for i in 0..num_inputs {
-                let input_source = env.get_object_array_element(&iter_array, i)?;
+                let input_source = env.get_object_array_element(&iterators, i)?;
                 let input_source = Arc::new(jni_new_global_ref!(env, input_source)?);
                 input_sources.push(input_source);
             }
@@ -216,7 +209,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let task_memory_manager =
                 Arc::new(jni_new_global_ref!(env, comet_task_memory_manager_obj)?);
 
-            let memory_pool_type = env.get_string(&JString::from_raw(memory_pool_type))?.into();
+            let memory_pool_type = env.get_string(&memory_pool_type)?.into();
             let memory_pool_config = parse_memory_pool_config(
                 off_heap_mode != JNI_FALSE,
                 memory_pool_type,
@@ -227,13 +220,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
             // Get local directories for storing spill files
-            let local_dirs_array = JObjectArray::from_raw(local_dirs);
-            let num_local_dirs = env.get_array_length(&local_dirs_array)?;
-            let mut local_dirs = vec![];
+            let num_local_dirs = env.get_array_length(&local_dirs)?;
+            let mut local_dirs_vec = vec![];
             for i in 0..num_local_dirs {
-                let local_dir: JString = env.get_object_array_element(&local_dirs_array, i)?.into();
+                let local_dir: JString = env.get_object_array_element(&local_dirs, i)?.into();
                 let local_dir = env.get_string(&local_dir)?;
-                local_dirs.push(local_dir.into());
+                local_dirs_vec.push(local_dir.into());
             }
 
             // We need to keep the session context alive. Some session state like temporary
@@ -242,7 +234,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let session = prepare_datafusion_session_context(
                 batch_size as usize,
                 memory_pool,
-                local_dirs,
+                local_dirs_vec,
                 max_temp_directory_size,
             )?;
 
@@ -344,21 +336,19 @@ fn prepare_datafusion_session_context(
 /// Prepares arrow arrays for output.
 fn prepare_output(
     env: &mut JNIEnv,
-    array_addrs: jlongArray,
-    schema_addrs: jlongArray,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
     output_batch: RecordBatch,
     validate: bool,
 ) -> CometResult<jlong> {
-    let array_address_array = unsafe { JLongArray::from_raw(array_addrs) };
-    let num_cols = env.get_array_length(&array_address_array)? as usize;
+    let num_cols = env.get_array_length(&array_addrs)? as usize;
 
     let array_addrs =
-        unsafe { env.get_array_elements(&array_address_array, ReleaseMode::NoCopyBack)? };
+        unsafe { env.get_array_elements(&array_addrs, ReleaseMode::NoCopyBack)? };
     let array_addrs = &*array_addrs;
 
-    let schema_address_array = unsafe { JLongArray::from_raw(schema_addrs) };
     let schema_addrs =
-        unsafe { env.get_array_elements(&schema_address_array, ReleaseMode::NoCopyBack)? };
+        unsafe { env.get_array_elements(&schema_addrs, ReleaseMode::NoCopyBack)? };
     let schema_addrs = &*schema_addrs;
 
     let results = output_batch.columns();
@@ -441,8 +431,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
     stage_id: jint,
     partition: jint,
     exec_context: jlong,
-    array_addrs: jlongArray,
-    schema_addrs: jlongArray,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
         // Retrieve the query
@@ -599,24 +589,21 @@ fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> Come
 
 fn convert_datatype_arrays(
     env: &'_ mut JNIEnv<'_>,
-    serialized_datatypes: jobjectArray,
+    serialized_datatypes: JObjectArray,
 ) -> JNIResult<Vec<ArrowDataType>> {
-    unsafe {
-        let obj_array = JObjectArray::from_raw(serialized_datatypes);
-        let array_len = env.get_array_length(&obj_array)?;
-        let mut res: Vec<ArrowDataType> = Vec::new();
+    let array_len = env.get_array_length(&serialized_datatypes)?;
+    let mut res: Vec<ArrowDataType> = Vec::new();
 
-        for i in 0..array_len {
-            let inner_array = env.get_object_array_element(&obj_array, i)?;
-            let inner_array: JByteArray = inner_array.into();
-            let bytes = env.convert_byte_array(inner_array)?;
-            let data_type = serde::deserialize_data_type(bytes.as_slice()).unwrap();
-            let arrow_dt = to_arrow_datatype(&data_type);
-            res.push(arrow_dt);
-        }
-
-        Ok(res)
+    for i in 0..array_len {
+        let inner_array = env.get_object_array_element(&serialized_datatypes, i)?;
+        let inner_array: JByteArray = inner_array.into();
+        let bytes = env.convert_byte_array(inner_array)?;
+        let data_type = serde::deserialize_data_type(bytes.as_slice()).unwrap();
+        let arrow_dt = to_arrow_datatype(&data_type);
+        res.push(arrow_dt);
     }
+
+    Ok(res)
 }
 
 fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
@@ -634,16 +621,16 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
 pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative(
     e: JNIEnv,
     _class: JClass,
-    row_addresses: jlongArray,
-    row_sizes: jintArray,
-    serialized_datatypes: jobjectArray,
-    file_path: jstring,
+    row_addresses: JLongArray,
+    row_sizes: JIntArray,
+    serialized_datatypes: JObjectArray,
+    file_path: JString,
     prefer_dictionary_ratio: jdouble,
     batch_size: jlong,
     checksum_enabled: jboolean,
     checksum_algo: jint,
     current_checksum: jlong,
-    compression_codec: jstring,
+    compression_codec: JString,
     compression_level: jint,
     tracing_enabled: jboolean,
 ) -> jlongArray {
@@ -654,19 +641,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
             || {
                 let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
 
-                let row_address_array = JLongArray::from_raw(row_addresses);
-                let row_num = env.get_array_length(&row_address_array)? as usize;
+                let row_num = env.get_array_length(&row_addresses)? as usize;
                 let row_addresses =
-                    env.get_array_elements(&row_address_array, ReleaseMode::NoCopyBack)?;
+                    env.get_array_elements(&row_addresses, ReleaseMode::NoCopyBack)?;
 
-                let row_size_array = JIntArray::from_raw(row_sizes);
-                let row_sizes = env.get_array_elements(&row_size_array, ReleaseMode::NoCopyBack)?;
+                let row_sizes = env.get_array_elements(&row_sizes, ReleaseMode::NoCopyBack)?;
 
                 let row_addresses_ptr = row_addresses.as_ptr();
                 let row_sizes_ptr = row_sizes.as_ptr();
 
                 let output_path: String = env
-                    .get_string(&JString::from_raw(file_path))
+                    .get_string(&file_path)
                     .unwrap()
                     .into();
 
@@ -679,7 +664,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                 };
 
                 let compression_codec: String = env
-                    .get_string(&JString::from_raw(compression_codec))
+                    .get_string(&compression_codec)
                     .unwrap()
                     .into();
 
@@ -754,8 +739,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     _class: JClass,
     byte_buffer: JByteBuffer,
     length: jint,
-    array_addrs: jlongArray,
-    schema_addrs: jlongArray,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
     tracing_enabled: jboolean,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
@@ -775,10 +760,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
 pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
     e: JNIEnv,
     _class: JClass,
-    event: jstring,
+    event: JString,
 ) {
     try_unwrap_or_throw(&e, |mut env| {
-        let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
+        let name: String = env.get_string(&event).unwrap().into();
         trace_begin(&name);
         Ok(())
     })
@@ -790,10 +775,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
 pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
     e: JNIEnv,
     _class: JClass,
-    event: jstring,
+    event: JString,
 ) {
     try_unwrap_or_throw(&e, |mut env| {
-        let name: String = env.get_string(&JString::from_raw(event)).unwrap().into();
+        let name: String = env.get_string(&event).unwrap().into();
         trace_end(&name);
         Ok(())
     })
@@ -805,11 +790,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
 pub unsafe extern "system" fn Java_org_apache_comet_Native_logMemoryUsage(
     e: JNIEnv,
     _class: JClass,
-    name: jstring,
+    name: JString,
     value: jlong,
 ) {
     try_unwrap_or_throw(&e, |mut env| {
-        let name: String = env.get_string(&JString::from_raw(name)).unwrap().into();
+        let name: String = env.get_string(&name).unwrap().into();
         log_memory_usage(&name, value as u64);
         Ok(())
     })
