@@ -46,7 +46,7 @@ class CometStringExpressionSuite extends CometTestBase {
         StructField("len", DataTypes.IntegerType, nullable = true),
         StructField("pad", DataTypes.StringType, nullable = true)))
     // scalastyle:off
-    val customStrings = Seq(
+    val edgeCases = Seq(
       "é", // unicode 'e\\u{301}'
       "é", // unicode '\\u{e9}'
       "తెలుగు")
@@ -56,7 +56,7 @@ class CometStringExpressionSuite extends CometTestBase {
       spark,
       schema,
       1000,
-      DataGenOptions(maxStringLength = 6, customStrings = customStrings))
+      DataGenOptions(maxStringLength = 6, customStrings = edgeCases))
     df.createOrReplaceTempView("t1")
 
     // test all combinations of scalar and array arguments
