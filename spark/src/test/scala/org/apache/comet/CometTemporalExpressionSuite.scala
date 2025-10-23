@@ -36,7 +36,6 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   test("trunc (TruncDate)") {
     val supportedFormats = CometTruncDate.supportedFormats
     val unsupportedFormats = Seq("invalid")
-    val allFormats = supportedFormats ++ unsupportedFormats
 
     val r = new Random(42)
     val schema = StructType(
@@ -48,7 +47,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       spark,
       schema,
       1000,
-      DataGenOptions(customStringValues = allFormats))
+      DataGenOptions())
 
     df.createOrReplaceTempView("tbl")
 
@@ -68,8 +67,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
 
   test("date_trunc (TruncTimestamp)") {
     val supportedFormats = CometTruncTimestamp.supportedFormats
-    val unsupportedOrInvalidFormats = Seq("invalid")
-    val allFormats = supportedFormats ++ unsupportedOrInvalidFormats
+    val unsupportedFormats = Seq("invalid")
 
     val r = new Random(42)
     val schema = StructType(
@@ -81,7 +79,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       spark,
       schema,
       1000,
-      DataGenOptions(customStringValues = allFormats))
+      DataGenOptions())
     df.createOrReplaceTempView("tbl")
 
     // TODO test fails if timezone not set to UTC
@@ -89,7 +87,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       for (format <- supportedFormats) {
         checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
-      for (format <- unsupportedOrInvalidFormats) {
+      for (format <- unsupportedFormats) {
         // Comet should fall back to Spark for unsupported or invalid formats
         checkFallback(
           s"unsupported/invalid format $format",
