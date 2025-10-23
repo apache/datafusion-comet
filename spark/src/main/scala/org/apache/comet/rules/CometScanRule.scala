@@ -307,7 +307,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
               }
 
             if (formatVersion > 2) {
-              fallbackReasons += s"Iceberg table format version " +
+              fallbackReasons += "Iceberg table format version " +
                 s"$formatVersion is not supported. " +
                 "Comet only supports Iceberg table format V1 and V2"
               false
