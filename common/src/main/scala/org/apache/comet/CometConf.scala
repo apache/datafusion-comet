@@ -123,6 +123,15 @@ object CometConf extends ShimCometConf {
       .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
       .toLowerCase(Locale.ROOT))
 
+  val COMET_SCAN_FFI_DEEP_COPY: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.ffi.deepCopy")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "Whether to perform a deep copy of arrays passed from JVM to native code. Enabling this " +
+          "can reduce GC pressure.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.respectFilterPushdown")
       .category(CATEGORY_PARQUET)
