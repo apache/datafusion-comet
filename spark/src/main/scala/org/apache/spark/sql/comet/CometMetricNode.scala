@@ -99,12 +99,108 @@ object CometMetricNode {
   }
 
   /**
-   * SQL Metrics for Comet native ScanExec
+   * Base SQL Metrics for ScanExec and BatchScanExec These are needed for various Spark systems to
+   * function properly, and are calculated on the general iterator created by the scan operator,
+   * regardless of which scan implementation is used.
    */
-  def scanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+  def baseScanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
-      "cast_time" ->
-        SQLMetrics.createNanoTimingMetric(sc, "Total time for casting columns"))
+      "numOutputRows" -> SQLMetrics.createMetric(sc, "number of output rows"),
+      "scanTime" -> SQLMetrics.createNanoTimingMetric(sc, "scan time"))
+  }
+
+  /**
+   * Metrics specific to Parquet format in scan operators. This provides some statistics about the
+   * read files, as well as some meta filtering occuring. These metrics are independent of the
+   * native reader metrics.
+   */
+  def parquetScanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "ParquetRowGroups" -> SQLMetrics.createMetric(sc, "num of Parquet row groups read"),
+      "ParquetNativeDecodeTime" -> SQLMetrics.createNanoTimingMetric(
+        sc,
+        "time spent in Parquet native decoding"),
+      "ParquetNativeLoadTime" -> SQLMetrics.createNanoTimingMetric(
+        sc,
+        "time spent in loading Parquet native vectors"),
+      "ParquetLoadRowGroupTime" -> SQLMetrics.createNanoTimingMetric(
+        sc,
+        "time spent in loading Parquet row groups"),
+      "ParquetInputFileReadTime" -> SQLMetrics.createNanoTimingMetric(
+        sc,
+        "time spent in reading Parquet file from storage"),
+      "ParquetInputFileReadSize" -> SQLMetrics.createSizeMetric(
+        sc,
+        "read size when reading Parquet file from storage (MB)"),
+      "ParquetInputFileReadThroughput" -> SQLMetrics.createAverageMetric(
+        sc,
+        "read throughput when reading Parquet file from storage (MB/sec)"))
+  }
+
+  /**
+   * SQL Metrics from the native Datafusion reader.
+   */
+  def nativeScanMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "output_rows" -> SQLMetrics.createMetric(sc, "number of output rows"),
+      "time_elapsed_opening" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Wall clock time elapsed for file opening"),
+      "time_elapsed_scanning_until_data" ->
+        SQLMetrics.createNanoTimingMetric(
+          sc,
+          "Wall clock time elapsed for file scanning + " +
+            "first record batch of decompression + decoding"),
+      "time_elapsed_scanning_total" ->
+        SQLMetrics.createNanoTimingMetric(
+          sc,
+          "Elapsed wall clock time for for scanning " +
+            "+ record batch decompression / decoding"),
+      "time_elapsed_processing" ->
+        SQLMetrics.createNanoTimingMetric(
+          sc,
+          "Wall clock time elapsed for data decompression + decoding"),
+      "file_open_errors" ->
+        SQLMetrics.createMetric(sc, "Count of errors opening file"),
+      "file_scan_errors" ->
+        SQLMetrics.createMetric(sc, "Count of errors scanning file"),
+      "predicate_evaluation_errors" ->
+        SQLMetrics.createMetric(sc, "Number of times the predicate could not be evaluated"),
+      "row_groups_matched_bloom_filter" ->
+        SQLMetrics.createMetric(
+          sc,
+          "Number of row groups whose bloom filters were checked and matched (not pruned)"),
+      "row_groups_pruned_bloom_filter" ->
+        SQLMetrics.createMetric(sc, "Number of row groups pruned by bloom filters"),
+      "row_groups_matched_statistics" ->
+        SQLMetrics.createMetric(
+          sc,
+          "Number of row groups whose statistics were checked and matched (not pruned)"),
+      "row_groups_pruned_statistics" ->
+        SQLMetrics.createMetric(sc, "Number of row groups pruned by statistics"),
+      "bytes_scanned" ->
+        SQLMetrics.createSizeMetric(sc, "Number of bytes scanned"),
+      "pushdown_rows_pruned" ->
+        SQLMetrics.createMetric(sc, "Rows filtered out by predicates pushed into parquet scan"),
+      "pushdown_rows_matched" ->
+        SQLMetrics.createMetric(sc, "Rows passed predicates pushed into parquet scan"),
+      "row_pushdown_eval_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Time spent evaluating row-level pushdown filters"),
+      "statistics_eval_time" ->
+        SQLMetrics.createNanoTimingMetric(
+          sc,
+          "Time spent evaluating row group-level statistics filters"),
+      "bloom_filter_eval_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Time spent evaluating row group Bloom Filters"),
+      "page_index_rows_pruned" ->
+        SQLMetrics.createMetric(sc, "Rows filtered out by parquet page index"),
+      "page_index_rows_matched" ->
+        SQLMetrics.createMetric(sc, "Rows passed through the parquet page index"),
+      "page_index_eval_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Time spent evaluating parquet page index filters"),
+      "metadata_load_time" ->
+        SQLMetrics.createNanoTimingMetric(
+          sc,
+          "Time spent reading and parsing metadata from the footer"))
   }
 
   /**

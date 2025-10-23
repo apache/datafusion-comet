@@ -195,8 +195,9 @@ object FuzzDataGenerator {
             case 2 => r.nextLong().toString
             case 3 => r.nextDouble().toString
             case 4 => RandomStringUtils.randomAlphabetic(8)
-            case 5 if options.customStringValues.nonEmpty =>
-              randomChoice(options.customStringValues, r)
+            case 5 =>
+              // use a constant value to trigger dictionary encoding
+              "dict_encode_me!"
             case _ => r.nextString(8)
           }
         })
@@ -219,10 +220,6 @@ object FuzzDataGenerator {
             ZoneId.systemDefault()))
       case _ => throw new IllegalStateException(s"Cannot generate data for $dataType yet")
     }
-  }
-
-  private def randomChoice[T](list: Seq[T], r: Random): T = {
-    list(r.nextInt(list.length))
   }
 }
 
@@ -253,5 +250,4 @@ case class SchemaGenOptions(
 case class DataGenOptions(
     allowNull: Boolean = true,
     generateNegativeZero: Boolean = true,
-    baseDate: Long = FuzzDataGenerator.defaultBaseDate,
-    customStringValues: Seq[String] = Seq.empty)
+    baseDate: Long = FuzzDataGenerator.defaultBaseDate)
