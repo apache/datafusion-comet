@@ -71,11 +71,18 @@ class CometStringExpressionSuite extends CometTestBase {
               // 2 args (default pad of ' ')
               s"SELECT $str, $len, $expr($str, $len) FROM t1 ORDER BY str, len, pad"
           }
-          if (str == "'hello'") {
+          val isLiteralStr = str == "'hello'"
+          val isLiteralLen = !len.contains("len")
+          val isLiteralPad = !pad.contains("pad")
+          if (isLiteralStr && isLiteralLen && isLiteralPad) {
+            // all arguments are literal, so Spark constant folding will kick in
+            // and pad function will not be evaluated by Comet
+            checkSparkAnswer(sql)
+          } else if (isLiteralStr) {
             checkSparkAnswerAndFallbackReason(
               sql,
               "Scalar values are not supported for the str argument")
-          } else if (pad.contains("pad")) {
+          } else if (!isLiteralPad) {
             checkSparkAnswerAndFallbackReason(
               sql,
               "Only scalar values are supported for the pad argument")
