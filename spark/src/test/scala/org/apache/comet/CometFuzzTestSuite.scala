@@ -28,7 +28,7 @@ import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometFuzzTestSuite extends CometFuzzTestBase {
 
@@ -261,11 +261,10 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
       generateArray: Boolean = true,
       generateStruct: Boolean = true): Unit = {
 
-    val options =
-      DataGenOptions(
-        generateArray = generateArray,
-        generateStruct = generateStruct,
-        generateNegativeZero = false)
+    val schemaGenOptions =
+      SchemaGenOptions(generateArray = generateArray, generateStruct = generateStruct)
+
+    val dataGenOptions = DataGenOptions(generateNegativeZero = false)
 
     withTempPath { filename =>
       val random = new Random(42)
@@ -273,7 +272,13 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         CometConf.COMET_ENABLED.key -> "false",
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> outputTimestampType.toString,
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
-        ParquetGenerator.makeParquetFile(random, spark, filename.toString, 100, options)
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename.toString,
+          100,
+          schemaGenOptions,
+          dataGenOptions)
       }
 
       Seq(defaultTimezone, "UTC", "America/Denver").foreach { tz =>

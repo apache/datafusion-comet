@@ -21,7 +21,7 @@ import json
 from pyspark.sql import SparkSession
 import time
 
-def main(benchmark: str, data_path: str, query_path: str, iterations: int, output: str, name: str, query_num: int = None):
+def main(benchmark: str, data_path: str, query_path: str, iterations: int, output: str, name: str, query_num: int = None, write_path: str = None):
 
     # Initialize a SparkSession
     spark = SparkSession.builder \
@@ -89,10 +89,16 @@ def main(benchmark: str, data_path: str, query_path: str, iterations: int, outpu
                         print(f"Executing: {sql}")
                         df = spark.sql(sql)
                         df.explain()
-                        rows = df.collect()
+
+                        if write_path is not None:
+                            output_path = f"{write_path}/q{query}"
+                            df.coalesce(1).write.mode("overwrite").parquet(output_path)
+                            print(f"Query {query} results written to {output_path}")
+                        else:
+                            rows = df.collect()
+                            print(f"Query {query} returned {len(rows)} rows")
                         df.explain()
 
-                        print(f"Query {query} returned {len(rows)} rows")
 
                 end_time = time.time()
                 print(f"Query {query} took {end_time - start_time} seconds")
@@ -123,6 +129,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", required=True, help="Path to write output")
     parser.add_argument("--name", required=True, help="Prefix for result file e.g. spark/comet/gluten")
     parser.add_argument("--query", required=False, type=int, help="Specific query number to run (1-based). If not specified, all queries will be run.")
+    parser.add_argument("--write", required=False, help="Path to save query results to, in Parquet format.")
     args = parser.parse_args()
 
-    main(args.benchmark, args.data, args.queries, int(args.iterations), args.output, args.name, args.query)
+    main(args.benchmark, args.data, args.queries, int(args.iterations), args.output, args.name, args.query, args.write)

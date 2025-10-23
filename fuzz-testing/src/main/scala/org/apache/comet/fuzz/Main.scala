@@ -26,7 +26,7 @@ import org.rogach.scallop.ScallopOption
 
 import org.apache.spark.sql.SparkSession
 
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
   object generateData extends Subcommand("data") {
@@ -78,19 +78,19 @@ object Main {
           case Some(seed) => new Random(seed)
           case None => new Random()
         }
-        val options = DataGenOptions(
-          allowNull = true,
-          generateArray = conf.generateData.generateArrays(),
-          generateStruct = conf.generateData.generateStructs(),
-          generateMap = conf.generateData.generateMaps(),
-          generateNegativeZero = !conf.generateData.excludeNegativeZero())
         for (i <- 0 until conf.generateData.numFiles()) {
           ParquetGenerator.makeParquetFile(
             r,
             spark,
             s"test$i.parquet",
             numRows = conf.generateData.numRows(),
-            options)
+            SchemaGenOptions(
+              generateArray = conf.generateData.generateArrays(),
+              generateStruct = conf.generateData.generateStructs(),
+              generateMap = conf.generateData.generateMaps()),
+            DataGenOptions(
+              allowNull = true,
+              generateNegativeZero = !conf.generateData.excludeNegativeZero()))
         }
       case Some(conf.generateQueries) =>
         val r = conf.generateQueries.randomSeed.toOption match {

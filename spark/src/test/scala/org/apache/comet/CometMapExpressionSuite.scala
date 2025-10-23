@@ -26,7 +26,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometMapExpressionSuite extends CometTestBase {
 
@@ -108,13 +108,16 @@ class CometMapExpressionSuite extends CometTestBase {
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val options = DataGenOptions(
-          allowNull = false,
-          generateNegativeZero = false,
-          generateArray = true,
-          generateStruct = false,
-          generateMap = false)
-        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+        val schemaGenOptions =
+          SchemaGenOptions(generateArray = true, generateStruct = false, generateMap = false)
+        val dataGenOptions = DataGenOptions(allowNull = false, generateNegativeZero = false)
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          schemaGenOptions,
+          dataGenOptions)
       }
       spark.read.parquet(filename).createOrReplaceTempView("t1")
       val df = spark.sql("SELECT map_from_arrays(array(c12), array(c3)) FROM t1")

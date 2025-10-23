@@ -22,18 +22,32 @@ package org.apache.comet.testing
 import scala.util.Random
 
 import org.apache.spark.sql.{SaveMode, SparkSession}
+import org.apache.spark.sql.types.StructType
 
 object ParquetGenerator {
 
+  /** Generate a Parquet file using a generated schema */
   def makeParquetFile(
       r: Random,
       spark: SparkSession,
       filename: String,
       numRows: Int,
+      schemaGenOptions: SchemaGenOptions,
+      dataGenOptions: DataGenOptions): Unit = {
+    val schema = FuzzDataGenerator.generateSchema(schemaGenOptions)
+    makeParquetFile(r, spark, filename, schema, numRows, dataGenOptions)
+  }
+
+  /** Generate a Parquet file using the provided schema */
+  def makeParquetFile(
+      r: Random,
+      spark: SparkSession,
+      filename: String,
+      schema: StructType,
+      numRows: Int,
       options: DataGenOptions): Unit = {
-
-    val df = FuzzDataGenerator.generateDataFrame(r, spark, numRows, options)
-
+    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, numRows, options)
     df.write.mode(SaveMode.Overwrite).parquet(filename)
   }
+
 }

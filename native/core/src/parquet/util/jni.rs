@@ -20,7 +20,7 @@ use std::sync::Arc;
 use jni::{
     errors::Result as JNIResult,
     objects::{JObjectArray, JString},
-    sys::{jboolean, jint, jobjectArray},
+    sys::{jboolean, jint},
     JNIEnv,
 };
 
@@ -50,7 +50,7 @@ pub fn convert_column_descriptor(
     scale: jint,
     time_unit: jint,
     is_adjusted_utc: jboolean,
-    jni_path: jobjectArray,
+    jni_path: JObjectArray,
 ) -> JNIResult<ColumnDescriptor> {
     let physical_type = convert_physical_type(physical_type_id);
     let type_length = fix_type_length(&physical_type, type_length);
@@ -132,8 +132,7 @@ impl TypePromotionInfo {
     }
 }
 
-fn convert_column_path(env: &mut JNIEnv, path: jobjectArray) -> JNIResult<ColumnPath> {
-    let path_array = unsafe { JObjectArray::from_raw(path) };
+fn convert_column_path(env: &mut JNIEnv, path_array: JObjectArray) -> JNIResult<ColumnPath> {
     let array_len = env.get_array_length(&path_array)?;
     let mut res: Vec<String> = Vec::new();
     for i in 0..array_len {
