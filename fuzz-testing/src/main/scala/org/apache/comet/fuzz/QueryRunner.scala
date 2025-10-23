@@ -19,7 +19,7 @@
 
 package org.apache.comet.fuzz
 
-import java.io.{BufferedWriter, File, FileWriter, PrintWriter, StringWriter}
+import java.io.{BufferedWriter, FileWriter, PrintWriter, StringWriter}
 
 import scala.collection.mutable
 import scala.io.Source
@@ -37,7 +37,7 @@ object QueryRunner {
     new BufferedWriter(new FileWriter(outputFilename))
   }
 
-  def assertCorrectness(
+  def executeSQLAndAssertCorrectness(
       spark: SparkSession,
       sql: String,
       showFailedSparkQueries: Boolean = false,
@@ -59,35 +59,17 @@ object QueryRunner {
         val cometRows = df.collect()
         val cometPlan = df.queryExecution.executedPlan.toString
 
-        if (sparkRows.length == cometRows.length) {
-          var i = 0
-          while (i < sparkRows.length) {
-            val l = sparkRows(i)
-            val r = cometRows(i)
-            assert(l.length == r.length)
-            for (j <- 0 until l.length) {
-              if (!same(l(j), r(j))) {
-                showSQL(output, sql)
-                showPlans(output, sparkPlan, cometPlan)
-                output.write(s"First difference at row $i:\n")
-                output.write("Spark: `" + formatRow(l) + "`\n")
-                output.write("Comet: `" + formatRow(r) + "`\n")
-                i = sparkRows.length
-              }
-            }
-            i += 1
-          }
-        } else {
-          showSQL(output, sql)
-          showPlans(output, sparkPlan, cometPlan)
-          output.write(
-            s"[ERROR] Spark produced ${sparkRows.length} rows and " +
-              s"Comet produced ${cometRows.length} rows.\n")
-        }
+        QueryComparison.assertSameRows(
+          sparkRows,
+          cometRows,
+          sqlText = sql,
+          sparkPlan,
+          cometPlan,
+          output)
       } catch {
         case e: Exception =>
           // the query worked in Spark but failed in Comet, so this is likely a bug in Comet
-          showSQL(output, sql)
+          QueryComparison.showSQL(output, sql)
           output.write(s"[ERROR] Query failed in Comet: ${e.getMessage}:\n")
           output.write("```\n")
           val sw = new StringWriter()
@@ -105,7 +87,7 @@ object QueryRunner {
       case e: Exception =>
         // we expect many generated queries to be invalid
         if (showFailedSparkQueries) {
-          showSQL(output, sql)
+          QueryComparison.showSQL(output, sql)
           output.write(s"Query failed in Spark: ${e.getMessage}\n")
         }
     }
@@ -133,7 +115,8 @@ object QueryRunner {
     try {
       querySource
         .getLines()
-        .foreach(sql => assertCorrectness(spark, sql, showFailedSparkQueries, output = w))
+        .foreach(sql =>
+          executeSQLAndAssertCorrectness(spark, sql, showFailedSparkQueries, output = w))
 
     } finally {
       w.close()
@@ -141,59 +124,9 @@ object QueryRunner {
     }
   }
 
-  def runTPCQueries(
-      spark: SparkSession,
-      dataFolderName: String,
-      queriesFolderName: String): Unit = {
-    val output = QueryRunner.createOutputMdFile()
+}
 
-    // Load data tables from dataFolder
-    val dataFolder = new File(dataFolderName)
-    if (!dataFolder.exists() || !dataFolder.isDirectory) {
-      // scalastyle:off println
-      println(s"Error: Data folder $dataFolder does not exist or is not a directory")
-      // scalastyle:on println
-      sys.exit(-1)
-    }
-
-    // Traverse data folder and create temp views
-    dataFolder.listFiles().filter(_.isDirectory).foreach { tableDir =>
-      val tableName = tableDir.getName
-      val parquetPath = s"${tableDir.getAbsolutePath}/*.parquet"
-      spark.read.parquet(parquetPath).createOrReplaceTempView(tableName)
-      // scalastyle:off println
-      println(s"Created temp view: $tableName from $parquetPath")
-    // scalastyle:on println
-    }
-
-    // Load and run queries from queriesFolder
-    val queriesFolder = new File(queriesFolderName)
-    if (!queriesFolder.exists() || !queriesFolder.isDirectory) {
-      // scalastyle:off println
-      println(s"Error: Queries folder $queriesFolder does not exist or is not a directory")
-      // scalastyle:on println
-      sys.exit(-1)
-    }
-
-    // Traverse queries folder and run each .sql file
-    queriesFolder.listFiles().filter(f => f.isFile && f.getName.endsWith(".sql")).foreach {
-      sqlFile =>
-        // scalastyle:off println
-        println(s"Running query from: ${sqlFile.getName}")
-        // scalastyle:on println
-
-        val querySource = Source.fromFile(sqlFile)
-        try {
-          val sql = querySource.mkString
-          QueryRunner.assertCorrectness(spark, sql, showFailedSparkQueries = false, output)
-        } finally {
-          querySource.close()
-        }
-    }
-
-    output.close()
-  }
-
+object QueryComparison {
   private def same(l: Any, r: Any): Boolean = {
     if (l == null || r == null) {
       return l == null && r == null
@@ -235,7 +168,7 @@ object QueryRunner {
     row.toSeq.map(format).mkString(",")
   }
 
-  private def showSQL(w: BufferedWriter, sql: String, maxLength: Int = 120): Unit = {
+  def showSQL(w: BufferedWriter, sql: String, maxLength: Int = 120): Unit = {
     w.write("## SQL\n")
     w.write("```\n")
     val words = sql.split(" ")
@@ -262,4 +195,37 @@ object QueryRunner {
     w.write(s"```\n$cometPlan\n```\n")
   }
 
+  def assertSameRows(
+      sparkRows: Array[Row],
+      cometRows: Array[Row],
+      sqlText: String,
+      sparkPlan: String,
+      cometPlan: String,
+      output: BufferedWriter): Unit = {
+    if (sparkRows.length == cometRows.length) {
+      var i = 0
+      while (i < sparkRows.length) {
+        val l = sparkRows(i)
+        val r = cometRows(i)
+        assert(l.length == r.length)
+        for (j <- 0 until l.length) {
+          if (!same(l(j), r(j))) {
+            showSQL(output, sqlText)
+            showPlans(output, sparkPlan, cometPlan)
+            output.write(s"First difference at row $i:\n")
+            output.write("Spark: `" + formatRow(l) + "`\n")
+            output.write("Comet: `" + formatRow(r) + "`\n")
+            i = sparkRows.length
+          }
+        }
+        i += 1
+      }
+    } else {
+      showSQL(output, sqlText)
+      showPlans(output, sparkPlan, cometPlan)
+      output.write(
+        s"[ERROR] Spark produced ${sparkRows.length} rows and " +
+          s"Comet produced ${cometRows.length} rows.\n")
+    }
+  }
 }
