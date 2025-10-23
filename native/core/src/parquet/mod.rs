@@ -41,10 +41,7 @@ use arrow::ffi::FFI_ArrowArray;
 use jni::JNIEnv;
 use jni::{
     objects::{GlobalRef, JByteBuffer, JClass},
-    sys::{
-        jboolean, jbyte, jdouble, jfloat, jint, jlong,
-        jshort,
-    },
+    sys::{jboolean, jbyte, jdouble, jfloat, jint, jlong, jshort},
 };
 
 use self::util::jni::TypePromotionInfo;
@@ -65,7 +62,9 @@ use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::{poll, StreamExt};
-use jni::objects::{JBooleanArray, JByteArray, JLongArray, JMap, JObject, JObjectArray, JString, ReleaseMode};
+use jni::objects::{
+    JBooleanArray, JByteArray, JLongArray, JMap, JObject, JObjectArray, JString, ReleaseMode,
+};
 use jni::sys::{jintArray, JNI_FALSE};
 use object_store::path::Path;
 use read::ColumnReader;
@@ -669,12 +668,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_validateObjec
         let planner =
             PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)), 0);
         let session_ctx = planner.session_ctx();
-        let path: String = env
-            .get_string(&file_path)
-            .unwrap()
-            .into();
-        let object_store_config =
-            get_object_store_options(&mut env, object_store_options)?;
+        let path: String = env.get_string(&file_path).unwrap().into();
+        let object_store_config = get_object_store_options(&mut env, object_store_options)?;
         let (_, _) = prepare_object_store_with_configs(
             session_ctx.runtime_env(),
             path.clone(),
@@ -710,13 +705,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)), 0);
         let session_ctx = planner.session_ctx();
 
-        let path: String = env
-            .get_string(&file_path)
-            .unwrap()
-            .into();
+        let path: String = env.get_string(&file_path).unwrap().into();
 
-        let object_store_config =
-            get_object_store_options(&mut env, object_store_options)?;
+        let object_store_config = get_object_store_options(&mut env, object_store_options)?;
         let (object_store_url, object_store_path) = prepare_object_store_with_configs(
             session_ctx.runtime_env(),
             path.clone(),
@@ -747,10 +738,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let file_groups =
             get_file_groups_single_file(&object_store_path, file_size as u64, starts, lengths);
 
-        let session_timezone: String = env
-            .get_string(&session_timezone)
-            .unwrap()
-            .into();
+        let session_timezone: String = env.get_string(&session_timezone).unwrap().into();
 
         // Handle key unwrapper for encrypted files
         let encryption_enabled = if !key_unwrapper_obj.is_null() {

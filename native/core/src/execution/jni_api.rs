@@ -54,10 +54,10 @@ use jni::sys::{jlongArray, JNI_FALSE};
 use jni::{
     errors::Result as JNIResult,
     objects::{
-        JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JString,
-        ReleaseMode,GlobalRef
+        GlobalRef, JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JString,
+        ReleaseMode,
     },
-    sys::{jint, jlong, jboolean, jdouble},
+    sys::{jboolean, jdouble, jint, jlong},
     JNIEnv,
 };
 use std::collections::HashMap;
@@ -343,12 +343,10 @@ fn prepare_output(
 ) -> CometResult<jlong> {
     let num_cols = env.get_array_length(&array_addrs)? as usize;
 
-    let array_addrs =
-        unsafe { env.get_array_elements(&array_addrs, ReleaseMode::NoCopyBack)? };
+    let array_addrs = unsafe { env.get_array_elements(&array_addrs, ReleaseMode::NoCopyBack)? };
     let array_addrs = &*array_addrs;
 
-    let schema_addrs =
-        unsafe { env.get_array_elements(&schema_addrs, ReleaseMode::NoCopyBack)? };
+    let schema_addrs = unsafe { env.get_array_elements(&schema_addrs, ReleaseMode::NoCopyBack)? };
     let schema_addrs = &*schema_addrs;
 
     let results = output_batch.columns();
@@ -650,10 +648,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                 let row_addresses_ptr = row_addresses.as_ptr();
                 let row_sizes_ptr = row_sizes.as_ptr();
 
-                let output_path: String = env
-                    .get_string(&file_path)
-                    .unwrap()
-                    .into();
+                let output_path: String = env.get_string(&file_path).unwrap().into();
 
                 let checksum_enabled = checksum_enabled == 1;
                 let current_checksum = if current_checksum == i64::MIN {
@@ -663,10 +658,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                     Some(current_checksum as u32)
                 };
 
-                let compression_codec: String = env
-                    .get_string(&compression_codec)
-                    .unwrap()
-                    .into();
+                let compression_codec: String = env.get_string(&compression_codec).unwrap().into();
 
                 let compression_codec = match compression_codec.as_str() {
                     "zstd" => CompressionCodec::Zstd(compression_level),
