@@ -51,13 +51,13 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
     for (format <- unsupportedFormats) {
       // Comet should fall back to Spark for unsupported or invalid formats
-      checkFallback(
+      checkSparkAnswerAndFallbackReason(
         s"Format $format is not supported",
         s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
     }
 
     // Comet should fall back to Spark if format is not a literal
-    checkFallback("Format must be a literal", "SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
+    checkSparkAnswerAndFallbackReason("Format must be a literal", "SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
   }
 
   test("date_trunc (TruncTimestamp)") {
@@ -79,21 +79,15 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       }
       for (format <- unsupportedFormats) {
         // Comet should fall back to Spark for unsupported or invalid formats
-        checkFallback(
+        checkSparkAnswerAndFallbackReason(
           s"Format $format is not supported",
           s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
       // Comet should fall back to Spark if format is not a literal
-      checkFallback(
+      checkSparkAnswerAndFallbackReason(
         "Format must be a literal",
         "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt")
     }
   }
 
-  /** Check for the expected fallback reason */
-  private def checkFallback(fallbackReason: String, sql: String): Unit = {
-    val (_, cometPlan) = checkSparkAnswer(sql)
-    val explain = new ExtendedExplainInfo().generateVerboseExtendedInfo(cometPlan)
-    assert(explain.contains(fallbackReason))
-  }
 }
