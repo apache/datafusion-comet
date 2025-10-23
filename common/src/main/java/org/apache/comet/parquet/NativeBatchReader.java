@@ -114,6 +114,9 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private InternalRow partitionValues;
   private PartitionedFile file;
   private final Map<String, SQLMetric> metrics;
+  // Unfortunately CometMetricNode is from the "spark" package and cannot be used directly here
+  // TODO: Move it to common package?
+  private Object metricsNode = null;
 
   private StructType sparkSchema;
   private StructType dataSchema;
@@ -214,7 +217,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       boolean useLegacyDateTimestamp,
       StructType partitionSchema,
       InternalRow partitionValues,
-      Map<String, SQLMetric> metrics) {
+      Map<String, SQLMetric> metrics,
+      Object metricsNode) {
     this.conf = conf;
     this.capacity = capacity;
     this.sparkSchema = sparkSchema;
@@ -229,6 +233,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.footer = footer;
     this.nativeFilter = nativeFilter;
     this.metrics = metrics;
+    this.metricsNode = metricsNode;
     this.taskContext = TaskContext$.MODULE$.get();
   }
 
@@ -436,7 +441,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
               batchSize,
               caseSensitive,
               objectStoreOptions,
-              keyUnwrapper);
+              keyUnwrapper,
+              metricsNode);
     }
     isInitialized = true;
   }

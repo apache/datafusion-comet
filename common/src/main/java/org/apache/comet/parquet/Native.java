@@ -268,7 +268,8 @@ public final class Native extends NativeBase {
       int batchSize,
       boolean caseSensitive,
       Map<String, String> objectStoreOptions,
-      CometFileKeyUnwrapper keyUnwrapper);
+      CometFileKeyUnwrapper keyUnwrapper,
+      Object metricsNode);
 
   // arrow native version of read batch
 
