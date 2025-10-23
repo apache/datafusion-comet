@@ -195,6 +195,9 @@ object FuzzDataGenerator {
             case 2 => r.nextLong().toString
             case 3 => r.nextDouble().toString
             case 4 => RandomStringUtils.randomAlphabetic(8)
+            case 5 =>
+              // use a constant value to trigger dictionary encoding
+              "dict_encode_me!"
             case _ => r.nextString(8)
           }
         })
