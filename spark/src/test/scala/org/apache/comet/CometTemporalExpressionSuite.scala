@@ -22,6 +22,8 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.execution.{ProjectExec, RDDScanExec, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -33,7 +35,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
 
   test("trunc (TruncDate)") {
     val supportedFormats = CometTruncDate.supportedFormats
-    val unsupportedFormats = Seq("day", "foo")
+    val unsupportedFormats = Seq("invalid")
     val allFormats = supportedFormats ++ unsupportedFormats
 
     val r = new Random(42)
@@ -54,28 +56,20 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       checkSparkAnswerAndOperator(s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
     }
     for (format <- unsupportedFormats) {
-      checkSparkAnswer(s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
+      // Comet should fall back to Spark for unsupported or invalid formats
+      checkFallback(
+        s"unsupported/invalid format $format",
+        s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
     }
 
     // Comet should fall back to Spark if format is not a literal
-    // TODO check operator fallback
-    checkSparkAnswer("SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
+    checkFallback("non-literal format", "SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
   }
 
   test("date_trunc (TruncTimestamp)") {
     val supportedFormats = CometTruncTimestamp.supportedFormats
-    val unsupportedFormats = Seq(
-      "day",
-      "dd",
-      "microsecond",
-      "millisecond",
-      "second",
-      "minute",
-      "hour",
-      "week",
-      "quarter",
-      "foo")
-    val allFormats = supportedFormats ++ unsupportedFormats
+    val unsupportedOrInvalidFormats = Seq("invalid")
+    val allFormats = supportedFormats ++ unsupportedOrInvalidFormats
 
     val r = new Random(42)
     val schema = StructType(
@@ -95,13 +89,29 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       for (format <- supportedFormats) {
         checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
-      for (format <- unsupportedFormats) {
-        // TODO check for operator fallback
-        checkSparkAnswer(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
+      for (format <- unsupportedOrInvalidFormats) {
+        // Comet should fall back to Spark for unsupported or invalid formats
+        checkFallback(
+          s"unsupported/invalid format $format",
+          s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
       // Comet should fall back to Spark if format is not a literal
-      // TODO check operator fallback
-      checkSparkAnswer("SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt")
+      checkFallback(
+        "non-literal format",
+        "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt")
+    }
+  }
+
+  /** Check that the first projection fell back to Spark */
+  private def checkFallback(message: String, sql: String): Unit = {
+    val (_, cometPlan) = checkSparkAnswer(sql)
+    val shuffle = collect(cometPlan) { case p: CometShuffleExchangeExec => p }
+    assert(shuffle.length == 1)
+    shuffle.head.child match {
+      case WholeStageCodegenExec(p: ProjectExec) =>
+        assert(p.child.isInstanceOf[RDDScanExec])
+      case _ =>
+        fail(s"Comet should have fallen back to Spark for $message")
     }
   }
 }
