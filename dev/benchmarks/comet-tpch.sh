@@ -50,4 +50,5 @@ $SPARK_HOME/bin/spark-submit \
     --data $TPCH_DATA \
     --queries $TPCH_QUERIES \
     --output . \
+    --write /tmp \
     --iterations 1
