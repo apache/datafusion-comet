@@ -1378,6 +1378,8 @@ abstract class ParquetReadSuite extends CometTestBase {
 
         val metricNames = scans.head match {
           case _: CometNativeScanExec => cometNativeScanMetricNames
+          case s: CometScanExec if s.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
+            cometNativeScanMetricNames
           case _ => cometScanMetricNames
         }
 
@@ -1910,10 +1912,8 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
           rows,
           nullEnabled = false)
       }
-      Seq(
-        (CometConf.SCAN_NATIVE_DATAFUSION, "output_rows"),
-        (CometConf.SCAN_NATIVE_ICEBERG_COMPAT, "numOutputRows")).foreach {
-        case (scanMode, metricKey) =>
+      Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach {
+        scanMode =>
           Seq(true, false).foreach { pushDown =>
             breakable {
               withSQLConf(
@@ -1953,9 +1953,9 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
                   assert(scan.size == 1)
 
                   if (pushDown) {
-                    assert(scan.head.metrics(metricKey).value == expectedRows)
+                    assert(scan.head.metrics("output_rows").value == expectedRows)
                   } else {
-                    assert(scan.head.metrics(metricKey).value == rows)
+                    assert(scan.head.metrics("output_rows").value == rows)
                   }
                 }
               }
