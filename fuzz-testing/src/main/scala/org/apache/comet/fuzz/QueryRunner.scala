@@ -21,12 +21,77 @@ package org.apache.comet.fuzz
 
 import java.io.{BufferedWriter, FileWriter, PrintWriter, StringWriter}
 
-import scala.collection.mutable.WrappedArray
+import scala.collection.mutable
 import scala.io.Source
 
 import org.apache.spark.sql.{Row, SparkSession}
 
 object QueryRunner {
+
+  def createOutputMdFile(): BufferedWriter = {
+    val outputFilename = s"results-${System.currentTimeMillis()}.md"
+    // scalastyle:off println
+    println(s"Writing results to $outputFilename")
+    // scalastyle:on println
+
+    new BufferedWriter(new FileWriter(outputFilename))
+  }
+
+  def executeSQLAndAssertCorrectness(
+      spark: SparkSession,
+      sql: String,
+      showFailedSparkQueries: Boolean = false,
+      output: BufferedWriter): Unit = {
+    try {
+      // execute with Spark
+      spark.conf.set("spark.comet.enabled", "false")
+      val df = spark.sql(sql)
+      val sparkRows = df.collect()
+      val sparkPlan = df.queryExecution.executedPlan.toString
+
+      // execute with Comet
+      try {
+        spark.conf.set("spark.comet.enabled", "true")
+        // complex type support until we support it natively
+        spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
+        spark.conf.set("spark.comet.convert.parquet.enabled", "true")
+        val df = spark.sql(sql)
+        val cometRows = df.collect()
+        val cometPlan = df.queryExecution.executedPlan.toString
+
+        QueryComparison.assertSameRows(
+          sparkRows,
+          cometRows,
+          sqlText = sql,
+          sparkPlan,
+          cometPlan,
+          output)
+      } catch {
+        case e: Exception =>
+          // the query worked in Spark but failed in Comet, so this is likely a bug in Comet
+          QueryComparison.showSQL(output, sql)
+          output.write(s"[ERROR] Query failed in Comet: ${e.getMessage}:\n")
+          output.write("```\n")
+          val sw = new StringWriter()
+          val p = new PrintWriter(sw)
+          e.printStackTrace(p)
+          p.close()
+          output.write(s"${sw.toString}\n")
+          output.write("```\n")
+      }
+
+      // flush after every query so that results are saved in the event of the driver crashing
+      output.flush()
+
+    } catch {
+      case e: Exception =>
+        // we expect many generated queries to be invalid
+        if (showFailedSparkQueries) {
+          QueryComparison.showSQL(output, sql)
+          output.write(s"Query failed in Spark: ${e.getMessage}\n")
+        }
+    }
+  }
 
   def runQueries(
       spark: SparkSession,
@@ -34,12 +99,7 @@ object QueryRunner {
       filename: String,
       showFailedSparkQueries: Boolean = false): Unit = {
 
-    val outputFilename = s"results-${System.currentTimeMillis()}.md"
-    // scalastyle:off println
-    println(s"Writing results to $outputFilename")
-    // scalastyle:on println
-
-    val w = new BufferedWriter(new FileWriter(outputFilename))
+    val w = createOutputMdFile()
 
     // register input files
     for (i <- 0 until numFiles) {
@@ -55,76 +115,8 @@ object QueryRunner {
     try {
       querySource
         .getLines()
-        .foreach(sql => {
-
-          try {
-            // execute with Spark
-            spark.conf.set("spark.comet.enabled", "false")
-            val df = spark.sql(sql)
-            val sparkRows = df.collect()
-            val sparkPlan = df.queryExecution.executedPlan.toString
-
-            // execute with Comet
-            try {
-              spark.conf.set("spark.comet.enabled", "true")
-              // complex type support until we support it natively
-              spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
-              spark.conf.set("spark.comet.convert.parquet.enabled", "true")
-              val df = spark.sql(sql)
-              val cometRows = df.collect()
-              val cometPlan = df.queryExecution.executedPlan.toString
-
-              if (sparkRows.length == cometRows.length) {
-                var i = 0
-                while (i < sparkRows.length) {
-                  val l = sparkRows(i)
-                  val r = cometRows(i)
-                  assert(l.length == r.length)
-                  for (j <- 0 until l.length) {
-                    if (!same(l(j), r(j))) {
-                      showSQL(w, sql)
-                      showPlans(w, sparkPlan, cometPlan)
-                      w.write(s"First difference at row $i:\n")
-                      w.write("Spark: `" + formatRow(l) + "`\n")
-                      w.write("Comet: `" + formatRow(r) + "`\n")
-                      i = sparkRows.length
-                    }
-                  }
-                  i += 1
-                }
-              } else {
-                showSQL(w, sql)
-                showPlans(w, sparkPlan, cometPlan)
-                w.write(
-                  s"[ERROR] Spark produced ${sparkRows.length} rows and " +
-                    s"Comet produced ${cometRows.length} rows.\n")
-              }
-            } catch {
-              case e: Exception =>
-                // the query worked in Spark but failed in Comet, so this is likely a bug in Comet
-                showSQL(w, sql)
-                w.write(s"[ERROR] Query failed in Comet: ${e.getMessage}:\n")
-                w.write("```\n")
-                val sw = new StringWriter()
-                val p = new PrintWriter(sw)
-                e.printStackTrace(p)
-                p.close()
-                w.write(s"${sw.toString}\n")
-                w.write("```\n")
-            }
-
-            // flush after every query so that results are saved in the event of the driver crashing
-            w.flush()
-
-          } catch {
-            case e: Exception =>
-              // we expect many generated queries to be invalid
-              if (showFailedSparkQueries) {
-                showSQL(w, sql)
-                w.write(s"Query failed in Spark: ${e.getMessage}\n")
-              }
-          }
-        })
+        .foreach(sql =>
+          executeSQLAndAssertCorrectness(spark, sql, showFailedSparkQueries, output = w))
 
     } finally {
       w.close()
@@ -132,18 +124,32 @@ object QueryRunner {
     }
   }
 
+}
+
+object QueryComparison {
   private def same(l: Any, r: Any): Boolean = {
+    if (l == null || r == null) {
+      return l == null && r == null
+    }
     (l, r) match {
+      case (a: Float, b: Float) if a.isPosInfinity => b.isPosInfinity
+      case (a: Float, b: Float) if a.isNegInfinity => b.isNegInfinity
       case (a: Float, b: Float) if a.isInfinity => b.isInfinity
       case (a: Float, b: Float) if a.isNaN => b.isNaN
       case (a: Float, b: Float) => (a - b).abs <= 0.000001f
+      case (a: Double, b: Double) if a.isPosInfinity => b.isPosInfinity
+      case (a: Double, b: Double) if a.isNegInfinity => b.isNegInfinity
       case (a: Double, b: Double) if a.isInfinity => b.isInfinity
       case (a: Double, b: Double) if a.isNaN => b.isNaN
       case (a: Double, b: Double) => (a - b).abs <= 0.000001
       case (a: Array[_], b: Array[_]) =>
         a.length == b.length && a.zip(b).forall(x => same(x._1, x._2))
-      case (a: WrappedArray[_], b: WrappedArray[_]) =>
+      case (a: mutable.WrappedArray[_], b: mutable.WrappedArray[_]) =>
         a.length == b.length && a.zip(b).forall(x => same(x._1, x._2))
+      case (a: Row, b: Row) =>
+        val aa = a.toSeq
+        val bb = b.toSeq
+        aa.length == bb.length && aa.zip(bb).forall(x => same(x._1, x._2))
       case (a, b) => a == b
     }
   }
@@ -151,8 +157,9 @@ object QueryRunner {
   private def format(value: Any): String = {
     value match {
       case null => "NULL"
-      case v: WrappedArray[_] => s"[${v.map(format).mkString(",")}]"
+      case v: mutable.WrappedArray[_] => s"[${v.map(format).mkString(",")}]"
       case v: Array[Byte] => s"[${v.mkString(",")}]"
+      case r: Row => formatRow(r)
       case other => other.toString
     }
   }
@@ -161,7 +168,7 @@ object QueryRunner {
     row.toSeq.map(format).mkString(",")
   }
 
-  private def showSQL(w: BufferedWriter, sql: String, maxLength: Int = 120): Unit = {
+  def showSQL(w: BufferedWriter, sql: String, maxLength: Int = 120): Unit = {
     w.write("## SQL\n")
     w.write("```\n")
     val words = sql.split(" ")
@@ -188,4 +195,37 @@ object QueryRunner {
     w.write(s"```\n$cometPlan\n```\n")
   }
 
+  def assertSameRows(
+      sparkRows: Array[Row],
+      cometRows: Array[Row],
+      sqlText: String,
+      sparkPlan: String,
+      cometPlan: String,
+      output: BufferedWriter): Unit = {
+    if (sparkRows.length == cometRows.length) {
+      var i = 0
+      while (i < sparkRows.length) {
+        val l = sparkRows(i)
+        val r = cometRows(i)
+        assert(l.length == r.length)
+        for (j <- 0 until l.length) {
+          if (!same(l(j), r(j))) {
+            showSQL(output, sqlText)
+            showPlans(output, sparkPlan, cometPlan)
+            output.write(s"First difference at row $i:\n")
+            output.write("Spark: `" + formatRow(l) + "`\n")
+            output.write("Comet: `" + formatRow(r) + "`\n")
+            i = sparkRows.length
+          }
+        }
+        i += 1
+      }
+    } else {
+      showSQL(output, sqlText)
+      showPlans(output, sparkPlan, cometPlan)
+      output.write(
+        s"[ERROR] Spark produced ${sparkRows.length} rows and " +
+          s"Comet produced ${cometRows.length} rows.\n")
+    }
+  }
 }
