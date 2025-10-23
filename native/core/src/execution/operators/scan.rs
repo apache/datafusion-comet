@@ -266,6 +266,7 @@ impl ScanExec {
 
             let array = if arrow_ffi_safe {
                 // ownership of this array has been transferred to native
+                // but we still need to unpack dictionary arrays
                 copy_or_unpack_array(&array, &CopyMode::UnpackOrClone)?
             } else {
                 // it is necessary to copy the array because the contents may be
