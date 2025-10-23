@@ -91,7 +91,7 @@ def main(benchmark: str, data_path: str, query_path: str, iterations: int, outpu
                         df.explain()
 
                         if write_path is not None:
-                            output_path = f"{write_path}/{query}.parquet"
+                            output_path = f"{write_path}/q{query}.parquet"
                             df.write.parquet(output_path)
                             print(f"Query {query} results written to {output_path}")
                         else:
