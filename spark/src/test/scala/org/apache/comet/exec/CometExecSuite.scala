@@ -659,12 +659,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: scan") {
-    withSQLConf(
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      // TODO: update this test to work with native_iceberg_compat/auto,
-      // scan is set to native_comet for now as a workaround
-      // https://github.com/apache/datafusion-comet/issues/1882
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "native-scan.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 10000)
@@ -676,28 +671,19 @@ class CometExecSuite extends CometTestBase {
             s.isInstanceOf[CometScanExec] || s.isInstanceOf[CometNativeScanExec])
             .foreach(scan => {
               val metrics = scan.metrics
-              scan match {
-                case _: CometScanExec => {
-                  assert(metrics.contains("scanTime"))
-                  assert(metrics.contains("cast_time"))
-                  assert(metrics("scanTime").value > 0)
-                  assert(metrics("cast_time").value > 0)
-                }
-                case _: CometNativeScanExec => {
-                  assert(metrics.contains("time_elapsed_scanning_total"))
-                  assert(metrics.contains("bytes_scanned"))
-                  assert(metrics.contains("output_rows"))
-                  assert(metrics.contains("time_elapsed_opening"))
-                  assert(metrics.contains("time_elapsed_processing"))
-                  assert(metrics.contains("time_elapsed_scanning_until_data"))
-                  assert(metrics("time_elapsed_scanning_total").value > 0)
-                  assert(metrics("bytes_scanned").value > 0)
-                  assert(metrics("output_rows").value == 0)
-                  assert(metrics("time_elapsed_opening").value > 0)
-                  assert(metrics("time_elapsed_processing").value > 0)
-                  assert(metrics("time_elapsed_scanning_until_data").value > 0)
-                }
-              }
+
+              assert(metrics.contains("time_elapsed_scanning_total"))
+              assert(metrics.contains("bytes_scanned"))
+              assert(metrics.contains("output_rows"))
+              assert(metrics.contains("time_elapsed_opening"))
+              assert(metrics.contains("time_elapsed_processing"))
+              assert(metrics.contains("time_elapsed_scanning_until_data"))
+              assert(metrics("time_elapsed_scanning_total").value > 0)
+              assert(metrics("bytes_scanned").value > 0)
+              assert(metrics("output_rows").value > 0)
+              assert(metrics("time_elapsed_opening").value > 0)
+              assert(metrics("time_elapsed_processing").value > 0)
+              assert(metrics("time_elapsed_scanning_until_data").value > 0)
             })
 
         }

@@ -42,15 +42,21 @@ class CometStringExpressionSuite extends CometTestBase {
     val r = new Random(42)
     val schema = StructType(
       Seq(
-        StructField("str", DataTypes.StringType, true),
-        StructField("len", DataTypes.IntegerType, true),
-        StructField("pad", DataTypes.StringType, true)))
+        StructField("str", DataTypes.StringType, nullable = true),
+        StructField("len", DataTypes.IntegerType, nullable = true),
+        StructField("pad", DataTypes.StringType, nullable = true)))
+    // scalastyle:off
+    val customStrings = Seq(
+      "é", // unicode 'e\\u{301}'
+      "é", // unicode '\\u{e9}'
+      "తెలుగు")
+    // scalastyle:on
     val df = FuzzDataGenerator.generateDataFrame(
       r,
       spark,
       schema,
       1000,
-      DataGenOptions(maxStringLength = 6))
+      DataGenOptions(maxStringLength = 6, customStrings = customStrings))
     df.createOrReplaceTempView("t1")
 
     // test all combinations of scalar and array arguments
@@ -65,10 +71,14 @@ class CometStringExpressionSuite extends CometTestBase {
               // 2 args (default pad of ' ')
               s"SELECT $str, $len, $expr($str, $len) FROM t1 ORDER BY str, len, pad"
           }
-          if (str == "'hello'" || pad.contains("pad")) {
-            // Comet does not support literal for str argument
-            // Comet only supports literals for pad argument
-            checkSparkAnswer(sql)
+          if (str == "'hello'") {
+            checkSparkAnswerAndFallbackReason(
+              sql,
+              "Scalar values are not supported for the str argument")
+          } else if (pad.contains("pad")) {
+            checkSparkAnswerAndFallbackReason(
+              sql,
+              "Only scalar values are supported for the pad argument")
           } else {
             checkSparkAnswerAndOperator(sql)
           }

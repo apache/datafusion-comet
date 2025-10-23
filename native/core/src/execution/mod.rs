@@ -18,7 +18,7 @@
 //! PoC of vectorization execution through JNI to Rust.
 pub mod expressions;
 pub mod jni_api;
-mod metrics;
+pub(crate) mod metrics;
 pub mod operators;
 pub(crate) mod planner;
 pub mod serde;

@@ -3120,11 +3120,8 @@ mod tests {
                         assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
                         let batch = batch.unwrap();
                         assert_eq!(batch.num_rows(), row_count / 4);
-                        // string/binary should still be packed with dictionary
-                        assert!(matches!(
-                            batch.column(0).data_type(),
-                            DataType::Dictionary(_, _)
-                        ));
+                        // string/binary should no longer be packed with dictionary
+                        assert!(matches!(batch.column(0).data_type(), DataType::Utf8));
                     }
                     Poll::Ready(None) => {
                         break;

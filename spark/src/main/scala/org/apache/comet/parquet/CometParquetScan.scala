@@ -23,6 +23,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.connector.read.PartitionReaderFactory
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
 import org.apache.spark.sql.execution.datasources.v2.FileScan
@@ -34,6 +35,8 @@ import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.MetricsSupport
 
+// TODO: Consider creating a case class and patch SQL tests if needed, will make life easier.
+// currently hacking around this by setting the metrics within the object's apply method.
 trait CometParquetScan extends FileScan with MetricsSupport {
   def sparkSession: SparkSession
   def hadoopConf: Configuration
@@ -70,8 +73,8 @@ trait CometParquetScan extends FileScan with MetricsSupport {
 }
 
 object CometParquetScan {
-  def apply(scan: ParquetScan): CometParquetScan =
-    new ParquetScan(
+  def apply(session: SparkSession, scan: ParquetScan): CometParquetScan = {
+    val newScan = new ParquetScan(
       scan.sparkSession,
       scan.hadoopConf,
       scan.fileIndex,
@@ -82,4 +85,10 @@ object CometParquetScan {
       scan.options,
       partitionFilters = scan.partitionFilters,
       dataFilters = scan.dataFilters) with CometParquetScan
+
+    newScan.metrics = CometMetricNode.nativeScanMetrics(session.sparkContext) ++ CometMetricNode
+      .parquetScanMetrics(session.sparkContext)
+
+    newScan
+  }
 }

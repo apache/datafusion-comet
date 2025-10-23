@@ -19,8 +19,7 @@
 
 package org.apache.comet
 
-import org.apache.spark.SparkContext
-import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.execution.metric.SQLMetric
 
 /**
  * A trait for Comet operators that support SQL metrics
@@ -28,29 +27,5 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 trait MetricsSupport {
   protected var metrics: Map[String, SQLMetric] = Map.empty
 
-  def initMetrics(sparkContext: SparkContext): Map[String, SQLMetric] = {
-    metrics = Map(
-      "ParquetRowGroups" -> SQLMetrics.createMetric(
-        sparkContext,
-        "num of Parquet row groups read"),
-      "ParquetNativeDecodeTime" -> SQLMetrics.createNanoTimingMetric(
-        sparkContext,
-        "time spent in Parquet native decoding"),
-      "ParquetNativeLoadTime" -> SQLMetrics.createNanoTimingMetric(
-        sparkContext,
-        "time spent in loading Parquet native vectors"),
-      "ParquetLoadRowGroupTime" -> SQLMetrics.createNanoTimingMetric(
-        sparkContext,
-        "time spent in loading Parquet row groups"),
-      "ParquetInputFileReadTime" -> SQLMetrics.createNanoTimingMetric(
-        sparkContext,
-        "time spent in reading Parquet file from storage"),
-      "ParquetInputFileReadSize" -> SQLMetrics.createSizeMetric(
-        sparkContext,
-        "read size when reading Parquet file from storage (MB)"),
-      "ParquetInputFileReadThroughput" -> SQLMetrics.createAverageMetric(
-        sparkContext,
-        "read throughput when reading Parquet file from storage (MB/sec)"))
-    metrics
-  }
+  def getMetrics: Map[String, SQLMetric] = metrics
 }
