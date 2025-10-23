@@ -104,7 +104,7 @@ case class CometIcebergNativeScanExec(
   }
 
   override def stringArgs: Iterator[Any] =
-    Iterator(output, metadataLocation, numPartitions)
+    Iterator(output, s"$metadataLocation, ${originalPlan.scan.description()}", numPartitions)
 
   override def equals(obj: Any): Boolean = {
     obj match {
