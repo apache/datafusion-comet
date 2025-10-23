@@ -42,12 +42,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       Seq(
         StructField("c0", DataTypes.DateType, true),
         StructField("c1", DataTypes.StringType, true)))
-    val df = FuzzDataGenerator.generateDataFrame(
-      r,
-      spark,
-      schema,
-      1000,
-      DataGenOptions())
+    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
 
     df.createOrReplaceTempView("tbl")
 
@@ -57,12 +52,12 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     for (format <- unsupportedFormats) {
       // Comet should fall back to Spark for unsupported or invalid formats
       checkFallback(
-        s"unsupported/invalid format $format",
+        s"Format $format is not supported",
         s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
     }
 
     // Comet should fall back to Spark if format is not a literal
-    checkFallback("non-literal format", "SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
+    checkFallback("Format must be a literal", "SELECT c0, trunc(c0, c1) from tbl order by c0, c1")
   }
 
   test("date_trunc (TruncTimestamp)") {
@@ -74,12 +69,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       Seq(
         StructField("c0", DataTypes.TimestampType, true),
         StructField("fmt", DataTypes.StringType, true)))
-    val df = FuzzDataGenerator.generateDataFrame(
-      r,
-      spark,
-      schema,
-      1000,
-      DataGenOptions())
+    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
     df.createOrReplaceTempView("tbl")
 
     // TODO test fails if timezone not set to UTC
@@ -90,26 +80,20 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       for (format <- unsupportedFormats) {
         // Comet should fall back to Spark for unsupported or invalid formats
         checkFallback(
-          s"unsupported/invalid format $format",
+          s"Format $format is not supported",
           s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
       // Comet should fall back to Spark if format is not a literal
       checkFallback(
-        "non-literal format",
+        "Format must be a literal",
         "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt")
     }
   }
 
-  /** Check that the first projection fell back to Spark */
-  private def checkFallback(message: String, sql: String): Unit = {
+  /** Check for the expected fallback reason */
+  private def checkFallback(fallbackReason: String, sql: String): Unit = {
     val (_, cometPlan) = checkSparkAnswer(sql)
-    val shuffle = collect(cometPlan) { case p: CometShuffleExchangeExec => p }
-    assert(shuffle.length == 1)
-    shuffle.head.child match {
-      case WholeStageCodegenExec(p: ProjectExec) =>
-        assert(p.child.isInstanceOf[RDDScanExec])
-      case _ =>
-        fail(s"Comet should have fallen back to Spark for $message")
-    }
+    val explain = new ExtendedExplainInfo().generateVerboseExtendedInfo(cometPlan)
+    assert(explain.contains(fallbackReason))
   }
 }
