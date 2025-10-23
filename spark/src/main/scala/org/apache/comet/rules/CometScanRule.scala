@@ -316,7 +316,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             }
           } catch {
             case e: Exception =>
-              fallbackReasons += s"Could not verify Iceberg table " +
+              fallbackReasons += "Could not verify Iceberg table " +
                 s"format version: ${e.getMessage}"
               false
           }
