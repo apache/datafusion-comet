@@ -43,6 +43,7 @@ case class SparkArrayType(elementType: SparkType) extends SparkType
 case class SparkMapType(keyType: SparkType, valueType: SparkType) extends SparkType
 case class SparkStructType(fields: Seq[SparkType]) extends SparkType
 case object SparkAnyType extends SparkType
+case class SparkTypeWithValues(sparkType: SparkType, validValues: Seq[String]) extends SparkType
 
 case class FunctionSignature(inputTypes: Seq[SparkType])
 
@@ -302,7 +303,12 @@ object Meta {
       createFunctionWithInputTypes("hour", Seq(SparkDateOrTimestampType)),
       createFunctionWithInputTypes("minute", Seq(SparkDateOrTimestampType)),
       createFunctionWithInputTypes("second", Seq(SparkDateOrTimestampType)),
-      createFunctionWithInputTypes("trunc", Seq(SparkDateOrTimestampType, SparkStringType)),
+      createFunctionWithInputTypes(
+        "date_trunc",
+        Seq(SparkDateOrTimestampType, SparkTypeWithValues(SparkStringType, Seq("year", "week")))),
+      createFunctionWithInputTypes(
+        "trunc",
+        Seq(SparkDateOrTimestampType, SparkTypeWithValues(SparkStringType, Seq("year", "week")))),
       createFunctionWithInputTypes("year", Seq(SparkDateOrTimestampType)),
       createFunctionWithInputTypes("month", Seq(SparkDateOrTimestampType)),
       createFunctionWithInputTypes("day", Seq(SparkDateOrTimestampType)),

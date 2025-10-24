@@ -121,8 +121,7 @@ object QueryGen {
       r: Random,
       df: DataFrame,
       targetType: SparkType): String = {
-    // prefer picking columns over literals
-    if (r.nextInt(10) > 7) {
+    if (r.nextBoolean) {
       targetType match {
         case SparkIntegralType =>
           r.nextInt(10).toString
@@ -130,6 +129,13 @@ object QueryGen {
           s""""${r.nextString(4)}""""
         case SparkTimestampType =>
           "now()"
+        case SparkTypeWithValues(sparkType, values) =>
+          // choose between known valid input and random input
+          if (r.nextBoolean()) {
+            Utils.randomChoice(values, r)
+          } else {
+            pickRandomColumnOrLiteral(r, df, sparkType)
+          }
         case _ =>
           pickRandomColumn(r, df, targetType)
       }
