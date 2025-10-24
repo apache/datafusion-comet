@@ -1137,22 +1137,26 @@ class CometIcebergNativeSuite extends CometTestBase {
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
 
-        import org.apache.iceberg.catalog.{Namespace, TableIdentifier}
-        import org.apache.iceberg.hadoop.HadoopCatalog
+        import org.apache.iceberg.catalog.TableIdentifier
+        import org.apache.iceberg.spark.SparkCatalog
         import org.apache.iceberg.types.Types
         import org.apache.iceberg.{PartitionSpec, Schema}
 
-        // Use Iceberg API to create table with native UUID type (not possible via Spark SQL CREATE TABLE)
-        val catalog =
-          new HadoopCatalog(spark.sessionState.newHadoopConf(), warehouseDir.getAbsolutePath)
-        catalog.createNamespace(Namespace.of("db"))
+        // Use Iceberg API to create table with native UUID type
+        // (not possible via Spark SQL CREATE TABLE)
+        // Get Spark's catalog instance to ensure the table is visible to Spark
+        val sparkCatalog = spark.sessionState.catalogManager
+          .catalog("test_cat")
+          .asInstanceOf[SparkCatalog]
+
+        spark.sql("CREATE NAMESPACE IF NOT EXISTS test_cat.db")
 
         // UUID is stored as FixedSizeBinary(16) but must be presented as Utf8 to Spark
         val schema = new Schema(
           Types.NestedField.required(1, "id", Types.IntegerType.get()),
           Types.NestedField.optional(2, "uuid", Types.UUIDType.get()))
         val tableIdent = TableIdentifier.of("db", "uuid_test")
-        catalog.createTable(tableIdent, schema, PartitionSpec.unpartitioned())
+        sparkCatalog.icebergCatalog.createTable(tableIdent, schema, PartitionSpec.unpartitioned())
 
         spark.sql("""
           INSERT INTO test_cat.db.uuid_test VALUES
