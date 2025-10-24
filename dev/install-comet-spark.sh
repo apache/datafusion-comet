@@ -72,6 +72,8 @@ rm -rf /root/.m2/repository/org/apache/parquet
 # Removing local cached protobuf that also causes building Spark with SBT
 rm -rf /root/.m2/repository/com/google/protobuf
 
+rm -rf /root/.m2/repository/commons-io
+
 cd $COMET_WORKSPACE
 rm -rf apache-spark
 git clone git@github.pie.apple.com:IPR/apache-spark.git --depth 1 --branch $SPARK_BRANCH
@@ -79,7 +81,7 @@ cd apache-spark
 
 # Apply custom diff files, if they exist
 if [ -f "$BASEDIR/diffs/$SPARK_BRANCH.diff" ]; then
-  git apply "$BASEDIR/diffs/$SPARK_BRANCH.diff"
+  git apply --allow-empty "$BASEDIR/diffs/$SPARK_BRANCH.diff"
 fi
 
 # Update the Comet version
