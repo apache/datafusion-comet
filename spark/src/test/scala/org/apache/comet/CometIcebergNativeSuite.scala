@@ -1125,6 +1125,49 @@ class CometIcebergNativeSuite extends CometTestBase {
     }
   }
 
+  test("UUID type - native Iceberg UUID column (reproduces type mismatch)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        import org.apache.iceberg.catalog.{Namespace, TableIdentifier}
+        import org.apache.iceberg.hadoop.HadoopCatalog
+        import org.apache.iceberg.types.Types
+        import org.apache.iceberg.{PartitionSpec, Schema}
+
+        // Use Iceberg API to create table with native UUID type (not possible via Spark SQL CREATE TABLE)
+        val catalog =
+          new HadoopCatalog(spark.sessionState.newHadoopConf(), warehouseDir.getAbsolutePath)
+        catalog.createNamespace(Namespace.of("db"))
+
+        // UUID is stored as FixedSizeBinary(16) but must be presented as Utf8 to Spark
+        val schema = new Schema(
+          Types.NestedField.required(1, "id", Types.IntegerType.get()),
+          Types.NestedField.optional(2, "uuid", Types.UUIDType.get()))
+        val tableIdent = TableIdentifier.of("db", "uuid_test")
+        catalog.createTable(tableIdent, schema, PartitionSpec.unpartitioned())
+
+        spark.sql("""
+          INSERT INTO test_cat.db.uuid_test VALUES
+          (1, 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'),
+          (2, 'b1ffcd88-8d1a-3de7-aa5c-5aa8ac269a00'),
+          (3, 'c2aade77-7e0b-2cf6-99e4-4998bc158b22')
+        """)
+
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.uuid_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.uuid_test")
+      }
+    }
+  }
+
   // Helper to create temp directory
   def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile
