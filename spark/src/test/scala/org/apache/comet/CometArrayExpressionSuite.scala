@@ -806,6 +806,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_reverse 2") {
+    // This test validates data correctness for array<binary> columns with nullable elements.
+    // See https://github.com/apache/datafusion-comet/issues/2612
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       val filename = path.toString
