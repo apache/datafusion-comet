@@ -41,6 +41,7 @@ impl SumInteger {
     pub fn try_new(data_type: DataType, eval_mode: EvalMode) -> DFResult<Self> {
         // The `data_type` is the SUM result type passed from Spark side which should i64
         println!("data type: {:?} eval_mode {:?}", data_type, eval_mode);
+
         match data_type {
             DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => Ok(Self {
                 signature: Signature::user_defined(Immutable),
@@ -121,14 +122,19 @@ impl Accumulator for SumIntegerAccumulator {
                     })?;
                     println!("sum : {:?}, v : {:?}", sum, v);
                     match eval_mode {
-                        EvalMode::Legacy | EvalMode::Try => {
+                        EvalMode::Legacy => {
                             sum = v.add_wrapping(sum);
                         }
-                        EvalMode::Ansi => {
+                        EvalMode::Ansi | EvalMode::Try => {
                             match v.add_checked(sum) {
                                 Ok(v) => sum = v,
                                 Err(e) => {
-                                    return Err(DataFusionError::from(arithmetic_overflow_error("integer")))
+                                    if (eval_mode == EvalMode::Ansi){
+                                        return Err(DataFusionError::from(arithmetic_overflow_error("integer")))
+                                    }
+                                    else {
+                                        sum = None.unwrap();
+                                    }
                                 }
                             };
                         }
@@ -228,12 +234,18 @@ impl Accumulator for SumIntegerAccumulator {
         );
         let that_sum = states[0].as_primitive::<Int64Type>();
         match self.eval_mode {
-            EvalMode::Legacy | EvalMode::Try => {
+            EvalMode::Legacy => {
                 self.sum.add_wrapping(that_sum.value(0));
             }
-            EvalMode::Ansi => match self.sum.add_checked(that_sum.value(0)) {
+            EvalMode::Ansi | EvalMode::Try => match self.sum.add_checked(that_sum.value(0)) {
                 Ok(v) => self.sum = v,
-                Err(e) => return Err(DataFusionError::from(arithmetic_overflow_error("integer"))),
+                Err(e) =>
+                if (self.eval_mode == EvalMode::Ansi){
+                    return Err(DataFusionError::from(arithmetic_overflow_error("integer"))),
+                }
+                else{
+                    self.sum = None.unwrap();
+                }
             },
         }
         Ok(())
@@ -271,14 +283,19 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
 
         for (&group_index, &value) in iter {
             match self.eval_mode {
-                EvalMode::Legacy | EvalMode::Try => {
+                EvalMode::Legacy => {
                     self.sums[group_index] = self.sums[group_index].add_wrapping(value);
                 }
-                EvalMode::Ansi => {
+                EvalMode::Ansi | EvalMode::Try => {
                     match self.sums[group_index].add_checked(value) {
                         Ok(v) => self.sums[group_index] = v,
                         Err(e) => {
-                            return Err(DataFusionError::from(arithmetic_overflow_error("integer")))
+                            if (self.eval_mode == EvalMode::Ansi){
+                                return Err(DataFusionError::from(arithmetic_overflow_error("integer")))
+                            }
+                            else{
+                                self.sums[group_index] = None.unwrap();
+                            }
                         }
                     };
                 }
@@ -333,11 +350,16 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
                 EvalMode::Legacy | EvalMode::Try => {
                     self.sums[group_index] = self.sums[group_index].add_wrapping(value);
                 }
-                EvalMode::Ansi => {
+                EvalMode::Ansi | EvalMode::Try => {
                     match self.sums[group_index].add_checked(value) {
                         Ok(v) => self.sums[group_index] = v,
                         Err(e) => {
-                            return Err(DataFusionError::Internal("integer overflow".to_string()))
+                            if (self.eval_mode == EvalMode::Ansi){
+                                return Err(DataFusionError::from(arithmetic_overflow_error("integer")))
+                            }
+                            else{
+                                self.sums[group_index] = None.unwrap();
+                            }
                         }
                     };
                 }

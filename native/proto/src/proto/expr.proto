@@ -120,7 +120,7 @@ message Count {
 message Sum {
   Expr child = 1;
   DataType datatype = 2;
-  bool fail_on_error = 3;
+  EvalMode eval_mode = 3;
 }
 
 message Min {

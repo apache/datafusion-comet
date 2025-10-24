@@ -3020,16 +3020,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 //                |  """.stripMargin)
 //            checkSparkAnswerAndOperator(res)
           }
-            //        res.show(10, false)
+          //        res.show(10, false)
 //            checkSparkMaybeThrows(res) match {
 //              case (Some(sparkExc), Some(cometExc)) =>
 //                assert(cometExc.getMessage.contains("error"))
 //                assert(sparkExc.getMessage.contains("overflow"))
 //              case _ => fail("Exception should be thrown")
 //            }
-          }
         }
       }
+    }
 
   }
 
