@@ -34,13 +34,19 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
 
   override def title: String = "Comet"
 
-  override def generateExtendedInfo(plan: SparkPlan): String = {
-    if (CometConf.COMET_EXPLAIN_VERBOSE_ENABLED.get()) {
-      generateVerboseExtendedInfo(plan)
-    } else {
-      val info = extensionInfo(plan)
-      info.toSeq.sorted.mkString("\n").trim
-    }
+  /**
+   * Generates the extended info in a verbose manner, printing each node along with the extended
+   * information in a tree display.
+   */
+  def generateExtendedInfo(plan: SparkPlan): String = {
+    val planStats = new CometCoverageStats()
+    val outString = new StringBuilder()
+    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
+    s"${outString.toString()}\n$planStats"
+  }
+
+  def getFallbackReasons(plan: SparkPlan): Seq[String] = {
+    extensionInfo(plan).toSeq.sorted
   }
 
   private[comet] def extensionInfo(node: TreeNode[_]): Set[String] = {
@@ -80,25 +86,10 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     ordered.reverse
   }
 
-  // generates the extended info in a verbose manner, printing each node along with the
-  // extended information in a tree display
-  def generateVerboseExtendedInfo(plan: SparkPlan): String = {
-    val planStats = new CometCoverageStats()
-    val outString = new StringBuilder()
-    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
-    s"${outString.toString()}\n$planStats"
-  }
-
-  /** Get the coverage statistics without the full plan */
-  def generateCoverageInfo(plan: SparkPlan): String = {
-    val planStats = new CometCoverageStats()
-    val outString = new StringBuilder()
-    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
-    planStats.toString()
-  }
-
-  // Simplified generateTreeString from Spark TreeNode. Appends explain info to the node if any
-  def generateTreeString(
+  /**
+   * Simplified generateTreeString from Spark TreeNode. Appends explain info to the node if any
+   */
+  private def generateTreeString(
       node: TreeNode[_],
       depth: Int,
       lastChildren: Seq[Boolean],

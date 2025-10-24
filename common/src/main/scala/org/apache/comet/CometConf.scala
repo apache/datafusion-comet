@@ -459,17 +459,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_EXPLAIN_VERBOSE_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.explain.verbose.enabled")
-      .category(CATEGORY_EXEC_EXPLAIN)
-      .doc(
-        "When this setting is enabled, Comet's extended explain output will provide the full " +
-          "query plan annotated with fallback reasons as well as a summary of how much of " +
-          "the plan was accelerated by Comet. When this setting is disabled, a list of fallback " +
-          "reasons will be provided instead.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_EXPLAIN_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explain.native.enabled")
       .category(CATEGORY_EXEC_EXPLAIN)

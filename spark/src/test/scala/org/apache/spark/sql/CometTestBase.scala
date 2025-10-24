@@ -168,9 +168,23 @@ abstract class CometTestBase
 
   /** Check for the correct results as well as the expected fallback reason */
   def checkSparkAnswerAndFallbackReason(sql: String, fallbackReason: String): Unit = {
-    val (_, cometPlan) = checkSparkAnswer(sql)
-    val explain = new ExtendedExplainInfo().generateVerboseExtendedInfo(cometPlan)
-    assert(explain.contains(fallbackReason))
+    checkSparkAnswerAndFallbackReason(spark.sql(sql), fallbackReason)
+  }
+
+  /** Check for the correct results as well as the expected fallback reason */
+  def checkSparkAnswerAndFallbackReason(df: => DataFrame, fallbackReason: String): Unit = {
+    val (_, cometPlan) = checkSparkAnswer(df)
+    val fallbacks = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
+    assert(fallbacks.contains(fallbackReason))
+  }
+
+  /** Check for the correct results as well as the expected fallback reasons */
+  def checkSparkAnswerAndFallbackReasons(df: => DataFrame, fallbackReasons: Set[String]): Unit = {
+    val (_, cometPlan) = checkSparkAnswer(df)
+    val fallbacks = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
+    for (reason <- fallbackReasons) {
+      assert(fallbacks.contains(reason))
+    }
   }
 
   protected def checkSparkAnswerAndOperator(query: String, excludedClasses: Class[_]*): Unit = {
@@ -221,7 +235,7 @@ abstract class CometTestBase
           assert(
             false,
             s"Expected only Comet native operators, but found ${op.nodeName}.\n" +
-              s"plan: ${new ExtendedExplainInfo().generateVerboseExtendedInfo(plan)}")
+              s"plan: ${new ExtendedExplainInfo().generateExtendedInfo(plan)}")
         }
     }
   }
