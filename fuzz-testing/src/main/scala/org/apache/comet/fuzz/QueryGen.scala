@@ -103,7 +103,7 @@ object QueryGen {
     val func = Utils.randomChoice(Meta.scalarFunc, r)
     try {
       val signature = Utils.randomChoice(func.signatures, r)
-      val args = signature.inputTypes.map(x => pickRandomColumn(r, table, x))
+      val args = signature.inputTypes.map(x => pickRandomColumnOrLiteral(r, table, x))
 
       // Example SELECT c0, log(c0) as x FROM test0
       s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
@@ -114,6 +114,27 @@ object QueryGen {
         throw new IllegalStateException(
           s"Failed to generate SQL for scalar function ${func.name}",
           e)
+    }
+  }
+
+  private def pickRandomColumnOrLiteral(
+      r: Random,
+      df: DataFrame,
+      targetType: SparkType): String = {
+    // prefer picking columns over literals
+    if (r.nextInt(10) > 7) {
+      targetType match {
+        case SparkIntegralType =>
+          r.nextInt(10).toString
+        case SparkStringType =>
+          s""""${r.nextString(4)}""""
+        case SparkTimestampType =>
+          "now()"
+        case _ =>
+          pickRandomColumn(r, df, targetType)
+      }
+    } else {
+      pickRandomColumn(r, df, targetType)
     }
   }
 
