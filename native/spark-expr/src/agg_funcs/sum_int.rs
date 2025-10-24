@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::EvalMode;
+use crate::{arithmetic_overflow_error, EvalMode};
 use arrow::array::{
     cast::AsArray, Array, ArrayBuilder, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType,
     BooleanArray, Int64Array, PrimitiveArray,
@@ -39,8 +39,8 @@ pub struct SumInteger {
 
 impl SumInteger {
     pub fn try_new(data_type: DataType, eval_mode: EvalMode) -> DFResult<Self> {
-        // The `data_type` is the SUM result type passed from Spark side
-        println!("data type: {:?}", data_type);
+        // The `data_type` is the SUM result type passed from Spark side which should i64
+        println!("data type: {:?} eval_mode {:?}", data_type, eval_mode);
         match data_type {
             DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => Ok(Self {
                 signature: Signature::user_defined(Immutable),
@@ -75,14 +75,14 @@ impl AggregateUDFImpl for SumInteger {
     }
 
     fn accumulator(&self, acc_args: AccumulatorArgs) -> DFResult<Box<dyn Accumulator>> {
-        Ok(Box::new(SumIntegerAccumulator::new()))
+        Ok(Box::new(SumIntegerAccumulator::new(self.eval_mode)))
     }
 
     fn create_groups_accumulator(
         &self,
         _args: AccumulatorArgs,
     ) -> DFResult<Box<dyn GroupsAccumulator>> {
-        Ok(Box::new(SumDecimalGroupsAccumulator::new(self.eval_mode)))
+        Ok(Box::new(SumIntGroupsAccumulator::new(self.eval_mode)))
     }
 }
 
@@ -94,10 +94,10 @@ struct SumIntegerAccumulator {
 }
 
 impl SumIntegerAccumulator {
-    fn new() -> Self {
+    fn new(eval_mode: EvalMode) -> Self {
         Self {
             sum: 0,
-            eval_mode: EvalMode::Legacy,
+            eval_mode,
             input_data_type: DataType::Int64,
         }
     }
@@ -113,13 +113,13 @@ impl Accumulator for SumIntegerAccumulator {
         where
             T: ArrowPrimitiveType,
         {
-            println!("match internal function data type: {:?}", sum);
             let len = int_array.len();
             for i in 0..int_array.len() {
                 if !int_array.is_null(i) {
                     let v = int_array.value(i).to_i64().ok_or_else(|| {
                         DataFusionError::Internal("Failed to convert value to i64".to_string())
                     })?;
+                    println!("sum : {:?}, v : {:?}", sum, v);
                     match eval_mode {
                         EvalMode::Legacy | EvalMode::Try => {
                             sum = v.add_wrapping(sum);
@@ -128,7 +128,7 @@ impl Accumulator for SumIntegerAccumulator {
                             match v.add_checked(sum) {
                                 Ok(v) => sum = v,
                                 Err(e) => {
-                                    return Err(DataFusionError::Internal("error".to_string()))
+                                    return Err(DataFusionError::from(arithmetic_overflow_error("integer")))
                                 }
                             };
                         }
@@ -157,53 +157,40 @@ impl Accumulator for SumIntegerAccumulator {
             );
             Ok(())
         } else {
-            match values.data_type() {
-                DataType::Int64 => {
-                    println!("match data type: {:?}", self.input_data_type);
-                    update_sum_internal(
-                        values
-                            .as_any()
-                            .downcast_ref::<PrimitiveArray<Int64Type>>()
-                            .unwrap(),
-                        self.eval_mode,
-                        self.sum,
-                    )?;
-                }
-                DataType::Int32 => {
-                    println!("match data type: {:?}", self.input_data_type);
-                    update_sum_internal(
-                        values
-                            .as_any()
-                            .downcast_ref::<PrimitiveArray<Int32Type>>()
-                            .unwrap(),
-                        self.eval_mode,
-                        self.sum,
-                    )?;
-                }
-                DataType::Int16 => {
-                    println!("match data type: {:?}", self.input_data_type);
-                    update_sum_internal(
-                        values
-                            .as_any()
-                            .downcast_ref::<PrimitiveArray<Int16Type>>()
-                            .unwrap(),
-                        self.eval_mode,
-                        self.sum,
-                    )?;
-                }
-                DataType::Int8 => {
-                    println!("match data type: {:?}", self.input_data_type);
-                    update_sum_internal(
-                        values
-                            .as_any()
-                            .downcast_ref::<PrimitiveArray<Int8Type>>()
-                            .unwrap(),
-                        self.eval_mode,
-                        self.sum,
-                    )?;
-                }
+            self.sum = match values.data_type() {
+                DataType::Int64 => update_sum_internal(
+                    values
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<Int64Type>>()
+                        .unwrap(),
+                    self.eval_mode,
+                    self.sum,
+                )?,
+                DataType::Int32 => update_sum_internal(
+                    values
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<Int32Type>>()
+                        .unwrap(),
+                    self.eval_mode,
+                    self.sum,
+                )?,
+                DataType::Int16 => update_sum_internal(
+                    values
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<Int16Type>>()
+                        .unwrap(),
+                    self.eval_mode,
+                    self.sum,
+                )?,
+                DataType::Int8 => update_sum_internal(
+                    values
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<Int8Type>>()
+                        .unwrap(),
+                    self.eval_mode,
+                    self.sum,
+                )?,
                 _ => {
-                    println!("unsupported input data type: {:?}", self.input_data_type);
                     panic!("Unsupported data type")
                 }
             };
@@ -246,19 +233,19 @@ impl Accumulator for SumIntegerAccumulator {
             }
             EvalMode::Ansi => match self.sum.add_checked(that_sum.value(0)) {
                 Ok(v) => self.sum = v,
-                Err(e) => return Err(DataFusionError::Internal("error".to_string())),
+                Err(e) => return Err(DataFusionError::from(arithmetic_overflow_error("integer"))),
             },
         }
         Ok(())
     }
 }
 
-struct SumDecimalGroupsAccumulator {
+struct SumIntGroupsAccumulator {
     sums: Vec<i64>,
     eval_mode: EvalMode,
 }
 
-impl SumDecimalGroupsAccumulator {
+impl SumIntGroupsAccumulator {
     fn new(eval_mode: EvalMode) -> Self {
         Self {
             sums: Vec::new(),
@@ -267,7 +254,7 @@ impl SumDecimalGroupsAccumulator {
     }
 }
 
-impl GroupsAccumulator for SumDecimalGroupsAccumulator {
+impl GroupsAccumulator for SumIntGroupsAccumulator {
     fn update_batch(
         &mut self,
         values: &[ArrayRef],
@@ -285,13 +272,13 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         for (&group_index, &value) in iter {
             match self.eval_mode {
                 EvalMode::Legacy | EvalMode::Try => {
-                    self.sums[group_index].add_wrapping(value);
+                    self.sums[group_index] = self.sums[group_index].add_wrapping(value);
                 }
                 EvalMode::Ansi => {
                     match self.sums[group_index].add_checked(value) {
-                        Ok(v) => v,
+                        Ok(v) => self.sums[group_index] = v,
                         Err(e) => {
-                            return Err(DataFusionError::Internal("integer overflow".to_string()))
+                            return Err(DataFusionError::from(arithmetic_overflow_error("integer")))
                         }
                     };
                 }
@@ -344,11 +331,11 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         for (&group_index, &value) in iter {
             match self.eval_mode {
                 EvalMode::Legacy | EvalMode::Try => {
-                    self.sums[group_index].add_wrapping(value);
+                    self.sums[group_index] = self.sums[group_index].add_wrapping(value);
                 }
                 EvalMode::Ansi => {
                     match self.sums[group_index].add_checked(value) {
-                        Ok(v) => v,
+                        Ok(v) => self.sums[group_index] = v,
                         Err(e) => {
                             return Err(DataFusionError::Internal("integer overflow".to_string()))
                         }

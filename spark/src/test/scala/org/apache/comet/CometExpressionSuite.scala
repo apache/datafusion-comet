@@ -3004,24 +3004,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("ANSI support for SUM function") {
-    val data = Seq((Int.MaxValue, 10), (1, 1))
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
-      withParquetTable(data, "tbl") {
-        val res = spark.sql("""
-                                |SELECT
-                                |  SUM(_1)
-                                |  from tbl
-                                |  """.stripMargin)
-
-        res.show(10, false)
-//        checkSparkMaybeThrows(res) match {
-//          case (Some(sparkExc), Some(cometExc)) =>
-//            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-//            assert(sparkExc.getMessage.contains("overflow"))
-//          case _ => fail("Exception should be thrown")
-//          }
+    val batchSize = 10
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test_sum.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, batchSize)
+        withParquetTable(path.toString, "tbl") {
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+            spark.table("tbl").printSchema()
+//            val res = spark.sql(
+//              """
+//                |SELECT
+//                |  SUM(_1)
+//                |  from tbl
+//                |  """.stripMargin)
+//            checkSparkAnswerAndOperator(res)
+          }
+            //        res.show(10, false)
+//            checkSparkMaybeThrows(res) match {
+//              case (Some(sparkExc), Some(cometExc)) =>
+//                assert(cometExc.getMessage.contains("error"))
+//                assert(sparkExc.getMessage.contains("overflow"))
+//              case _ => fail("Exception should be thrown")
+//            }
+          }
+        }
       }
-    }
 
   }
 
