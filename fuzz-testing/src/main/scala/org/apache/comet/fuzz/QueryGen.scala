@@ -126,13 +126,13 @@ object QueryGen {
         case SparkIntegralType =>
           r.nextInt(10).toString
         case SparkStringType =>
-          s""""${r.nextString(4)}""""
+          formatLiteral(r.nextString(4), SparkStringType)
         case SparkTimestampType =>
           "now()"
         case SparkTypeWithValues(sparkType, values) =>
           // choose between known valid input and random input
           if (r.nextBoolean()) {
-            Utils.randomChoice(values, r)
+            formatLiteral(Utils.randomChoice(values, r), sparkType)
           } else {
             pickRandomColumnOrLiteral(r, df, sparkType)
           }
@@ -141,6 +141,13 @@ object QueryGen {
       }
     } else {
       pickRandomColumn(r, df, targetType)
+    }
+  }
+
+  private def formatLiteral(validValue: Any, sparkType: SparkType): String = {
+    sparkType match {
+      case SparkStringType => s""""$validValue""""
+      case _ => validValue.toString
     }
   }
 
