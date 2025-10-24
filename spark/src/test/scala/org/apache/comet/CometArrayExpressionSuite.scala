@@ -778,13 +778,14 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   test("array_reverse - fallback for binary array") {
     val fallbackReason =
       if (CometConf.COMET_NATIVE_SCAN_IMPL.key == CometConf.SCAN_NATIVE_COMET || sys.env
-          .getOrElse("COMET_PARQUET_SCAN_IMPL", "") == CometConf.SCAN_NATIVE_COMET) {
+        .getOrElse("COMET_PARQUET_SCAN_IMPL", "") == CometConf.SCAN_NATIVE_COMET) {
         "Unsupported schema"
       } else {
         CometArrayReverse.unsupportedReason
       }
     withTable("t1") {
-      sql("""create table t1 using parquet as
+      sql(
+        """create table t1 using parquet as
           select cast(null as array<binary>) c1, cast(array() as array<binary>) c2
           from range(10)
         """)
@@ -800,6 +801,31 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       checkSparkAnswerAndFallbackReason(
         "select reverse(array(array(c1), array(c2))) AS x FROM t1",
         fallbackReason)
+    }
+  }
+
+  test("array_reverse 2") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val options = DataGenOptions(
+          allowNull = true,
+          generateNegativeZero = false,
+          generateArray = true,
+          generateStruct = false,
+          generateMap = false)
+        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+      }
+      withTempView("t1") {
+        val table = spark.read.parquet(filename)
+        table.createOrReplaceTempView("t1")
+        for (field <- table.schema.fields.filter(_.dataType.isInstanceOf[ArrayType])) {
+          val sql = s"SELECT ${field.name}, reverse(${field.name}) FROM t1 ORDER BY ${field.name}"
+          checkSparkAnswer(sql)
+        }
+      }
     }
   }
 }

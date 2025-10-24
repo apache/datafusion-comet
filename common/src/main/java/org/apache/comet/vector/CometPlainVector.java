@@ -147,6 +147,9 @@ public class CometPlainVector extends CometDecodedVector {
 
   @Override
   public byte[] getBinary(int rowId) {
+    if (isNullAt(rowId)) {
+      return null;
+    }
     int offset;
     int length;
     if (valueVector instanceof BaseVariableWidthVector) {
