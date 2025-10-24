@@ -241,7 +241,7 @@ impl Accumulator for SumIntegerAccumulator {
                 Ok(v) => self.sum = v,
                 Err(e) =>
                 if (self.eval_mode == EvalMode::Ansi){
-                    return Err(DataFusionError::from(arithmetic_overflow_error("integer"))),
+                    return Err(DataFusionError::from(arithmetic_overflow_error("integer")))
                 }
                 else{
                     self.sum = None.unwrap();
