@@ -32,8 +32,6 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, exprToProtoInternal, 
 
 object CometSortOrder extends CometExpressionSerde[SortOrder] {
 
-  val floatFallbackMessage = "Complex types containing floating-point not supported"
-
   override def getSupportLevel(expr: SortOrder): SupportLevel = {
 
     def containsFloatingPoint(dt: DataType): Boolean = {
@@ -48,7 +46,7 @@ object CometSortOrder extends CometExpressionSerde[SortOrder] {
     }
 
     if (containsFloatingPoint(expr.child.dataType)) {
-      Incompatible(Some(floatFallbackMessage))
+      Incompatible(Some(s"Sorting on floating-point is not 100% compatible with Spark. ${CometConf.COMPAT_GUIDE}"))
     } else {
       Compatible()
     }
