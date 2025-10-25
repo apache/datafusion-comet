@@ -371,13 +371,12 @@ impl IcebergFileStream {
                         }
                     }
 
-                    // Poll current stream for next batch
-                    match ready!(current.poll_next_unpin(cx)) {
+                    // Poll current stream for next batch and record metrics
+                    match ready!(self
+                        .baseline_metrics
+                        .record_poll(current.poll_next_unpin(cx)))
+                    {
                         Some(result) => {
-                            // Record output metrics if batch is successful
-                            if let Ok(ref batch) = result {
-                                self.baseline_metrics.record_output(batch.num_rows());
-                            }
                             return Poll::Ready(Some(result));
                         }
                         None => {
