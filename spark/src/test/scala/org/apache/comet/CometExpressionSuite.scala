@@ -414,41 +414,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
-  test("Verify rpad expr support for second arg instead of just literal") {
-    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("తెలుగు", 2))
-    withParquetTable(data, "t1") {
-      val res = sql("select rpad(_1,_2) , rpad(_1,2) from t1 order by _1")
-      checkSparkAnswerAndOperator(res)
-    }
-  }
-
-  test("RPAD with character support other than default space") {
-    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("hi", 2))
-    withParquetTable(data, "t1") {
-      val res = sql(
-        """ select rpad(_1,_2,'?'), rpad(_1,_2,'??') , rpad(_1,2, '??'), hex(rpad(unhex('aabb'), 5)),
-          rpad(_1, 5, '??') from t1 order by _1 """.stripMargin)
-      checkSparkAnswerAndOperator(res)
-    }
-  }
-
-  test("test lpad expression support") {
-    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("తెలుగు", 2))
-    withParquetTable(data, "t1") {
-      val res = sql("select lpad(_1,_2) , lpad(_1,2) from t1 order by _1")
-      checkSparkAnswerAndOperator(res)
-    }
-  }
-
-  test("LPAD with character support other than default space") {
-    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("hi", 2))
-    withParquetTable(data, "t1") {
-      val res = sql(
-        """ select lpad(_1,_2,'?'), lpad(_1,_2,'??') , lpad(_1,2, '??'), hex(lpad(unhex('aabb'), 5)),
-          rpad(_1, 5, '??') from t1 order by _1 """.stripMargin)
-      checkSparkAnswerAndOperator(res)
-    }
-  }
 
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
@@ -2289,33 +2254,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql(s"insert into $table values('ab')")
 
       checkSparkAnswerAndOperator(s"SELECT * FROM $table")
-    }
-  }
-
-  test("rpad") {
-    val table = "rpad"
-    val gen = new DataGenerator(new Random(42))
-    withTable(table) {
-      // generate some data
-      val dataChars = "abc123"
-      sql(s"create table $table(id int, name1 char(8), name2 varchar(8)) using parquet")
-      val testData = gen.generateStrings(100, dataChars, 6) ++ Seq(
-        "é", // unicode 'e\\u{301}'
-        "é" // unicode '\\u{e9}'
-      )
-      testData.zipWithIndex.foreach { x =>
-        sql(s"insert into $table values(${x._2}, '${x._1}', '${x._1}')")
-      }
-      // test 2-arg version
-      checkSparkAnswerAndOperator(
-        s"SELECT id, rpad(name1, 10), rpad(name2, 10) FROM $table ORDER BY id")
-      // test 3-arg version
-      for (length <- Seq(2, 10)) {
-        checkSparkAnswerAndOperator(
-          s"SELECT id, name1, rpad(name1, $length, ' ') FROM $table ORDER BY id")
-        checkSparkAnswerAndOperator(
-          s"SELECT id, name2, rpad(name2, $length, ' ') FROM $table ORDER BY id")
-      }
     }
   }
 

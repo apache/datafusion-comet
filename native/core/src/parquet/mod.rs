@@ -46,9 +46,11 @@ use jni::{
 
 use self::util::jni::TypePromotionInfo;
 use crate::execution::jni_api::get_runtime;
+use crate::execution::metrics::utils::update_comet_metric;
 use crate::execution::operators::ExecutionError;
 use crate::execution::planner::PhysicalPlanner;
 use crate::execution::serde;
+use crate::execution::spark_plan::SparkPlan;
 use crate::execution::utils::SparkArrowConvert;
 use crate::jvm_bridge::{jni_new_global_ref, JVMClasses};
 use crate::parquet::data_type::AsBytes;
@@ -600,6 +602,8 @@ enum ParquetReaderState {
 }
 /// Parquet read context maintained across multiple JNI calls.
 struct BatchContext {
+    native_plan: Arc<SparkPlan>,
+    metrics_node: Arc<GlobalRef>,
     batch_stream: Option<SendableRecordBatchStream>,
     current_batch: Option<RecordBatch>,
     reader_state: ParquetReaderState,
@@ -697,6 +701,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     case_sensitive: jboolean,
     object_store_options: JObject,
     key_unwrapper_obj: JObject,
+    metrics_node: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         JVMClasses::init(&mut env);
@@ -776,6 +781,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
         let batch_stream = Some(scan.execute(partition_index, session_ctx.task_ctx())?);
 
         let ctx = BatchContext {
+            native_plan: Arc::new(SparkPlan::new(0, scan, vec![])),
+            metrics_node: Arc::new(jni_new_global_ref!(env, metrics_node)?),
             batch_stream,
             current_batch: None,
             reader_state: ParquetReaderState::Init,
@@ -791,7 +798,7 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_readNextRecordBatch(
     _jclass: JClass,
     handle: jlong,
 ) -> jint {
-    try_unwrap_or_throw(&e, |_env| {
+    try_unwrap_or_throw(&e, |mut env| {
         let context = get_batch_context(handle)?;
         let mut rows_read: i32 = 0;
         let batch_stream = context.batch_stream.as_mut().unwrap();
@@ -813,8 +820,11 @@ pub extern "system" fn Java_org_apache_comet_parquet_Native_readNextRecordBatch(
                 Poll::Ready(None) => {
                     // EOF
 
-                    // TODO: (ARROW NATIVE) We can update metrics here
-                    // crate::execution::jni_api::update_metrics(&mut env, exec_context)?;
+                    update_comet_metric(
+                        &mut env,
+                        context.metrics_node.as_obj(),
+                        &context.native_plan,
+                    )?;
 
                     context.current_batch = None;
                     context.reader_state = ParquetReaderState::Complete;

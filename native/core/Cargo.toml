@@ -94,7 +94,7 @@ jni = { version = "0.21", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "9"
 hex = "0.4.3"
-datafusion-functions-nested = { version = "50.2.0" }
+datafusion-functions-nested = { version = "50.3.0" }
 
 [features]
 backtrace = ["datafusion/backtrace"]
@@ -105,7 +105,7 @@ jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
 
 # exclude optional packages from cargo machete verifications
 [package.metadata.cargo-machete]
-ignored = ["hdfs-sys"]
+ignored = ["datafusion-comet-objectstore-hdfs", "hdfs-sys"]
 
 [lib]
 name = "comet"

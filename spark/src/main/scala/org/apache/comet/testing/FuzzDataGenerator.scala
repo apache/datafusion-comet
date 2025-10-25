@@ -194,8 +194,13 @@ object FuzzDataGenerator {
             case 1 => r.nextInt().toByte.toString
             case 2 => r.nextLong().toString
             case 3 => r.nextDouble().toString
-            case 4 => RandomStringUtils.randomAlphabetic(8)
-            case _ => r.nextString(8)
+            case 4 => RandomStringUtils.randomAlphabetic(options.maxStringLength)
+            case 5 =>
+              // use a constant value to trigger dictionary encoding
+              "dict_encode_me!"
+            case 6 if options.customStrings.nonEmpty =>
+              randomChoice(options.customStrings, r)
+            case _ => r.nextString(options.maxStringLength)
           }
         })
       case DataTypes.BinaryType =>
@@ -218,6 +223,11 @@ object FuzzDataGenerator {
       case _ => throw new IllegalStateException(s"Cannot generate data for $dataType yet")
     }
   }
+
+  private def randomChoice[T](list: Seq[T], r: Random): T = {
+    list(r.nextInt(list.length))
+  }
+
 }
 
 object SchemaGenOptions {
@@ -247,4 +257,6 @@ case class SchemaGenOptions(
 case class DataGenOptions(
     allowNull: Boolean = true,
     generateNegativeZero: Boolean = true,
-    baseDate: Long = FuzzDataGenerator.defaultBaseDate)
+    baseDate: Long = FuzzDataGenerator.defaultBaseDate,
+    customStrings: Seq[String] = Seq.empty,
+    maxStringLength: Int = 8)

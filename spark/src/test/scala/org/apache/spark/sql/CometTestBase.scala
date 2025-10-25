@@ -166,6 +166,13 @@ abstract class CometTestBase
     (sparkPlan, dfComet.queryExecution.executedPlan)
   }
 
+  /** Check for the correct results as well as the expected fallback reason */
+  def checkSparkAnswerAndFallbackReason(sql: String, fallbackReason: String): Unit = {
+    val (_, cometPlan) = checkSparkAnswer(sql)
+    val explain = new ExtendedExplainInfo().generateVerboseExtendedInfo(cometPlan)
+    assert(explain.contains(fallbackReason))
+  }
+
   protected def checkSparkAnswerAndOperator(query: String, excludedClasses: Class[_]*): Unit = {
     checkSparkAnswerAndOperator(sql(query), excludedClasses: _*)
   }

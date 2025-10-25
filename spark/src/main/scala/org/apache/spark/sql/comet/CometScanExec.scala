@@ -246,32 +246,25 @@ case class CometScanExec(
     }
   }
 
-  override lazy val metrics: Map[String, SQLMetric] = wrapped.metrics ++ {
-    // Tracking scan time has overhead, we can't afford to do it for each row, and can only do
-    // it for each batch.
-    if (supportsColumnar) {
-      Map(
-        "scanTime" -> SQLMetrics.createNanoTimingMetric(
-          sparkContext,
-          "scan time")) ++ CometMetricNode.scanMetrics(sparkContext)
-    } else {
-      Map.empty
-    }
-  } ++ {
-    relation.fileFormat match {
-      case f: MetricsSupport => f.initMetrics(sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] =
+    wrapped.driverMetrics ++ CometMetricNode.baseScanMetrics(
+      session.sparkContext) ++ (relation.fileFormat match {
+      case m: MetricsSupport => m.getMetrics
       case _ => Map.empty
-    }
-  }
+    })
 
   protected override def doExecute(): RDD[InternalRow] = {
     ColumnarToRowExec(this).doExecute()
   }
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    val rdd = inputRDD.asInstanceOf[RDD[ColumnarBatch]]
+
+    // These metrics are important for streaming solutions.
+    // despite there being similar metrics published by the native reader.
     val numOutputRows = longMetric("numOutputRows")
     val scanTime = longMetric("scanTime")
-    inputRDD.asInstanceOf[RDD[ColumnarBatch]].mapPartitionsInternal { batches =>
+    rdd.mapPartitionsInternal { batches =>
       new Iterator[ColumnarBatch] {
 
         override def hasNext: Boolean = {
@@ -512,10 +505,12 @@ object CometScanExec {
     // https://github.com/apache/arrow-datafusion-comet/issues/190
     def transform(arg: Any): AnyRef = arg match {
       case _: HadoopFsRelation =>
-        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(scanImpl))(session)
+        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(session, scanImpl))(
+          session)
       case other: AnyRef => other
       case null => null
     }
+
     val newArgs = mapProductIterator(scanExec, transform)
     val wrapped = scanExec.makeCopy(newArgs).asInstanceOf[FileSourceScanExec]
     val batchScanExec = CometScanExec(

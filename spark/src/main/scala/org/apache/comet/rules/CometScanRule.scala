@@ -203,7 +203,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        if (scanImpl != CometConf.SCAN_NATIVE_COMET && encryptionEnabled(hadoopConf)) {
+        if (encryptionEnabled(hadoopConf) && scanImpl != CometConf.SCAN_NATIVE_COMET) {
           if (!isEncryptionConfigSupported(hadoopConf)) {
             return withInfos(scanExec, fallbackReasons.toSet)
           }
@@ -257,7 +257,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         }
 
         if (schemaSupported && partitionSchemaSupported && scan.pushedAggregate.isEmpty) {
-          val cometScan = CometParquetScan(scanExec.scan.asInstanceOf[ParquetScan])
+          val cometScan = CometParquetScan(session, scanExec.scan.asInstanceOf[ParquetScan])
           CometBatchScanExec(
             scanExec.copy(scan = cometScan),
             runtimeFilters = scanExec.runtimeFilters)

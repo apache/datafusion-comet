@@ -30,6 +30,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
+import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.execution.datasources.DataSourceUtils
 import org.apache.spark.sql.execution.datasources.PartitionedFile
 import org.apache.spark.sql.execution.datasources.RecordReaderIterator
@@ -56,10 +57,14 @@ import org.apache.comet.vector.CometVector
  *     in [[org.apache.comet.CometSparkSessionExtensions]]
  *   - `buildReaderWithPartitionValues`, so Spark calls Comet's Parquet reader to read values.
  */
-class CometParquetFileFormat(scanImpl: String)
+class CometParquetFileFormat(session: SparkSession, scanImpl: String)
     extends ParquetFileFormat
     with MetricsSupport
     with ShimSQLConf {
+  metrics =
+    CometMetricNode.nativeScanMetrics(session.sparkContext) ++ CometMetricNode.parquetScanMetrics(
+      session.sparkContext)
+
   override def shortName(): String = "parquet"
   override def toString: String = "CometParquet"
   override def hashCode(): Int = getClass.hashCode()
@@ -164,7 +169,8 @@ class CometParquetFileFormat(scanImpl: String)
             datetimeRebaseSpec.mode == CORRECTED,
             partitionSchema,
             file.partitionValues,
-            metrics.asJava)
+            metrics.asJava,
+            CometMetricNode(metrics))
           try {
             batchReader.init()
           } catch {
