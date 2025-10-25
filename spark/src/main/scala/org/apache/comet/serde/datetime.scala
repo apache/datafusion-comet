@@ -19,8 +19,11 @@
 
 package org.apache.comet.serde
 
+import java.util.Locale
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.types.{DateType, IntegerType}
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
@@ -256,6 +259,23 @@ object CometDateAdd extends CometScalarFunction[DateAdd]("date_add")
 object CometDateSub extends CometScalarFunction[DateSub]("date_sub")
 
 object CometTruncDate extends CometExpressionSerde[TruncDate] {
+
+  val supportedFormats: Seq[String] =
+    Seq("year", "yyyy", "yy", "quarter", "mon", "month", "mm", "week")
+
+  override def getSupportLevel(expr: TruncDate): SupportLevel = {
+    expr.format match {
+      case Literal(fmt: UTF8String, _) =>
+        if (supportedFormats.contains(fmt.toString.toLowerCase(Locale.ROOT))) {
+          Compatible()
+        } else {
+          Unsupported(Some(s"Format $fmt is not supported"))
+        }
+      case _ =>
+        Unsupported(Some("Format must be a literal"))
+    }
+  }
+
   override def convert(
       expr: TruncDate,
       inputs: Seq[Attribute],
@@ -274,6 +294,40 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
 }
 
 object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
+
+  val supportedFormats: Seq[String] =
+    Seq(
+      "year",
+      "yyyy",
+      "yy",
+      "quarter",
+      "mon",
+      "month",
+      "mm",
+      "week",
+      "day",
+      "dd",
+      "microsecond",
+      "millisecond",
+      "second",
+      "minute",
+      "hour",
+      "week",
+      "quarter")
+
+  override def getSupportLevel(expr: TruncTimestamp): SupportLevel = {
+    expr.format match {
+      case Literal(fmt: UTF8String, _) =>
+        if (supportedFormats.contains(fmt.toString.toLowerCase(Locale.ROOT))) {
+          Compatible()
+        } else {
+          Unsupported(Some(s"Format $fmt is not supported"))
+        }
+      case _ =>
+        Unsupported(Some("Format must be a literal"))
+    }
+  }
+
   override def convert(
       expr: TruncTimestamp,
       inputs: Seq[Attribute],
