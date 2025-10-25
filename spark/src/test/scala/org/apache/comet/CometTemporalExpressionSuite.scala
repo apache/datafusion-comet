@@ -21,7 +21,7 @@ package org.apache.comet
 
 import scala.util.Random
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, SaveMode}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -60,19 +60,14 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       "Format must be a literal")
   }
 
-  test("date_trunc (TruncTimestamp)") {
+  test("date_trunc (TruncTimestamp) - reading from DataFrame") {
     val supportedFormats = CometTruncTimestamp.supportedFormats
     val unsupportedFormats = Seq("invalid")
 
-    val r = new Random(42)
-    val schema = StructType(
-      Seq(
-        StructField("c0", DataTypes.TimestampType, true),
-        StructField("fmt", DataTypes.StringType, true)))
-    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
-    df.createOrReplaceTempView("tbl")
+    createTimestampTestData.createOrReplaceTempView("tbl")
 
-    // TODO test fails if timezone not set to UTC
+    // TODO test fails with non-UTC timezone
+    // https://github.com/apache/datafusion-comet/issues/2649
     withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
       for (format <- supportedFormats) {
         checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
@@ -90,4 +85,41 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
+  test("date_trunc (TruncTimestamp) - reading from Parquet") {
+    val supportedFormats = CometTruncTimestamp.supportedFormats
+    val unsupportedFormats = Seq("invalid")
+
+    withTempDir { path =>
+      createTimestampTestData.write.mode(SaveMode.Overwrite).parquet(path.toString)
+      spark.read.parquet(path.toString).createOrReplaceTempView("tbl")
+
+      // TODO test fails with non-UTC timezone
+      // https://github.com/apache/datafusion-comet/issues/2649
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+        for (format <- supportedFormats) {
+          checkSparkAnswerAndOperator(
+            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
+        }
+        for (format <- unsupportedFormats) {
+          // Comet should fall back to Spark for unsupported or invalid formats
+          checkSparkAnswerAndFallbackReason(
+            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
+            s"Format $format is not supported")
+        }
+        // Comet should fall back to Spark if format is not a literal
+        checkSparkAnswerAndFallbackReason(
+          "SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt",
+          "Format must be a literal")
+      }
+    }
+  }
+
+  private def createTimestampTestData = {
+    val r = new Random(42)
+    val schema = StructType(
+      Seq(
+        StructField("c0", DataTypes.TimestampType, true),
+        StructField("fmt", DataTypes.StringType, true)))
+    FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
+  }
 }
