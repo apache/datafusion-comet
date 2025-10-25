@@ -292,6 +292,8 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
     withTempDir { dir =>
       withSQLConf(
         DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
+        CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_HASH_JOIN_ENABLED.key -> "true",
         KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
           "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
         InMemoryKMS.KEY_LIST_PROPERTY_NAME ->

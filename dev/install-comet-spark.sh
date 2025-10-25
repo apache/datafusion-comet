@@ -71,6 +71,8 @@ set -x
 rm -rf /root/.m2/repository/org/apache/parquet
 # Removing local cached protobuf that also causes building Spark with SBT
 rm -rf /root/.m2/repository/com/google/protobuf
+# Removing local cached commons that also causes building Spark with SBT
+rm -rf /root/.m2/repository/org/apache/commons
 
 rm -rf /root/.m2/repository/commons-io
 

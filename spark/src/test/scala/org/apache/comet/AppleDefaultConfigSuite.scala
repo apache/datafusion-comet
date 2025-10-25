@@ -38,16 +38,14 @@ class AppleDefaultConfigSuite extends CometTestBase {
     assert(CometConf.COMET_NATIVE_SCAN_ENABLED.defaultValue.get)
     assert(CometConf.COMET_EXEC_ENABLED.defaultValue.get)
 
-    // individual execs all default to enabled
+    // individual execs all default to enabled, except for hash join
     assert(CometConf.COMET_EXEC_AGGREGATE_ENABLED.defaultValue.get)
     assert(CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.defaultValue.get)
-    assert(CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.defaultValue.get)
     assert(CometConf.COMET_EXEC_COALESCE_ENABLED.defaultValue.get)
     assert(CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.defaultValue.get)
     assert(CometConf.COMET_EXEC_EXPAND_ENABLED.defaultValue.get)
     assert(CometConf.COMET_EXEC_FILTER_ENABLED.defaultValue.get)
     assert(CometConf.COMET_EXEC_GLOBAL_LIMIT_ENABLED.defaultValue.get)
-    assert(CometConf.COMET_EXEC_HASH_JOIN_ENABLED.defaultValue.get)
     assert(CometConf.COMET_EXEC_LOCAL_LIMIT_ENABLED.defaultValue.get)
     assert(CometConf.COMET_EXEC_PROJECT_ENABLED.defaultValue.get)
     assert(CometConf.COMET_EXEC_SORT_ENABLED.defaultValue.get)
@@ -56,11 +54,15 @@ class AppleDefaultConfigSuite extends CometTestBase {
     assert(CometConf.COMET_EXEC_UNION_ENABLED.defaultValue.get)
     assert(CometConf.COMET_EXEC_WINDOW_ENABLED.defaultValue.get)
 
+    // there is no spill support for hash join, so it is opt-in for now
+    assert(!CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.defaultValue.get)
+    assert(!CometConf.COMET_EXEC_HASH_JOIN_ENABLED.defaultValue.get)
+
     // SMJ + join condition has known issues
     assert(!CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.defaultValue.get)
 
-    // shuffle is disabled by default due to memory issues
-    assert(!CometConf.COMET_EXEC_SHUFFLE_ENABLED.defaultValue.get)
+    // shuffle is enabled by default
+    assert(CometConf.COMET_EXEC_SHUFFLE_ENABLED.defaultValue.get)
     assert("auto" == CometConf.COMET_SHUFFLE_MODE.defaultValue.get)
   }
 

@@ -254,6 +254,8 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_HASH_JOIN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
       // COMET_EXPR_ALLOW_INCOMPATIBLE is needed for Spark 4.0.0 / ANSI support
       // as well as for v1.4/q9, v1.4/q44, v2.7.0/q6, v2.7.0/q64

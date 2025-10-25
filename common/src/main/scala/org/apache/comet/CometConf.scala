@@ -235,11 +235,11 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_GLOBAL_LIMIT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("globalLimit", defaultValue = true)
   val COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig("broadcastHashJoin", defaultValue = true)
+    createExecEnabledConfig("broadcastHashJoin", defaultValue = false) // Disabled for Apple Comet
   val COMET_EXEC_BROADCAST_EXCHANGE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("broadcastExchange", defaultValue = true)
   val COMET_EXEC_HASH_JOIN_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig("hashJoin", defaultValue = true)
+    createExecEnabledConfig("hashJoin", defaultValue = false) // Disabled for Apple Comet
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
@@ -316,7 +316,7 @@ object CometConf extends ShimCometConf {
           "`spark.shuffle.manager` must be set before starting the Spark application and " +
           "cannot be changed during the application.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
     .category(CATEGORY_SHUFFLE)
