@@ -21,13 +21,71 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, Descending, NullsFirst, NullsLast, SortOrder}
 import org.apache.spark.sql.execution.SortExec
-import org.apache.spark.sql.types.DataTypes
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, MapType, StructType}
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, exprToProtoInternal, supportedSortType}
+
+object CometSortOrder extends CometExpressionSerde[SortOrder] {
+
+  val floatFallbackMessage = "Complex types containing floating-point not supported"
+
+  override def getSupportLevel(expr: SortOrder): SupportLevel = {
+
+    def containsFloatingPoint(dt: DataType): Boolean = {
+      dt match {
+        case DataTypes.FloatType | DataTypes.DoubleType => true
+        case ArrayType(elementType, _) => containsFloatingPoint(elementType)
+        case StructType(fields) => fields.exists(f => containsFloatingPoint(f.dataType))
+        case MapType(keyType, valueType, _) =>
+          containsFloatingPoint(keyType) || containsFloatingPoint(valueType)
+        case _ => false
+      }
+    }
+
+    if (containsFloatingPoint(expr.child.dataType)) {
+      Incompatible(Some(floatFallbackMessage))
+    } else {
+      Compatible()
+    }
+  }
+
+  override def convert(
+      expr: SortOrder,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+
+    if (childExpr.isDefined) {
+      val sortOrderBuilder = ExprOuterClass.SortOrder.newBuilder()
+
+      sortOrderBuilder.setChild(childExpr.get)
+
+      expr.direction match {
+        case Ascending => sortOrderBuilder.setDirectionValue(0)
+        case Descending => sortOrderBuilder.setDirectionValue(1)
+      }
+
+      expr.nullOrdering match {
+        case NullsFirst => sortOrderBuilder.setNullOrderingValue(0)
+        case NullsLast => sortOrderBuilder.setNullOrderingValue(1)
+      }
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setSortOrder(sortOrderBuilder)
+          .build())
+    } else {
+      withInfo(expr, expr.child)
+      None
+    }
+  }
+}
 
 object CometSort extends CometOperatorSerde[SortExec] {
 
@@ -43,22 +101,7 @@ object CometSort extends CometOperatorSerde[SortExec] {
       return None
     }
 
-    val sortOrders: Seq[Option[ExprOuterClass.Expr]] = op.sortOrder.map {
-      case expr
-          if expr.dataType == DataTypes.FloatType || expr.dataType == DataTypes.DoubleType =>
-        // handle negative zero correctly
-        exprToProto(expr, op.child.output).map(exprProto =>
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setNormalizeNanAndZero(
-              ExprOuterClass.NormalizeNaNAndZero
-                .newBuilder()
-                .setChild(exprProto)
-                .setDatatype(serializeDataType(expr.dataType).get))
-            .build())
-      case expr =>
-        exprToProto(expr, op.child.output)
-    }
+    val sortOrders = op.sortOrder.map(exprToProto(_, op.child.output))
 
     if (sortOrders.forall(_.isDefined) && childOp.nonEmpty) {
       val sortBuilder = OperatorOuterClass.Sort

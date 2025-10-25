@@ -65,7 +65,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val schema = StructType(
       Seq(
         StructField("c0", DataTypes.FloatType, true),
-        StructField("c0", DataTypes.DoubleType, true)))
+        StructField("c1", DataTypes.DoubleType, true)))
     val df = FuzzDataGenerator.generateDataFrame(
       new Random(42),
       spark,
@@ -73,7 +73,47 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       1000,
       DataGenOptions(generateNegativeZero = true))
     df.createOrReplaceTempView("tbl")
-    checkSparkAnswerAndOperator("select * from tbl order by 1, 2")
+
+    // TODO check fallback reason
+    checkSparkAnswer("select * from tbl order by 1, 2")
+  }
+
+  test("sort array of floating point with negative zero") {
+    val schema = StructType(
+      Seq(
+        StructField("c0", DataTypes.createArrayType(DataTypes.FloatType), true),
+        StructField("c1", DataTypes.createArrayType(DataTypes.DoubleType), true)))
+    val df = FuzzDataGenerator.generateDataFrame(
+      new Random(42),
+      spark,
+      schema,
+      1000,
+      DataGenOptions(generateNegativeZero = true))
+    df.createOrReplaceTempView("tbl")
+
+    // TODO check fallback reason
+    checkSparkAnswer("select * from tbl order by 1, 2")
+  }
+
+  test("sort struct containing floating point with negative zero") {
+    val schema = StructType(
+      Seq(
+        StructField(
+          "float_struct",
+          StructType(Seq(StructField("c0", DataTypes.FloatType, true)))),
+        StructField(
+          "float_double",
+          StructType(Seq(StructField("c0", DataTypes.DoubleType, true))))))
+    val df = FuzzDataGenerator.generateDataFrame(
+      new Random(42),
+      spark,
+      schema,
+      1000,
+      DataGenOptions(generateNegativeZero = true))
+    df.createOrReplaceTempView("tbl")
+
+    // TODO check fallback reason
+    checkSparkAnswer("select * from tbl order by 1, 2")
   }
 
   test("compare true/false to negative zero") {
