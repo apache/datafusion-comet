@@ -46,7 +46,8 @@ object CometSortOrder extends CometExpressionSerde[SortOrder] {
     }
 
     if (containsFloatingPoint(expr.child.dataType)) {
-      Incompatible(Some(s"Sorting on floating-point is not 100% compatible with Spark. ${CometConf.COMPAT_GUIDE}"))
+      Incompatible(Some(
+        s"Sorting on floating-point is not 100% compatible with Spark. ${CometConf.COMPAT_GUIDE}"))
     } else {
       Compatible()
     }

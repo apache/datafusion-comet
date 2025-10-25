@@ -146,7 +146,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
       val sql = s"SELECT $randomColsSubset FROM t1 ORDER BY $randomColsSubset"
 
       // TODO
-      checkSparkAnswer/*AndOperator*/(sql)
+      checkSparkAnswer /*AndOperator*/ (sql)
     }
   }
 
