@@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{KeyGroupedPartitioning, Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.util.AccumulatorV2
 
 import com.google.common.base.Objects
 
@@ -92,6 +93,90 @@ case class CometIcebergNativeScanExec(
 
   override lazy val outputOrdering: Seq[SortOrder] = Nil
 
+  // Capture metric VALUES and TYPES (not objects!) in a serializable case class
+  // This survives serialization while SQLMetric objects get reset to 0
+  private case class MetricValue(name: String, value: Long, metricType: String)
+
+  /**
+   * Maps Iceberg V2 custom metric types to standard Spark metric types for better UI formatting.
+   *
+   * Iceberg uses V2 custom metrics which don't get formatted in Spark UI (they just show raw
+   * numbers). By mapping to standard Spark types, we get proper formatting:
+   *   - "size" metrics: formatted as KB/MB/GB (e.g., "10.3 GB" instead of "11040868925")
+   *   - "timing" metrics: formatted as ms/s (e.g., "200 ms" instead of "200")
+   *   - "sum" metrics: plain numbers with commas (e.g., "1,000")
+   *
+   * This provides better UX than vanilla Iceberg Java which shows raw numbers.
+   */
+  private def mapMetricType(name: String, originalType: String): String = {
+    import java.util.Locale
+
+    // Only remap V2 custom metrics; leave standard Spark metrics unchanged
+    if (!originalType.startsWith("v2Custom_")) {
+      return originalType
+    }
+
+    // Map based on metric name patterns from Iceberg
+    val nameLower = name.toLowerCase(Locale.ROOT)
+    if (nameLower.contains("size")) {
+      "size" // Will format as KB/MB/GB
+    } else if (nameLower.contains("duration")) {
+      "timing" // Will format as ms/s (Iceberg durations are in milliseconds)
+    } else {
+      "sum" // Plain number formatting
+    }
+  }
+
+  private val capturedMetricValues: Seq[MetricValue] = {
+    originalPlan.metrics
+      .filterNot(_._1 == "numOutputRows")
+      .map { case (name, metric) =>
+        val mappedType = mapMetricType(name, metric.metricType)
+        MetricValue(name, metric.value, mappedType)
+      }
+      .toSeq
+  }
+
+  /**
+   * Immutable SQLMetric for planning metrics that don't change during execution.
+   *
+   * Regular SQLMetric extends AccumulatorV2, which means when execution completes, accumulator
+   * updates from executors (which are 0 since they don't update planning metrics) get merged back
+   * to the driver, overwriting the driver's values with 0.
+   *
+   * This class overrides the accumulator methods to make the metric truly immutable once set.
+   */
+  private class ImmutableSQLMetric(metricType: String, initialValue: Long)
+      extends SQLMetric(metricType, initialValue) {
+
+    // Override merge to do nothing - planning metrics are not updated during execution
+    override def merge(other: AccumulatorV2[Long, Long]): Unit = {
+      // Do nothing - this metric's value is immutable
+    }
+
+    // Override reset to do nothing - planning metrics should never be reset
+    override def reset(): Unit = {
+      // Do nothing - this metric's value is immutable
+    }
+  }
+
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val baseMetrics = Map(
+      "output_rows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
+
+    // Create IMMUTABLE metrics with captured values AND types
+    // these won't be affected by accumulator merges
+    val icebergMetrics = capturedMetricValues.map { mv =>
+      // Create the immutable metric with original type and initial value
+      val metric = new ImmutableSQLMetric(mv.metricType, mv.value)
+      // Register it with SparkContext to assign metadata (name, etc.)
+      sparkContext.register(metric, mv.name)
+      mv.name -> metric
+    }.toMap
+
+    baseMetrics ++ icebergMetrics
+  }
+
   override protected def doCanonicalize(): CometIcebergNativeScanExec = {
     CometIcebergNativeScanExec(
       nativeOp,
@@ -125,33 +210,6 @@ case class CometIcebergNativeScanExec(
       output.asJava,
       serializedPlanOpt,
       numPartitions: java.lang.Integer)
-
-  override lazy val metrics: Map[String, SQLMetric] = {
-    Map(
-      "output_rows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
-      "time_elapsed_opening" ->
-        SQLMetrics.createNanoTimingMetric(
-          sparkContext,
-          "Wall clock time elapsed for FileIO initialization"),
-      "time_elapsed_scanning_until_data" ->
-        SQLMetrics.createNanoTimingMetric(
-          sparkContext,
-          "Wall clock time elapsed for scanning + first record batch"),
-      "time_elapsed_scanning_total" ->
-        SQLMetrics.createNanoTimingMetric(
-          sparkContext,
-          "Total wall clock time for scanning + decompression/decoding"),
-      "time_elapsed_processing" ->
-        SQLMetrics.createNanoTimingMetric(
-          sparkContext,
-          "Wall clock time elapsed for data decompression + decoding"),
-      "bytes_scanned" ->
-        SQLMetrics.createSizeMetric(sparkContext, "Number of bytes scanned"),
-      "files_scanned" ->
-        SQLMetrics.createMetric(sparkContext, "Number of data files scanned"),
-      "manifest_files_scanned" ->
-        SQLMetrics.createMetric(sparkContext, "Number of manifest files scanned"))
-  }
 }
 
 object CometIcebergNativeScanExec {

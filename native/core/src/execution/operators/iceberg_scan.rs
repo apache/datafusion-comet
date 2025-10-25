@@ -30,6 +30,7 @@ use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
@@ -58,6 +59,8 @@ pub struct IcebergScanExec {
     catalog_properties: HashMap<String, String>,
     /// Pre-planned file scan tasks from Scala, grouped by Spark partition
     file_task_groups: Option<Vec<Vec<iceberg::scan::FileScanTask>>>,
+    /// Metrics
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl IcebergScanExec {
@@ -73,12 +76,15 @@ impl IcebergScanExec {
 
         let plan_properties = Self::compute_properties(Arc::clone(&output_schema), num_partitions);
 
+        let metrics = ExecutionPlanMetricsSet::new();
+
         Ok(Self {
             metadata_location,
             output_schema,
             plan_properties,
             catalog_properties,
             file_task_groups,
+            metrics,
         })
     }
 
@@ -131,7 +137,7 @@ impl ExecutionPlan for IcebergScanExec {
             if partition < task_groups.len() {
                 let tasks = &task_groups[partition];
 
-                return self.execute_with_tasks(tasks.clone(), context);
+                return self.execute_with_tasks(tasks.clone(), partition, context);
             } else {
                 return Err(DataFusionError::Execution(format!(
                     "IcebergScanExec: Partition index {} out of range (only {} task groups available)",
@@ -147,6 +153,10 @@ impl ExecutionPlan for IcebergScanExec {
             partition
         )))
     }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
 }
 
 impl IcebergScanExec {
@@ -155,6 +165,7 @@ impl IcebergScanExec {
     fn execute_with_tasks(
         &self,
         tasks: Vec<iceberg::scan::FileScanTask>,
+        partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
@@ -165,9 +176,17 @@ impl IcebergScanExec {
         // Get batch size from context
         let batch_size = context.session_config().batch_size();
 
+        // Create baseline metrics for this partition
+        let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
+
         // Create parallel file stream that overlaps opening next file with reading current file
-        let file_stream =
-            IcebergFileStream::new(tasks, file_io, batch_size, Arc::clone(&output_schema))?;
+        let file_stream = IcebergFileStream::new(
+            tasks,
+            file_io,
+            batch_size,
+            Arc::clone(&output_schema),
+            baseline_metrics,
+        )?;
 
         // Note: BatchSplitStream adds overhead. Since we're already setting batch_size in
         // iceberg-rust's ArrowReaderBuilder, it should produce correctly sized batches.
@@ -223,6 +242,7 @@ struct IcebergFileStream {
     batch_size: usize,
     tasks: VecDeque<iceberg::scan::FileScanTask>,
     state: FileStreamState,
+    baseline_metrics: BaselineMetrics,
 }
 
 impl IcebergFileStream {
@@ -231,6 +251,7 @@ impl IcebergFileStream {
         file_io: FileIO,
         batch_size: usize,
         schema: SchemaRef,
+        baseline_metrics: BaselineMetrics,
     ) -> DFResult<Self> {
         Ok(Self {
             schema,
@@ -238,6 +259,7 @@ impl IcebergFileStream {
             batch_size,
             tasks: tasks.into_iter().collect(),
             state: FileStreamState::Idle,
+            baseline_metrics,
         })
     }
 
@@ -352,6 +374,10 @@ impl IcebergFileStream {
                     // Poll current stream for next batch
                     match ready!(current.poll_next_unpin(cx)) {
                         Some(result) => {
+                            // Record output metrics if batch is successful
+                            if let Ok(ref batch) = result {
+                                self.baseline_metrics.record_output(batch.num_rows());
+                            }
                             return Poll::Ready(Some(result));
                         }
                         None => {

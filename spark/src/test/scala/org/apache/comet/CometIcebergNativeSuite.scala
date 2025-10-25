@@ -1172,6 +1172,235 @@ class CometIcebergNativeSuite extends CometTestBase {
     }
   }
 
+  test("verify all Iceberg planning metrics are populated") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    val icebergPlanningMetricNames = Seq(
+      "totalPlanningDuration",
+      "totalDataManifest",
+      "scannedDataManifests",
+      "skippedDataManifests",
+      "resultDataFiles",
+      "skippedDataFiles",
+      "totalDataFileSize",
+      "totalDeleteManifests",
+      "scannedDeleteManifests",
+      "skippedDeleteManifests",
+      "totalDeleteFileSize",
+      "resultDeleteFiles",
+      "equalityDeleteFiles",
+      "indexedDeleteFiles",
+      "positionalDeleteFiles",
+      "skippedDeleteFiles")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.metrics_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        // Create multiple files to ensure non-zero manifest/file counts
+        spark
+          .range(10000)
+          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
+          .coalesce(1)
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.metrics_test")
+
+        spark
+          .range(10001, 20000)
+          .selectExpr("CAST(id AS INT)", "CAST(id * 1.5 AS DOUBLE) as value")
+          .coalesce(1)
+          .write
+          .format("iceberg")
+          .mode("append")
+          .saveAsTable("test_cat.db.metrics_test")
+
+        val df = spark.sql("SELECT * FROM test_cat.db.metrics_test WHERE id < 10000")
+
+        // Must extract metrics before collect() because planning happens at plan creation
+        val scanNodes = df.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+
+        assert(scanNodes.nonEmpty, "Expected at least one CometIcebergNativeScanExec node")
+
+        val metrics = scanNodes.head.metrics
+
+        icebergPlanningMetricNames.foreach { metricName =>
+          assert(metrics.contains(metricName), s"metric $metricName was not found")
+        }
+
+        // Planning metrics are populated during plan creation, so they're already available
+        assert(metrics("totalDataManifest").value > 0, "totalDataManifest should be > 0")
+        assert(metrics("resultDataFiles").value > 0, "resultDataFiles should be > 0")
+        assert(metrics("totalDataFileSize").value > 0, "totalDataFileSize should be > 0")
+
+        df.collect()
+
+        // ImmutableSQLMetric prevents these from being reset to 0 after execution
+        assert(metrics("output_rows").value == 10000)
+        assert(
+          metrics("totalDataManifest").value > 0,
+          "totalDataManifest should still be > 0 after execution")
+        assert(
+          metrics("resultDataFiles").value > 0,
+          "resultDataFiles should still be > 0 after execution")
+
+        spark.sql("DROP TABLE test_cat.db.metrics_test")
+      }
+    }
+  }
+
+  test("verify manifest pruning metrics") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Partition by category to enable manifest-level pruning
+        spark.sql("""
+          CREATE TABLE test_cat.db.pruning_test (
+            id INT,
+            category STRING,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (category)
+        """)
+
+        // Each category gets its own manifest entry
+        spark.sql("""
+          INSERT INTO test_cat.db.pruning_test
+          SELECT id, 'A' as category, CAST(id * 1.5 AS DOUBLE) as value
+          FROM range(1000)
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.pruning_test
+          SELECT id, 'B' as category, CAST(id * 2.0 AS DOUBLE) as value
+          FROM range(1000, 2000)
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.pruning_test
+          SELECT id, 'C' as category, CAST(id * 2.5 AS DOUBLE) as value
+          FROM range(2000, 3000)
+        """)
+
+        // Filter should prune B and C partitions at manifest level
+        val df = spark.sql("SELECT * FROM test_cat.db.pruning_test WHERE category = 'A'")
+
+        val scanNodes = df.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+
+        assert(scanNodes.nonEmpty, "Expected at least one CometIcebergNativeScanExec node")
+
+        val metrics = scanNodes.head.metrics
+
+        // Iceberg prunes entire manifests when all files in a manifest don't match the filter
+        assert(
+          metrics("resultDataFiles").value == 1,
+          s"Expected 1 result data file, got ${metrics("resultDataFiles").value}")
+        assert(
+          metrics("scannedDataManifests").value == 1,
+          s"Expected 1 scanned manifest, got ${metrics("scannedDataManifests").value}")
+        assert(
+          metrics("skippedDataManifests").value == 2,
+          s"Expected 2 skipped manifests, got ${metrics("skippedDataManifests").value}")
+
+        // Verify the query actually returns correct results
+        val result = df.collect()
+        assert(result.length == 1000, s"Expected 1000 rows, got ${result.length}")
+
+        spark.sql("DROP TABLE test_cat.db.pruning_test")
+      }
+    }
+  }
+
+  test("verify delete file metrics - MOR table") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Equality delete columns force MOR behavior instead of COW
+        spark.sql("""
+          CREATE TABLE test_cat.db.delete_metrics (
+            id INT,
+            category STRING,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read',
+            'write.delete.equality-delete-columns' = 'id'
+          )
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.delete_metrics
+          VALUES
+            (1, 'A', 10.5), (2, 'B', 20.3), (3, 'A', 30.7),
+            (4, 'B', 15.2), (5, 'A', 25.8), (6, 'C', 35.0)
+        """)
+
+        spark.sql("DELETE FROM test_cat.db.delete_metrics WHERE id IN (2, 4, 6)")
+
+        val df = spark.sql("SELECT * FROM test_cat.db.delete_metrics")
+
+        val scanNodes = df.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+
+        assert(scanNodes.nonEmpty, "Expected at least one CometIcebergNativeScanExec node")
+
+        val metrics = scanNodes.head.metrics
+
+        // Iceberg may convert equality deletes to positional deletes internally
+        assert(
+          metrics("resultDeleteFiles").value > 0,
+          s"Expected result delete files > 0, got ${metrics("resultDeleteFiles").value}")
+        assert(
+          metrics("totalDeleteFileSize").value > 0,
+          s"Expected total delete file size > 0, got ${metrics("totalDeleteFileSize").value}")
+
+        val hasDeletes = metrics("positionalDeleteFiles").value > 0 ||
+          metrics("equalityDeleteFiles").value > 0
+        assert(hasDeletes, "Expected either positional or equality delete files > 0")
+
+        val result = df.collect()
+        assert(result.length == 3, s"Expected 3 rows after deletes, got ${result.length}")
+
+        spark.sql("DROP TABLE test_cat.db.delete_metrics")
+      }
+    }
+  }
+
   // Helper to create temp directory
   def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile
