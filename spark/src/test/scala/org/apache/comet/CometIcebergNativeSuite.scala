@@ -1250,8 +1250,12 @@ class CometIcebergNativeSuite extends CometTestBase {
 
         df.collect()
 
-        // ImmutableSQLMetric prevents these from being reset to 0 after execution
         assert(metrics("output_rows").value == 10000)
+        assert(metrics("time_elapsed_opening").value > 0)
+        assert(metrics("time_elapsed_scanning_until_data").value > 0)
+        assert(metrics("time_elapsed_scanning_total").value > 0)
+        assert(metrics("time_elapsed_processing").value > 0)
+        // ImmutableSQLMetric prevents these from being reset to 0 after execution
         assert(
           metrics("totalDataManifest").value > 0,
           "totalDataManifest should still be > 0 after execution")

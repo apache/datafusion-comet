@@ -43,6 +43,7 @@ use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use datafusion::datasource::schema_adapter::SchemaAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
+use datafusion_datasource::file_stream::FileStreamMetrics;
 
 /// Native Iceberg scan operator that uses iceberg-rust to read Iceberg tables.
 ///
@@ -186,6 +187,8 @@ impl IcebergScanExec {
             batch_size,
             Arc::clone(&output_schema),
             baseline_metrics,
+            &self.metrics,
+            partition,
         )?;
 
         // Note: BatchSplitStream adds overhead. Since we're already setting batch_size in
@@ -243,6 +246,7 @@ struct IcebergFileStream {
     tasks: VecDeque<iceberg::scan::FileScanTask>,
     state: FileStreamState,
     baseline_metrics: BaselineMetrics,
+    file_stream_metrics: FileStreamMetrics,
 }
 
 impl IcebergFileStream {
@@ -252,7 +256,11 @@ impl IcebergFileStream {
         batch_size: usize,
         schema: SchemaRef,
         baseline_metrics: BaselineMetrics,
+        metrics: &ExecutionPlanMetricsSet,
+        partition: usize,
     ) -> DFResult<Self> {
+        let file_stream_metrics = FileStreamMetrics::new(metrics, partition);
+
         Ok(Self {
             schema,
             file_io,
@@ -260,6 +268,7 @@ impl IcebergFileStream {
             tasks: tasks.into_iter().collect(),
             state: FileStreamState::Idle,
             baseline_metrics,
+            file_stream_metrics,
         })
     }
 
@@ -330,6 +339,7 @@ impl IcebergFileStream {
             match &mut self.state {
                 FileStreamState::Idle => {
                     // Start opening the first file
+                    self.file_stream_metrics.time_opening.start();
                     match self.start_next_file() {
                         Some(future) => {
                             self.state = FileStreamState::Opening { future };
@@ -342,6 +352,9 @@ impl IcebergFileStream {
                     match ready!(future.poll_unpin(cx)) {
                         Ok(stream) => {
                             // File opened, start reading and open next file in parallel
+                            self.file_stream_metrics.time_opening.stop();
+                            self.file_stream_metrics.time_scanning_until_data.start();
+                            self.file_stream_metrics.time_scanning_total.start();
                             let next = self.start_next_file();
                             self.state = FileStreamState::Reading {
                                 current: stream,
@@ -377,15 +390,24 @@ impl IcebergFileStream {
                         .record_poll(current.poll_next_unpin(cx)))
                     {
                         Some(result) => {
+                            // Stop time_scanning_until_data on first batch (idempotent)
+                            self.file_stream_metrics.time_scanning_until_data.stop();
+                            self.file_stream_metrics.time_scanning_total.stop();
+                            // Restart time_scanning_total for next batch
+                            self.file_stream_metrics.time_scanning_total.start();
                             return Poll::Ready(Some(result));
                         }
                         None => {
                             // Current file is done, move to next file if available
+                            self.file_stream_metrics.time_scanning_until_data.stop();
+                            self.file_stream_metrics.time_scanning_total.stop();
                             match next.take() {
                                 Some(mut next_future) => {
                                     // Check if next file is already opened
                                     match next_future.poll_unpin(cx) {
                                         Poll::Ready(Ok(stream)) => {
+                                            self.file_stream_metrics.time_scanning_until_data.start();
+                                            self.file_stream_metrics.time_scanning_total.start();
                                             let next_next = self.start_next_file();
                                             self.state = FileStreamState::Reading {
                                                 current: stream,
@@ -424,7 +446,10 @@ impl Stream for IcebergFileStream {
     type Item = DFResult<arrow::array::RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.poll_inner(cx)
+        self.file_stream_metrics.time_processing.start();
+        let result = self.poll_inner(cx);
+        self.file_stream_metrics.time_processing.stop();
+        result
     }
 }
 
