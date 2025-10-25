@@ -406,7 +406,9 @@ impl IcebergFileStream {
                                     // Check if next file is already opened
                                     match next_future.poll_unpin(cx) {
                                         Poll::Ready(Ok(stream)) => {
-                                            self.file_stream_metrics.time_scanning_until_data.start();
+                                            self.file_stream_metrics
+                                                .time_scanning_until_data
+                                                .start();
                                             self.file_stream_metrics.time_scanning_total.start();
                                             let next_next = self.start_next_file();
                                             self.state = FileStreamState::Reading {
