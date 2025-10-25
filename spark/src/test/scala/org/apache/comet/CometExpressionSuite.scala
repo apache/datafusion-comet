@@ -20,14 +20,11 @@
 package org.apache.comet
 
 import java.time.{Duration, Period}
-
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.Random
-
 import org.scalactic.source.Position
 import org.scalatest.Tag
-
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Literal}
@@ -40,8 +37,8 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
-
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -59,6 +56,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+
+  test("sort floating point with negative zero") {
+    val schema = StructType(Seq(
+      StructField("c0", DataTypes.FloatType, true),
+      StructField("c0", DataTypes.DoubleType, true)
+    ))
+    val df = FuzzDataGenerator.generateDataFrame(new Random(42), spark, schema, 1000, DataGenOptions(generateNegativeZero = true))
+    df.createOrReplaceTempView("tbl")
+    checkSparkAnswerAndOperator("select * from tbl order by 1, 2")
+  }
 
   test("compare true/false to negative zero") {
     Seq(false, true).foreach { dictionary =>
