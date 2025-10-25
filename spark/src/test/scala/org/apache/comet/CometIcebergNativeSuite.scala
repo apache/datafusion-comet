@@ -1329,6 +1329,7 @@ class CometIcebergNativeSuite extends CometTestBase {
 
         // Verify the query actually returns correct results
         val result = df.collect()
+        assert(metrics("output_rows").value == 1000)
         assert(result.length == 1000, s"Expected 1000 rows, got ${result.length}")
 
         spark.sql("DROP TABLE test_cat.db.pruning_test")
@@ -1394,6 +1395,7 @@ class CometIcebergNativeSuite extends CometTestBase {
         assert(hasDeletes, "Expected either positional or equality delete files > 0")
 
         val result = df.collect()
+        assert(metrics("output_rows").value == 3)
         assert(result.length == 3, s"Expected 3 rows after deletes, got ${result.length}")
 
         spark.sql("DROP TABLE test_cat.db.delete_metrics")
