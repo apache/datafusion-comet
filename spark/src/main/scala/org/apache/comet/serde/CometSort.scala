@@ -22,11 +22,12 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.execution.SortExec
+import org.apache.spark.sql.types.DataTypes
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType, supportedSortType}
 
 object CometSort extends CometOperatorSerde[SortExec] {
 
@@ -42,7 +43,22 @@ object CometSort extends CometOperatorSerde[SortExec] {
       return None
     }
 
-    val sortOrders = op.sortOrder.map(exprToProto(_, op.child.output))
+    val sortOrders: Seq[Option[ExprOuterClass.Expr]] = op.sortOrder.map {
+      case expr
+          if expr.dataType == DataTypes.FloatType || expr.dataType == DataTypes.DoubleType =>
+        // handle negative zero correctly
+        exprToProto(expr, op.child.output).map(exprProto =>
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setNormalizeNanAndZero(
+              ExprOuterClass.NormalizeNaNAndZero
+                .newBuilder()
+                .setChild(exprProto)
+                .setDatatype(serializeDataType(expr.dataType).get))
+            .build())
+      case expr =>
+        exprToProto(expr, op.child.output)
+    }
 
     if (sortOrders.forall(_.isDefined) && childOp.nonEmpty) {
       val sortBuilder = OperatorOuterClass.Sort
