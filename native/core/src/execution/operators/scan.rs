@@ -28,7 +28,6 @@ use arrow::array::{
 use arrow::compute::{cast_with_options, take, CastOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use arrow::downcast_dictionary_array;
-use arrow::error::ArrowError;
 use arrow::ffi::FFI_ArrowArray;
 use arrow::ffi::FFI_ArrowSchema;
 use datafusion::common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
@@ -84,8 +83,6 @@ pub struct ScanExec {
     jvm_fetch_time: Time,
     /// Time spent in FFI
     arrow_ffi_time: Time,
-    /// Whether native code can assume ownership of batches that it receives
-    arrow_ffi_safe: bool,
 }
 
 impl ScanExec {
@@ -94,7 +91,6 @@ impl ScanExec {
         input_source: Option<Arc<GlobalRef>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
-        arrow_ffi_safe: bool,
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
@@ -115,7 +111,6 @@ impl ScanExec {
                 data_types.len(),
                 &jvm_fetch_time,
                 &arrow_ffi_time,
-                arrow_ffi_safe,
             )?;
             timer.stop();
             batch
@@ -146,7 +141,6 @@ impl ScanExec {
             jvm_fetch_time,
             arrow_ffi_time,
             schema,
-            arrow_ffi_safe,
         })
     }
 
@@ -181,7 +175,6 @@ impl ScanExec {
                 self.data_types.len(),
                 &self.jvm_fetch_time,
                 &self.arrow_ffi_time,
-                self.arrow_ffi_safe,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -198,7 +191,6 @@ impl ScanExec {
         num_cols: usize,
         jvm_fetch_time: &Time,
         arrow_ffi_time: &Time,
-        arrow_ffi_safe: bool,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -267,15 +259,10 @@ impl ScanExec {
                 array
             };
 
-            let array = if arrow_ffi_safe {
-                // ownership of this array has been transferred to native
-                // but we still need to unpack dictionary arrays
-                copy_or_unpack_array(&array, &CopyMode::UnpackOrClone)?
-            } else {
-                // it is necessary to copy the array because the contents may be
-                // overwritten on the JVM side in the future
-                copy_array(&array)
-            };
+            // copy array immediately to release JVM-side ArrowArray/ArrowSchema wrappers
+            // and also unpack dictionaries because not all DataFusion operators and expressions
+            // support them
+            let array = copy_array(&array);
 
             inputs.push(array);
 
@@ -657,14 +644,6 @@ impl InputBatch {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
-enum CopyMode {
-    /// Perform a deep copy and also unpack dictionaries
-    UnpackOrDeepCopy,
-    /// Perform a clone and also unpack dictionaries
-    UnpackOrClone,
-}
-
 /// Copy an Arrow Array
 fn copy_array(array: &dyn Array) -> ArrayRef {
     let capacity = array.len();
@@ -694,32 +673,5 @@ fn copy_array(array: &dyn Array) -> ArrayRef {
         )
     } else {
         make_array(mutable.freeze())
-    }
-}
-
-/// Copy an Arrow Array or cast to primitive type if it is a dictionary array.
-/// This is used for `CopyExec` to copy/cast the input array. If the input array
-/// is a dictionary array, we will cast the dictionary array to primitive type
-/// (i.e., unpack the dictionary array) and copy the primitive array. If the input
-/// array is a primitive array, we simply copy the array.
-fn copy_or_unpack_array(array: &Arc<dyn Array>, mode: &CopyMode) -> Result<ArrayRef, ArrowError> {
-    match array.data_type() {
-        DataType::Dictionary(_, value_type) => {
-            let options = CastOptions::default();
-            // We need to copy the array after `cast` because arrow-rs `take` kernel which is used
-            // to unpack dictionary array might reuse the input array's null buffer.
-            Ok(copy_array(&cast_with_options(
-                array,
-                value_type.as_ref(),
-                &options,
-            )?))
-        }
-        _ => {
-            if mode == &CopyMode::UnpackOrDeepCopy {
-                Ok(copy_array(array))
-            } else {
-                Ok(Arc::clone(array))
-            }
-        }
     }
 }
