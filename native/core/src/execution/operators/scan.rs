@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::operators::{copy_array, copy_or_unpack_array, CopyMode};
 use crate::{
     errors::CometError,
     execution::{
@@ -23,9 +22,12 @@ use crate::{
     },
     jvm_bridge::{jni_call, JVMClasses},
 };
-use arrow::array::{make_array, ArrayData, ArrayRef, RecordBatch, RecordBatchOptions};
+use arrow::array::{
+    make_array, Array, ArrayData, ArrayRef, MutableArrayData, RecordBatch, RecordBatchOptions,
+};
 use arrow::compute::{cast_with_options, take, CastOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::downcast_dictionary_array;
 use arrow::ffi::FFI_ArrowArray;
 use arrow::ffi::FFI_ArrowSchema;
 use datafusion::common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
@@ -81,8 +83,6 @@ pub struct ScanExec {
     jvm_fetch_time: Time,
     /// Time spent in FFI
     arrow_ffi_time: Time,
-    /// Whether native code can assume ownership of batches that it receives
-    arrow_ffi_safe: bool,
 }
 
 impl ScanExec {
@@ -91,7 +91,6 @@ impl ScanExec {
         input_source: Option<Arc<GlobalRef>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
-        arrow_ffi_safe: bool,
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
@@ -112,7 +111,6 @@ impl ScanExec {
                 data_types.len(),
                 &jvm_fetch_time,
                 &arrow_ffi_time,
-                arrow_ffi_safe,
             )?;
             timer.stop();
             batch
@@ -143,7 +141,6 @@ impl ScanExec {
             jvm_fetch_time,
             arrow_ffi_time,
             schema,
-            arrow_ffi_safe,
         })
     }
 
@@ -178,7 +175,6 @@ impl ScanExec {
                 self.data_types.len(),
                 &self.jvm_fetch_time,
                 &self.arrow_ffi_time,
-                self.arrow_ffi_safe,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -195,7 +191,6 @@ impl ScanExec {
         num_cols: usize,
         jvm_fetch_time: &Time,
         arrow_ffi_time: &Time,
-        arrow_ffi_safe: bool,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -264,15 +259,10 @@ impl ScanExec {
                 array
             };
 
-            let array = if arrow_ffi_safe {
-                // ownership of this array has been transferred to native
-                // but we still need to unpack dictionary arrays
-                copy_or_unpack_array(&array, &CopyMode::UnpackOrClone)?
-            } else {
-                // it is necessary to copy the array because the contents may be
-                // overwritten on the JVM side in the future
-                copy_array(&array)
-            };
+            // copy array immediately to release JVM-side ArrowArray/ArrowSchema wrappers
+            // and also unpack dictionaries because not all DataFusion operators and expressions
+            // support them
+            let array = copy_array(&array);
 
             inputs.push(array);
 
@@ -651,5 +641,37 @@ impl InputBatch {
         });
 
         InputBatch::Batch(columns, num_rows)
+    }
+}
+
+/// Copy an Arrow Array
+fn copy_array(array: &dyn Array) -> ArrayRef {
+    let capacity = array.len();
+    let data = array.to_data();
+
+    let mut mutable = MutableArrayData::new(vec![&data], false, capacity);
+
+    mutable.extend(0, 0, capacity);
+
+    if matches!(array.data_type(), DataType::Dictionary(_, _)) {
+        let copied_dict = make_array(mutable.freeze());
+        let ref_copied_dict = &copied_dict;
+
+        downcast_dictionary_array!(
+            ref_copied_dict => {
+                // Copying dictionary value array
+                let values = ref_copied_dict.values();
+                let data = values.to_data();
+
+                let mut mutable = MutableArrayData::new(vec![&data], false, values.len());
+                mutable.extend(0, 0, values.len());
+
+                let copied_dict = ref_copied_dict.with_values(make_array(mutable.freeze()));
+                Arc::new(copied_dict)
+            }
+            t => unreachable!("Should not reach here: {}", t)
+        )
+    } else {
+        make_array(mutable.freeze())
     }
 }

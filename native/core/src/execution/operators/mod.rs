@@ -21,10 +21,8 @@ use std::fmt::Debug;
 
 use jni::objects::GlobalRef;
 
-pub use copy::*;
 pub use scan::*;
 
-mod copy;
 mod expand;
 pub use expand::ExpandExec;
 mod scan;
