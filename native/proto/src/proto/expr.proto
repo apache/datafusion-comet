@@ -70,7 +70,6 @@ message Expr {
     IfExpr if = 44;
     NormalizeNaNAndZero normalize_nan_and_zero = 45;
     TruncTimestamp truncTimestamp = 47;
-    Abs abs = 49;
     Subquery subquery = 50;
     UnboundReference unbound = 51;
     BloomFilterMightContain bloom_filter_might_contain = 52;
@@ -349,11 +348,6 @@ message TruncTimestamp {
   Expr format = 1;
   Expr child = 2;
   string timezone = 3;
-}
-
-message Abs {
-  Expr child = 1;
-  EvalMode eval_mode = 2;
 }
 
 message Subquery {
