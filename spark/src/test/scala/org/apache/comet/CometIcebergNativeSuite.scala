@@ -1409,6 +1409,82 @@ class CometIcebergNativeSuite extends CometTestBase {
     }
   }
 
+  test("verify output_rows metric reflects row-level filtering in scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        // Create relatively small files to get multiple row groups per file
+        "spark.sql.files.maxRecordsPerFile" -> "1000") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.filter_metric_test (
+            id INT,
+            category STRING,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        // Insert 10,000 rows with mixed category values
+        // This ensures row groups will have mixed data that can't be completely eliminated
+        spark.sql("""
+          INSERT INTO test_cat.db.filter_metric_test
+          SELECT
+            id,
+            CASE WHEN id % 2 = 0 THEN 'even' ELSE 'odd' END as category,
+            CAST(id * 1.5 AS DOUBLE) as value
+          FROM range(10000)
+        """)
+
+        // Apply a highly selective filter on id that will filter ~99% of rows
+        // This filter requires row-level evaluation because:
+        // - Row groups contain ranges of IDs (0-999, 1000-1999, etc.)
+        // - The first row group (0-999) cannot be fully eliminated by stats alone
+        // - Row-level filtering must apply "id < 100" to filter out rows 100-999
+        val df = spark.sql("""
+          SELECT * FROM test_cat.db.filter_metric_test
+          WHERE id < 100
+        """)
+
+        val scanNodes = df.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+
+        assert(scanNodes.nonEmpty, "Expected at least one CometIcebergNativeScanExec node")
+
+        val metrics = scanNodes.head.metrics
+
+        // Execute the query to populate metrics
+        val result = df.collect()
+
+        // The filter "id < 100" should match exactly 100 rows (0-99)
+        assert(result.length == 100, s"Expected 100 rows after filter, got ${result.length}")
+
+        // CRITICAL: Verify output_rows metric matches the filtered count
+        // If row-level filtering is working, this should be 100
+        // If only row group filtering is working, this would be ~1000 (entire first row group)
+        assert(
+          metrics("output_rows").value == 100,
+          s"Expected output_rows=100 (filtered count), got ${metrics("output_rows").value}. " +
+            "This indicates row-level filtering may not be working correctly.")
+
+        // Verify the filter actually selected the right rows
+        val ids = result.map(_.getInt(0)).sorted
+        assert(ids.head == 0, s"Expected first id=0, got ${ids.head}")
+        assert(ids.last == 99, s"Expected last id=99, got ${ids.last}")
+        assert(ids.forall(_ < 100), "All IDs should be < 100")
+
+        spark.sql("DROP TABLE test_cat.db.filter_metric_test")
+      }
+    }
+  }
+
   // Helper to create temp directory
   def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile
