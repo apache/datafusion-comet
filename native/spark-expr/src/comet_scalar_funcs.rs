@@ -180,17 +180,6 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(spark_modulo);
             make_comet_scalar_udf!("spark_modulo", func, without data_type, fail_on_error)
         }
-        "concat" => {
-            // Use concat from datafusion-spark crate which has Spark semantics
-            // (returns null if any argument is null)
-            // The registry parameter already contains functions from datafusion-spark
-            // if they were registered in prepare_datafusion_session_context
-            registry.udf("concat").map_err(|e| {
-                DataFusionError::Execution(format!(
-                    "Function concat not found in the registry: {e}",
-                ))
-            })
-        }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",

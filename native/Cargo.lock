@@ -1590,7 +1590,6 @@ dependencies = [
  "chrono-tz",
  "criterion",
  "datafusion",
- "datafusion-spark",
  "futures",
  "hex",
  "num",

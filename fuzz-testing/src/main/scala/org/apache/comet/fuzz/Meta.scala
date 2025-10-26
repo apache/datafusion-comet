@@ -137,6 +137,7 @@ object Meta {
             SparkBinaryType,
             SparkArrayType(
               SparkTypeOneOf(Seq(SparkStringType, SparkNumericType, SparkBinaryType))))))),
+    createFunctionWithInputTypes("concat", Seq(SparkStringType, SparkStringType)), // TODO: variadic
     createFunctionWithInputTypes("concat_ws", Seq(SparkStringType, SparkStringType)),
     createFunctionWithInputTypes("contains", Seq(SparkStringType, SparkStringType)),
     createFunctionWithInputTypes("ends_with", Seq(SparkStringType, SparkStringType)),
