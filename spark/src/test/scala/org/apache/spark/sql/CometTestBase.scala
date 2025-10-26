@@ -86,6 +86,9 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key, "true")
     conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
+    // SortOrder is incompatible for mixed zero and negative zero floating point values, but
+    // this is an edge case, and we expect most users to allow sorts on floating point, so we
+    // enable this for the tests
     conf.set(CometConf.getExprAllowIncompatConfigKey("SortOrder"), "true")
     conf
   }
