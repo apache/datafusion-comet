@@ -102,8 +102,8 @@ It may be possible to reduce Comet's memory overhead by reducing batch sizes or 
 
 ## Optimizing Sorting on Floating-Point Values
 
-Sorting on floating point values is disabled by default, because of known differences when the data 
-contains both positive and negative zero. This is likely an edge case that is not of concern for many users
+Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
+Spark if the data contains both zero and negative zero. This is likely an edge case that is not of concern for many users
 and sorting on floating-point data can be enabled by setting `spark.comet.expression.SortOrder.allowIncompatible=true`.
 
 ## Optimizing Joins
