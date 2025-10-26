@@ -77,7 +77,8 @@ case class CometIcebergNativeScanExec(
     override val serializedPlanOpt: SerializedPlan,
     metadataLocation: String,
     catalogProperties: Map[String, String], // TODO: Extract for authentication
-    numPartitions: Int)
+    numPartitions: Int,
+    numSplits: Long)
     extends CometLeafExec {
 
   override val supportsColumnar: Boolean = true
@@ -187,7 +188,11 @@ case class CometIcebergNativeScanExec(
       mv.name -> metric
     }.toMap
 
-    baseMetrics ++ icebergMetrics
+    // Add numSplits as an immutable planning metric
+    val numSplitsMetric = new ImmutableSQLMetric("sum", numSplits)
+    sparkContext.register(numSplitsMetric, "File splits read based on read.split.target-size")
+
+    baseMetrics ++ icebergMetrics + ("numSplits" -> numSplitsMetric)
   }
 
   override protected def doCanonicalize(): CometIcebergNativeScanExec = {
@@ -198,7 +203,8 @@ case class CometIcebergNativeScanExec(
       SerializedPlan(None),
       metadataLocation,
       catalogProperties,
-      numPartitions)
+      numPartitions,
+      numSplits)
   }
 
   override def stringArgs: Iterator[Any] =
@@ -211,7 +217,8 @@ case class CometIcebergNativeScanExec(
         this.catalogProperties == other.catalogProperties &&
         this.output == other.output &&
         this.serializedPlanOpt == other.serializedPlanOpt &&
-        this.numPartitions == other.numPartitions
+        this.numPartitions == other.numPartitions &&
+        this.numSplits == other.numSplits
       case _ =>
         false
     }
@@ -222,10 +229,53 @@ case class CometIcebergNativeScanExec(
       metadataLocation,
       output.asJava,
       serializedPlanOpt,
-      numPartitions: java.lang.Integer)
+      numPartitions: java.lang.Integer,
+      numSplits: java.lang.Long)
 }
 
 object CometIcebergNativeScanExec {
+
+  /**
+   * Counts the total number of FileScanTasks across all partitions.
+   *
+   * @param scanExec
+   *   The Spark BatchScanExec containing an Iceberg scan
+   * @return
+   *   Total number of file scan tasks (splits)
+   */
+  private def countFileScanTasks(scanExec: BatchScanExec): Long = {
+    try {
+      scanExec.inputRDD match {
+        case rdd: org.apache.spark.sql.execution.datasources.v2.DataSourceRDD =>
+          var totalTasks = 0L
+          rdd.partitions.foreach { partition =>
+            val inputPartitions = partition
+              .asInstanceOf[org.apache.spark.sql.execution.datasources.v2.DataSourceRDDPartition]
+              .inputPartitions
+
+            inputPartitions.foreach { inputPartition =>
+              try {
+                val taskGroupMethod = inputPartition.getClass.getDeclaredMethod("taskGroup")
+                taskGroupMethod.setAccessible(true)
+                val taskGroup = taskGroupMethod.invoke(inputPartition)
+
+                val tasksMethod = taskGroup.getClass.getMethod("tasks")
+                val tasksCollection =
+                  tasksMethod.invoke(taskGroup).asInstanceOf[java.util.Collection[_]]
+
+                totalTasks += tasksCollection.size()
+              } catch {
+                case _: Exception => // Skip partitions we can't count
+              }
+            }
+          }
+          totalTasks
+        case _ => 0L
+      }
+    } catch {
+      case _: Exception => 0L
+    }
+  }
 
   /**
    * Extracts metadata location from Iceberg table.
@@ -272,6 +322,8 @@ object CometIcebergNativeScanExec {
    *   - KeyGroupedPartitioning: Use Iceberg's partition count
    *   - Other cases: Use the number of InputPartitions from Iceberg's planning
    *
+   * Also counts the total number of FileScanTasks for the numSplits metric.
+   *
    * @param nativeOp
    *   The serialized native operator
    * @param scanExec
@@ -297,6 +349,9 @@ object CometIcebergNativeScanExec {
         scanExec.inputRDD.getNumPartitions
     }
 
+    // Count total file scan tasks (splits) for metrics
+    val numSplits = countFileScanTasks(scanExec)
+
     val exec = CometIcebergNativeScanExec(
       nativeOp,
       scanExec.output,
@@ -304,7 +359,61 @@ object CometIcebergNativeScanExec {
       SerializedPlan(None),
       metadataLocation,
       Map.empty, // TODO: Extract catalog properties for authentication
-      numParts)
+      numParts,
+      numSplits)
+
+    scanExec.logicalLink.foreach(exec.setLogicalLink)
+    exec
+  }
+
+  /**
+   * Creates a CometIcebergNativeScanExec with a pre-computed numSplits count.
+   *
+   * Why this overload exists: During serialization in QueryPlanSerde.operator2Proto(), we iterate
+   * through ALL FileScanTasks to serialize them into the protobuf. While doing this, we count
+   * them (numSplitsCount). Since we've already paid the cost of iterating and counting, we pass
+   * that count through the protobuf back to CometExecRule. This overload accepts that
+   * pre-computed count to avoid re-iterating the RDD partitions and re-counting tasks using
+   * reflection (which the 4-parameter overload does via countFileScanTasks()). This ensures we
+   * use the same count consistently and avoid double work.
+   *
+   * @param nativeOp
+   *   The serialized native operator (contains the serialized FileScanTasks)
+   * @param scanExec
+   *   The original Spark BatchScanExec
+   * @param session
+   *   The SparkSession
+   * @param metadataLocation
+   *   Path to table metadata file from extractMetadataLocation
+   * @param numSplits
+   *   Count of FileScanTasks computed during serialization in QueryPlanSerde
+   * @return
+   *   A new CometIcebergNativeScanExec
+   */
+  def apply(
+      nativeOp: Operator,
+      scanExec: BatchScanExec,
+      session: SparkSession,
+      metadataLocation: String,
+      numSplits: Long): CometIcebergNativeScanExec = {
+
+    // Determine number of partitions from Iceberg's output partitioning
+    val numParts = scanExec.outputPartitioning match {
+      case p: KeyGroupedPartitioning =>
+        p.numPartitions
+      case _ =>
+        scanExec.inputRDD.getNumPartitions
+    }
+
+    val exec = CometIcebergNativeScanExec(
+      nativeOp,
+      scanExec.output,
+      scanExec,
+      SerializedPlan(None),
+      metadataLocation,
+      Map.empty, // TODO: Extract catalog properties for authentication
+      numParts,
+      numSplits)
 
     scanExec.logicalLink.foreach(exec.setLogicalLink)
     exec

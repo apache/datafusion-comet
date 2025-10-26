@@ -174,8 +174,21 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           // Serialize CometBatchScanExec to extract FileScanTasks and get proto
           QueryPlanSerde.operator2Proto(scan) match {
             case Some(nativeOp) =>
+              // Extract num_splits from the serialized protobuf
+              val numSplits = if (nativeOp.hasIcebergScan) {
+                nativeOp.getIcebergScan.getNumSplits
+              } else {
+                0L
+              }
+
               // Create native Iceberg scan exec with the serialized proto
-              CometIcebergNativeScanExec(nativeOp, scan.wrapped, session, metadataLocation)
+              // and extracted numSplits
+              CometIcebergNativeScanExec(
+                nativeOp,
+                scan.wrapped,
+                session,
+                metadataLocation,
+                numSplits)
             case None =>
               // Serialization failed, fall back to CometBatchScanExec
               scan

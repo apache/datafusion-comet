@@ -123,6 +123,9 @@ message IcebergScan {
 
   // Table metadata file path for FileIO initialization
   string metadata_location = 5;
+
+  // Total number of file scan tasks (splits) across all partitions
+  int64 num_splits = 6;
 }
 
 // Groups FileScanTasks for a single Spark partition
