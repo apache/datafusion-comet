@@ -100,7 +100,7 @@ Comet Performance
 
 It may be possible to reduce Comet's memory overhead by reducing batch sizes or increasing number of partitions.
 
-## Optimizing Sorting on Floating-Point
+## Optimizing Sorting on Floating-Point Values
 
 Sorting on floating point values is disabled by default, because of known differences when the data 
 contains both positive and negative zero. This is likely an edge case that is not of concern for many users
