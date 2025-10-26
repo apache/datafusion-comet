@@ -1211,7 +1211,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         // Extract FileScanTasks from the InputPartitions in the RDD
         // (Same logic as the previous CometIcebergNativeScanExec case)
         var actualNumPartitions = 0
-        var numSplitsCount = 0L
         try {
           scan.wrapped.inputRDD match {
             case rdd: org.apache.spark.sql.execution.datasources.v2.DataSourceRDD =>
@@ -1519,7 +1518,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
                         }
 
                         partitionBuilder.addFileScanTasks(taskBuilder.build())
-                        numSplitsCount += 1
                       } catch {
                         case e: Exception =>
                           logWarning(s"Failed to serialize FileScanTask: ${e.getMessage}")
@@ -1546,7 +1544,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
         val numPartitions =
           if (actualNumPartitions > 0) actualNumPartitions else numParts
-        icebergScanBuilder.setNumSplits(numSplitsCount)
         icebergScanBuilder.setNumPartitions(numPartitions)
 
         builder.clearChildren()

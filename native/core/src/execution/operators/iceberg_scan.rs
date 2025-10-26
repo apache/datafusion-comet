@@ -30,7 +30,9 @@ use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
+use datafusion::physical_plan::metrics::{
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
+};
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
@@ -177,8 +179,8 @@ impl IcebergScanExec {
         // Get batch size from context
         let batch_size = context.session_config().batch_size();
 
-        // Create baseline metrics for this partition
-        let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
+        // Create metrics for this partition (wraps both baseline and file stream metrics)
+        let metrics = IcebergScanMetrics::new(&self.metrics, partition);
 
         // Create parallel file stream that overlaps opening next file with reading current file
         let file_stream = IcebergFileStream::new(
@@ -186,9 +188,7 @@ impl IcebergScanExec {
             file_io,
             batch_size,
             Arc::clone(&output_schema),
-            baseline_metrics,
-            &self.metrics,
-            partition,
+            metrics,
         )?;
 
         // Note: BatchSplitStream adds overhead. Since we're already setting batch_size in
@@ -213,6 +213,26 @@ impl IcebergScanExec {
         file_io_builder
             .build()
             .map_err(|e| DataFusionError::Execution(format!("Failed to build FileIO: {}", e)))
+    }
+}
+
+/// Metrics for IcebergScanExec
+struct IcebergScanMetrics {
+    /// Baseline metrics (output rows, elapsed compute time)
+    baseline: BaselineMetrics,
+    /// File stream metrics (time opening, time scanning, etc.)
+    file_stream: FileStreamMetrics,
+    /// Count of file splits (FileScanTasks) processed
+    num_splits: Count,
+}
+
+impl IcebergScanMetrics {
+    fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
+        Self {
+            baseline: BaselineMetrics::new(metrics, partition),
+            file_stream: FileStreamMetrics::new(metrics, partition),
+            num_splits: MetricBuilder::new(metrics).counter("num_splits", partition),
+        }
     }
 }
 
@@ -245,8 +265,7 @@ struct IcebergFileStream {
     batch_size: usize,
     tasks: VecDeque<iceberg::scan::FileScanTask>,
     state: FileStreamState,
-    baseline_metrics: BaselineMetrics,
-    file_stream_metrics: FileStreamMetrics,
+    metrics: IcebergScanMetrics,
 }
 
 impl IcebergFileStream {
@@ -255,20 +274,15 @@ impl IcebergFileStream {
         file_io: FileIO,
         batch_size: usize,
         schema: SchemaRef,
-        baseline_metrics: BaselineMetrics,
-        metrics: &ExecutionPlanMetricsSet,
-        partition: usize,
+        metrics: IcebergScanMetrics,
     ) -> DFResult<Self> {
-        let file_stream_metrics = FileStreamMetrics::new(metrics, partition);
-
         Ok(Self {
             schema,
             file_io,
             batch_size,
             tasks: tasks.into_iter().collect(),
             state: FileStreamState::Idle,
-            baseline_metrics,
-            file_stream_metrics,
+            metrics,
         })
     }
 
@@ -277,6 +291,9 @@ impl IcebergFileStream {
         &mut self,
     ) -> Option<BoxFuture<'static, DFResult<SendableRecordBatchStream>>> {
         let task = self.tasks.pop_front()?;
+
+        self.metrics.num_splits.add(1);
+
         let file_io = self.file_io.clone();
         let batch_size = self.batch_size;
         let schema = Arc::clone(&self.schema);
@@ -339,7 +356,7 @@ impl IcebergFileStream {
             match &mut self.state {
                 FileStreamState::Idle => {
                     // Start opening the first file
-                    self.file_stream_metrics.time_opening.start();
+                    self.metrics.file_stream.time_opening.start();
                     match self.start_next_file() {
                         Some(future) => {
                             self.state = FileStreamState::Opening { future };
@@ -352,9 +369,9 @@ impl IcebergFileStream {
                     match ready!(future.poll_unpin(cx)) {
                         Ok(stream) => {
                             // File opened, start reading and open next file in parallel
-                            self.file_stream_metrics.time_opening.stop();
-                            self.file_stream_metrics.time_scanning_until_data.start();
-                            self.file_stream_metrics.time_scanning_total.start();
+                            self.metrics.file_stream.time_opening.stop();
+                            self.metrics.file_stream.time_scanning_until_data.start();
+                            self.metrics.file_stream.time_scanning_total.start();
                             let next = self.start_next_file();
                             self.state = FileStreamState::Reading {
                                 current: stream,
@@ -386,30 +403,32 @@ impl IcebergFileStream {
 
                     // Poll current stream for next batch and record metrics
                     match ready!(self
-                        .baseline_metrics
+                        .metrics
+                        .baseline
                         .record_poll(current.poll_next_unpin(cx)))
                     {
                         Some(result) => {
                             // Stop time_scanning_until_data on first batch (idempotent)
-                            self.file_stream_metrics.time_scanning_until_data.stop();
-                            self.file_stream_metrics.time_scanning_total.stop();
+                            self.metrics.file_stream.time_scanning_until_data.stop();
+                            self.metrics.file_stream.time_scanning_total.stop();
                             // Restart time_scanning_total for next batch
-                            self.file_stream_metrics.time_scanning_total.start();
+                            self.metrics.file_stream.time_scanning_total.start();
                             return Poll::Ready(Some(result));
                         }
                         None => {
                             // Current file is done, move to next file if available
-                            self.file_stream_metrics.time_scanning_until_data.stop();
-                            self.file_stream_metrics.time_scanning_total.stop();
+                            self.metrics.file_stream.time_scanning_until_data.stop();
+                            self.metrics.file_stream.time_scanning_total.stop();
                             match next.take() {
                                 Some(mut next_future) => {
                                     // Check if next file is already opened
                                     match next_future.poll_unpin(cx) {
                                         Poll::Ready(Ok(stream)) => {
-                                            self.file_stream_metrics
+                                            self.metrics
+                                                .file_stream
                                                 .time_scanning_until_data
                                                 .start();
-                                            self.file_stream_metrics.time_scanning_total.start();
+                                            self.metrics.file_stream.time_scanning_total.start();
                                             let next_next = self.start_next_file();
                                             self.state = FileStreamState::Reading {
                                                 current: stream,
@@ -448,9 +467,9 @@ impl Stream for IcebergFileStream {
     type Item = DFResult<arrow::array::RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.file_stream_metrics.time_processing.start();
+        self.metrics.file_stream.time_processing.start();
         let result = self.poll_inner(cx);
-        self.file_stream_metrics.time_processing.stop();
+        self.metrics.file_stream.time_processing.stop();
         result
     }
 }

@@ -1250,9 +1250,8 @@ class CometIcebergNativeSuite extends CometTestBase {
 
         df.collect()
 
-        metrics.foreach { metric => println(metric) }
-
         assert(metrics("output_rows").value == 10000)
+        assert(metrics("num_splits").value > 0)
         assert(metrics("time_elapsed_opening").value > 0)
         assert(metrics("time_elapsed_scanning_until_data").value > 0)
         assert(metrics("time_elapsed_scanning_total").value > 0)
