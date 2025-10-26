@@ -149,8 +149,7 @@ case class CometIcebergNativeScanExec(
    *
    * This class overrides the accumulator methods to make the metric truly immutable once set.
    */
-  private class ImmutableSQLMetric(metricType: String, initialValue: Long)
-      extends SQLMetric(metricType, initialValue) {
+  private class ImmutableSQLMetric(metricType: String) extends SQLMetric(metricType, 0) {
 
     // Override merge to do nothing - planning metrics are not updated during execution
     override def merge(other: AccumulatorV2[Long, Long]): Unit = {
@@ -183,8 +182,10 @@ case class CometIcebergNativeScanExec(
     // Create IMMUTABLE metrics with captured values AND types
     // these won't be affected by accumulator merges
     val icebergMetrics = capturedMetricValues.map { mv =>
-      // Create the immutable metric with original type and initial value
-      val metric = new ImmutableSQLMetric(mv.metricType, mv.value)
+      // Create the immutable metric with initValue = 0 (Spark 4 requires initValue <= 0)
+      val metric = new ImmutableSQLMetric(mv.metricType)
+      // Set the actual value after creation
+      metric.set(mv.value)
       // Register it with SparkContext to assign metadata (name, etc.)
       sparkContext.register(metric, mv.name)
       mv.name -> metric
