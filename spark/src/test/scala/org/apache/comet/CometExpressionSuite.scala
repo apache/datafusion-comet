@@ -74,8 +74,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataGenOptions(generateNegativeZero = true))
     df.createOrReplaceTempView("tbl")
 
-    // TODO check fallback reason
-    checkSparkAnswer("select * from tbl order by 1, 2")
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+      checkSparkAnswerAndFallbackReason(
+        "select * from tbl order by 1, 2",
+        "unsupported range partitioning sort order")
+    }
   }
 
   test("sort array of floating point with negative zero") {
@@ -91,8 +94,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataGenOptions(generateNegativeZero = true))
     df.createOrReplaceTempView("tbl")
 
-    // TODO check fallback reason
-    checkSparkAnswer("select * from tbl order by 1, 2")
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+      checkSparkAnswerAndFallbackReason(
+        "select * from tbl order by 1, 2",
+        "unsupported range partitioning sort order")
+    }
   }
 
   test("sort struct containing floating point with negative zero") {
@@ -112,8 +118,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataGenOptions(generateNegativeZero = true))
     df.createOrReplaceTempView("tbl")
 
-    // TODO check fallback reason
-    checkSparkAnswer("select * from tbl order by 1, 2")
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+      checkSparkAnswerAndFallbackReason(
+        "select * from tbl order by 1, 2",
+        "unsupported range partitioning sort order")
+    }
   }
 
   test("compare true/false to negative zero") {
