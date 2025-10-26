@@ -3224,10 +3224,39 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql(
         "create table t1 using parquet as select uuid() c1, uuid() c2, uuid() c3, uuid() c4, cast(null as string) c5 from range(10)")
       checkSparkAnswerAndOperator("select concat(c1, c2) AS x FROM t1")
+      checkSparkAnswerAndOperator("select concat(c1, c1) AS x FROM t1")
       checkSparkAnswerAndOperator("select concat(c1, c2, c3) AS x FROM t1")
       checkSparkAnswerAndOperator("select concat(c1, c2, c3, c5) AS x FROM t1")
-      //checkSparkAnswerAndOperator("select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1")
+      checkSparkAnswerAndOperator(
+        "select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1")
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/2647
+  ignore("test concat function - arrays") {
+    withTable("t1") {
+      sql(
+        "create table t1 using parquet as select array(id, id+1) c1, array(id+2, id+3) c2, array() c3, array(null) c4, cast(null as array<int>) c5 from range(10)")
+      checkSparkAnswerAndOperator("select concat(c1, c2) AS x FROM t1")
+      checkSparkAnswerAndOperator("select concat(c1, c1) AS x FROM t1")
+      checkSparkAnswerAndOperator("select concat(c1, c2, c3) AS x FROM t1")
+      checkSparkAnswerAndOperator("select concat(c1, c2, c3, c5) AS x FROM t1")
+      checkSparkAnswerAndOperator(
+        "select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1")
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/2647
+  ignore("test concat function - binary") {
+    withTable("t1") {
+      sql(
+        "create table t1 using parquet as select cast(uuid() as binary) c1, cast(uuid() as binary) c2, cast(uuid() as binary) c3, cast(uuid() as binary) c4, cast(null as binary) c5 from range(10)")
+      checkSparkAnswerAndOperator("select concat(c1, c2) AS x FROM t1")
+      checkSparkAnswerAndOperator("select concat(c1, c1) AS x FROM t1")
+      checkSparkAnswerAndOperator("select concat(c1, c2, c3) AS x FROM t1")
+      checkSparkAnswerAndOperator("select concat(c1, c2, c3, c5) AS x FROM t1")
+      checkSparkAnswerAndOperator(
+        "select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1")
+    }
+  }
 }
