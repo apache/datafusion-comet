@@ -98,6 +98,94 @@ abstract class CometTestBase
     }
   }
 
+  protected def internalCheckSparkAnswer(
+      df: => DataFrame,
+      assertCometNative: Boolean,
+      includeClasses: Seq[Class[_]] = Seq.empty,
+      excludedClasses: Seq[Class[_]] = Seq.empty,
+      withTol: Option[Double] = None): (SparkPlan, SparkPlan) = {
+
+    var expected: Array[Row] = Array.empty
+    var sparkPlan = null.asInstanceOf[SparkPlan]
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      val dfSpark = datasetOfRows(spark, df.logicalPlan)
+      expected = dfSpark.collect()
+      sparkPlan = dfSpark.queryExecution.executedPlan
+    }
+    val dfComet = datasetOfRows(spark, df.logicalPlan)
+
+    if (withTol.isDefined) {
+      checkAnswerWithTol(dfComet, expected, withTol.get)
+    } else {
+      checkAnswer(dfComet, expected)
+    }
+
+    if (assertCometNative) {
+      checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan), excludedClasses: _*)
+    }
+
+    if (includeClasses.nonEmpty) {
+      checkPlanContains(stripAQEPlan(df.queryExecution.executedPlan), includeClasses: _*)
+    }
+
+    (sparkPlan, dfComet.queryExecution.executedPlan)
+  }
+
+  protected def checkSparkAnswerAndOperator(query: String, excludedClasses: Class[_]*): Unit = {
+    checkSparkAnswerAndOperator(sql(query), excludedClasses: _*)
+  }
+
+  protected def checkSparkAnswerAndOperator(
+      df: => DataFrame,
+      excludedClasses: Class[_]*): Unit = {
+    internalCheckSparkAnswer(
+      df,
+      assertCometNative = true,
+      excludedClasses = Seq(excludedClasses: _*))
+  }
+
+  protected def checkSparkAnswerAndOperator(
+      df: => DataFrame,
+      includeClasses: Seq[Class[_]],
+      excludedClasses: Class[_]*): Unit = {
+    internalCheckSparkAnswer(
+      df,
+      assertCometNative = true,
+      includeClasses,
+      excludedClasses = Seq(excludedClasses: _*))
+  }
+
+  protected def checkSparkAnswerAndOperatorWithTol(df: => DataFrame, tol: Double = 1e-6): Unit = {
+    checkSparkAnswerAndOperatorWithTol(df, tol, Seq.empty)
+  }
+
+  protected def checkSparkAnswerAndOperatorWithTol(
+      df: => DataFrame,
+      tol: Double,
+      includeClasses: Seq[Class[_]],
+      excludedClasses: Class[_]*): Unit = {
+    internalCheckSparkAnswer(
+      df,
+      assertCometNative = true,
+      includeClasses = Seq(includeClasses: _*),
+      excludedClasses = Seq(excludedClasses: _*),
+      withTol = Some(tol))
+  }
+
+  /** Check for the correct results as well as the expected fallback reason */
+  protected def checkSparkAnswerAndFallbackReason(query: String, fallbackReason: String): Unit = {
+    checkSparkAnswerAndFallbackReason(sql(query), fallbackReason)
+  }
+
+  /** Check for the correct results as well as the expected fallback reason */
+  protected def checkSparkAnswerAndFallbackReason(
+      df: => DataFrame,
+      fallbackReason: String): Unit = {
+    val (_, cometPlan) = internalCheckSparkAnswer(df, assertCometNative = false)
+    val explain = new ExtendedExplainInfo().generateVerboseExtendedInfo(cometPlan)
+    assert(explain.contains(fallbackReason))
+  }
+
   /**
    * A helper function for comparing Comet DataFrame with Spark result using absolute tolerance.
    */
@@ -142,101 +230,20 @@ abstract class CometTestBase
     }
   }
 
-  protected def newCheckSparkAnswer(
-      df: => DataFrame,
-      assertCometNative: Boolean,
-      includeClasses: Seq[Class[_]],
-      excludedClasses: Seq[Class[_]],
-      withTol: Option[Double]): (SparkPlan, SparkPlan) = {
-
-    var expected: Array[Row] = Array.empty
-    var sparkPlan = null.asInstanceOf[SparkPlan]
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      val dfSpark = datasetOfRows(spark, df.logicalPlan)
-      expected = dfSpark.collect()
-      sparkPlan = dfSpark.queryExecution.executedPlan
-    }
-    val dfComet = datasetOfRows(spark, df.logicalPlan)
-
-    if (withTol.isDefined) {
-      checkAnswerWithTol(dfComet, expected, withTol.get)
-    } else {
-      checkAnswer(dfComet, expected)
-    }
-
-    if (assertCometNative) {
-      checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan), excludedClasses: _*)
-    }
-
-    if (includeClasses.nonEmpty) {
-      checkPlanContains(stripAQEPlan(df.queryExecution.executedPlan), includeClasses: _*)
-    }
-
-    (sparkPlan, dfComet.queryExecution.executedPlan)
-  }
-
+  /**
+   * Check that the query returns the correct results when Comet is enabled, but do not check if
+   * Comet accelerated any operators
+   */
   protected def checkSparkAnswer(query: String): (SparkPlan, SparkPlan) = {
-    checkSparkAnswer(sql(query))
+    internalCheckSparkAnswer(sql(query), assertCometNative = false)
   }
 
   /**
-   * Check the answer of a Comet SQL query with Spark result.
-   * @param df
-   *   The DataFrame of the query.
-   * @return
-   *   A tuple of the SparkPlan of the query and the SparkPlan of the Comet query.
+   * Check that the query returns the correct results when Comet is enabled, but do not check if
+   * Comet accelerated any operators
    */
   protected def checkSparkAnswer(df: => DataFrame): (SparkPlan, SparkPlan) = {
-    var expected: Array[Row] = Array.empty
-    var sparkPlan = null.asInstanceOf[SparkPlan]
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      val dfSpark = datasetOfRows(spark, df.logicalPlan)
-      expected = dfSpark.collect()
-      sparkPlan = dfSpark.queryExecution.executedPlan
-    }
-    val dfComet = datasetOfRows(spark, df.logicalPlan)
-    checkAnswer(dfComet, expected)
-    (sparkPlan, dfComet.queryExecution.executedPlan)
-  }
-
-  /** Check for the correct results as well as the expected fallback reason */
-  def checkSparkAnswerAndFallbackReason(sql: String, fallbackReason: String): Unit = {
-    val (_, cometPlan) = checkSparkAnswer(sql)
-    val explain = new ExtendedExplainInfo().generateVerboseExtendedInfo(cometPlan)
-    assert(explain.contains(fallbackReason))
-  }
-
-  protected def checkSparkAnswerAndOperator(query: String, excludedClasses: Class[_]*): Unit = {
-    checkSparkAnswerAndOperator(sql(query), excludedClasses: _*)
-  }
-
-  protected def checkSparkAnswerAndOperator(
-      df: => DataFrame,
-      excludedClasses: Class[_]*): Unit = {
-    checkSparkAnswerAndOperator(df, Seq.empty, excludedClasses: _*)
-  }
-
-  protected def checkSparkAnswerAndOperator(
-      df: => DataFrame,
-      includeClasses: Seq[Class[_]],
-      excludedClasses: Class[_]*): Unit = {
-    checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan), excludedClasses: _*)
-    checkPlanContains(stripAQEPlan(df.queryExecution.executedPlan), includeClasses: _*)
-    checkSparkAnswer(df)
-  }
-
-  protected def checkSparkAnswerAndOperatorWithTol(df: => DataFrame, tol: Double = 1e-6): Unit = {
-    checkSparkAnswerAndOperatorWithTol(df, tol, Seq.empty)
-  }
-
-  protected def checkSparkAnswerAndOperatorWithTol(
-      df: => DataFrame,
-      tol: Double,
-      includeClasses: Seq[Class[_]],
-      excludedClasses: Class[_]*): Unit = {
-    checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan), excludedClasses: _*)
-    checkPlanContains(stripAQEPlan(df.queryExecution.executedPlan), includeClasses: _*)
-    checkSparkAnswerWithTol(df, tol)
+    internalCheckSparkAnswer(df, assertCometNative = false)
   }
 
   protected def checkCometOperators(plan: SparkPlan, excludedClasses: Class[_]*): Unit = {
