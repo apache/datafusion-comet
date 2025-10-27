@@ -142,6 +142,39 @@ abstract class CometTestBase
     }
   }
 
+  protected def newCheckSparkAnswer(
+      df: => DataFrame,
+      assertCometNative: Boolean,
+      includeClasses: Seq[Class[_]],
+      excludedClasses: Seq[Class[_]],
+      withTol: Option[Double]): (SparkPlan, SparkPlan) = {
+
+    var expected: Array[Row] = Array.empty
+    var sparkPlan = null.asInstanceOf[SparkPlan]
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      val dfSpark = datasetOfRows(spark, df.logicalPlan)
+      expected = dfSpark.collect()
+      sparkPlan = dfSpark.queryExecution.executedPlan
+    }
+    val dfComet = datasetOfRows(spark, df.logicalPlan)
+
+    if (withTol.isDefined) {
+      checkAnswerWithTol(dfComet, expected, withTol.get)
+    } else {
+      checkAnswer(dfComet, expected)
+    }
+
+    if (assertCometNative) {
+      checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan), excludedClasses: _*)
+    }
+
+    if (includeClasses.nonEmpty) {
+      checkPlanContains(stripAQEPlan(df.queryExecution.executedPlan), includeClasses: _*)
+    }
+
+    (sparkPlan, dfComet.queryExecution.executedPlan)
+  }
+
   protected def checkSparkAnswer(query: String): (SparkPlan, SparkPlan) = {
     checkSparkAnswer(sql(query))
   }
