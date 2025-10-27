@@ -1208,6 +1208,62 @@ object QueryPlanSerde extends Logging with CometExprShim {
           icebergScanBuilder.addRequiredSchema(field.build())
         }
 
+        // For schema evolution support: extract the scan's expected schema to use for all tasks.
+        // When reading old snapshots (VERSION AS OF) after schema changes (add/drop columns),
+        // individual FileScanTasks may have inconsistent schemas - some with the snapshot schema,
+        // others with the current table schema. By using the scan's expectedSchema() uniformly,
+        // we ensure iceberg-rust reads all files with the correct snapshot schema.
+        val globalNameToFieldId = scala.collection.mutable.Map[String, Int]()
+        var scanSchemaForTasks: Option[Any] = None
+
+        try {
+          // expectedSchema() is a protected method in SparkScan that returns the Iceberg Schema
+          // for this scan (which is the snapshot schema for VERSION AS OF queries).
+          var scanClass: Class[_] = scan.wrapped.scan.getClass
+          var schemaMethod: java.lang.reflect.Method = null
+
+          // Search through class hierarchy to find expectedSchema()
+          while (scanClass != null && schemaMethod == null) {
+            try {
+              schemaMethod = scanClass.getDeclaredMethod("expectedSchema")
+              schemaMethod.setAccessible(true)
+            } catch {
+              case _: NoSuchMethodException => scanClass = scanClass.getSuperclass
+            }
+          }
+
+          if (schemaMethod == null) {
+            throw new NoSuchMethodException(
+              "Could not find expectedSchema() method in class hierarchy")
+          }
+
+          val scanSchema = schemaMethod.invoke(scan.wrapped.scan)
+          scanSchemaForTasks = Some(scanSchema)
+
+          // Build a field ID mapping from the scan schema as a fallback.
+          // This is needed when scan.output includes columns that aren't in some task schemas.
+          val columnsMethod = scanSchema.getClass.getMethod("columns")
+          val columns = columnsMethod.invoke(scanSchema).asInstanceOf[java.util.List[_]]
+
+          columns.forEach { column =>
+            try {
+              val nameMethod = column.getClass.getMethod("name")
+              val name = nameMethod.invoke(column).asInstanceOf[String]
+
+              val fieldIdMethod = column.getClass.getMethod("fieldId")
+              val fieldId = fieldIdMethod.invoke(column).asInstanceOf[Int]
+
+              globalNameToFieldId(name) = fieldId
+            } catch {
+              case e: Exception =>
+                logWarning(s"Failed to extract field ID from scan schema column: ${e.getMessage}")
+            }
+          }
+        } catch {
+          case e: Exception =>
+            logWarning(s"Failed to extract scan schema for field ID mapping: ${e.getMessage}")
+        }
+
         // Extract FileScanTasks from the InputPartitions in the RDD
         // (Same logic as the previous CometIcebergNativeScanExec case)
         var actualNumPartitions = 0
@@ -1355,8 +1411,17 @@ object QueryPlanSerde extends Logging with CometExprShim {
                         taskBuilder.setLength(length)
 
                         try {
-                          val schemaMethod = fileScanTaskClass.getMethod("schema")
-                          val schema = schemaMethod.invoke(task)
+                          // Use the scan's expected schema for ALL tasks instead of each task's
+                          // individual schema. This is critical for schema evolution: when
+                          // reading old snapshots after column changes, some tasks may have the
+                          // current table schema instead of the snapshot schema.Using the scan
+                          // schema ensures iceberg-rust reads all files correctly.
+                          val schema: AnyRef =
+                            scanSchemaForTasks.map(_.asInstanceOf[AnyRef]).getOrElse {
+                              // Fallback to task schema if scan schema extraction failed
+                              val schemaMethod = fileScanTaskClass.getMethod("schema")
+                              schemaMethod.invoke(task)
+                            }
 
                           // scalastyle:off classforname
                           val schemaParserClass = Class.forName("org.apache.iceberg.SchemaParser")
@@ -1374,6 +1439,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
                           taskBuilder.setSchemaJson(schemaJson)
 
+                          // Build field ID mapping from the schema we're using
+                          // (scan or task schema)
                           val columnsMethod = schema.getClass.getMethod("columns")
                           val columns =
                             columnsMethod.invoke(schema).asInstanceOf[java.util.List[_]]
@@ -1395,11 +1462,23 @@ object QueryPlanSerde extends Logging with CometExprShim {
                             }
                           }
 
+                          // Extract project_field_ids for scan.output columns.
+                          // For schema evolution: try task schema first, then fall back to
+                          // global scan schema.
+                          // This handles cases where scan.output has columns not present in
+                          // some task schemas.
                           scan.output.foreach { attr =>
-                            nameToFieldId.get(attr.name) match {
-                              case Some(fieldId) =>
-                                taskBuilder.addProjectFieldIds(fieldId)
+                            val fieldId = nameToFieldId
+                              .get(attr.name)
+                              .orElse(globalNameToFieldId.get(attr.name))
+
+                            fieldId match {
+                              case Some(id) =>
+                                taskBuilder.addProjectFieldIds(id)
                               case None =>
+                                logWarning(
+                                  s"Column '${attr.name}' not found in task or scan schema," +
+                                    "skipping projection")
                             }
                           }
                         } catch {

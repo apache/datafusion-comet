@@ -1670,6 +1670,84 @@ class CometIcebergNativeSuite extends CometTestBase {
     }
   }
 
+  test("schema evolution - read old snapshot after column drop (VERSION AS OF)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        // Force LOCAL mode to use iceberg-rust
+        "spark.sql.iceberg.read.data-planning-mode" -> "local") {
+
+        // This test verifies that Comet correctly handles reading old snapshots after schema changes,
+        // which is a form of backward schema evolution. This corresponds to these Iceberg Java tests:
+        // - TestIcebergSourceHadoopTables::testSnapshotReadAfterDropColumn
+        // - TestIcebergSourceHadoopTables::testSnapshotReadAfterAddAndDropColumn
+        // - TestIcebergSourceHiveTables::testSnapshotReadAfterDropColumn
+        // - TestIcebergSourceHiveTables::testSnapshotReadAfterAddAndDropColumn
+        // - TestSnapshotSelection::testSnapshotSelectionByTagWithSchemaChange
+
+        // Step 1: Create table with columns (id, data, category)
+        spark.sql("""
+          CREATE TABLE test_cat.db.schema_evolution_test (
+            id INT,
+            data STRING,
+            category STRING
+          ) USING iceberg
+        """)
+
+        // Step 2: Write data with all three columns
+        spark.sql("""
+          INSERT INTO test_cat.db.schema_evolution_test
+          VALUES (1, 'x', 'A'), (2, 'y', 'A'), (3, 'z', 'B')
+        """)
+
+        // Get snapshot ID before schema change
+        val snapshotIdBefore = spark
+          .sql("SELECT snapshot_id FROM test_cat.db.schema_evolution_test.snapshots ORDER BY committed_at DESC LIMIT 1")
+          .collect()(0)
+          .getLong(0)
+
+        // Verify data is correct before schema change
+        val beforeDrop =
+          spark.sql("SELECT * FROM test_cat.db.schema_evolution_test ORDER BY id").collect()
+        assert(beforeDrop.length == 3)
+        assert(beforeDrop(0).getString(1) == "x", "Row 1 should have data='x' before drop")
+        assert(beforeDrop(1).getString(1) == "y", "Row 2 should have data='y' before drop")
+        assert(beforeDrop(2).getString(1) == "z", "Row 3 should have data='z' before drop")
+
+        // Step 3: Drop the "data" column
+        spark.sql("ALTER TABLE test_cat.db.schema_evolution_test DROP COLUMN data")
+
+        // Step 4: Read the old snapshot (before column was dropped) using VERSION AS OF
+        // This requires using the snapshot's schema, not the current table schema
+        val snapshotRead = spark
+          .sql(
+            s"SELECT * FROM test_cat.db.schema_evolution_test VERSION AS OF $snapshotIdBefore ORDER BY id")
+          .collect()
+
+        // Verify the snapshot read returns the original data with all columns
+        assert(snapshotRead.length == 3, "Should have 3 rows")
+        assert(
+          snapshotRead(0).getString(1) == "x",
+          s"Row 1 should have data='x', got ${snapshotRead(0).get(1)}")
+        assert(
+          snapshotRead(1).getString(1) == "y",
+          s"Row 2 should have data='y', got ${snapshotRead(1).get(1)}")
+        assert(
+          snapshotRead(2).getString(1) == "z",
+          s"Row 3 should have data='z', got ${snapshotRead(2).get(1)}")
+
+        spark.sql("DROP TABLE test_cat.db.schema_evolution_test")
+      }
+    }
+  }
+
   // Helper to create temp directory
   def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile
