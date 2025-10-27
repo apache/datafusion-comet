@@ -1010,7 +1010,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
       } else {
         // Should just fall back to Spark since non-DataSourceExec scan does not support nested types.
-        checkSparkAnswerAndOperator(
+        checkSparkAnswer(
           "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
       }
     }
@@ -1249,7 +1249,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // cast() should return null for invalid inputs when ansi mode is disabled
         val df = spark.sql(s"select a, cast(a as ${toType.sql}) from t order by a")
         if (hasIncompatibleType) {
-          checkSparkAnswerAndOperator(df)
+          checkSparkAnswer(df)
         } else {
           checkSparkAnswerAndOperator(df)
         }
