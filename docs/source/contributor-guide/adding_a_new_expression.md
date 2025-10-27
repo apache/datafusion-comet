@@ -41,9 +41,15 @@ Once you know what you want to add, you'll need to update the query planner to r
 
 ### Adding the Expression in Scala
 
-The `QueryPlanSerde` object has a method `exprToProto`, which is responsible for converting a Spark expression to a protobuf expression. Within that method is an `exprToProtoInternal` method that contains a large match statement for each expression type. You'll need to add a new case to this match statement for your new expression.
+The `QueryPlanSerde` object has a field `exprSerdeMap`, which contains a mapping of Spark expression classes, such 
+as `DateAdd`, to Comet expression serde classes, such as `CometDateAdd`. Adding support for a new expression typically 
+requires creating a new Comet serde class that implements the `CometExpressionSerde` trait.
 
-For example, the `unhex` function looks like this:
+If it is not possible to add a simple mapping from a Spark class to a Comet serde class. then it will be necessary to
+handle the mapping manually in the `exprToProtoInternal` method that contains a large match statement for each 
+expression type. You'll need to add a new case to this match statement for your new expression.
+
+For example, the `unhex` function was originally implemented like this before moving to the `CometUnhex` object:
 
 ```scala
 case e: Unhex =>
