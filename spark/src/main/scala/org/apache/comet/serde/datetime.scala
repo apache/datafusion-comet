@@ -273,7 +273,7 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
         }
       case _ =>
         Incompatible(
-          Some("Invalid 1 format strings will throw an exception instead of returning NULL"))
+          Some("Invalid format strings will throw an exception instead of returning NULL"))
     }
   }
 
@@ -326,7 +326,7 @@ object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
         }
       case _ =>
         Incompatible(
-          Some("Invalid 2 format strings will throw an exception instead of returning NULL"))
+          Some("Invalid format strings will throw an exception instead of returning NULL"))
     }
   }
 
