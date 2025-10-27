@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
-import scala.util.Try
+import scala.util.{Success, Try}
 
 import org.scalatest.BeforeAndAfterEach
 
@@ -272,12 +272,26 @@ abstract class CometTestBase
    */
   protected def checkSparkMaybeThrows(
       df: => DataFrame): (Option[Throwable], Option[Throwable]) = {
-    var expected: Option[Throwable] = None
+    var expected: Try[Array[Row]] = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      expected = Try(datasetOfRows(spark, df.logicalPlan).collect()).failed.toOption
+      expected = Try(datasetOfRows(spark, df.logicalPlan).collect())
     }
-    val actual = Try(datasetOfRows(spark, df.logicalPlan).collect()).failed.toOption
-    (expected, actual)
+    val actual = Try(datasetOfRows(spark, df.logicalPlan).collect())
+
+    (expected, actual) match {
+      case (Success(expectedAnswer), Success(actualAnswer)) =>
+        // in success case, check that the answers match
+        require(
+          actualAnswer.length == expectedAnswer.length,
+          s"actual num rows ${actualAnswer.length} != expected num of rows ${expectedAnswer.length}")
+        actualAnswer.zip(expectedAnswer).foreach { case (actualRow, expectedRow) =>
+          checkAnswerWithTol(actualRow, expectedRow, absTol = 1e-6)
+        }
+        (None, None)
+      case _ =>
+        (expected.failed.toOption, actual.failed.toOption)
+    }
+
   }
 
   /**
