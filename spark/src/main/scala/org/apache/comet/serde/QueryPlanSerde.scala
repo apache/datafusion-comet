@@ -1094,19 +1094,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val cond = exprToProto(condition, child.output)
 
         if (cond.isDefined && childOp.nonEmpty) {
-          // Some native expressions do not support operating on dictionary-encoded arrays, so
-          // wrap the child in a CopyExec to unpack dictionaries first.
-          def wrapChildInCopyExec(condition: Expression): Boolean = {
-            condition.exists(expr => {
-              expr.isInstanceOf[StartsWith] || expr.isInstanceOf[EndsWith] || expr
-                .isInstanceOf[Contains]
-            })
-          }
-
           val filterBuilder = OperatorOuterClass.Filter
             .newBuilder()
             .setPredicate(cond.get)
-            .setWrapChildInCopyExec(wrapChildInCopyExec(condition))
           Some(builder.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)
