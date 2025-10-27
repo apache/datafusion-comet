@@ -1091,17 +1091,10 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter: Arc<dyn ExecutionPlan> = if filter.wrap_child_in_copy_exec {
-                    Arc::new(FilterExec::try_new(
-                        predicate,
-                        Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
-                    )?)
-                } else {
-                    Arc::new(FilterExec::try_new(
-                        predicate,
-                        Arc::clone(&child.native_plan),
-                    )?)
-                };
+                let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(
+                    predicate,
+                    Arc::clone(&child.native_plan),
+                )?);
 
                 Ok((
                     scans,
@@ -1814,7 +1807,9 @@ impl PhysicalPlanner {
 
     /// Wrap an ExecutionPlan in a CopyExec, which will unpack any dictionary-encoded arrays.
     fn wrap_in_copy_exec(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-        Arc::new(CopyExec::new(plan, CopyMode::UnpackOrClone))
+        // make a deep copy so that the JVM wrapper objects can be released, reducing
+        // GC pressure
+        Arc::new(CopyExec::new(plan, CopyMode::UnpackOrDeepCopy))
     }
 
     /// Create a DataFusion physical aggregate expression from Spark physical aggregate expression
