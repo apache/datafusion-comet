@@ -3203,7 +3203,6 @@ mod tests {
             children: vec![child_op],
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
-                wrap_child_in_copy_exec: false,
             })),
         }
     }
