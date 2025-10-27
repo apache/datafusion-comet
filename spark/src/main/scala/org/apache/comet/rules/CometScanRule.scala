@@ -324,46 +324,71 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           false
         }
 
-        // Check if all files are Parquet format
-        val allParquetFiles = if (schemaSupported && formatVersionSupported) {
-          try {
-            // Use reflection to access the protected tasks() method
-            val tasksMethod = scanExec.scan.getClass.getSuperclass
-              .getDeclaredMethod("tasks")
-            tasksMethod.setAccessible(true)
-            val tasks = tasksMethod.invoke(scanExec.scan).asInstanceOf[java.util.List[_]]
+        // Check if all files are Parquet format and use supported filesystem schemes
+        val (allParquetFiles, allSupportedFilesystems) =
+          if (schemaSupported && formatVersionSupported) {
+            try {
+              // Use reflection to access the protected tasks() method
+              val tasksMethod = scanExec.scan.getClass.getSuperclass
+                .getDeclaredMethod("tasks")
+              tasksMethod.setAccessible(true)
+              val tasks = tasksMethod.invoke(scanExec.scan).asInstanceOf[java.util.List[_]]
 
-            // scalastyle:off classforname
-            val contentScanTaskClass = Class.forName("org.apache.iceberg.ContentScanTask")
-            val contentFileClass = Class.forName("org.apache.iceberg.ContentFile")
-            // scalastyle:on classforname
+              // scalastyle:off classforname
+              val contentScanTaskClass = Class.forName("org.apache.iceberg.ContentScanTask")
+              val contentFileClass = Class.forName("org.apache.iceberg.ContentFile")
+              // scalastyle:on classforname
 
-            val fileMethod = contentScanTaskClass.getMethod("file")
-            val formatMethod = contentFileClass.getMethod("format")
+              val fileMethod = contentScanTaskClass.getMethod("file")
+              val formatMethod = contentFileClass.getMethod("format")
+              val pathMethod = contentFileClass.getMethod("path")
 
-            // Check that all FileScanTasks are for Parquet files
-            val allParquet = tasks.asScala.forall { task =>
-              val dataFile = fileMethod.invoke(task)
-              val fileFormat = formatMethod.invoke(dataFile)
-              fileFormat.toString == "PARQUET"
+              // Filesystem schemes supported by iceberg-rust
+              // See: iceberg-rust/crates/iceberg/src/io/storage.rs parse_scheme()
+              val supportedSchemes =
+                Set("file", "s3", "s3a", "gs", "gcs", "oss", "abfss", "abfs", "wasbs", "wasb")
+
+              var allParquet = true
+              var allSupportedFs = true
+
+              tasks.asScala.foreach { task =>
+                val dataFile = fileMethod.invoke(task)
+                val fileFormat = formatMethod.invoke(dataFile)
+
+                // Check file format
+                if (fileFormat.toString != "PARQUET") {
+                  allParquet = false
+                }
+
+                // Check filesystem scheme
+                val filePath = pathMethod.invoke(dataFile).toString
+                val scheme = new URI(filePath).getScheme
+                if (scheme != null && !supportedSchemes.contains(scheme)) {
+                  allSupportedFs = false
+                  fallbackReasons += "Iceberg scan contains files with unsupported filesystem" +
+                    s"scheme: $scheme. " +
+                    s"Comet only supports: ${supportedSchemes.mkString(", ")}"
+                }
+              }
+
+              if (!allParquet) {
+                fallbackReasons += "Iceberg scan contains non-Parquet files (ORC or Avro). " +
+                  "Comet only supports Parquet files in Iceberg tables"
+              }
+
+              (allParquet, allSupportedFs)
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Could not verify file formats or filesystem schemes: " +
+                  s"${e.getMessage}"
+                (false, false)
             }
-
-            if (!allParquet) {
-              fallbackReasons += "Iceberg scan contains non-Parquet files (ORC or Avro). " +
-                "Comet only supports Parquet files in Iceberg tables"
-            }
-
-            allParquet
-          } catch {
-            case e: Exception =>
-              fallbackReasons += s"Could not verify file formats: ${e.getMessage}"
-              false
+          } else {
+            (false, false)
           }
-        } else {
-          false
-        }
 
-        if (schemaSupported && formatVersionSupported && allParquetFiles) {
+        if (schemaSupported && formatVersionSupported && allParquetFiles &&
+          allSupportedFilesystems) {
           // When reading from Iceberg, automatically enable type promotion
           SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
           CometBatchScanExec(

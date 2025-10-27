@@ -774,7 +774,6 @@ class CometIcebergNativeSuite extends CometTestBase {
           FROM range(100)
         """)
 
-        // Test bucket partitioning correctness
         checkIcebergNativeScan("SELECT * FROM test_cat.db.bucket_partitioned ORDER BY id")
         checkIcebergNativeScan("SELECT COUNT(DISTINCT id) FROM test_cat.db.bucket_partitioned")
         checkIcebergNativeScan("SELECT SUM(value) FROM test_cat.db.bucket_partitioned")
@@ -782,6 +781,189 @@ class CometIcebergNativeSuite extends CometTestBase {
           "SELECT * FROM test_cat.db.bucket_partitioned WHERE id < 20 ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.bucket_partitioned")
+      }
+    }
+  }
+
+  test("partition pruning - bucket transform verifies files are skipped") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.bucket_pruning (
+            id INT,
+            data STRING
+          ) USING iceberg
+          PARTITIONED BY (bucket(8, id))
+        """)
+
+        (0 until 8).foreach { bucket =>
+          spark.sql(s"""
+            INSERT INTO test_cat.db.bucket_pruning
+            SELECT id, CONCAT('data_', CAST(id AS STRING)) as data
+            FROM range(${bucket * 100}, ${(bucket + 1) * 100})
+          """)
+        }
+
+        val specificIds = Seq(5, 15, 25)
+        val df = spark.sql(s"""
+          SELECT * FROM test_cat.db.bucket_pruning
+          WHERE id IN (${specificIds.mkString(",")})
+        """)
+
+        val scanNodes = df.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+
+        assert(scanNodes.nonEmpty, "Expected at least one CometIcebergNativeScanExec node")
+
+        val metrics = scanNodes.head.metrics
+
+        val result = df.collect()
+        assert(result.length == specificIds.length)
+
+        // Partition pruning occurs at the manifest level, not file level
+        // Each INSERT creates one manifest, so we verify skippedDataManifests
+        assert(
+          metrics("resultDataFiles").value < 8,
+          s"Bucket pruning should skip some files, but read ${metrics("resultDataFiles").value} out of 8")
+        assert(
+          metrics("skippedDataManifests").value > 0,
+          s"Expected skipped manifests due to bucket pruning, got ${metrics("skippedDataManifests").value}")
+
+        spark.sql("DROP TABLE test_cat.db.bucket_pruning")
+      }
+    }
+  }
+
+  test("partition pruning - truncate transform verifies files are skipped") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.truncate_pruning (
+            id INT,
+            message STRING
+          ) USING iceberg
+          PARTITIONED BY (truncate(5, message))
+        """)
+
+        val prefixes = Seq("alpha", "bravo", "charlie", "delta", "echo")
+        prefixes.zipWithIndex.foreach { case (prefix, idx) =>
+          spark.sql(s"""
+            INSERT INTO test_cat.db.truncate_pruning
+            SELECT
+              id,
+              CONCAT('$prefix', '_suffix_', CAST(id AS STRING)) as message
+            FROM range(${idx * 10}, ${(idx + 1) * 10})
+          """)
+        }
+
+        val df = spark.sql("""
+          SELECT * FROM test_cat.db.truncate_pruning
+          WHERE message LIKE 'alpha%'
+        """)
+
+        val scanNodes = df.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+
+        assert(scanNodes.nonEmpty, "Expected at least one CometIcebergNativeScanExec node")
+
+        val metrics = scanNodes.head.metrics
+
+        val result = df.collect()
+        assert(result.length == 10)
+        assert(result.forall(_.getString(1).startsWith("alpha")))
+
+        // Partition pruning occurs at the manifest level, not file level
+        // Each INSERT creates one manifest, so we verify skippedDataManifests
+        assert(
+          metrics("resultDataFiles").value == 1,
+          s"Truncate pruning should only read 1 file, read ${metrics("resultDataFiles").value}")
+        assert(
+          metrics("skippedDataManifests").value == 4,
+          s"Expected 4 skipped manifests, got ${metrics("skippedDataManifests").value}")
+
+        spark.sql("DROP TABLE test_cat.db.truncate_pruning")
+      }
+    }
+  }
+
+  test("partition pruning - hour transform verifies files are skipped") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.hour_pruning (
+            id INT,
+            event_time TIMESTAMP,
+            data STRING
+          ) USING iceberg
+          PARTITIONED BY (hour(event_time))
+        """)
+
+        (0 until 6).foreach { hour =>
+          spark.sql(s"""
+            INSERT INTO test_cat.db.hour_pruning
+            SELECT
+              id,
+              CAST('2024-01-01 $hour:00:00' AS TIMESTAMP) as event_time,
+              CONCAT('event_', CAST(id AS STRING)) as data
+            FROM range(${hour * 10}, ${(hour + 1) * 10})
+          """)
+        }
+
+        val df = spark.sql("""
+          SELECT * FROM test_cat.db.hour_pruning
+          WHERE event_time >= CAST('2024-01-01 04:00:00' AS TIMESTAMP)
+        """)
+
+        val scanNodes = df.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+
+        assert(scanNodes.nonEmpty, "Expected at least one CometIcebergNativeScanExec node")
+
+        val metrics = scanNodes.head.metrics
+
+        val result = df.collect()
+        assert(result.length == 20)
+
+        // Partition pruning occurs at the manifest level, not file level
+        // Each INSERT creates one manifest, so we verify skippedDataManifests
+        assert(
+          metrics("resultDataFiles").value == 2,
+          s"Hour pruning should read 2 files (hours 4-5), read ${metrics("resultDataFiles").value}")
+        assert(
+          metrics("skippedDataManifests").value == 4,
+          s"Expected 4 skipped manifests (hours 0-3), got ${metrics("skippedDataManifests").value}")
+
+        spark.sql("DROP TABLE test_cat.db.hour_pruning")
       }
     }
   }
