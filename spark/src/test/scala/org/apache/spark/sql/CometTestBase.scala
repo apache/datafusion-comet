@@ -241,16 +241,6 @@ abstract class CometTestBase
       withTol = Some(tol))
   }
 
-  protected def checkSparkMaybeThrows(
-      df: => DataFrame): (Option[Throwable], Option[Throwable]) = {
-    var expected: Option[Throwable] = None
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      expected = Try(datasetOfRows(spark, df.logicalPlan).collect()).failed.toOption
-    }
-    val actual = Try(datasetOfRows(spark, df.logicalPlan).collect()).failed.toOption
-    (expected, actual)
-  }
-
   /** Check for the correct results as well as the expected fallback reason */
   protected def checkSparkAnswerAndFallbackReason(query: String, fallbackReason: String): Unit = {
     checkSparkAnswerAndFallbackReasons(sql(query), Set(fallbackReason))
@@ -263,7 +253,7 @@ abstract class CometTestBase
     checkSparkAnswerAndFallbackReasons(df, Set(fallbackReason))
   }
 
-  /** Check for the correct results as well as the expected fallback reason */
+  /** Check for the correct results as well as the expected fallback reasons */
   protected def checkSparkAnswerAndFallbackReasons(
       df: => DataFrame,
       fallbackReasons: Set[String]): Unit = {
@@ -272,6 +262,22 @@ abstract class CometTestBase
     for (reason <- fallbackReasons) {
       assert(explain.contains(reason))
     }
+  }
+
+  /**
+   * Try executing the query against Spark and Comet and return the results or the exception.
+   *
+   * This method does not check that Comet replaced any operators or that the results match in the
+   * case where the query is successful against both Spark and Comet.
+   */
+  protected def checkSparkMaybeThrows(
+      df: => DataFrame): (Option[Throwable], Option[Throwable]) = {
+    var expected: Option[Throwable] = None
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      expected = Try(datasetOfRows(spark, df.logicalPlan).collect()).failed.toOption
+    }
+    val actual = Try(datasetOfRows(spark, df.logicalPlan).collect()).failed.toOption
+    (expected, actual)
   }
 
   /**
