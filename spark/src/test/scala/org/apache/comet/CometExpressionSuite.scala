@@ -1278,17 +1278,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "sin",
           "sqrt",
           "tan")) {
-        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1), $expr(_2) FROM tbl")
-        val cometProjectExecs = collect(df.queryExecution.executedPlan) {
-          case op: CometProjectExec => op
+        val (_, cometPlan) = checkSparkAnswerWithTol(s"SELECT $expr(_1), $expr(_2) FROM tbl")
+        val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+          op
         }
         assert(cometProjectExecs.length == 1, expr)
       }
       // expressions with two args
       for (expr <- Seq("atan2", "pow")) {
-        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1, _2) FROM tbl")
-        val cometProjectExecs = collect(df.queryExecution.executedPlan) {
-          case op: CometProjectExec => op
+        val (_, cometPlan) = checkSparkAnswerWithTol(s"SELECT $expr(_1, _2) FROM tbl")
+        val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+          op
         }
         assert(cometProjectExecs.length == 1, expr)
       }
@@ -1299,8 +1299,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val testValuesRepeated = doubleValues.flatMap(v => Seq.fill(1000)(v))
     for (withDictionary <- Seq(true, false)) {
       withParquetTable(testValuesRepeated.map(n => (n, n)), "tbl", withDictionary) {
-        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1) FROM tbl")
-        val projections = collect(df.queryExecution.executedPlan) { case p: CometProjectExec =>
+        val (_, cometPlan) = checkSparkAnswerWithTol(s"SELECT $expr(_1) FROM tbl")
+        val projections = collect(cometPlan) { case p: CometProjectExec =>
           p
         }
         assert(projections.length == 1)
@@ -1940,7 +1940,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val expected = test._2
             val df = sql(qry)
             df.collect() // force an execution
-            checkSparkAnswerAndCompareExplainPlan(df, expected)
+            checkSparkAnswerAndFallbackReasons(df, expected)
           })
       }
     }
@@ -1965,7 +1965,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val expected = test._2
             val df = sql(qry)
             df.collect() // force an execution
-            checkSparkAnswerAndCompareExplainPlan(df, expected)
+            checkSparkAnswerAndFallbackReasons(df, expected)
           })
       }
     }
