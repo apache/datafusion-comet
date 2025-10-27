@@ -781,10 +781,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 "SECOND",
                 "MILLISECOND",
                 "MICROSECOND").foreach { format =>
-                checkSparkAnswer(
-                  "SELECT " +
-                    s"date_trunc('$format', ts )" +
-                    " from int96timetbl")
+                val sql = "SELECT " +
+                  s"date_trunc('$format', ts )" +
+                  " from int96timetbl"
+
+                if (conversionEnabled) {
+                  // TODO this test should check for fallback reasons, but no fallback reason is recorded
+                  checkSparkAnswer(sql)
+                } else {
+                  checkSparkAnswerAndOperator(sql)
+                }
               }
             }
           }
@@ -913,7 +919,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
       sql(s"insert into $table values(1,'James Smith')")
       val query = sql(s"select cast(id as string) from $table")
-      val (_, cometPlan) = checkSparkAnswer(query)
+      val (_, cometPlan) = checkSparkAnswerAndOperator(query)
       val project = cometPlan
         .asInstanceOf[WholeStageCodegenExec]
         .child
@@ -1278,7 +1284,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "sin",
           "sqrt",
           "tan")) {
-        val (_, cometPlan) = checkSparkAnswerWithTol(s"SELECT $expr(_1), $expr(_2) FROM tbl")
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
         val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
           op
         }
@@ -1286,7 +1293,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
       // expressions with two args
       for (expr <- Seq("atan2", "pow")) {
-        val (_, cometPlan) = checkSparkAnswerWithTol(s"SELECT $expr(_1, _2) FROM tbl")
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
         val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
           op
         }
@@ -1299,7 +1307,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val testValuesRepeated = doubleValues.flatMap(v => Seq.fill(1000)(v))
     for (withDictionary <- Seq(true, false)) {
       withParquetTable(testValuesRepeated.map(n => (n, n)), "tbl", withDictionary) {
-        val (_, cometPlan) = checkSparkAnswerWithTol(s"SELECT $expr(_1) FROM tbl")
+        val (_, cometPlan) = checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1) FROM tbl"))
         val projections = collect(cometPlan) { case p: CometProjectExec =>
           p
         }
@@ -1316,10 +1324,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
     withParquetTable(Seq(0, 1, 2).map(n => (n, n)), "tbl") {
       val sql = "select _1+_2 from tbl"
-      val (_, cometPlan) = checkSparkAnswer(sql)
+      val (_, cometPlan) = checkSparkAnswerAndOperator(sql)
       assert(0 == countSparkProjectExec(cometPlan))
       withSQLConf(CometConf.getExprEnabledConfigKey("Add") -> "false") {
-        val (_, cometPlan) = checkSparkAnswer(sql)
+        val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+          sql,
+          "Expression support is disabled. Set spark.comet.expression.Add.enabled=true to enable it.")
         assert(1 == countSparkProjectExec(cometPlan))
       }
     }
@@ -1336,7 +1346,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val (_, cometPlan) = checkSparkAnswer(sql)
       assert(1 == countSparkProjectExec(cometPlan))
       withSQLConf(CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true") {
-        val (_, cometPlan) = checkSparkAnswer(sql)
+        val (_, cometPlan) = checkSparkAnswerAndOperator(sql)
         assert(0 == countSparkProjectExec(cometPlan))
       }
     }
@@ -1612,7 +1622,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               s"SELECT * FROM $table WHERE name in ('Smith', 'Brown', NULL)")
 
             // TODO: why with not in, the plan is only `LocalTableScan`?
-            checkSparkAnswer(s"SELECT * FROM $table WHERE id not in (1)")
+            checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE id not in (1)")
             checkSparkAnswer(s"SELECT * FROM $table WHERE name not in ('Smith', 'Brown', NULL)")
           }
         }

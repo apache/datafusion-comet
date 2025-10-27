@@ -121,6 +121,14 @@ abstract class CometTestBase
 
     if (assertCometNative) {
       checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan), excludedClasses: _*)
+    } else {
+      if (CometConf.COMET_STRICT_TESTING.get()) {
+        if (findFirstNonCometOperator(
+            stripAQEPlan(df.queryExecution.executedPlan),
+            excludedClasses: _*).isEmpty) {
+          fail("Plan was fully native in Comet. Call checkSparkAnswerAndOperator instead.")
+        }
+      }
     }
 
     if (includeClasses.nonEmpty) {
@@ -174,7 +182,9 @@ abstract class CometTestBase
    * Check that the query returns the correct results when Comet is enabled and that Comet
    * replaced all possible operators except for those specified in the excluded list.
    */
-  protected def checkSparkAnswerAndOperator(query: String, excludedClasses: Class[_]*): Unit = {
+  protected def checkSparkAnswerAndOperator(
+      query: String,
+      excludedClasses: Class[_]*): (SparkPlan, SparkPlan) = {
     checkSparkAnswerAndOperator(sql(query), excludedClasses: _*)
   }
 
@@ -184,7 +194,7 @@ abstract class CometTestBase
    */
   protected def checkSparkAnswerAndOperator(
       df: => DataFrame,
-      excludedClasses: Class[_]*): Unit = {
+      excludedClasses: Class[_]*): (SparkPlan, SparkPlan) = {
     internalCheckSparkAnswer(
       df,
       assertCometNative = true,
@@ -200,7 +210,7 @@ abstract class CometTestBase
   protected def checkSparkAnswerAndOperator(
       df: => DataFrame,
       includeClasses: Seq[Class[_]],
-      excludedClasses: Class[_]*): Unit = {
+      excludedClasses: Class[_]*): (SparkPlan, SparkPlan) = {
     internalCheckSparkAnswer(
       df,
       assertCometNative = true,
@@ -216,7 +226,9 @@ abstract class CometTestBase
    *
    * Use the provided `tol` when comparing floating-point results.
    */
-  protected def checkSparkAnswerAndOperatorWithTol(df: => DataFrame, tol: Double = 1e-6): Unit = {
+  protected def checkSparkAnswerAndOperatorWithTol(
+      df: => DataFrame,
+      tol: Double = 1e-6): (SparkPlan, SparkPlan) = {
     checkSparkAnswerAndOperatorWithTol(df, tol, Seq.empty)
   }
 
@@ -232,7 +244,7 @@ abstract class CometTestBase
       df: => DataFrame,
       tol: Double,
       includeClasses: Seq[Class[_]],
-      excludedClasses: Class[_]*): Unit = {
+      excludedClasses: Class[_]*): (SparkPlan, SparkPlan) = {
     internalCheckSparkAnswer(
       df,
       assertCometNative = true,
@@ -242,26 +254,39 @@ abstract class CometTestBase
   }
 
   /** Check for the correct results as well as the expected fallback reason */
-  protected def checkSparkAnswerAndFallbackReason(query: String, fallbackReason: String): Unit = {
+  protected def checkSparkAnswerAndFallbackReason(
+      query: String,
+      fallbackReason: String): (SparkPlan, SparkPlan) = {
     checkSparkAnswerAndFallbackReasons(sql(query), Set(fallbackReason))
   }
 
   /** Check for the correct results as well as the expected fallback reason */
   protected def checkSparkAnswerAndFallbackReason(
       df: => DataFrame,
-      fallbackReason: String): Unit = {
+      fallbackReason: String): (SparkPlan, SparkPlan) = {
     checkSparkAnswerAndFallbackReasons(df, Set(fallbackReason))
   }
 
   /** Check for the correct results as well as the expected fallback reasons */
   protected def checkSparkAnswerAndFallbackReasons(
       df: => DataFrame,
-      fallbackReasons: Set[String]): Unit = {
-    val (_, cometPlan) = internalCheckSparkAnswer(df, assertCometNative = false)
-    val explain = new ExtendedExplainInfo().generateVerboseExtendedInfo(cometPlan)
+      fallbackReasons: Set[String]): (SparkPlan, SparkPlan) = {
+    val (sparkPlan, cometPlan) = internalCheckSparkAnswer(df, assertCometNative = false)
+    val explainInfo = new ExtendedExplainInfo()
+    val actualFallbacks = explainInfo.getFallbackReasons(cometPlan)
     for (reason <- fallbackReasons) {
-      assert(explain.contains(reason))
+      if (!actualFallbacks.contains(reason)) {
+        if (actualFallbacks.isEmpty) {
+          fail(
+            s"Expected fallback reason '$reason' but no fallback reasons were found. Explain: ${explainInfo
+                .generateVerboseExtendedInfo(cometPlan)}")
+        } else {
+          fail(
+            s"Expected fallback reason '$reason' not found in [${actualFallbacks.mkString(", ")}]")
+        }
+      }
     }
+    (sparkPlan, cometPlan)
   }
 
   /**
@@ -336,6 +361,19 @@ abstract class CometTestBase
   }
 
   protected def checkCometOperators(plan: SparkPlan, excludedClasses: Class[_]*): Unit = {
+    findFirstNonCometOperator(plan, excludedClasses: _*) match {
+      case Some(op) =>
+        assert(
+          false,
+          s"Expected only Comet native operators, but found ${op.nodeName}.\n" +
+            s"plan: ${new ExtendedExplainInfo().generateVerboseExtendedInfo(plan)}")
+      case _ =>
+    }
+  }
+
+  protected def findFirstNonCometOperator(
+      plan: SparkPlan,
+      excludedClasses: Class[_]*): Option[SparkPlan] = {
     val wrapped = wrapCometSparkToColumnar(plan)
     wrapped.foreach {
       case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec =>
@@ -345,14 +383,11 @@ abstract class CometTestBase
       case _: CometExec | _: CometShuffleExchangeExec =>
       case _: CometBroadcastExchangeExec =>
       case _: WholeStageCodegenExec | _: ColumnarToRowExec | _: InputAdapter =>
-      case op =>
-        if (!excludedClasses.exists(c => c.isAssignableFrom(op.getClass))) {
-          assert(
-            false,
-            s"Expected only Comet native operators, but found ${op.nodeName}.\n" +
-              s"plan: ${new ExtendedExplainInfo().generateVerboseExtendedInfo(plan)}")
-        }
+      case op if !excludedClasses.exists(c => c.isAssignableFrom(op.getClass)) =>
+        return Some(op)
+      case _ =>
     }
+    None
   }
 
   private def checkPlanContains(plan: SparkPlan, includePlans: Class[_]*): Unit = {
