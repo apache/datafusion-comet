@@ -830,14 +830,18 @@ class CometIcebergNativeSuite extends CometTestBase {
         val result = df.collect()
         assert(result.length == specificIds.length)
 
-        // Partition pruning occurs at the manifest level, not file level
-        // Each INSERT creates one manifest, so we verify skippedDataManifests
+        // With bucket partitioning, pruning occurs at the file level, not manifest level
+        // Bucket transforms use hash-based bucketing, so manifests may contain files from
+        // multiple buckets. Iceberg can skip individual files based on bucket metadata,
+        // but cannot skip entire manifests.
         assert(
           metrics("resultDataFiles").value < 8,
-          s"Bucket pruning should skip some files, but read ${metrics("resultDataFiles").value} out of 8")
+          "Bucket pruning should skip some files, but read " +
+            s"${metrics("resultDataFiles").value} out of 8")
         assert(
-          metrics("skippedDataManifests").value > 0,
-          s"Expected skipped manifests due to bucket pruning, got ${metrics("skippedDataManifests").value}")
+          metrics("skippedDataFiles").value > 0,
+          "Expected skipped data files due to bucket pruning, got" +
+            s"${metrics("skippedDataFiles").value}")
 
         spark.sql("DROP TABLE test_cat.db.bucket_pruning")
       }
