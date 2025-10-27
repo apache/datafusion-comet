@@ -29,6 +29,7 @@ Development Guide <development>
 Debugging Guide <debugging>
 Benchmarking Guide <benchmarking>
 Adding a New Expression <adding_a_new_expression>
+Writing Tests <testing>
 Tracing <tracing>
 Profiling Native Code <profiling_native_code>
 Spark SQL Tests <spark-sql-tests.md>
