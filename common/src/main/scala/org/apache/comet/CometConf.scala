@@ -704,8 +704,8 @@ object CometConf extends ShimCometConf {
 
   val COMET_STRICT_TESTING: ConfigEntry[Boolean] = conf(s"$COMET_PREFIX.testing.strict")
     .category(CATEGORY_TESTING)
-    .doc("Enable strict testing, which will fail tests that could be more comprehensive, " +
-      "such as checking for a specific fallback reason")
+    .doc("Experimental option to enable strict testing, which will fail tests that could be " +
+      "more comprehensive, such as checking for a specific fallback reason")
     .booleanConf
     .createWithDefault(sys.env.getOrElse("ENABLE_COMET_STRICT_TESTING", "false").toBoolean)
 

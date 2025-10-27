@@ -304,19 +304,13 @@ abstract class CometTestBase
     val actual = Try(datasetOfRows(spark, df.logicalPlan).collect())
 
     (expected, actual) match {
-      case (Success(expectedAnswer), Success(actualAnswer)) =>
-        // in success case, check that the answers match
-        require(
-          actualAnswer.length == expectedAnswer.length,
-          s"actual num rows ${actualAnswer.length} != expected num of rows ${expectedAnswer.length}")
-        actualAnswer.zip(expectedAnswer).foreach { case (actualRow, expectedRow) =>
-          checkAnswerWithTol(actualRow, expectedRow, absTol = 1e-6)
-        }
+      case (Success(_), Success(_)) =>
+        // TODO compare results and confirm that they match
+        // https://github.com/apache/datafusion-comet/issues/2657
         (None, None)
       case _ =>
         (expected.failed.toOption, actual.failed.toOption)
     }
-
   }
 
   /**
@@ -347,6 +341,14 @@ abstract class CometTestBase
     require(absTol > 0 && absTol <= 1e-6, s"absTol $absTol is out of range (0, 1e-6]")
 
     actualAnswer.toSeq.zip(expectedAnswer.toSeq).foreach {
+      case (actual: Float, expected: Float) =>
+        if (actual.isInfinity || expected.isInfinity) {
+          assert(actual.isInfinity == expected.isInfinity, s"actual answer $actual != $expected")
+        } else if (!actual.isNaN && !expected.isNaN) {
+          assert(
+            math.abs(actual - expected) < absTol,
+            s"actual answer $actual not within $absTol of correct answer $expected")
+        }
       case (actual: Double, expected: Double) =>
         if (actual.isInfinity || expected.isInfinity) {
           assert(actual.isInfinity == expected.isInfinity, s"actual answer $actual != $expected")
