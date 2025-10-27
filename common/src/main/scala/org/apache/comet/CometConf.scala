@@ -733,6 +733,10 @@ object CometConf extends ShimCometConf {
     s"${CometConf.COMET_EXPR_CONFIG_PREFIX}.$name.allowIncompatible"
   }
 
+  def getExprAllowIncompatConfigKey(exprClass: Class[_]): String = {
+    s"${CometConf.COMET_EXPR_CONFIG_PREFIX}.${exprClass.getSimpleName}.allowIncompatible"
+  }
+
   def getBooleanConf(name: String, defaultValue: Boolean, conf: SQLConf): Boolean = {
     conf.getConfString(name, defaultValue.toString).toLowerCase(Locale.ROOT) == "true"
   }

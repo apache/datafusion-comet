@@ -272,7 +272,8 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
           Unsupported(Some(s"Format $fmt is not supported"))
         }
       case _ =>
-        Unsupported(Some("Format must be a literal"))
+        Incompatible(
+          Some("Invalid 1 format strings will throw an exception instead of returning NULL"))
     }
   }
 
@@ -324,7 +325,8 @@ object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
           Unsupported(Some(s"Format $fmt is not supported"))
         }
       case _ =>
-        Unsupported(Some("Format must be a literal"))
+        Incompatible(
+          Some("Invalid 2 format strings will throw an exception instead of returning NULL"))
     }
   }
 
