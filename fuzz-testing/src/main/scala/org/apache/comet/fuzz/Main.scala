@@ -87,7 +87,11 @@ object Main {
             SchemaGenOptions(
               generateArray = conf.generateData.generateArrays(),
               generateStruct = conf.generateData.generateStructs(),
-              generateMap = conf.generateData.generateMaps()),
+              generateMap = conf.generateData.generateMaps(),
+              // create two columns of each primitive type so that they can be used in binary
+              // expressions such as `a + b` and `a <  b`
+              primitiveTypes = SchemaGenOptions.defaultPrimitiveTypes ++
+                SchemaGenOptions.defaultPrimitiveTypes),
             DataGenOptions(
               allowNull = true,
               generateNegativeZero = !conf.generateData.excludeNegativeZero()))

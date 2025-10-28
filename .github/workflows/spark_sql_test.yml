@@ -90,7 +90,7 @@ jobs:
           LC_ALL: "C.UTF-8"
       - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: fallback-log-spark-sql-${{ matrix.module.name }}-${{ matrix.os }}-spark-${{ matrix.spark-version.full }}-java-${{ matrix.java-version }}
           path: "**/fallback.log"
@@ -139,7 +139,7 @@ jobs:
           LC_ALL: "C.UTF-8"
       - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: fallback-log-spark-sql-native-comet-${{ matrix.module.name }}-${{ matrix.os }}-spark-${{ matrix.spark-version.full }}-java-${{ matrix.java-version }}
           path: "**/fallback.log"
@@ -188,7 +188,7 @@ jobs:
           LC_ALL: "C.UTF-8"
       - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: fallback-log-spark-sql-iceberg-compat-${{ matrix.module.name }}-${{ matrix.os }}-spark-${{ matrix.spark-version.full }}-java-${{ matrix.java-version }}
           path: "**/fallback.log"
@@ -200,14 +200,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Download fallback log artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           path: fallback-logs/
       - name: Merge fallback logs
         run: |
           find ./fallback-logs/ -type f -name "fallback.log" -print0 | xargs -0 cat | sort -u > all_fallback.log
       - name: Upload merged fallback log
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: all-fallback-log
           path: all_fallback.log

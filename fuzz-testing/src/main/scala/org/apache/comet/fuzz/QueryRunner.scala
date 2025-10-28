@@ -34,6 +34,11 @@ object QueryRunner {
       filename: String,
       showFailedSparkQueries: Boolean = false): Unit = {
 
+    var queryCount = 0
+    var invalidQueryCount = 0
+    var cometFailureCount = 0
+    var cometSuccessCount = 0
+
     val outputFilename = s"results-${System.currentTimeMillis()}.md"
     // scalastyle:off println
     println(s"Writing results to $outputFilename")
@@ -56,7 +61,7 @@ object QueryRunner {
       querySource
         .getLines()
         .foreach(sql => {
-
+          queryCount += 1
           try {
             // execute with Spark
             spark.conf.set("spark.comet.enabled", "false")
@@ -67,13 +72,11 @@ object QueryRunner {
             // execute with Comet
             try {
               spark.conf.set("spark.comet.enabled", "true")
-              // complex type support until we support it natively
-              spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
-              spark.conf.set("spark.comet.convert.parquet.enabled", "true")
               val df = spark.sql(sql)
               val cometRows = df.collect()
               val cometPlan = df.queryExecution.executedPlan.toString
 
+              var success = true
               if (sparkRows.length == cometRows.length) {
                 var i = 0
                 while (i < sparkRows.length) {
@@ -82,6 +85,7 @@ object QueryRunner {
                   assert(l.length == r.length)
                   for (j <- 0 until l.length) {
                     if (!same(l(j), r(j))) {
+                      success = false
                       showSQL(w, sql)
                       showPlans(w, sparkPlan, cometPlan)
                       w.write(s"First difference at row $i:\n")
@@ -93,16 +97,36 @@ object QueryRunner {
                   i += 1
                 }
               } else {
+                success = false
                 showSQL(w, sql)
                 showPlans(w, sparkPlan, cometPlan)
                 w.write(
                   s"[ERROR] Spark produced ${sparkRows.length} rows and " +
                     s"Comet produced ${cometRows.length} rows.\n")
               }
+
+              // check that the plan contains Comet operators
+              if (!cometPlan.contains("Comet")) {
+                success = false
+                showSQL(w, sql)
+                showPlans(w, sparkPlan, cometPlan)
+                w.write("[ERROR] Comet did not accelerate any part of the plan\n")
+              }
+
+              if (success) {
+                cometSuccessCount += 1
+              } else {
+                cometFailureCount += 1
+              }
+
             } catch {
               case e: Exception =>
                 // the query worked in Spark but failed in Comet, so this is likely a bug in Comet
+                cometFailureCount += 1
                 showSQL(w, sql)
+                w.write("### Spark Plan\n")
+                w.write(s"```\n$sparkPlan\n```\n")
+
                 w.write(s"[ERROR] Query failed in Comet: ${e.getMessage}:\n")
                 w.write("```\n")
                 val sw = new StringWriter()
@@ -119,12 +143,18 @@ object QueryRunner {
           } catch {
             case e: Exception =>
               // we expect many generated queries to be invalid
+              invalidQueryCount += 1
               if (showFailedSparkQueries) {
                 showSQL(w, sql)
                 w.write(s"Query failed in Spark: ${e.getMessage}\n")
               }
           }
         })
+
+      w.write("# Summary\n")
+      w.write(
+        s"Total queries: $queryCount; Invalid queries: $invalidQueryCount; " +
+          s"Comet failed: $cometFailureCount; Comet succeeded: $cometSuccessCount\n")
 
     } finally {
       w.close()
@@ -133,10 +163,17 @@ object QueryRunner {
   }
 
   private def same(l: Any, r: Any): Boolean = {
+    if (l == null || r == null) {
+      return l == null && r == null
+    }
     (l, r) match {
+      case (a: Float, b: Float) if a.isPosInfinity => b.isPosInfinity
+      case (a: Float, b: Float) if a.isNegInfinity => b.isNegInfinity
       case (a: Float, b: Float) if a.isInfinity => b.isInfinity
       case (a: Float, b: Float) if a.isNaN => b.isNaN
       case (a: Float, b: Float) => (a - b).abs <= 0.000001f
+      case (a: Double, b: Double) if a.isPosInfinity => b.isPosInfinity
+      case (a: Double, b: Double) if a.isNegInfinity => b.isNegInfinity
       case (a: Double, b: Double) if a.isInfinity => b.isInfinity
       case (a: Double, b: Double) if a.isNaN => b.isNaN
       case (a: Double, b: Double) => (a - b).abs <= 0.000001
@@ -144,6 +181,10 @@ object QueryRunner {
         a.length == b.length && a.zip(b).forall(x => same(x._1, x._2))
       case (a: WrappedArray[_], b: WrappedArray[_]) =>
         a.length == b.length && a.zip(b).forall(x => same(x._1, x._2))
+      case (a: Row, b: Row) =>
+        val aa = a.toSeq
+        val bb = b.toSeq
+        aa.length == bb.length && aa.zip(bb).forall(x => same(x._1, x._2))
       case (a, b) => a == b
     }
   }
@@ -153,6 +194,7 @@ object QueryRunner {
       case null => "NULL"
       case v: WrappedArray[_] => s"[${v.map(format).mkString(",")}]"
       case v: Array[Byte] => s"[${v.mkString(",")}]"
+      case r: Row => formatRow(r)
       case other => other.toString
     }
   }
