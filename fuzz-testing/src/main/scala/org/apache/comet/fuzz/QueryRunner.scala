@@ -26,6 +26,8 @@ import scala.io.Source
 
 import org.apache.spark.sql.{Row, SparkSession}
 
+import org.apache.comet.fuzz.QueryComparison.showPlans
+
 object QueryRunner {
 
   def createOutputMdFile(): BufferedWriter = {
@@ -80,17 +82,21 @@ object QueryRunner {
               val cometRows = df.collect()
               val cometPlan = df.queryExecution.executedPlan.toString
 
-              val success = QueryComparison.assertSameRows(
-                sparkRows,
-                cometRows,
-                sqlText = sql,
-                sparkPlan,
-                cometPlan,
-                output = w)
+              var success = QueryComparison.assertSameRows(sparkRows, cometRows, output = w)
+
+              // check that the plan contains Comet operators
+              if (!cometPlan.contains("Comet")) {
+                success = false
+                w.write("[ERROR] Comet did not accelerate any part of the plan\n")
+              }
+
+              QueryComparison.showSQL(w, sql)
 
               if (success) {
                 cometSuccessCount += 1
               } else {
+                // show plans for failed queries
+                showPlans(w, sparkPlan, cometPlan)
                 cometFailureCount += 1
               }
 
@@ -142,9 +148,6 @@ object QueryComparison {
   def assertSameRows(
       sparkRows: Array[Row],
       cometRows: Array[Row],
-      sqlText: String,
-      sparkPlan: String,
-      cometPlan: String,
       output: BufferedWriter): Boolean = {
     var success = true
     if (sparkRows.length == cometRows.length) {
@@ -160,8 +163,6 @@ object QueryComparison {
         for (j <- 0 until l.length) {
           if (!same(l(j), r(j))) {
             success = false
-            showSQL(output, sqlText)
-            showPlans(output, sparkPlan, cometPlan)
             output.write(s"First difference at row $i:\n")
             output.write("Spark: `" + formatRow(l) + "`\n")
             output.write("Comet: `" + formatRow(r) + "`\n")
@@ -172,23 +173,12 @@ object QueryComparison {
       }
     } else {
       success = false
-      showSQL(output, sqlText)
-      showPlans(output, sparkPlan, cometPlan)
       output.write(
         s"[ERROR] Spark produced ${sparkRows.length} rows and " +
           s"Comet produced ${cometRows.length} rows.\n")
     }
 
-    // check that the plan contains Comet operators
-    if (!cometPlan.contains("Comet")) {
-      success = false
-      showSQL(output, sqlText)
-      showPlans(output, sparkPlan, cometPlan)
-      output.write("[ERROR] Comet did not accelerate any part of the plan\n")
-    }
-
     success
-
   }
 
   private def same(l: Any, r: Any): Boolean = {
@@ -252,7 +242,7 @@ object QueryComparison {
     w.write("```\n")
   }
 
-  private def showPlans(w: BufferedWriter, sparkPlan: String, cometPlan: String): Unit = {
+  def showPlans(w: BufferedWriter, sparkPlan: String, cometPlan: String): Unit = {
     w.write("### Spark Plan\n")
     w.write(s"```\n$sparkPlan\n```\n")
     w.write("### Comet Plan\n")

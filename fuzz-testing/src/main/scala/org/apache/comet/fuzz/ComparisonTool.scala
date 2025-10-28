@@ -23,7 +23,7 @@ import java.io.File
 
 import org.rogach.scallop.{ScallopConf, ScallopOption, Subcommand}
 
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{functions, SparkSession}
 
 class ComparisonToolConf(arguments: Seq[String]) extends ScallopConf(arguments) {
   object compareParquet extends Subcommand("compareParquet") {
@@ -36,7 +36,7 @@ class ComparisonToolConf(arguments: Seq[String]) extends ScallopConf(arguments) 
   verify()
 }
 
-object ComparisonToolMain {
+object ComparisonTool {
 
   lazy val spark: SparkSession = SparkSession
     .builder()
@@ -108,22 +108,14 @@ object ComparisonToolMain {
             // Read Spark parquet files
             spark.conf.set("spark.comet.enabled", "false")
             val sparkDf = spark.read.parquet(sparkSubfolderPath.getAbsolutePath)
-            val sparkRows = sparkDf.collect()
-            val sparkPlan = sparkDf.queryExecution.executedPlan.toString
+            val sparkRows = sparkDf.orderBy(sparkDf.columns.map(functions.col): _*).collect()
 
             // Read Comet parquet files
             val cometDf = spark.read.parquet(cometSubfolderPath.getAbsolutePath)
-            val cometRows = cometDf.collect()
-            val cometPlan = cometDf.queryExecution.executedPlan.toString
+            val cometRows = cometDf.orderBy(cometDf.columns.map(functions.col): _*).collect()
 
             // Compare the results
-            QueryComparison.assertSameRows(
-              sparkRows,
-              cometRows,
-              sqlText = s"Reading parquet from subfolder: $subfolderName",
-              sparkPlan,
-              cometPlan,
-              output)
+            QueryComparison.assertSameRows(sparkRows, cometRows, output)
 
             output.write(s"Subfolder $subfolderName: ${sparkRows.length} rows matched\n\n")
 
