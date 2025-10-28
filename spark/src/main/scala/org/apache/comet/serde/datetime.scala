@@ -308,13 +308,11 @@ object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
       "week",
       "day",
       "dd",
-      "microsecond",
-      "millisecond",
-      "second",
-      "minute",
       "hour",
-      "week",
-      "quarter")
+      "minute",
+      "second",
+      "millisecond",
+      "microsecond")
 
   override def getSupportLevel(expr: TruncTimestamp): SupportLevel = {
     expr.format match {
