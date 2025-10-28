@@ -175,7 +175,7 @@ abstract class CometTestBase
   def checkSparkAnswerAndFallbackReason(df: => DataFrame, fallbackReason: String): Unit = {
     val (_, cometPlan) = checkSparkAnswer(df)
     val fallbacks = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
-    assert(fallbacks.contains(fallbackReason))
+    assert(fallbacks.contains(fallbackReason), s"Expected fallback reason not found.\nExpected: [$fallbackReason]\nObserved: ${fallbacks.mkString("[", " | ", "]")}")
   }
 
   /** Check for the correct results as well as the expected fallback reasons */
