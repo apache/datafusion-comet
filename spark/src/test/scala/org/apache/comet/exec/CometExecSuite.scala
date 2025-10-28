@@ -120,7 +120,7 @@ class CometExecSuite extends CometTestBase {
           assert(infos.contains("Dynamic Partition Pruning is not supported"))
 
           val extendedExplain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
-          assert(extendedExplain.contains("Comet accelerated"))
+          assert(infos.contains("Comet accelerated"))
         }
       }
     }
