@@ -387,9 +387,125 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             (false, false)
           }
 
+        // Partition values are deserialized via iceberg-rust's Literal::try_from_json()
+        // which has incomplete type support (binary/fixed unimplemented, decimals limited)
+        val partitionTypesSupported =
+          if (schemaSupported && formatVersionSupported && allParquetFiles &&
+            allSupportedFilesystems) {
+            try {
+              val tableMethod = scanExec.scan.getClass.getSuperclass.getSuperclass
+                .getDeclaredMethod("table")
+              tableMethod.setAccessible(true)
+              val table = tableMethod.invoke(scanExec.scan)
+
+              val specMethod = table.getClass.getMethod("spec")
+              val partitionSpec = specMethod.invoke(table)
+              val fieldsMethod = partitionSpec.getClass.getMethod("fields")
+              val fields = fieldsMethod.invoke(partitionSpec).asInstanceOf[java.util.List[_]]
+
+              // scalastyle:off classforname
+              val partitionFieldClass = Class.forName("org.apache.iceberg.PartitionField")
+              // scalastyle:on classforname
+              val sourceIdMethod = partitionFieldClass.getMethod("sourceId")
+
+              val schemaMethod = table.getClass.getMethod("schema")
+              val schema = schemaMethod.invoke(table)
+              val findFieldMethod = schema.getClass.getMethod("findField", classOf[Int])
+
+              var allSupported = true
+              fields.asScala.foreach { field =>
+                val sourceId = sourceIdMethod.invoke(field).asInstanceOf[Int]
+                val column = findFieldMethod.invoke(schema, sourceId.asInstanceOf[Object])
+
+                if (column != null) {
+                  val typeMethod = column.getClass.getMethod("type")
+                  val icebergType = typeMethod.invoke(column)
+                  val typeStr = icebergType.toString
+
+                  // iceberg-rust/crates/iceberg/src/spec/values.rs Literal::try_from_json()
+                  if (typeStr.startsWith("decimal(")) {
+                    val precisionStr = typeStr.substring(8, typeStr.indexOf(','))
+                    val precision = precisionStr.toInt
+                    // rust_decimal crate maximum precision
+                    if (precision > 28) {
+                      allSupported = false
+                      fallbackReasons += "Partition column with high-precision decimal " +
+                        s"(precision=$precision) is not yet supported by iceberg-rust. " +
+                        "Maximum supported precision for partition columns is 28 " +
+                        "(rust_decimal limitation)"
+                    }
+                  } else if (typeStr == "binary" || typeStr.startsWith("fixed[")) {
+                    // Literal::try_from_json returns todo!() for these types
+                    allSupported = false
+                    fallbackReasons += "Partition column with binary or fixed type is not yet " +
+                      "supported by iceberg-rust (Literal::try_from_json todo!())"
+                  }
+                }
+              }
+
+              allSupported
+            } catch {
+              case e: Exception =>
+                // Avoid blocking valid queries if reflection fails
+                true
+            }
+          } else {
+            false
+          }
+
+        // iceberg-rust cannot bind predicates on complex types (struct/array/map).
+        // Detecting which columns filters reference requires parsing Iceberg expressions,
+        // so we use string matching as a conservative approximation.
+        val complexTypePredicatesSupported =
+          if (schemaSupported && formatVersionSupported && allParquetFiles &&
+            allSupportedFilesystems && partitionTypesSupported) {
+            try {
+              val filterExpressionsMethod =
+                scanExec.scan.getClass.getSuperclass.getSuperclass
+                  .getDeclaredMethod("filterExpressions")
+              filterExpressionsMethod.setAccessible(true)
+              val filters =
+                filterExpressionsMethod.invoke(scanExec.scan).asInstanceOf[java.util.List[_]]
+
+              // No filters means no predicate binding issues
+              if (filters.isEmpty) {
+                true
+              } else {
+                val readSchema = scanExec.scan.readSchema()
+
+                val complexTypeColumns = readSchema
+                  .filter(field => isComplexType(field.dataType))
+                  .map(_.name)
+                  .toSet
+
+                // String matching is imperfect but avoids parsing Iceberg Expression AST
+                val hasComplexTypePredicate = filters.asScala.exists { expr =>
+                  val exprStr = expr.toString
+                  complexTypeColumns.exists(colName => exprStr.contains(colName))
+                }
+
+                if (hasComplexTypePredicate) {
+                  fallbackReasons += "Filter predicates reference complex type columns " +
+                    "(struct/array/map), which are not yet supported by iceberg-rust"
+                  false
+                } else {
+                  true
+                }
+              }
+            } catch {
+              case e: Exception =>
+                // Avoid blocking valid queries if reflection fails
+                logWarning(s"Could not check for complex type predicates: ${e.getMessage}")
+                true
+            }
+          } else {
+            false
+          }
+
         if (schemaSupported && formatVersionSupported && allParquetFiles &&
-          allSupportedFilesystems) {
-          // When reading from Iceberg, automatically enable type promotion
+          allSupportedFilesystems && partitionTypesSupported &&
+          complexTypePredicatesSupported) {
+          // Iceberg tables require type promotion for schema evolution (add/drop columns)
           SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
