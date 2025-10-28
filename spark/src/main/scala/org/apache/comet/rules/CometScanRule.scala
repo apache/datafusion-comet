@@ -445,7 +445,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
               allSupported
             } catch {
-              case e: Exception =>
+              case _: Exception =>
                 // Avoid blocking valid queries if reflection fails
                 true
             }
