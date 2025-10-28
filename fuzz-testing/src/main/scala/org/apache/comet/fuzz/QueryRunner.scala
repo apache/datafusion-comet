@@ -156,8 +156,9 @@ object QueryComparison {
         val l = sparkRows(i)
         val r = cometRows(i)
         // Check the schema is equal for first row only
-        if (i == 0)
+        if (i == 0) {
           assert(l.schema == r.schema)
+        }
 
         assert(l.length == r.length)
         for (j <- 0 until l.length) {
