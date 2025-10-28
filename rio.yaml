@@ -968,7 +968,8 @@ builds:
         - cd apache-incubator-iceberg
 
         -  sed -i -E "s|(org.apache.comet:comet-spark-spark.*:).*|\1${NEXT_VERSION}\"|g" spark/v3.4/build.gradle
-        - ./gradlew ${PROXY_OPTS} -DscalaVersion=${ICEBERG_SCALA_VERSION} :iceberg-spark:iceberg-spark-${ICEBERG_TAG}:test :iceberg-spark:iceberg-spark-runtime-${ICEBERG_TAG}:test
+        - git apply ../dev/diffs/iceberg/${ICEBERG_BRANCH}.diff
+        - ENABLE_COMET=true ./gradlew ${PROXY_OPTS} -DscalaVersion=${ICEBERG_SCALA_VERSION} :iceberg-spark:iceberg-spark-${ICEBERG_TAG}:test :iceberg-spark:iceberg-spark-extensions-${ICEBERG_TAG}:test :iceberg-spark:iceberg-spark-runtime-${ICEBERG_TAG}:integrationTest
     reports: &test_iceberg_reports
       junit:
         paths:
