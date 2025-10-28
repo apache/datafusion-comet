@@ -148,6 +148,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.exec.globalLimit.enabled` | Whether to enable globalLimit by default. | true |
 | `spark.comet.exec.hashJoin.enabled` | Whether to enable hashJoin by default. | true |
 | `spark.comet.exec.localLimit.enabled` | Whether to enable localLimit by default. | true |
+| `spark.comet.exec.localTableScan.enabled` | Whether to enable localTableScan by default. | true |
 | `spark.comet.exec.project.enabled` | Whether to enable project by default. | true |
 | `spark.comet.exec.sort.enabled` | Whether to enable sort by default. | true |
 | `spark.comet.exec.sortMergeJoin.enabled` | Whether to enable sortMergeJoin by default. | true |
