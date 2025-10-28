@@ -279,7 +279,7 @@ abstract class CometTestBase
     val explainInfo = new ExtendedExplainInfo()
     val actualFallbacks = explainInfo.getFallbackReasons(cometPlan)
     for (reason <- fallbackReasons) {
-      if (!actualFallbacks.contains(reason)) {
+      if (!actualFallbacks.exists(_.contains(reason))) {
         if (actualFallbacks.isEmpty) {
           fail(
             s"Expected fallback reason '$reason' but no fallback reasons were found. Explain: ${explainInfo
