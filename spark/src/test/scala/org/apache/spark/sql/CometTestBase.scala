@@ -175,7 +175,10 @@ abstract class CometTestBase
   def checkSparkAnswerAndFallbackReason(df: => DataFrame, fallbackReason: String): Unit = {
     val (_, cometPlan) = checkSparkAnswer(df)
     val fallbacks = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
-    assert(fallbacks.contains(fallbackReason), s"Expected fallback reason not found.\nExpected: [$fallbackReason]\nObserved: ${fallbacks.mkString("[", " | ", "]")}")
+    assert(
+      fallbacks.contains(fallbackReason),
+      s"Expected fallback reason not found.\nExpected: [$fallbackReason]\nObserved: ${fallbacks
+          .mkString("[", " | ", "]")}")
   }
 
   /** Check for the correct results as well as the expected fallback reasons */
@@ -183,7 +186,10 @@ abstract class CometTestBase
     val (_, cometPlan) = checkSparkAnswer(df)
     val fallbacks = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
     for (reason <- fallbackReasons) {
-      assert(fallbacks.contains(reason), s"Expected fallback reason not found.\nExpected: [$reason]\nObserved: ${fallbacks.mkString("[", " | ", "]")}")
+      assert(
+        fallbacks.contains(reason),
+        s"Expected fallback reason not found.\nExpected: [$reason]\nObserved: ${fallbacks
+            .mkString("[", " | ", "]")}")
     }
   }
 
