@@ -177,23 +177,22 @@ abstract class CometTestBase
 
   /** Check for the correct results as well as the expected fallback reason */
   def checkSparkAnswerAndFallbackReason(df: => DataFrame, fallbackReason: String): Unit = {
-    val (_, cometPlan) = checkSparkAnswer(df)
-    val fallbacks = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
-    assert(
-      fallbacks.contains(fallbackReason),
-      s"Expected fallback reason not found.\nExpected: [$fallbackReason]\nObserved: ${fallbacks
-          .mkString("[", " | ", "]")}")
+    checkSparkAnswerAndFallbackReasons(df, Set(fallbackReason))
   }
 
   /** Check for the correct results as well as the expected fallback reasons */
   def checkSparkAnswerAndFallbackReasons(df: => DataFrame, fallbackReasons: Set[String]): Unit = {
     val (_, cometPlan) = checkSparkAnswer(df)
-    val fallbacks = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
+    val actualFallbacks = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
     for (reason <- fallbackReasons) {
-      assert(
-        fallbacks.contains(reason),
-        s"Expected fallback reason not found.\nExpected: [$reason]\nObserved: ${fallbacks
-            .mkString("[", " | ", "]")}")
+      if (!actualFallbacks.exists(_.contains(reason))) {
+        if (actualFallbacks.isEmpty) {
+          fail(s"Expected fallback reason '$reason' but no fallback reasons were found")
+        } else {
+          fail(
+            s"Expected fallback reason '$reason' not found in [${actualFallbacks.mkString(" | ")}]")
+        }
+      }
     }
   }
 
