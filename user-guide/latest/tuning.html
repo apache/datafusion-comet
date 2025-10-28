@@ -523,6 +523,12 @@ providing better performance than Spark for half the resource</p></li>
 <p>It may be possible to reduce Comet’s memory overhead by reducing batch sizes or increasing number of partitions.</p>
 </section>
 </section>
+<section id="optimizing-sorting-on-floating-point-values">
+<h2>Optimizing Sorting on Floating-Point Values<a class="headerlink" href="#optimizing-sorting-on-floating-point-values" title="Link to this heading">#</a></h2>
+<p>Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
+Spark if the data contains both zero and negative zero. This is likely an edge case that is not of concern for many users
+and sorting on floating-point data can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.allowIncompatible=true</span></code>.</p>
+</section>
 <section id="optimizing-joins">
 <h2>Optimizing Joins<a class="headerlink" href="#optimizing-joins" title="Link to this heading">#</a></h2>
 <p>Spark often chooses <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> over <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> for stability reasons. If the build-side of a

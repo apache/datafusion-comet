@@ -548,6 +548,9 @@ However, one exception is comparison. Spark does not normalize NaN and zero when
 because they are handled well in Spark (e.g., <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil.compareFloats</span></code>). But the comparison
 functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., <a class="reference external" href="https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#">arrow::compute::kernels::cmp::eq</a>).
 So Comet will add additional normalization expression of NaN and zero for comparison.</p>
+<p>Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
+Spark if the data contains both zero and negative zero. This is likely an edge case that is not of concern for many users
+and sorting on floating-point data can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.allowIncompatible=true</span></code>.</p>
 <p>There is a known bug with using count(distinct) within aggregate queries, where each NaN value will be counted
 separately <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1824">#1824</a>.</p>
 </section>
