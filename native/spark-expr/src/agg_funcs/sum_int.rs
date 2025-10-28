@@ -17,8 +17,8 @@
 
 use crate::{arithmetic_overflow_error, EvalMode};
 use arrow::array::{
-    cast::AsArray, Array, ArrayBuilder, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType,
-    BooleanArray, Int64Array, PrimitiveArray,
+    cast::AsArray, Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray,
+    Int64Array, PrimitiveArray,
 };
 use arrow::datatypes::{ArrowNativeType, DataType, Int16Type, Int32Type, Int64Type, Int8Type};
 use datafusion::common::{DataFusionError, Result as DFResult, ScalarValue};
@@ -39,9 +39,6 @@ pub struct SumInteger {
 
 impl SumInteger {
     pub fn try_new(data_type: DataType, eval_mode: EvalMode) -> DFResult<Self> {
-        // The `data_type` is the SUM result type passed from Spark side which should i64
-        println!("data type: {:?} eval_mode {:?}", data_type, eval_mode);
-
         match data_type {
             DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => Ok(Self {
                 signature: Signature::user_defined(Immutable),
@@ -67,7 +64,7 @@ impl AggregateUDFImpl for SumInteger {
         &self.signature
     }
 
-    fn return_type(&self, arg_types: &[DataType]) -> DFResult<DataType> {
+    fn return_type(&self, _arg_types: &[DataType]) -> DFResult<DataType> {
         Ok(DataType::Int64)
     }
 
@@ -75,7 +72,7 @@ impl AggregateUDFImpl for SumInteger {
         true
     }
 
-    fn accumulator(&self, acc_args: AccumulatorArgs) -> DFResult<Box<dyn Accumulator>> {
+    fn accumulator(&self, _acc_args: AccumulatorArgs) -> DFResult<Box<dyn Accumulator>> {
         Ok(Box::new(SumIntegerAccumulator::new(self.eval_mode)))
     }
 
@@ -89,17 +86,15 @@ impl AggregateUDFImpl for SumInteger {
 
 #[derive(Debug)]
 struct SumIntegerAccumulator {
-    sum: i64,
+    sum: Option<i64>,
     eval_mode: EvalMode,
-    input_data_type: DataType,
 }
 
 impl SumIntegerAccumulator {
     fn new(eval_mode: EvalMode) -> Self {
         Self {
-            sum: 0,
+            sum: Some(0),
             eval_mode,
-            input_data_type: DataType::Int64,
         }
     }
 }
@@ -109,151 +104,132 @@ impl Accumulator for SumIntegerAccumulator {
         fn update_sum_internal<T>(
             int_array: &PrimitiveArray<T>,
             eval_mode: EvalMode,
-            mut sum: i64,
-        ) -> Result<i64, DataFusionError>
+            sum: Option<i64>,
+        ) -> Result<Option<i64>, DataFusionError>
         where
             T: ArrowPrimitiveType,
         {
-            let len = int_array.len();
+            let mut curr_sum = sum.unwrap();
             for i in 0..int_array.len() {
                 if !int_array.is_null(i) {
                     let v = int_array.value(i).to_i64().ok_or_else(|| {
                         DataFusionError::Internal("Failed to convert value to i64".to_string())
                     })?;
-                    println!("sum : {:?}, v : {:?}", sum, v);
                     match eval_mode {
                         EvalMode::Legacy => {
-                            sum = v.add_wrapping(sum);
+                            curr_sum = v.add_wrapping(curr_sum);
                         }
                         EvalMode::Ansi | EvalMode::Try => {
-                            match v.add_checked(sum) {
-                                Ok(v) => sum = v,
-                                Err(e) => {
-                                    if (eval_mode == EvalMode::Ansi){
-                                        return Err(DataFusionError::from(arithmetic_overflow_error("integer")))
-                                    }
-                                    else {
-                                        sum = None.unwrap();
-                                    }
+                            match v.add_checked(curr_sum) {
+                                Ok(v) => curr_sum = v,
+                                Err(_e) => {
+                                    return if eval_mode == EvalMode::Ansi {
+                                        Err(DataFusionError::from(arithmetic_overflow_error(
+                                            "integer",
+                                        )))
+                                    } else {
+                                        Ok(None)
+                                    };
                                 }
                             };
                         }
                     }
                 }
             }
-            println!("match internal (AFTER) function data type: {:?}", sum);
-
-            Ok(sum)
+            Ok(Some(curr_sum))
         }
 
-        let values = &values[0];
-        println!("accumulator data type: {:?}", self.input_data_type);
-
-        println!(
-            "DEBUG: values[0] actual Rust type: {:?}, Arrow dtype: {:?}, len={}",
-            values.as_any().type_id(),
-            values.data_type(),
-            values.len()
-        );
-
-        if values.len() == values.null_count() {
-            println!(
-                "ALL NULL in values accumulator data type: {:?}",
-                self.input_data_type
-            );
+        if self.sum.is_none() {
             Ok(())
         } else {
-            self.sum = match values.data_type() {
-                DataType::Int64 => update_sum_internal(
-                    values
-                        .as_any()
-                        .downcast_ref::<PrimitiveArray<Int64Type>>()
-                        .unwrap(),
-                    self.eval_mode,
-                    self.sum,
-                )?,
-                DataType::Int32 => update_sum_internal(
-                    values
-                        .as_any()
-                        .downcast_ref::<PrimitiveArray<Int32Type>>()
-                        .unwrap(),
-                    self.eval_mode,
-                    self.sum,
-                )?,
-                DataType::Int16 => update_sum_internal(
-                    values
-                        .as_any()
-                        .downcast_ref::<PrimitiveArray<Int16Type>>()
-                        .unwrap(),
-                    self.eval_mode,
-                    self.sum,
-                )?,
-                DataType::Int8 => update_sum_internal(
-                    values
-                        .as_any()
-                        .downcast_ref::<PrimitiveArray<Int8Type>>()
-                        .unwrap(),
-                    self.eval_mode,
-                    self.sum,
-                )?,
-                _ => {
-                    panic!("Unsupported data type")
-                }
-            };
-            println!(
-                "sum updated accumulator data type: {:?}",
-                self.input_data_type
-            );
-
-            Ok(())
+            let values = &values[0];
+            if values.len() == values.null_count() {
+                Ok(())
+            } else {
+                self.sum = match values.data_type() {
+                    DataType::Int64 => update_sum_internal(
+                        values
+                            .as_any()
+                            .downcast_ref::<PrimitiveArray<Int64Type>>()
+                            .unwrap(),
+                        self.eval_mode,
+                        self.sum,
+                    )?,
+                    DataType::Int32 => update_sum_internal(
+                        values
+                            .as_any()
+                            .downcast_ref::<PrimitiveArray<Int32Type>>()
+                            .unwrap(),
+                        self.eval_mode,
+                        self.sum,
+                    )?,
+                    DataType::Int16 => update_sum_internal(
+                        values
+                            .as_any()
+                            .downcast_ref::<PrimitiveArray<Int16Type>>()
+                            .unwrap(),
+                        self.eval_mode,
+                        self.sum,
+                    )?,
+                    DataType::Int8 => update_sum_internal(
+                        values
+                            .as_any()
+                            .downcast_ref::<PrimitiveArray<Int8Type>>()
+                            .unwrap(),
+                        self.eval_mode,
+                        self.sum,
+                    )?,
+                    _ => {
+                        panic!("Unsupported data type")
+                    }
+                };
+                Ok(())
+            }
         }
     }
 
     fn evaluate(&mut self) -> DFResult<ScalarValue> {
-        println!(
-            "evaluate :: accumulator data type: {:?}",
-            self.input_data_type
-        );
-        Ok(ScalarValue::Int64(Some(self.sum)))
+        Ok(ScalarValue::Int64(self.sum))
     }
 
     fn size(&self) -> usize {
-        println!("size :: accumulator data type: {:?}", self.input_data_type);
         size_of_val(self)
     }
 
     fn state(&mut self) -> DFResult<Vec<ScalarValue>> {
-        println!("state :: accumulator data type: {:?}", self.input_data_type);
-        Ok(vec![ScalarValue::Int64(Some(self.sum))])
+        Ok(vec![ScalarValue::Int64(self.sum)])
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> DFResult<()> {
-        println!(
-            "merge batch :: accumulator data type: {:?}",
-            self.input_data_type
-        );
+        if self.sum.is_none() {
+            return Ok(());
+        }
         let that_sum = states[0].as_primitive::<Int64Type>();
         match self.eval_mode {
             EvalMode::Legacy => {
-                self.sum.add_wrapping(that_sum.value(0));
+                self.sum = Some(self.sum.unwrap().add_wrapping(that_sum.value(0)));
             }
-            EvalMode::Ansi | EvalMode::Try => match self.sum.add_checked(that_sum.value(0)) {
-                Ok(v) => self.sum = v,
-                Err(e) =>
-                if (self.eval_mode == EvalMode::Ansi){
-                    return Err(DataFusionError::from(arithmetic_overflow_error("integer")))
+            EvalMode::Ansi | EvalMode::Try => {
+                match self.sum.unwrap().add_checked(that_sum.value(0)) {
+                    Ok(v) => self.sum = Some(v),
+                    Err(_e) => {
+                        if self.eval_mode == EvalMode::Ansi {
+                            return Err(DataFusionError::from(arithmetic_overflow_error(
+                                "integer",
+                            )));
+                        } else {
+                            self.sum = None
+                        }
+                    }
                 }
-                else{
-                    self.sum = None.unwrap();
-                }
-            },
+            }
         }
         Ok(())
     }
 }
 
 struct SumIntGroupsAccumulator {
-    sums: Vec<i64>,
+    sums: Vec<Option<i64>>,
     eval_mode: EvalMode,
 }
 
@@ -274,33 +250,93 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        assert!(opt_filter.is_none(), "opt_filter is not supported yet");
-        let values = values[0].as_primitive::<Int64Type>();
-        let data = values.values();
-        self.sums.resize(total_num_groups, 0);
-
-        let iter = group_indices.iter().zip(data.iter());
-
-        for (&group_index, &value) in iter {
-            match self.eval_mode {
-                EvalMode::Legacy => {
-                    self.sums[group_index] = self.sums[group_index].add_wrapping(value);
-                }
-                EvalMode::Ansi | EvalMode::Try => {
-                    match self.sums[group_index].add_checked(value) {
-                        Ok(v) => self.sums[group_index] = v,
-                        Err(e) => {
-                            if (self.eval_mode == EvalMode::Ansi){
-                                return Err(DataFusionError::from(arithmetic_overflow_error("integer")))
-                            }
-                            else{
-                                self.sums[group_index] = None.unwrap();
-                            }
+        fn update_groups_sum_internal<T>(
+            int_array: &PrimitiveArray<T>,
+            group_indices: &[usize],
+            sums: &mut [Option<i64>],
+            eval_mode: EvalMode,
+        ) -> DFResult<()>
+        where
+            T: ArrowPrimitiveType,
+            T::Native: ArrowNativeType,
+        {
+            for (i, &group_index) in group_indices.iter().enumerate() {
+                if sums[group_index].is_some() && !int_array.is_null(i) {
+                    let v = int_array.value(i).to_i64().ok_or_else(|| {
+                        DataFusionError::Internal("Failed to convert value to i64".to_string())
+                    })?;
+                    match eval_mode {
+                        EvalMode::Legacy => {
+                            sums[group_index] = Some(sums[group_index].unwrap().add_wrapping(v));
                         }
-                    };
+                        EvalMode::Ansi | EvalMode::Try => {
+                            match sums[group_index].unwrap().add_checked(v) {
+                                Ok(new_sum) => sums[group_index] = Some(new_sum),
+                                Err(_) => {
+                                    if eval_mode == EvalMode::Ansi {
+                                        return Err(DataFusionError::from(
+                                            arithmetic_overflow_error("integer"),
+                                        ));
+                                    } else {
+                                        sums[group_index] = None
+                                    }
+                                }
+                            };
+                        }
+                    }
                 }
             }
+            Ok(())
         }
+
+        assert!(opt_filter.is_none(), "opt_filter is not supported yet");
+        let values = &values[0];
+        self.sums.resize(total_num_groups, Some(0));
+
+        match values.data_type() {
+            DataType::Int64 => update_groups_sum_internal(
+                values
+                    .as_any()
+                    .downcast_ref::<PrimitiveArray<Int64Type>>()
+                    .unwrap(),
+                group_indices,
+                &mut self.sums,
+                self.eval_mode,
+            )?,
+            DataType::Int32 => update_groups_sum_internal(
+                values
+                    .as_any()
+                    .downcast_ref::<PrimitiveArray<Int32Type>>()
+                    .unwrap(),
+                group_indices,
+                &mut self.sums,
+                self.eval_mode,
+            )?,
+            DataType::Int16 => update_groups_sum_internal(
+                values
+                    .as_any()
+                    .downcast_ref::<PrimitiveArray<Int16Type>>()
+                    .unwrap(),
+                group_indices,
+                &mut self.sums,
+                self.eval_mode,
+            )?,
+            DataType::Int8 => update_groups_sum_internal(
+                values
+                    .as_any()
+                    .downcast_ref::<PrimitiveArray<Int8Type>>()
+                    .unwrap(),
+                group_indices,
+                &mut self.sums,
+                self.eval_mode,
+            )?,
+            _ => {
+                return Err(DataFusionError::Internal(format!(
+                    "Unsupported data type for SumIntGroupsAccumulator: {:?}",
+                    values.data_type()
+                )))
+            }
+        };
         Ok(())
     }
 
@@ -318,14 +354,14 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
             // and retain the state for the remaining groups.
             EmitTo::First(n) => {
                 // Take the first `n` sums.
-                let emitted_sums: Vec<i64> = self.sums.drain(..n).collect();
-                let result = Arc::new(Int64Array::from(emitted_sums)) as ArrayRef;
+                let result = Arc::new(Int64Array::from(self.sums.drain(..n).collect::<Vec<_>>()))
+                    as ArrayRef;
                 Ok(result)
             }
         }
     }
 
-    fn state(&mut self, emit_to: EmitTo) -> DFResult<Vec<ArrayRef>> {
+    fn state(&mut self, _emit_to: EmitTo) -> DFResult<Vec<ArrayRef>> {
         let state_array = Arc::new(Int64Array::from(self.sums.clone()));
         Ok(vec![state_array])
     }
@@ -338,30 +374,33 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
         total_num_groups: usize,
     ) -> DFResult<()> {
         assert!(opt_filter.is_none(), "opt_filter is not supported yet");
-        println!("merge batch : {:?}", values[0]);
         let values = values[0].as_primitive::<Int64Type>();
         let data = values.values();
-        self.sums.resize(total_num_groups, 0);
+        self.sums.resize(total_num_groups, Some(0));
 
         let iter = group_indices.iter().zip(data.iter());
 
         for (&group_index, &value) in iter {
-            match self.eval_mode {
-                EvalMode::Legacy | EvalMode::Try => {
-                    self.sums[group_index] = self.sums[group_index].add_wrapping(value);
-                }
-                EvalMode::Ansi | EvalMode::Try => {
-                    match self.sums[group_index].add_checked(value) {
-                        Ok(v) => self.sums[group_index] = v,
-                        Err(e) => {
-                            if (self.eval_mode == EvalMode::Ansi){
-                                return Err(DataFusionError::from(arithmetic_overflow_error("integer")))
+            if self.sums[group_index].is_some() {
+                match self.eval_mode {
+                    EvalMode::Legacy => {
+                        self.sums[group_index] =
+                            Some(self.sums[group_index].unwrap().add_wrapping(value));
+                    }
+                    EvalMode::Ansi | EvalMode::Try => {
+                        match self.sums[group_index].unwrap().add_checked(value) {
+                            Ok(v) => self.sums[group_index] = Some(v),
+                            Err(_e) => {
+                                if self.eval_mode == EvalMode::Ansi {
+                                    return Err(DataFusionError::from(arithmetic_overflow_error(
+                                        "integer",
+                                    )));
+                                } else {
+                                    self.sums[group_index] = None
+                                }
                             }
-                            else{
-                                self.sums[group_index] = None.unwrap();
-                            }
-                        }
-                    };
+                        };
+                    }
                 }
             }
         }

@@ -3003,34 +3003,273 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("ANSI support for SUM function") {
-    val batchSize = 10
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test_sum.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, batchSize)
-        withParquetTable(path.toString, "tbl") {
-          withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
-            spark.table("tbl").printSchema()
-//            val res = spark.sql(
-//              """
-//                |SELECT
-//                |  SUM(_1)
-//                |  from tbl
-//                |  """.stripMargin)
-//            checkSparkAnswerAndOperator(res)
+  test("ANSI support - SUM function") {
+//    Test long overflow
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+        // Test long overflow
+        withParquetTable(Seq((Long.MaxValue, 1L), (100L, 1L)), "tbl") {
+          val res = sql("SELECT SUM(_1) FROM tbl")
+          if (ansiEnabled) {
+            checkSparkMaybeThrows(res) match {
+              case (Some(sparkExc), Some(cometExc)) =>
+                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+              case _ => fail("Exception should be thrown for Long overflow in ANSI mode")
+            }
+          } else {
+            checkSparkAnswerAndOperator(res)
           }
-          //        res.show(10, false)
-//            checkSparkMaybeThrows(res) match {
-//              case (Some(sparkExc), Some(cometExc)) =>
-//                assert(cometExc.getMessage.contains("error"))
-//                assert(sparkExc.getMessage.contains("overflow"))
-//              case _ => fail("Exception should be thrown")
-//            }
+        }
+        //    Test long underflow
+        withParquetTable(Seq((Long.MinValue, 1L), (-100L, 1L)), "tbl") {
+          val res = sql("SELECT SUM(_1) FROM tbl")
+          if (ansiEnabled) {
+            checkSparkMaybeThrows(res) match {
+              case (Some(sparkExc), Some(cometExc)) =>
+                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+              case _ => fail("Exception should be thrown for Long underflow in ANSI mode")
+            }
+          } else {
+            checkSparkAnswerAndOperator(res)
+          }
+        }
+        // Test Int SUM (should not overflow)
+        withParquetTable(Seq((Int.MaxValue, 1), (Int.MaxValue, 1), (100, 1)), "tbl") {
+          val res = sql("SELECT SUM(_1) FROM tbl")
+          checkSparkAnswerAndOperator(res)
+        }
+        // Test Int SUM (should not overflow)
+        withParquetTable(
+          Seq((Short.MaxValue, 1.toShort), (Short.MaxValue, 1.toShort), (100.toShort, 1.toShort)),
+          "tbl") {
+          val res = sql("SELECT SUM(_1) FROM tbl")
+          checkSparkAnswerAndOperator(res)
+        }
+
+        // Test Byte SUM (should not overflow)
+        withParquetTable(
+          Seq((Byte.MaxValue, 1.toByte), (Byte.MaxValue, 1.toByte), (10.toByte, 1.toByte)),
+          "tbl") {
+          val res = sql("SELECT SUM(_1) FROM tbl")
+          checkSparkAnswerAndOperator(res)
+        }
+
+        // Test Long overflow with NULL values
+        withParquetTable(Seq((Long.MaxValue, 1L), (null, 1L), (100L, 1L)), "tbl") {
+          val res = sql("SELECT SUM(_1) FROM tbl")
+          if (ansiEnabled) {
+            checkSparkMaybeThrows(res) match {
+              case (Some(sparkExc), Some(cometExc)) =>
+                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+              case _ =>
+                fail("Exception should be thrown for Long overflow with NULLs in ANSI mode")
+            }
+          } else {
+            checkSparkAnswerAndOperator(res)
+          }
+        }
+
+        // Test Long underflow with NULL values
+        withParquetTable(Seq((Long.MinValue, 1L), (null, 1L), (-100L, 1L)), "tbl") {
+          val res = sql("SELECT SUM(_1) FROM tbl")
+          if (ansiEnabled) {
+            checkSparkMaybeThrows(res) match {
+              case (Some(sparkExc), Some(cometExc)) =>
+                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+              case _ =>
+                fail("Exception should be thrown for Long underflow with NULLs in ANSI mode")
+            }
+          } else {
+            checkSparkAnswerAndOperator(res)
+          }
+        }
+
+        // Test only NULL inputs
+        withParquetTable(Seq((null, 1L), (null, 1L), (null, 1L)), "tbl") {
+          val res = sql("SELECT SUM(_1) FROM tbl")
+          checkSparkAnswerAndOperator(res)
+        }
+
+        // Test with mix of valid numbers and NULLs (no overflow)
+        withParquetTable(Seq((100L, 1L), (null, 1L), (200L, 1L)), "tbl") {
+          val res = sql("SELECT SUM(_1) FROM tbl")
+          checkSparkAnswerAndOperator(res)
+        }
+
+        // Test with mix of valid numbers and NULLs (no overflow) - overflow
+        withParquetTable(Seq((Long.MaxValue, 1L), (null, 1L), (200L, 1L)), "tbl") {
+          val res = sql("SELECT SUM(_1) FROM tbl")
+          checkSparkAnswerAndOperator(res)
         }
       }
     }
+  }
 
+  test("SUM overflow - GROUP BY") {
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+        // Test Long overflow with GROUP BY to test GroupAccumulator
+        withParquetTable(
+          Seq((Long.MaxValue, 1), (100L, 1), (Long.MaxValue, 2), (200L, 2)),
+          "tbl") {
+          val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2").repartition(2)
+          if (ansiEnabled) {
+            checkSparkMaybeThrows(res) match {
+              case (Some(sparkExc), Some(cometExc)) =>
+                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+              case _ =>
+                fail("Exception should be thrown for Long overflow with GROUP BY in ANSI mode")
+            }
+          } else {
+            checkSparkAnswerAndOperator(res)
+          }
+        }
+
+        withParquetTable(
+          Seq((Long.MinValue, 1), (-100L, 1), (Long.MinValue, 2), (-200L, 2)),
+          "tbl") {
+          val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2")
+          if (ansiEnabled) {
+            checkSparkMaybeThrows(res) match {
+              case (Some(sparkExc), Some(cometExc)) =>
+                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+              case _ =>
+                fail("Exception should be thrown for Long underflow with GROUP BY in ANSI mode")
+            }
+          } else {
+            checkSparkAnswerAndOperator(res)
+          }
+        }
+        // Test Int with GROUP BY
+        withParquetTable(Seq((Int.MaxValue, 1), (Int.MaxValue, 1), (100, 2), (200, 2)), "tbl") {
+          val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2")
+          checkSparkAnswerAndOperator(res)
+        }
+        // Test Short with GROUP BY
+        withParquetTable(
+          Seq((Short.MaxValue, 1), (Short.MaxValue, 1), (100.toShort, 2), (200.toShort, 2)),
+          "tbl") {
+          val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2")
+          checkSparkAnswerAndOperator(res)
+        }
+
+        // Test Byte with GROUP BY
+        withParquetTable(
+          Seq((Byte.MaxValue, 1), (Byte.MaxValue, 1), (10.toByte, 2), (20.toByte, 2)),
+          "tbl") {
+          val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2")
+          checkSparkAnswerAndOperator(res)
+        }
+
+        // Test Long overflow with GROUP BY and NULL values
+        withParquetTable(
+          Seq((Long.MaxValue, 1), (null, 1), (100L, 1), (200L, 2), (null, 2)),
+          "tbl") {
+          val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2")
+          if (ansiEnabled) {
+            checkSparkMaybeThrows(res) match {
+              case (Some(sparkExc), Some(cometExc)) =>
+                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+              case _ =>
+                fail(
+                  "Exception should be thrown for Long overflow with GROUP BY and NULLs in ANSI mode")
+            }
+          } else {
+            checkSparkAnswerAndOperator(res)
+          }
+        }
+
+        // Test Long underflow with GROUP BY and NULL values
+        withParquetTable(
+          Seq((Long.MinValue, 1), (null, 1), (-100L, 1), (-200L, 2), (null, 2)),
+          "tbl") {
+          val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2")
+          if (ansiEnabled) {
+            checkSparkMaybeThrows(res) match {
+              case (Some(sparkExc), Some(cometExc)) =>
+                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+              case _ =>
+                fail(
+                  "Exception should be thrown for Long underflow with GROUP BY and NULLs in ANSI mode")
+            }
+          } else {
+            checkSparkAnswerAndOperator(res)
+          }
+        }
+
+        // Test GROUP BY with only NULL values
+        withParquetTable(Seq((null, 1), (null, 1), (null, 2), (null, 2)), "tbl") {
+          val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2")
+          checkSparkAnswerAndOperator(res)
+        }
+
+        // Test GROUP BY with mix of valid values and NULLs (no overflow)
+        withParquetTable(Seq((100L, 1), (null, 1), (200L, 1), (300L, 2), (null, 2)), "tbl") {
+          val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2")
+          checkSparkAnswerAndOperator(res)
+        }
+      }
+    }
+  }
+
+  test("try_sum overflow - with GROUP BY") {
+    // Test Long overflow with GROUP BY - some groups overflow, some don't
+    withParquetTable(Seq((Long.MaxValue, 1), (100L, 1), (200L, 2), (300L, 2)), "tbl") {
+      val res = sql("SELECT _2, try_sum(_1) FROM tbl GROUP BY _2").repartition(2, col("_2"))
+      // Group 1 should return NULL (overflow), Group 2 should return 500
+      checkSparkAnswerAndOperator(res)
+    }
+
+    // Test Long underflow with GROUP BY
+    withParquetTable(Seq((Long.MinValue, 1), (-100L, 1), (-200L, 2), (-300L, 2)), "tbl") {
+      val res = sql("SELECT _2, try_sum(_1) FROM tbl GROUP BY _2").repartition(2, col("_2"))
+      // Group 1 should return NULL (underflow), Group 2 should return -500
+      checkSparkAnswerAndOperator(res)
+    }
+
+    // Test all groups overflow
+    withParquetTable(Seq((Long.MaxValue, 1), (100L, 1), (Long.MaxValue, 2), (100L, 2)), "tbl") {
+      val res = sql("SELECT _2, try_sum(_1) FROM tbl GROUP BY _2").repartition(2, col("_2"))
+      // Both groups should return NULL
+      checkSparkAnswerAndOperator(res)
+    }
+
+    // Test with NULL values mixed with overflow
+    withParquetTable(Seq((Long.MaxValue, 1), (null, 1), (100L, 2), (null, 2)), "tbl") {
+      val res = sql("SELECT _2, try_sum(_1) FROM tbl GROUP BY _2").repartition(2, col("_2"))
+      // Group 1 should return NULL (overflow), Group 2 should return 100
+      checkSparkAnswerAndOperator(res)
+    }
+
+    // Test Int with GROUP BY (should NOT overflow since accumulator is i64)
+    withParquetTable(Seq((Int.MaxValue, 1), (Int.MaxValue, 1), (100, 2), (200, 2)), "tbl") {
+      val res = sql("SELECT _2, try_sum(_1) FROM tbl GROUP BY _2").repartition(2, col("_2"))
+      checkSparkAnswerAndOperator(res)
+    }
+
+    // Test Short with GROUP BY (should NOT overflow)
+    withParquetTable(
+      Seq((Short.MaxValue, 1), (Short.MaxValue, 1), (100.toShort, 2), (200.toShort, 2)),
+      "tbl") {
+      val res = sql("SELECT _2, try_sum(_1) FROM tbl GROUP BY _2").repartition(2, col("_2"))
+      checkSparkAnswerAndOperator(res)
+    }
+
+    // Test Byte with GROUP BY (should NOT overflow)
+    withParquetTable(
+      Seq((Byte.MaxValue, 1), (Byte.MaxValue, 1), (10.toByte, 2), (20.toByte, 2)),
+      "tbl") {
+      val res = sql("SELECT _2, try_sum(_1) FROM tbl GROUP BY _2").repartition(2, col("_2"))
+      checkSparkAnswerAndOperator(res)
+    }
   }
 
   test("test integral divide overflow for decimal") {
