@@ -114,7 +114,7 @@ abstract class CometTestBase
     val dfComet = datasetOfRows(spark, df.logicalPlan)
 
     if (withTol.isDefined) {
-      checkAnswerWithTol(dfComet, expected, withTol.get)
+      checkAnswerWithTolerance(dfComet, expected, withTol.get)
     } else {
       checkAnswer(dfComet, expected)
     }
@@ -160,10 +160,10 @@ abstract class CometTestBase
    *
    * Use the provided `tol` when comparing floating-point results.
    */
-  protected def checkSparkAnswerWithTol(
+  protected def checkSparkAnswerWithTolerance(
       query: String,
       absTol: Double = 1e-6): (SparkPlan, SparkPlan) = {
-    checkSparkAnswerWithTol(sql(query), absTol)
+    checkSparkAnswerWithTolerance(sql(query), absTol)
   }
 
   /**
@@ -172,7 +172,7 @@ abstract class CometTestBase
    *
    * Use the provided `tol` when comparing floating-point results.
    */
-  protected def checkSparkAnswerWithTol(
+  protected def checkSparkAnswerWithTolerance(
       df: => DataFrame,
       absTol: Double): (SparkPlan, SparkPlan) = {
     internalCheckSparkAnswer(df, assertCometNative = false, withTol = Some(absTol))
@@ -316,7 +316,7 @@ abstract class CometTestBase
   /**
    * A helper function for comparing Comet DataFrame with Spark result using absolute tolerance.
    */
-  private def checkAnswerWithTol(
+  private def checkAnswerWithTolerance(
       dataFrame: DataFrame,
       expectedAnswer: Seq[Row],
       absTol: Double): Unit = {
@@ -326,14 +326,17 @@ abstract class CometTestBase
       s"actual num rows ${actualAnswer.length} != expected num of rows ${expectedAnswer.length}")
 
     actualAnswer.zip(expectedAnswer).foreach { case (actualRow, expectedRow) =>
-      checkAnswerWithTol(actualRow, expectedRow, absTol)
+      checkAnswerWithTolerance(actualRow, expectedRow, absTol)
     }
   }
 
   /**
    * Compares two answers and makes sure the answer is within absTol of the expected result.
    */
-  private def checkAnswerWithTol(actualAnswer: Row, expectedAnswer: Row, absTol: Double): Unit = {
+  private def checkAnswerWithTolerance(
+      actualAnswer: Row,
+      expectedAnswer: Row,
+      absTol: Double): Unit = {
     require(
       actualAnswer.length == expectedAnswer.length,
       s"actual answer length ${actualAnswer.length} != " +
