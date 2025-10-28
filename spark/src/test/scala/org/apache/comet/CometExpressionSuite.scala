@@ -786,7 +786,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   " from int96timetbl"
 
                 if (conversionEnabled) {
-                  // TODO this test should check for fallback reasons, but no fallback reason is recorded
+                  // plugin is disabled if PARQUET_INT96_TIMESTAMP_CONVERSION is true
                   checkSparkAnswer(sql)
                 } else {
                   checkSparkAnswerAndOperator(sql)
