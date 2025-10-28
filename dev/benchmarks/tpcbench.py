@@ -21,6 +21,22 @@ import json
 from pyspark.sql import SparkSession
 import time
 
+# rename same columns aliases
+# a, a, b, b -> a, a_1, b, b_1
+#
+# Important for writing data where column name uniqueness is required
+def dedup_columns(df):
+    counts = {}
+    new_cols = []
+    for c in df.columns:
+        if c not in counts:
+            counts[c] = 0
+            new_cols.append(c)
+        else:
+            counts[c] += 1
+            new_cols.append(f"{c}_{counts[c]}")
+    return df.toDF(*new_cols)
+
 def main(benchmark: str, data_path: str, query_path: str, iterations: int, output: str, name: str, query_num: int = None, write_path: str = None):
 
     # Initialize a SparkSession
@@ -91,9 +107,11 @@ def main(benchmark: str, data_path: str, query_path: str, iterations: int, outpu
                         df.explain()
 
                         if write_path is not None:
+                            # skip results with empty schema
+                            # coming across for running DDL stmt
                             if len(df.columns) > 0:
                                 output_path = f"{write_path}/q{query}"
-                                df.coalesce(1).write.mode("overwrite").parquet(output_path)
+                                dedup_columns(df).coalesce(1).write.mode("overwrite").parquet(output_path)
                                 print(f"Query {query} results written to {output_path}")
                             else:
                                 print(f"Skipping write: DataFrame has no schema for {output_path}")
@@ -136,3 +154,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args.benchmark, args.data, args.queries, int(args.iterations), args.output, args.name, args.query, args.write)
+
