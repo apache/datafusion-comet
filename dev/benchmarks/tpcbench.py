@@ -111,7 +111,12 @@ def main(benchmark: str, data_path: str, query_path: str, iterations: int, outpu
                             # coming across for running DDL stmt
                             if len(df.columns) > 0:
                                 output_path = f"{write_path}/q{query}"
-                                dedup_columns(df).coalesce(1).write.mode("overwrite").parquet(output_path)
+                                # sort by all columns to have predictable output dataset for comparison
+                                df_sorted = df.orderBy(*df.columns)
+                                # rename same column names for output
+                                # output doesn't allow non unique column names
+                                # a, a, b, b => a, a_1, b, b_1
+                                dedup_columns(df_sorted).coalesce(1).write.mode("overwrite").parquet(output_path)
                                 print(f"Query {query} results written to {output_path}")
                             else:
                                 print(f"Skipping write: DataFrame has no schema for {output_path}")
