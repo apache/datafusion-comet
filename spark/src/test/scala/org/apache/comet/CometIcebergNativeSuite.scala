@@ -1748,6 +1748,90 @@ class CometIcebergNativeSuite extends CometTestBase {
     }
   }
 
+  test("schema evolution - branch read after adding DATE column") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        "spark.sql.iceberg.read.data-planning-mode" -> "local") {
+
+        // Reproduces: TestSelect::readAndWriteWithBranchAfterSchemaChange
+        // Error: "Iceberg scan error: Unexpected => unexpected target column type Date32"
+        //
+        // Issue: When reading old data from a branch after the table schema evolved to add
+        // a DATE column, the schema adapter fails to handle Date32 type conversion.
+
+        // Step 1: Create table with (id, data, float_col)
+        spark.sql("""
+          CREATE TABLE test_cat.db.date_branch_test (
+            id BIGINT,
+            data STRING,
+            float_col FLOAT
+          ) USING iceberg
+        """)
+
+        // Step 2: Insert data
+        spark.sql("""
+          INSERT INTO test_cat.db.date_branch_test
+          VALUES (1, 'a', 1.0), (2, 'b', 2.0), (3, 'c', CAST('NaN' AS FLOAT))
+        """)
+
+        // Step 3: Create a branch at this point using Iceberg API
+        val catalog = spark.sessionState.catalogManager.catalog("test_cat")
+        val ident =
+          org.apache.spark.sql.connector.catalog.Identifier.of(Array("db"), "date_branch_test")
+        val sparkTable = catalog
+          .asInstanceOf[org.apache.iceberg.spark.SparkCatalog]
+          .loadTable(ident)
+          .asInstanceOf[org.apache.iceberg.spark.source.SparkTable]
+        val table = sparkTable.table()
+        val snapshotId = table.currentSnapshot().snapshotId()
+        table.manageSnapshots().createBranch("test_branch", snapshotId).commit()
+
+        // Step 4: Evolve schema - drop float_col, add date_col
+        spark.sql("ALTER TABLE test_cat.db.date_branch_test DROP COLUMN float_col")
+        spark.sql("ALTER TABLE test_cat.db.date_branch_test ADD COLUMN date_col DATE")
+
+        // Step 5: Insert more data with the new schema
+        spark.sql("""
+          INSERT INTO test_cat.db.date_branch_test
+          VALUES (4, 'd', DATE '2024-04-04'), (5, 'e', DATE '2024-05-05')
+        """)
+
+        // Step 6: Read from the branch using VERSION AS OF
+        // This reads old data (id, data, float_col) but applies the current schema (id, data, date_col)
+        // The old data files don't have date_col, so it should be NULL
+        // THIS CURRENTLY FAILS with "unexpected target column type Date32"
+        val branchRead = spark
+          .sql(
+            "SELECT * FROM test_cat.db.date_branch_test VERSION AS OF 'test_branch' ORDER BY id")
+          .collect()
+
+        // Verify: Should get 3 rows with date_col = NULL
+        assert(branchRead.length == 3, "Should have 3 rows from branch")
+        assert(branchRead(0).getLong(0) == 1, "Row 1 should have id=1")
+        assert(branchRead(0).getString(1) == "a", "Row 1 should have data='a'")
+        assert(branchRead(0).isNullAt(2), "Row 1 should have date_col=NULL")
+
+        assert(branchRead(1).getLong(0) == 2, "Row 2 should have id=2")
+        assert(branchRead(1).getString(1) == "b", "Row 2 should have data='b'")
+        assert(branchRead(1).isNullAt(2), "Row 2 should have date_col=NULL")
+
+        assert(branchRead(2).getLong(0) == 3, "Row 3 should have id=3")
+        assert(branchRead(2).getString(1) == "c", "Row 3 should have data='c'")
+        assert(branchRead(2).isNullAt(2), "Row 3 should have date_col=NULL")
+
+        spark.sql("DROP TABLE test_cat.db.date_branch_test")
+      }
+    }
+  }
+
   // Helper to create temp directory
   def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile
