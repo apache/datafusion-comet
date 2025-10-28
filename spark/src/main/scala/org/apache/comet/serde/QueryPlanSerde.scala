@@ -1411,16 +1411,30 @@ object QueryPlanSerde extends Logging with CometExprShim {
                         taskBuilder.setLength(length)
 
                         try {
-                          // Use the scan's expected schema for ALL tasks instead of each task's
-                          // individual schema. This is critical for schema evolution: when
-                          // reading old snapshots after column changes, some tasks may have the
-                          // current table schema instead of the snapshot schema.Using the scan
-                          // schema ensures iceberg-rust reads all files correctly.
+                          // Schema selection strategy:
+                          // - For tasks with delete files: Use task schema (not scan schema)
+                          //   Delete files may reference columns not in the projection, so we need
+                          //   the full schema to resolve equality delete field IDs
+                          // - For tasks without deletes: Use scan schema for schema evolution
+                          //   This ensures old snapshots read correctly after column drops
+
+                          val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
+                          val taskSchema = taskSchemaMethod.invoke(task)
+
+                          // Check if task has delete files
+                          val deletesMethod = fileScanTaskClass.getMethod("deletes")
+                          val deletes = deletesMethod
+                            .invoke(task)
+                            .asInstanceOf[java.util.List[_]]
+                          val hasDeletes = !deletes.isEmpty
+
                           val schema: AnyRef =
-                            scanSchemaForTasks.map(_.asInstanceOf[AnyRef]).getOrElse {
-                              // Fallback to task schema if scan schema extraction failed
-                              val schemaMethod = fileScanTaskClass.getMethod("schema")
-                              schemaMethod.invoke(task)
+                            if (hasDeletes) {
+                              // Use task schema when deletes are present
+                              taskSchema
+                            } else {
+                              // Use scan schema for schema evolution when no deletes
+                              scanSchemaForTasks.map(_.asInstanceOf[AnyRef]).getOrElse(taskSchema)
                             }
 
                           // scalastyle:off classforname
