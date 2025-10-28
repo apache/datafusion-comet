@@ -183,7 +183,7 @@ abstract class CometTestBase
     val (_, cometPlan) = checkSparkAnswer(df)
     val fallbacks = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
     for (reason <- fallbackReasons) {
-      assert(fallbacks.contains(reason))
+      assert(fallbacks.contains(reason), s"Expected fallback reason not found.\nExpected: [$reason]\nObserved: ${fallbacks.mkString("[", " | ", "]")}")
     }
   }
 
