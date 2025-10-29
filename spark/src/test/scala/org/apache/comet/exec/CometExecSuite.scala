@@ -2076,16 +2076,16 @@ class CometExecSuite extends CometTestBase {
                     List(s"COUNT(_$col)", s"MAX(_$col)", s"MIN(_$col)", s"SUM(_$col)")
                   aggregateFunctions.foreach { function =>
                     val df1 = sql(s"SELECT $function OVER() FROM tbl")
-                    checkSparkAnswerWithTol(df1, 1e-6)
+                    checkSparkAnswerWithTolerance(df1, 1e-6)
 
                     val df2 = sql(s"SELECT $function OVER(order by _2) FROM tbl")
-                    checkSparkAnswerWithTol(df2, 1e-6)
+                    checkSparkAnswerWithTolerance(df2, 1e-6)
 
                     val df3 = sql(s"SELECT $function OVER(order by _2 desc) FROM tbl")
-                    checkSparkAnswerWithTol(df3, 1e-6)
+                    checkSparkAnswerWithTolerance(df3, 1e-6)
 
                     val df4 = sql(s"SELECT $function OVER(partition by _2 order by _2) FROM tbl")
-                    checkSparkAnswerWithTol(df4, 1e-6)
+                    checkSparkAnswerWithTolerance(df4, 1e-6)
                   }
                 }
 
@@ -2093,16 +2093,16 @@ class CometExecSuite extends CometTestBase {
                 val aggregateFunctionsWithoutSum = List("COUNT(_12)", "MAX(_12)", "MIN(_12)")
                 aggregateFunctionsWithoutSum.foreach { function =>
                   val df1 = sql(s"SELECT $function OVER() FROM tbl")
-                  checkSparkAnswerWithTol(df1, 1e-6)
+                  checkSparkAnswerWithTolerance(df1, 1e-6)
 
                   val df2 = sql(s"SELECT $function OVER(order by _2) FROM tbl")
-                  checkSparkAnswerWithTol(df2, 1e-6)
+                  checkSparkAnswerWithTolerance(df2, 1e-6)
 
                   val df3 = sql(s"SELECT $function OVER(order by _2 desc) FROM tbl")
-                  checkSparkAnswerWithTol(df3, 1e-6)
+                  checkSparkAnswerWithTolerance(df3, 1e-6)
 
                   val df4 = sql(s"SELECT $function OVER(partition by _2 order by _2) FROM tbl")
-                  checkSparkAnswerWithTol(df4, 1e-6)
+                  checkSparkAnswerWithTolerance(df4, 1e-6)
                 }
               }
             }

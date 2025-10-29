@@ -85,7 +85,7 @@ class CometStringExpressionSuite extends CometTestBase {
           if (isLiteralStr && isLiteralLen && isLiteralPad) {
             // all arguments are literal, so Spark constant folding will kick in
             // and pad function will not be evaluated by Comet
-            checkSparkAnswer(sql)
+            checkSparkAnswerAndOperator(sql)
           } else if (isLiteralStr) {
             checkSparkAnswerAndFallbackReason(
               sql,
@@ -135,7 +135,7 @@ class CometStringExpressionSuite extends CometTestBase {
           if (isLiteralStr && isLiteralLen && isLiteralPad) {
             // all arguments are literal, so Spark constant folding will kick in
             // and pad function will not be evaluated by Comet
-            checkSparkAnswer(sql)
+            checkSparkAnswerAndOperator(sql)
           } else {
             // Comet will fall back to Spark because the plan contains a staticinvoke instruction
             // which is not supported
