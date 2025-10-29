@@ -115,10 +115,9 @@ object ComparisonTool {
             val cometRows = cometDf.orderBy(cometDf.columns.map(functions.col): _*).collect()
 
             // Compare the results
-            QueryComparison.assertSameRows(sparkRows, cometRows, output)
-
-            output.write(s"Subfolder $subfolderName: ${sparkRows.length} rows matched\n\n")
-
+            if (QueryComparison.assertSameRows(sparkRows, cometRows, output)) {
+              output.write(s"Subfolder $subfolderName: ${sparkRows.length} rows matched\n\n")
+            }
           } catch {
             case e: Exception =>
               output.write(

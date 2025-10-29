@@ -149,37 +149,42 @@ object QueryComparison {
       sparkRows: Array[Row],
       cometRows: Array[Row],
       output: BufferedWriter): Boolean = {
-    var success = true
     if (sparkRows.length == cometRows.length) {
       var i = 0
       while (i < sparkRows.length) {
         val l = sparkRows(i)
         val r = cometRows(i)
         // Check the schema is equal for first row only
-        if (i == 0) {
-          assert(l.schema == r.schema)
+        if (i == 0 && l.schema != r.schema) {
+          output.write(
+            s"[ERROR] Spark produced schema ${l.schema}  and " +
+              s"Comet produced schema ${r.schema} rows.\n")
+
+          return false
         }
 
         assert(l.length == r.length)
         for (j <- 0 until l.length) {
           if (!same(l(j), r(j))) {
-            success = false
             output.write(s"First difference at row $i:\n")
             output.write("Spark: `" + formatRow(l) + "`\n")
             output.write("Comet: `" + formatRow(r) + "`\n")
             i = sparkRows.length
+
+            return false
           }
         }
         i += 1
       }
     } else {
-      success = false
       output.write(
         s"[ERROR] Spark produced ${sparkRows.length} rows and " +
           s"Comet produced ${cometRows.length} rows.\n")
+
+      return false
     }
 
-    success
+    true
   }
 
   private def same(l: Any, r: Any): Boolean = {
