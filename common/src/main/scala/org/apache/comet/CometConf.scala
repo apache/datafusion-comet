@@ -557,6 +557,13 @@ object CometConf extends ShimCometConf {
       .doubleConf
       .createWithDefault(1.0)
 
+  val COMET_FFI_DEEP_COPY: ConfigEntry[Boolean] =
+    conf("spark.comet.ffi.forceDeepCopy")
+      .category(CATEGORY_TUNING)
+      .doc(s"TBD. $TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SCAN_PREFETCH_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.preFetch.enabled")
       .category(CATEGORY_SCAN)

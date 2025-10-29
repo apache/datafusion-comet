@@ -265,12 +265,16 @@ impl ScanExec {
             };
 
             let array = if arrow_ffi_safe {
-                // ownership of this array has been transferred to native
-                // but we still need to unpack dictionary arrays
+                // Ownership of this array has been transferred to native,
+                // but we still need to unpack dictionary arrays. Note that
+                // this path will not free JVM wrapper classes immediately,
+                // which can lead to GC pressure.
                 copy_or_unpack_array(&array, &CopyMode::UnpackOrClone)?
             } else {
-                // it is necessary to copy the array because the contents may be
-                // overwritten on the JVM side in the future
+                // It is necessary to copy the array because the contents may be
+                // overwritten on the JVM side in the future, or the user has specified
+                // to perform a deep copy so that JVM wrapper classes are released
+                // immediately, reducing GC pressure.
                 copy_array(&array)
             };
 
