@@ -788,6 +788,10 @@ under the License.
 <td><p>The amount of additional memory to be allocated per executor process for Comet, in MiB, when running Spark in on-heap mode.</p></td>
 <td><p>1024 MiB</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.testing.strict</span></code></p></td>
+<td><p>Experimental option to enable strict testing, which will fail tests that could be more comprehensive, such as checking for a specific fallback reason</p></td>
+<td><p>false</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -1334,111 +1338,115 @@ under the License.
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Sin</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SparkPartitionID.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">SortOrder</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SparkPartitionID.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">SparkPartitionID</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Sqrt.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Sqrt.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Sqrt</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StartsWith.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StartsWith.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StartsWith</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringInstr.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringInstr.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringInstr</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringLPad.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringLPad.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringLPad</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringRPad.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringRPad.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringRPad</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringRepeat.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringRepeat.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringRepeat</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringReplace.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringReplace.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringReplace</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringSpace.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringSpace.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringSpace</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTranslate.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTranslate.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringTranslate</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrim.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrim.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringTrim</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrimBoth.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrimBoth.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringTrimBoth</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrimLeft.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrimLeft.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringTrimLeft</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrimRight.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrimRight.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringTrimRight</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StructsToJson.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StructsToJson.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StructsToJson</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Substring.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Substring.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Substring</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Subtract.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Subtract.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Subtract</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Tan.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Tan.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Tan</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncDate.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncDate.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">TruncDate</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncTimestamp.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncTimestamp.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">TruncTimestamp</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.UnaryMinus.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.UnaryMinus.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">UnaryMinus</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Unhex.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Unhex.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Unhex</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Upper.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Upper.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Upper</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.WeekDay.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.WeekDay.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">WeekDay</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.WeekOfYear.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.WeekOfYear.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">WeekOfYear</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.XxHash64.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.XxHash64.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">XxHash64</span></code></p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Year.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Year.enabled</span></code></p></td>
 <td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Year</span></code></p></td>
 <td><p>true</p></td>
 </tr>
