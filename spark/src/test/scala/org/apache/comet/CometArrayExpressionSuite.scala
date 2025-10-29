@@ -19,7 +19,6 @@
 
 package org.apache.comet
 
-import scala.collection.immutable.HashSet
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
@@ -126,14 +125,11 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")
         sql("SELECT array(struct(_1, _2)) as a, struct(_1, _2) as b FROM t1")
           .createOrReplaceTempView("t2")
-        val expectedFallbackReasons = HashSet(
-          "data type not supported: ArrayType(StructType(StructField(_1,BooleanType,true),StructField(_2,ByteType,true)),false)")
-        // note that checkExtended is disabled here due to an unrelated issue
-        // https://github.com/apache/datafusion-comet/issues/1313
-        checkSparkAnswerAndCompareExplainPlan(
+        val expectedFallbackReason =
+          "data type not supported: ArrayType(StructType(StructField(_1,BooleanType,true),StructField(_2,ByteType,true)),false)"
+        checkSparkAnswerAndFallbackReason(
           sql("SELECT array_remove(a, b) FROM t2"),
-          expectedFallbackReasons,
-          checkExplainString = false)
+          expectedFallbackReason)
       }
     }
   }
