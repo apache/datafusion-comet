@@ -150,26 +150,36 @@ t4      Wrappers reused for         Native still has     Data
 When ownership IS transferred to native:
 
 ```
-Time    JVM Heap                    Native               Off-heap
-─────────────────────────────────────────────────────────────────
-t0      ArrowArray created          -                    -
-        ArrowSchema created
+Time    JVM Heap                    Native               FFI Release Callback
+─────────────────────────────────────────────────────────────────────────────
+t0      ColumnarBatch created       -                    -
+        ArrowBuf objects
 
-t1      Wrappers populated          FFI pointers         Data exists
-        Ownership transferred       received
-        ✓ Safe
+t1      Batch exported via FFI      FFI pointers         Callback registered
+        Ownership transferred       received             in ArrayData
+        ⚠️ Still alive
 
-t2      Wrappers eligible for GC    ArrayData created    Data exists
-        (no longer needed)          Native owns data
+t2      -                           ArrayData created    Callback attached
+                                    from FFI import      to ArrayData
 
-t3      -                           Native operator      Data exists
-                                    holds ArrayRef       ✓ Safe
+t3      -                           Arc::clone for       Batch still alive
+                                    non-dict arrays      ⚠️ NOT GC-able yet
 
-t4      -                           ArrayRef dropped     Data freed
-                                    release() called
+t4      -                           Operators buffer     Batch still alive
+                                    arrays (SortExec)    ⚠️ Accumulating!
+
+t5      -                           Last Arc dropped     Callback FIRES
+                                                         ↓
+        Batch NOW GC-able           -                    JVM notified
+        ✓ Finally
 ```
 
-**Still requires unpacking**: Dictionary-encoded arrays must still be unpacked because some DataFusion operators don't support them (see `copy_or_unpack_array()` in scan.rs).
+**Critical Point**: Even with ownership transfer, JVM batches remain alive until **all native references are dropped**. This is because:
+1. The FFI release callback is copied into the `ArrayData` during import
+2. The callback only fires when the last `ArrayData` reference is dropped
+3. Buffering operators keep references alive for extended periods
+
+**This still causes GC pressure** when operators accumulate batches, which is why the PR performs deep copies even with `arrow_ffi_safe=true` - it allows immediate GC of JVM batches after the copy is made.
 
 ### The GC Pressure Problem
 
@@ -383,10 +393,15 @@ arrowBuf.close();  // → calls native release_batch()
 
 ### For Scan Operations (JVM → Native)
 
-1. **Always copy arrays** unless you have explicit ownership guarantees
+1. **Always deep copy arrays** to enable immediate JVM GC, even with `arrow_ffi_safe=true`
+   - Why? Buffering operators keep native references alive, preventing JVM GC
+   - The upfront copy cost is cheaper than GC thrashing
 2. **Unpack dictionary arrays** before passing to operators
-3. **Copy dictionaries' value arrays** to avoid shared references
-4. See implementation in `native/core/src/execution/operators/scan.rs:269-279`
+   - Some DataFusion operators don't support dictionary encoding
+3. **Copy dictionaries' value arrays** to avoid shared buffer references
+4. See implementation in `native/core/src/execution/operators/scan.rs:267-275`
+
+**Important**: Even with ownership transfer (`arrow_ffi_safe=true`), JVM batches can only be GC'd after the FFI release callback fires, which happens when all native references are dropped. For buffering operators, this means batches accumulate in JVM heap until native execution completes.
 
 ### For Result Export (Native → JVM)
 
