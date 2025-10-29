@@ -156,14 +156,10 @@ object QueryComparison {
         val r = cometRows(i)
 
         // Check the schema is equal for first row only
-        if (i == 0) {
-          showSchema(output, l.schema.treeString, r.schema.treeString)
+        if (i == 0 && l.schema != r.schema) {
+          output.write("[ERROR] Spark produced different schema than Comet.\n")
 
-          if (l.schema != r.schema) {
-            output.write("[ERROR] Spark produced different schema than Comet.\n")
-
-            return false
-          }
+          return false
         }
 
         assert(l.length == r.length)
