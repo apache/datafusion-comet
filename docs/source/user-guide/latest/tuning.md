@@ -72,6 +72,8 @@ need to spill or have a single spillable operator.
 
 [shuffle]: #shuffle
 
+[Advanced Memory Tuning]: #advanced-memory-tuning
+
 ### Determining How Much Memory to Allocate
 
 Generally, increasing the amount of memory allocated to Comet will improve query performance by reducing the
