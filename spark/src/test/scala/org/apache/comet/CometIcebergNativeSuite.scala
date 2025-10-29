@@ -1714,34 +1714,15 @@ class CometIcebergNativeSuite extends CometTestBase {
           .getLong(0)
 
         // Verify data is correct before schema change
-        val beforeDrop =
-          spark.sql("SELECT * FROM test_cat.db.schema_evolution_test ORDER BY id").collect()
-        assert(beforeDrop.length == 3)
-        assert(beforeDrop(0).getString(1) == "x", "Row 1 should have data='x' before drop")
-        assert(beforeDrop(1).getString(1) == "y", "Row 2 should have data='y' before drop")
-        assert(beforeDrop(2).getString(1) == "z", "Row 3 should have data='z' before drop")
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.schema_evolution_test ORDER BY id")
 
         // Step 3: Drop the "data" column
         spark.sql("ALTER TABLE test_cat.db.schema_evolution_test DROP COLUMN data")
 
         // Step 4: Read the old snapshot (before column was dropped) using VERSION AS OF
         // This requires using the snapshot's schema, not the current table schema
-        val snapshotRead = spark
-          .sql(
-            s"SELECT * FROM test_cat.db.schema_evolution_test VERSION AS OF $snapshotIdBefore ORDER BY id")
-          .collect()
-
-        // Verify the snapshot read returns the original data with all columns
-        assert(snapshotRead.length == 3, "Should have 3 rows")
-        assert(
-          snapshotRead(0).getString(1) == "x",
-          s"Row 1 should have data='x', got ${snapshotRead(0).get(1)}")
-        assert(
-          snapshotRead(1).getString(1) == "y",
-          s"Row 2 should have data='y', got ${snapshotRead(1).get(1)}")
-        assert(
-          snapshotRead(2).getString(1) == "z",
-          s"Row 3 should have data='z', got ${snapshotRead(2).get(1)}")
+        checkIcebergNativeScan(
+          s"SELECT * FROM test_cat.db.schema_evolution_test VERSION AS OF $snapshotIdBefore ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.schema_evolution_test")
       }
@@ -1807,27 +1788,315 @@ class CometIcebergNativeSuite extends CometTestBase {
         // Step 6: Read from the branch using VERSION AS OF
         // This reads old data (id, data, float_col) but applies the current schema (id, data, date_col)
         // The old data files don't have date_col, so it should be NULL
-        // THIS CURRENTLY FAILS with "unexpected target column type Date32"
-        val branchRead = spark
-          .sql(
-            "SELECT * FROM test_cat.db.date_branch_test VERSION AS OF 'test_branch' ORDER BY id")
-          .collect()
-
-        // Verify: Should get 3 rows with date_col = NULL
-        assert(branchRead.length == 3, "Should have 3 rows from branch")
-        assert(branchRead(0).getLong(0) == 1, "Row 1 should have id=1")
-        assert(branchRead(0).getString(1) == "a", "Row 1 should have data='a'")
-        assert(branchRead(0).isNullAt(2), "Row 1 should have date_col=NULL")
-
-        assert(branchRead(1).getLong(0) == 2, "Row 2 should have id=2")
-        assert(branchRead(1).getString(1) == "b", "Row 2 should have data='b'")
-        assert(branchRead(1).isNullAt(2), "Row 2 should have date_col=NULL")
-
-        assert(branchRead(2).getLong(0) == 3, "Row 3 should have id=3")
-        assert(branchRead(2).getString(1) == "c", "Row 3 should have data='c'")
-        assert(branchRead(2).isNullAt(2), "Row 3 should have date_col=NULL")
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.date_branch_test VERSION AS OF 'test_branch' ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.date_branch_test")
+      }
+    }
+  }
+
+  // Complex type filter tests
+  test("complex type filter - struct column IS NULL") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.struct_filter_test (
+            id INT,
+            name STRING,
+            address STRUCT<city: STRING, zip: INT>
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.struct_filter_test
+          VALUES
+            (1, 'Alice', struct('NYC', 10001)),
+            (2, 'Bob', struct('LA', 90001)),
+            (3, 'Charlie', NULL)
+        """)
+
+        // Test filtering on struct IS NULL - this should fall back to Spark
+        // (iceberg-rust doesn't support IS NULL on complex type columns yet)
+        checkSparkAnswer(
+          "SELECT * FROM test_cat.db.struct_filter_test WHERE address IS NULL ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.struct_filter_test")
+      }
+    }
+  }
+
+  test("complex type filter - struct field filter") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.struct_field_filter_test (
+            id INT,
+            name STRING,
+            address STRUCT<city: STRING, zip: INT>
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.struct_field_filter_test
+          VALUES
+            (1, 'Alice', struct('NYC', 10001)),
+            (2, 'Bob', struct('LA', 90001)),
+            (3, 'Charlie', struct('NYC', 10002))
+        """)
+
+        // Test filtering on struct field - this should use native scan now!
+        // iceberg-rust supports nested field filters like address.city = 'NYC'
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.struct_field_filter_test WHERE address.city = 'NYC' ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.struct_field_filter_test")
+      }
+    }
+  }
+
+  test("complex type filter - entire struct value") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.struct_value_filter_test (
+            id INT,
+            name STRING,
+            address STRUCT<city: STRING, zip: INT>
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.struct_value_filter_test
+          VALUES
+            (1, 'Alice', named_struct('city', 'NYC', 'zip', 10001)),
+            (2, 'Bob', named_struct('city', 'LA', 'zip', 90001)),
+            (3, 'Charlie', named_struct('city', 'NYC', 'zip', 10001))
+        """)
+
+        // Test filtering on entire struct value - this falls back to Spark
+        // (Iceberg Java doesn't push down this type of filter)
+        checkSparkAnswer(
+          "SELECT * FROM test_cat.db.struct_value_filter_test WHERE address = named_struct('city', 'NYC', 'zip', 10001) ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.struct_value_filter_test")
+      }
+    }
+  }
+
+  test("complex type filter - array column IS NULL") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.array_filter_test (
+            id INT,
+            name STRING,
+            values ARRAY<INT>
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.array_filter_test
+          VALUES
+            (1, 'Alice', array(1, 2, 3)),
+            (2, 'Bob', array(4, 5, 6)),
+            (3, 'Charlie', NULL)
+        """)
+
+        // Test filtering on array IS NULL - this should fall back to Spark
+        // (iceberg-rust doesn't support IS NULL on complex type columns yet)
+        checkSparkAnswer(
+          "SELECT * FROM test_cat.db.array_filter_test WHERE values IS NULL ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.array_filter_test")
+      }
+    }
+  }
+
+  test("complex type filter - array element filter") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.array_element_filter_test (
+            id INT,
+            name STRING,
+            values ARRAY<INT>
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.array_element_filter_test
+          VALUES
+            (1, 'Alice', array(1, 2, 3)),
+            (2, 'Bob', array(4, 5, 6)),
+            (3, 'Charlie', array(1, 7, 8))
+        """)
+
+        // Test filtering with array_contains - this should fall back to Spark
+        // (Iceberg Java only pushes down NOT NULL, which fails in iceberg-rust)
+        checkSparkAnswer(
+          "SELECT * FROM test_cat.db.array_element_filter_test WHERE array_contains(values, 1) ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.array_element_filter_test")
+      }
+    }
+  }
+
+  test("complex type filter - entire array value") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.array_value_filter_test (
+            id INT,
+            name STRING,
+            values ARRAY<INT>
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.array_value_filter_test
+          VALUES
+            (1, 'Alice', array(1, 2, 3)),
+            (2, 'Bob', array(4, 5, 6)),
+            (3, 'Charlie', array(1, 2, 3))
+        """)
+
+        // Test filtering on entire array value - this should fall back to Spark
+        // (Iceberg Java only pushes down NOT NULL, which fails in iceberg-rust)
+        checkSparkAnswer(
+          "SELECT * FROM test_cat.db.array_value_filter_test WHERE values = array(1, 2, 3) ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.array_value_filter_test")
+      }
+    }
+  }
+
+  test("complex type filter - map column IS NULL") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.map_filter_test (
+            id INT,
+            name STRING,
+            properties MAP<STRING, INT>
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.map_filter_test
+          VALUES
+            (1, 'Alice', map('age', 30, 'score', 95)),
+            (2, 'Bob', map('age', 25, 'score', 87)),
+            (3, 'Charlie', NULL)
+        """)
+
+        // Test filtering on map IS NULL - this should fall back to Spark
+        // (iceberg-rust doesn't support IS NULL on complex type columns yet)
+        checkSparkAnswer(
+          "SELECT * FROM test_cat.db.map_filter_test WHERE properties IS NULL ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.map_filter_test")
+      }
+    }
+  }
+
+  test("complex type filter - map key access filter") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.map_key_filter_test (
+            id INT,
+            name STRING,
+            properties MAP<STRING, INT>
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.map_key_filter_test
+          VALUES
+            (1, 'Alice', map('age', 30, 'score', 95)),
+            (2, 'Bob', map('age', 25, 'score', 87)),
+            (3, 'Charlie', map('age', 30, 'score', 80))
+        """)
+
+        // Test filtering with map key access - this should fall back to Spark
+        // (Iceberg Java only pushes down NOT NULL, which fails in iceberg-rust)
+        checkSparkAnswer(
+          "SELECT * FROM test_cat.db.map_key_filter_test WHERE properties['age'] = 30 ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.map_key_filter_test")
       }
     }
   }
