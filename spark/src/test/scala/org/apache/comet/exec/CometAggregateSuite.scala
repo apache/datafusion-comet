@@ -1105,7 +1105,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 "SELECT _g2, AVG(_7) FROM tbl GROUP BY _g2",
                 expectedNumOfCometAggregates)
 
-              checkSparkAnswerWithTol("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")
+              checkSparkAnswerWithTolerance("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")
               assert(getNumCometHashAggregate(
                 sql("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")) == expectedNumOfCometAggregates)
 
@@ -1117,7 +1117,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 "SELECT AVG(_7) FROM tbl",
                 expectedNumOfCometAggregates)
 
-              checkSparkAnswerWithTol("SELECT AVG(_8) FROM tbl")
+              checkSparkAnswerWithTolerance("SELECT AVG(_8) FROM tbl")
               assert(getNumCometHashAggregate(
                 sql("SELECT AVG(_8) FROM tbl")) == expectedNumOfCometAggregates)
 
@@ -1505,7 +1505,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       numAggregates: Int,
       absTol: Double = 1e-6): Unit = {
     val df = sql(query)
-    checkSparkAnswerWithTol(df, absTol)
+    checkSparkAnswerWithTolerance(df, absTol)
     val actualNumAggregates = getNumCometHashAggregate(df)
     assert(
       actualNumAggregates == numAggregates,
