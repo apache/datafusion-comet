@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::operators::{copy_array, copy_or_unpack_array, CopyMode};
+use crate::execution::operators::copy_array;
 use crate::{
     errors::CometError,
     execution::{
@@ -81,8 +81,6 @@ pub struct ScanExec {
     jvm_fetch_time: Time,
     /// Time spent in FFI
     arrow_ffi_time: Time,
-    /// Whether native code can assume ownership of batches that it receives
-    arrow_ffi_safe: bool,
 }
 
 impl ScanExec {
@@ -91,7 +89,6 @@ impl ScanExec {
         input_source: Option<Arc<GlobalRef>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
-        arrow_ffi_safe: bool,
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
@@ -112,7 +109,6 @@ impl ScanExec {
                 data_types.len(),
                 &jvm_fetch_time,
                 &arrow_ffi_time,
-                arrow_ffi_safe,
             )?;
             timer.stop();
             batch
@@ -143,7 +139,6 @@ impl ScanExec {
             jvm_fetch_time,
             arrow_ffi_time,
             schema,
-            arrow_ffi_safe,
         })
     }
 
@@ -178,7 +173,6 @@ impl ScanExec {
                 self.data_types.len(),
                 &self.jvm_fetch_time,
                 &self.arrow_ffi_time,
-                self.arrow_ffi_safe,
             )?;
             *current_batch = Some(next_batch);
         }
@@ -195,7 +189,6 @@ impl ScanExec {
         num_cols: usize,
         jvm_fetch_time: &Time,
         arrow_ffi_time: &Time,
-        arrow_ffi_safe: bool,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // This is a unit test. We don't need to call JNI.
@@ -264,19 +257,15 @@ impl ScanExec {
                 array
             };
 
-            let array = if arrow_ffi_safe {
-                // Ownership of this array has been transferred to native,
-                // but we still need to unpack dictionary arrays. Note that
-                // this path will not free JVM wrapper classes immediately,
-                // which can lead to GC pressure.
-                copy_or_unpack_array(&array, &CopyMode::UnpackOrClone)?
-            } else {
-                // It is necessary to copy the array because the contents may be
-                // overwritten on the JVM side in the future, or the user has specified
-                // to perform a deep copy so that JVM wrapper classes are released
-                // immediately, reducing GC pressure.
-                copy_array(&array)
-            };
+            // There are two reasons why it is import to make a deep copy of the array here.
+            // 1. If the underlying scan is `native_comet` then ownership of the array is
+            // not transferred to native and the contents of the buffers may be overwritten
+            // on the JVM side in the future.
+            // 2. Even if ownership is transferred, the JVM wrapper classes `ArrowArray`
+            // and `ArrowSchema` will not be released on the JVM side until the release
+            // callback is invoked. This can lead to GC pressure when the batches are
+            // buffered in operators such as SortExec.
+            let array = copy_array(&array);
 
             inputs.push(array);
 

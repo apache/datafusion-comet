@@ -112,9 +112,10 @@ Off-heap Memory:                            │
 
 ### Wrapper Object Lifecycle
 
-#### When `arrow_ffi_safe=false`
+#### When ownership is NOT transferred to native:
 
-When ownership is NOT transferred to native:
+If the data originates from `native_comet` scan (or from `native_iceberg_compat` in some cases), then ownership is 
+not transferred to native and the JVM may re-use the underlying buffers in the future.
 
 ```
 Time    JVM Heap                    Native               Off-heap
@@ -145,9 +146,7 @@ t4      Wrappers reused for         Native still has     Data
 
 **Solution**: Deep copy all arrays immediately after import (see `copy_array()` in scan.rs).
 
-#### When `arrow_ffi_safe=true`
-
-When ownership IS transferred to native:
+#### When ownership IS transferred to native:
 
 ```
 Time    JVM Heap                    Native               FFI Release Callback

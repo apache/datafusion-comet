@@ -557,14 +557,6 @@ object CometConf extends ShimCometConf {
       .doubleConf
       .createWithDefault(1.0)
 
-  val COMET_FFI_DEEP_COPY: ConfigEntry[Boolean] =
-    conf("spark.comet.ffi.forceDeepCopy")
-      .category(CATEGORY_TUNING)
-      .doc("Whether to perform a deep copy of all batches passed over FFI from JVM to Rust " +
-        s"to reduce GC pressure by releasing JVM resources earlier. $TUNING_GUIDE.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_SCAN_PREFETCH_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.preFetch.enabled")
       .category(CATEGORY_SCAN)

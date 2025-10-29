@@ -1464,27 +1464,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           scanBuilder.setSource(source)
         }
 
-        if (CometConf.COMET_FFI_DEEP_COPY.get(conf)) {
-          scanBuilder.setArrowFfiSafe(false)
-        } else {
-          val ffiSafe = op match {
-            case _ if isExchangeSink(op) =>
-              // Source of broadcast exchange batches is ArrowStreamReader
-              // Source of shuffle exchange batches is NativeBatchDecoderIterator
-              true
-            case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_COMET =>
-              // native_comet scan reuses mutable buffers
-              false
-            case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
-              // native_iceberg_compat scan reuses mutable buffers for constant columns
-              // https://github.com/apache/datafusion-comet/issues/2152
-              false
-            case _ =>
-              false
-          }
-          scanBuilder.setArrowFfiSafe(ffiSafe)
-        }
-
         val scanTypes = op.output.flatten { attr =>
           serializeDataType(attr.dataType)
         }
