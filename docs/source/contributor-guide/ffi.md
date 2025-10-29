@@ -3,6 +3,10 @@
 This document explains how Comet uses the [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html) (FFI) to transfer data between the 
 JVM (Spark) and native code (DataFusion/Rust), and the memory management considerations involved.
 
+The following diagram shows an example of the end-to-end flow for a query stage.
+
+![Diagram of Comet Data Flow](/_static/images/comet-dataflow.svg)
+
 ## Overview
 
 Comet uses Arrow FFI for zero-copy data transfer in two directions:
@@ -139,7 +143,7 @@ t4      Wrappers reused for         Native still has     Data
 - Use-after-free if wrappers are GC'd
 - Crashes and undefined behavior
 
-**Solution**: Deep copy all arrays immediately after import (see `copy_array()` in scan.rs:669-698).
+**Solution**: Deep copy all arrays immediately after import (see `copy_array()` in scan.rs).
 
 #### With `arrow_ffi_safe=true`
 
@@ -165,7 +169,7 @@ t4      -                           ArrayRef dropped     Data freed
                                     release() called
 ```
 
-**Still requires unpacking**: Dictionary-encoded arrays must still be unpacked because some DataFusion operators don't support them (see `copy_or_unpack_array()` in scan.rs:705-725).
+**Still requires unpacking**: Dictionary-encoded arrays must still be unpacked because some DataFusion operators don't support them (see `copy_or_unpack_array()` in scan.rs).
 
 ### The GC Pressure Problem
 
