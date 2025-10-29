@@ -112,9 +112,9 @@ Off-heap Memory:                            │
 
 ### Wrapper Object Lifecycle
 
-#### Without `arrow_ffi_safe=true`
+#### When `arrow_ffi_safe=false`
 
-When ownership is NOT transferred to native (`arrow_ffi_safe=false`):
+When ownership is NOT transferred to native:
 
 ```
 Time    JVM Heap                    Native               Off-heap
@@ -145,7 +145,7 @@ t4      Wrappers reused for         Native still has     Data
 
 **Solution**: Deep copy all arrays immediately after import (see `copy_array()` in scan.rs).
 
-#### With `arrow_ffi_safe=true`
+#### When `arrow_ffi_safe=true`
 
 When ownership IS transferred to native:
 
@@ -174,14 +174,12 @@ t5      -                           Last Arc dropped     Callback FIRES
         ✓ Finally
 ```
 
-**Critical Point**: Even with ownership transfer, JVM batches remain alive until **all native references are dropped**. This is because:
+**Problem**: Even with ownership transfer, JVM batches remain alive until **all native references are dropped**. This is because:
 1. The FFI release callback is copied into the `ArrayData` during import
 2. The callback only fires when the last `ArrayData` reference is dropped
 3. Buffering operators keep references alive for extended periods
 
-**This still causes GC pressure** when operators accumulate batches, which is why the PR performs deep copies even with `arrow_ffi_safe=true` - it allows immediate GC of JVM batches after the copy is made.
-
-### The GC Pressure Problem
+**This causes GC pressure** when operators such as sorts and joins accumulate batches.
 
 Even with off-heap data buffers, each batch creates small wrapper objects on the JVM heap:
 
@@ -193,39 +191,7 @@ Per batch overhead on JVM heap:
 - 100 columns × 1000 batches = ~20 MB of wrapper objects
 ```
 
-When DataFusion operators buffer entire inputs (e.g., `SortExec`):
-
-```rust
-// This pattern accumulates ALL wrapper objects
-while let Some(batch) = input.next().await {
-    sorter.insert_batch(batch).await?;  // Keeps wrapper references alive
-}
-sorter.sort().await  // Only then are wrappers released
-```
-
-**Impact**:
-- With reduced heap size (common when using off-heap memory)
-- Thousands of small wrapper objects accumulate
-- Triggers frequent GC cycles
-- Can cause **10x performance degradation** on large datasets
-
-**Solution**: Deep copy arrays in `ScanExec` before passing to operators:
-
-```rust
-let array = if arrow_ffi_safe {
-    // Unpack dictionaries but avoid full copy if possible
-    copy_or_unpack_array(&array, &CopyMode::UnpackOrClone)?
-} else {
-    // Full deep copy to avoid JVM wrapper reuse issues
-    copy_array(&array)
-};
-```
-
-This seems paradoxical (copying to improve performance), but:
-- Copy happens once per batch during scan
-- Wrapper objects are immediately GC-eligible
-- Cleaner memory lifecycle prevents GC thrashing
-- Net result: Better performance despite copy overhead
+**Solution**: Deep copy all arrays immediately after import (see `copy_array()` in scan.rs).
 
 ## Native → JVM Data Flow (CometExecIterator)
 
@@ -389,91 +355,8 @@ arrowBuf.close();  // → calls native release_batch()
 |----------|-----------|-----------------|
 | All cases | Native allocates, JVM references | JVM must call `close()` to trigger native release callback |
 
-## Best Practices
-
-### For Scan Operations (JVM → Native)
-
-1. **Always deep copy arrays** to enable immediate JVM GC, even with `arrow_ffi_safe=true`
-   - Why? Buffering operators keep native references alive, preventing JVM GC
-   - The upfront copy cost is cheaper than GC thrashing
-2. **Unpack dictionary arrays** before passing to operators
-   - Some DataFusion operators don't support dictionary encoding
-3. **Copy dictionaries' value arrays** to avoid shared buffer references
-4. See implementation in `native/core/src/execution/operators/scan.rs:267-275`
-
-**Important**: Even with ownership transfer (`arrow_ffi_safe=true`), JVM batches can only be GC'd after the FFI release callback fires, which happens when all native references are dropped. For buffering operators, this means batches accumulate in JVM heap until native execution completes.
-
-### For Result Export (Native → JVM)
-
-1. **Use batch handles** to control lifecycle
-2. **Implement proper release callbacks** for all allocations
-3. **Ensure JVM calls close()** on all ArrowBuf objects
-4. See implementation in `native/core/src/execution/jni_api.rs`
-
-### For Operators That Buffer Data
-
-When implementing operators that accumulate batches (Sort, Hash Join, etc.):
-
-1. **Wrap input in CopyExec** to ensure clean ownership
-2. **Prefer streaming over accumulation** when possible
-3. **Test with large datasets** to catch GC pressure issues
-4. See usage in `native/core/src/execution/planner.rs:1228,1503,1570`
-
-## Debugging FFI Issues
-
-### Common Symptoms
-
-| Symptom | Likely Cause | Solution |
-|---------|--------------|----------|
-| Segfault in native code | Use-after-free from JVM GC | Enable `arrow_ffi_safe` or add deep copy |
-| Data corruption | JVM wrapper reuse | Add deep copy in scan |
-| Slow performance with GC | Wrapper object accumulation | Add deep copy to allow immediate GC |
-| Memory leak (JVM) | Missing `close()` call | Add proper resource cleanup |
-| Memory leak (native) | Missing release callback | Implement proper FFI release function |
-
-### Debug Flags
-
-```properties
-# Enable FFI ownership transfer (requires Spark support)
-spark.comet.exec.arrowFfiSafe=true
-
-# Monitor GC behavior
--XX:+PrintGCDetails -XX:+PrintGCTimeStamps
-
-# Native memory tracking
--XX:NativeMemoryTracking=detail
-```
-
-### Profiling
-
-```bash
-# Profile native memory usage
-MALLOC_CONF="prof:true,prof_prefix:jeprof.out" ./spark-submit ...
-
-# Profile JVM heap
-jmap -dump:live,format=b,file=heap.bin <pid>
-jhat heap.bin
-```
-
-## Configuration
-
-### Comet Configuration
-
-```scala
-// Enable FFI ownership transfer (if Spark supports it)
-.config("spark.comet.exec.arrowFfiSafe", "true")
-
-// Increase off-heap memory to reduce heap pressure
-.config("spark.memory.offHeap.enabled", "true")
-.config("spark.memory.offHeap.size", "16g")
-
-// Reduce heap size when using off-heap
-.config("spark.executor.memory", "4g")
-```
-
 ## Further Reading
 
 - [Arrow C Data Interface Specification](https://arrow.apache.org/docs/format/CDataInterface.html)
 - [Arrow Java FFI Implementation](https://github.com/apache/arrow/tree/main/java/c)
 - [Arrow Rust FFI Implementation](https://docs.rs/arrow/latest/arrow/ffi/)
-- [Comet Issue #963: Dictionary Array Unpacking](https://github.com/apache/datafusion-comet/issues/963)
