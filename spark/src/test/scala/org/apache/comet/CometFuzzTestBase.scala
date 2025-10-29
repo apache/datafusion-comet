@@ -85,7 +85,9 @@ class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq("native", "jvm").foreach { shuffleMode =>
       Seq(
         CometConf.SCAN_NATIVE_COMET,
-        CometConf.SCAN_NATIVE_DATAFUSION,
+        // TODO enable native_datafusion tests
+        // https://github.com/apache/datafusion-comet/issues/2660
+        // CometConf.SCAN_NATIVE_DATAFUSION,
         CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach { scanImpl =>
         super.test(testName + s" ($scanImpl, $shuffleMode shuffle)", testTags: _*) {
           withSQLConf(
