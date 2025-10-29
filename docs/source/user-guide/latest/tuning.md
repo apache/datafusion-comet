@@ -98,15 +98,6 @@ Comet Performance
 
 It may be possible to reduce Comet's memory overhead by reducing batch sizes or increasing number of partitions.
 
-### FFI and GC Pressure
-
-When passing Arrow batches from JVM to Rust, the JVM will have allocated the underlying memory using off-heap
-memory and can pass this data to native code without requiring a copy to be made. However, the JVM will also retain
-references to on-heap wrapper classes until the arrays are released. This can lead to GC pressure in some cases.
-
-It is possible to set `spark.comet.ffi.forceDeepCopy=true` to force the native code to make a deep copy immediately 
-on receiving arrays, thus freeing up JVM resource sooner and reducing GC pressure. 
-
 ## Optimizing Sorting on Floating-Point Values
 
 Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
