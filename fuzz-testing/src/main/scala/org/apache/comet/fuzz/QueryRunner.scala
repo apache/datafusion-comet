@@ -154,11 +154,10 @@ object QueryComparison {
       while (i < sparkRows.length) {
         val l = sparkRows(i)
         val r = cometRows(i)
+
         // Check the schema is equal for first row only
         if (i == 0 && l.schema != r.schema) {
-          output.write(
-            s"[ERROR] Spark produced schema ${l.schema}  and " +
-              s"Comet produced schema ${r.schema} rows.\n")
+          output.write("[ERROR] Spark produced different schema than Comet.\n")
 
           return false
         }
@@ -253,5 +252,12 @@ object QueryComparison {
     w.write(s"```\n$sparkPlan\n```\n")
     w.write("### Comet Plan\n")
     w.write(s"```\n$cometPlan\n```\n")
+  }
+
+  def showSchema(w: BufferedWriter, sparkSchema: String, cometSchema: String): Unit = {
+    w.write("### Spark Schema\n")
+    w.write(s"```\n$sparkSchema\n```\n")
+    w.write("### Comet Schema\n")
+    w.write(s"```\n$cometSchema\n```\n")
   }
 }
