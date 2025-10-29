@@ -560,7 +560,7 @@ object CometConf extends ShimCometConf {
   val COMET_FFI_DEEP_COPY: ConfigEntry[Boolean] =
     conf("spark.comet.ffi.forceDeepCopy")
       .category(CATEGORY_TUNING)
-      .doc(s"Whether to perform a deep copy of all batches passed over FFI from JVM to Rust " +
+      .doc("Whether to perform a deep copy of all batches passed over FFI from JVM to Rust " +
         s"to reduce GC pressure by releasing JVM resources earlier. $TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
