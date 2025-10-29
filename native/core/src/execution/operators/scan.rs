@@ -257,14 +257,15 @@ impl ScanExec {
                 array
             };
 
-            // There are two reasons why it is import to make a deep copy of the array here.
+            // There are two reasons why it is important to make a deep copy of the array here.
             // 1. If the underlying scan is `native_comet` then ownership of the array is
             // not transferred to native and the contents of the buffers may be overwritten
             // on the JVM side in the future.
             // 2. Even if ownership is transferred, the JVM wrapper classes `ArrowArray`
             // and `ArrowSchema` will not be released on the JVM side until the release
-            // callback is invoked. This can lead to GC pressure when the batches are
-            // buffered in operators such as SortExec.
+            // callback is invoked when the array is eventually dropped in native code. This
+            // can lead to GC pressure when the batches are buffered in operators such as
+            // SortExec.
             let array = copy_array(&array);
 
             inputs.push(array);
