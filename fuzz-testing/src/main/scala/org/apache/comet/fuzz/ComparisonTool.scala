@@ -117,6 +117,12 @@ object ComparisonTool {
             // Compare the results
             if (QueryComparison.assertSameRows(sparkRows, cometRows, output)) {
               output.write(s"Subfolder $subfolderName: ${sparkRows.length} rows matched\n\n")
+            } else {
+              // Output schema if dataframes are not equal
+              QueryComparison.showSchema(
+                output,
+                sparkDf.schema.treeString,
+                cometDf.schema.treeString)
             }
           } catch {
             case e: Exception =>
