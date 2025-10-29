@@ -38,12 +38,12 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     if (CometConf.COMET_EXPLAIN_VERBOSE_ENABLED.get()) {
       generateVerboseExtendedInfo(plan)
     } else {
-      val info = extensionInfo(plan)
+      val info = getFallbackReasons(plan)
       info.toSeq.sorted.mkString("\n").trim
     }
   }
 
-  private[comet] def extensionInfo(node: TreeNode[_]): Set[String] = {
+  def getFallbackReasons(node: TreeNode[_]): Set[String] = {
     var info = mutable.Seq[String]()
     val sorted = sortup(node)
     sorted.foreach { p =>
