@@ -710,6 +710,13 @@ object CometConf extends ShimCometConf {
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
 
+  val COMET_STRICT_TESTING: ConfigEntry[Boolean] = conf(s"$COMET_PREFIX.testing.strict")
+    .category(CATEGORY_TESTING)
+    .doc("Experimental option to enable strict testing, which will fail tests that could be " +
+      "more comprehensive, such as checking for a specific fallback reason")
+    .booleanConf
+    .createWithDefault(sys.env.getOrElse("ENABLE_COMET_STRICT_TESTING", "false").toBoolean)
+
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
       exec: String,

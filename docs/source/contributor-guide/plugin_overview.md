@@ -131,20 +131,5 @@ For shuffle reads a `ShuffledRDD` requests a `ShuffleReader` from the shuffle ma
 `CometBlockStoreShuffleReader` which is implemented in JVM and fetches blocks from Spark and then creates an 
 `ArrowReaderIterator` to process the blocks using Arrow's `StreamReader` for decoding IPC batches.
 
-## Arrow FFI
 
-Due to the hybrid execution model, it is necessary to pass batches of data between the JVM and native code.
 
-The foundation for Arrow FFI is the [Arrow C Data Interface], which provides a stable ABI-compatible interface for
-accessing Arrow data structures from multiple languages.
-
-[Arrow C Data Interface]: https://arrow.apache.org/docs/format/CDataInterface.html
-
-- `CometExecIterator` invokes native plans and uses Arrow FFI to read the output batches
-- Native `ScanExec` operators call `CometBatchIterator` via JNI to fetch input batches from the JVM
-
-## End to End Flow
-
-The following diagram shows an example of the end-to-end flow for a query stage.
-
-![Diagram of Comet Data Flow](/_static/images/comet-dataflow.svg)

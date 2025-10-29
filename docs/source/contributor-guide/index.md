@@ -25,6 +25,7 @@ under the License.
 
 Getting Started <contributing>
 Comet Plugin Overview <plugin_overview>
+Arrow FFI Usage <ffi>
 Development Guide <development>
 Debugging Guide <debugging>
 Benchmarking Guide <benchmarking>

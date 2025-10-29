@@ -128,12 +128,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           .createOrReplaceTempView("t2")
         val expectedFallbackReasons = HashSet(
           "data type not supported: ArrayType(StructType(StructField(_1,BooleanType,true),StructField(_2,ByteType,true)),false)")
-        // note that checkExtended is disabled here due to an unrelated issue
-        // https://github.com/apache/datafusion-comet/issues/1313
-        checkSparkAnswerAndCompareExplainPlan(
+        checkSparkAnswerAndFallbackReasons(
           sql("SELECT array_remove(a, b) FROM t2"),
-          expectedFallbackReasons,
-          checkExplainString = false)
+          expectedFallbackReasons)
       }
     }
   }
