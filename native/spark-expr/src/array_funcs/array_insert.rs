@@ -16,11 +16,10 @@
 // under the License.
 
 use arrow::array::{make_array, Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait};
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{DataType, Schema};
 use arrow::{
     array::{as_primitive_array, Capacities, MutableArrayData},
     buffer::{NullBuffer, OffsetBuffer},
-    datatypes::ArrowNativeType,
     record_batch::RecordBatch,
 };
 use datafusion::common::{
@@ -238,7 +237,7 @@ fn array_insert<O: OffsetSizeTrait>(
             ));
         }
 
-        let mut final_len: usize;
+        let final_len: usize;
 
         if pos > 0 {
             // Positive index (1-based)
