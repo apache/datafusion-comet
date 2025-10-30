@@ -1,7 +1,7 @@
 == Physical Plan ==
-TakeOrderedAndProject (33)
-+- * Project (32)
-   +- * CometColumnarToRow (31)
+* CometColumnarToRow (33)
++- CometTakeOrderedAndProject (32)
+   +- CometProject (31)
       +- CometBroadcastHashJoin (30)
          :- CometBroadcastExchange (26)
          :  +- CometProject (25)
@@ -177,14 +177,14 @@ Left output [4]: [c_customer_id#7, c_first_name#8, c_last_name#9, cd_demo_sk#12]
 Right output [1]: [sr_cdemo_sk#18]
 Arguments: [cd_demo_sk#12], [sr_cdemo_sk#18], Inner, BuildLeft
 
-(31) CometColumnarToRow [codegen id : 1]
+(31) CometProject
 Input [5]: [c_customer_id#7, c_first_name#8, c_last_name#9, cd_demo_sk#12, sr_cdemo_sk#18]
+Arguments: [customer_id#20, customername#21, c_customer_id#7], [c_customer_id#7 AS customer_id#20, concat(c_last_name#9, , , c_first_name#8) AS customername#21, c_customer_id#7]
 
-(32) Project [codegen id : 1]
-Output [3]: [c_customer_id#7 AS customer_id#20, concat(c_last_name#9, , , c_first_name#8) AS customername#21, c_customer_id#7]
-Input [5]: [c_customer_id#7, c_first_name#8, c_last_name#9, cd_demo_sk#12, sr_cdemo_sk#18]
-
-(33) TakeOrderedAndProject
+(32) CometTakeOrderedAndProject
 Input [3]: [customer_id#20, customername#21, c_customer_id#7]
-Arguments: 100, [c_customer_id#7 ASC NULLS FIRST], [customer_id#20, customername#21]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[c_customer_id#7 ASC NULLS FIRST], output=[customer_id#20,customername#21]), [customer_id#20, customername#21], 100, 0, [c_customer_id#7 ASC NULLS FIRST], [customer_id#20, customername#21]
+
+(33) CometColumnarToRow [codegen id : 1]
+Input [2]: [customer_id#20, customername#21]
 

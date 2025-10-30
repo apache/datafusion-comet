@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, InitCap, Length, Like, Literal, Lower, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, InitCap, Length, Like, Literal, Lower, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
@@ -109,6 +109,18 @@ object CometSubstring extends CometExpressionSerde[Substring] {
       case _ =>
         withInfo(expr, "Substring pos and len must be literals")
         None
+    }
+  }
+}
+
+object CometConcat extends CometScalarFunction[Concat]("concat") {
+  val unsupportedReason = "CONCAT supports only string input parameters"
+
+  override def getSupportLevel(expr: Concat): SupportLevel = {
+    if (expr.children.forall(_.dataType == DataTypes.StringType)) {
+      Compatible()
+    } else {
+      Incompatible(Some(unsupportedReason))
     }
   }
 }
