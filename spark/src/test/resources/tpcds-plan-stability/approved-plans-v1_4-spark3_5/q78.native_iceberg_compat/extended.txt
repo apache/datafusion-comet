@@ -1,0 +1,1 @@
+Comet does not support Spark's BigDecimal rounding
