@@ -30,7 +30,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Literal, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec, CometWindowExec}
 import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, SparkPlan, WholeStageCodegenExec}
@@ -706,11 +706,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "date_trunc_with_format.parquet")
         makeDateTimeWithFormatTable(path, dictionaryEnabled = dictionaryEnabled, numRows)
         withParquetTable(path.toString, "dateformattbl") {
-          checkSparkAnswerAndOperator(
-            "SELECT " +
-              "dateformat, _7, " +
-              "trunc(_7, dateformat) " +
-              " from dateformattbl ")
+          withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[TruncDate]) -> "true") {
+            checkSparkAnswerAndOperator(
+              "SELECT " +
+                "dateformat, _7, " +
+                "trunc(_7, dateformat) " +
+                " from dateformattbl ")
+          }
         }
       }
     }
@@ -787,13 +789,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("date_trunc with format array") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-      val numRows = 1000
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "timestamp_trunc_with_format.parquet")
-          makeDateTimeWithFormatTable(path, dictionaryEnabled = dictionaryEnabled, numRows)
-          withParquetTable(path.toString, "timeformattbl") {
+    val numRows = 1000
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "timestamp_trunc_with_format.parquet")
+        makeDateTimeWithFormatTable(path, dictionaryEnabled = dictionaryEnabled, numRows)
+        withParquetTable(path.toString, "timeformattbl") {
+          withSQLConf(
+            CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
+            CometConf.getExprAllowIncompatConfigKey(classOf[TruncTimestamp]) -> "true") {
             checkSparkAnswerAndOperator(
               "SELECT " +
                 "format, _0, _1, _2, _3, _4, _5, " +
