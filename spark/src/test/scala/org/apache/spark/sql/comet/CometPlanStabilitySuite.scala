@@ -36,7 +36,7 @@ import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, Va
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 
 /**
@@ -103,38 +103,35 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
    * @param explain
    *   the full explain output; this is saved to help debug later as the simplified plan is not
    *   too useful for debugging
+   * @param extended
+   *   Extended explain plan showing fallback reasons
    */
-  private def generateGoldenFile(dir: File, simplified: String, explain: String): Unit = {
+  private def generateGoldenFile(
+      dir: File,
+      simplified: String,
+      explain: String,
+      extended: String): Unit = {
     FileUtils.deleteDirectory(dir)
     if (!dir.mkdirs()) {
       fail(s"Could not create dir: $dir")
     }
 
-    val file = new File(dir, "simplified.txt")
-    FileUtils.writeStringToFile(file, simplified, StandardCharsets.UTF_8)
-    val fileOriginalPlan = new File(dir, "explain.txt")
-    FileUtils.writeStringToFile(fileOriginalPlan, explain, StandardCharsets.UTF_8)
-    logDebug(s"APPROVED: $file $fileOriginalPlan")
+    writeGoldenFile(dir, "simplified.txt", simplified)
+    writeGoldenFile(dir, "explain.txt", explain)
+    writeGoldenFile(dir, "extended.txt", extended)
   }
 
-  private def checkWithApproved(
-      dir: File,
-      name: String,
-      simplified: String,
-      explain: String): Unit = {
+  private def writeGoldenFile(dir: File, filename: String, plan: String): Unit = {
+    FileUtils.writeStringToFile(new File(dir, filename), plan, StandardCharsets.UTF_8)
+    logDebug(s"APPROVED: $filename")
+  }
 
-    val approvedSimplifiedFile = new File(dir, "simplified.txt")
-    val approvedExplainFile = new File(dir, "explain.txt")
-
-    // write actual files out for debugging
+  private def checkWithApproved(dir: File, name: String, filename: String, plan: String): Unit = {
     val tempDir = FileUtils.getTempDirectory
-    val actualSimplifiedFile = new File(tempDir, s"$name.actual.simplified.txt")
-    val actualExplainFile = new File(tempDir, s"$name.actual.explain.txt")
-    FileUtils.writeStringToFile(actualSimplifiedFile, simplified, StandardCharsets.UTF_8)
-    FileUtils.writeStringToFile(actualExplainFile, explain, StandardCharsets.UTF_8)
-
-    comparePlans("simplified", approvedSimplifiedFile, actualSimplifiedFile)
-    comparePlans("explain", approvedExplainFile, actualExplainFile)
+    val approvedFile = new File(dir, s"$filename.txt")
+    val actualFile = new File(tempDir, s"$name.actual.$filename.txt")
+    FileUtils.writeStringToFile(actualFile, plan, StandardCharsets.UTF_8)
+    comparePlans("simplified", approvedFile, actualFile)
   }
 
   private def comparePlans(planType: String, expectedFile: File, actualFile: File): Unit = {
@@ -262,6 +259,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       val qe = sql(queryString).queryExecution
       val plan = qe.executedPlan
       val explain = normalizeLocation(normalizeIds(qe.explainString(FormattedMode)))
+      val extended = new ExtendedExplainInfo().generateExtendedInfo(qe.executedPlan)
       val simplified = getSimplifiedPlan(plan)
       assert(ValidateRequirements.validate(plan))
 
@@ -269,9 +267,11 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       val dir = getDirForTest(name)
 
       if (regenerateGoldenFiles) {
-        generateGoldenFile(dir, simplified, explain)
+        generateGoldenFile(dir, simplified, explain, extended)
       } else {
-        checkWithApproved(dir, name, simplified, explain)
+        checkWithApproved(dir, name, "simplified", simplified)
+        checkWithApproved(dir, name, "explain", explain)
+        checkWithApproved(dir, name, "extended", extended)
       }
     }
   }
