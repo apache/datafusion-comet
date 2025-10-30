@@ -201,6 +201,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.CheckOverflow.enabled` | Enable Comet acceleration for `CheckOverflow` | true |
 | `spark.comet.expression.Chr.enabled` | Enable Comet acceleration for `Chr` | true |
 | `spark.comet.expression.Coalesce.enabled` | Enable Comet acceleration for `Coalesce` | true |
+| `spark.comet.expression.Concat.enabled` | Enable Comet acceleration for `Concat` | true |
 | `spark.comet.expression.ConcatWs.enabled` | Enable Comet acceleration for `ConcatWs` | true |
 | `spark.comet.expression.Contains.enabled` | Enable Comet acceleration for `Contains` | true |
 | `spark.comet.expression.Cos.enabled` | Enable Comet acceleration for `Cos` | true |
