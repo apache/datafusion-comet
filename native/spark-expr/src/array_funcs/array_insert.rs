@@ -452,4 +452,37 @@ mod test {
 
         Ok(())
     }
+
+    #[test]
+    fn test_array_insert_bug_repro_null_item_pos1_fixed() -> Result<()> {
+        use arrow::array::{Array, ArrayRef, Int32Array, ListArray};
+        use arrow::datatypes::Int32Type;
+
+        // row0 = [0, null, 0]
+        // row1 = [1, null, 1]
+        let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(0), None, Some(0)]),
+            Some(vec![Some(1), None, Some(1)]),
+        ]);
+
+        let positions = Int32Array::from(vec![1, 1]);
+        let items = Int32Array::from(vec![None, None]);
+
+        let ColumnarValue::Array(result) = array_insert(
+            &list,
+            &(Arc::new(items) as ArrayRef),
+            &(Arc::new(positions) as ArrayRef),
+            false, // legacy_mode = false
+        )?
+        else {
+            unreachable!()
+        };
+
+        let expected = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![None, Some(0), None, Some(0)]),
+            Some(vec![None, Some(1), None, Some(1)])
+        ]);
+        assert_eq!(&result.to_data(), &expected.to_data());
+        Ok(())
+    }
 }
