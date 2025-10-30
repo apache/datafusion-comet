@@ -2869,6 +2869,57 @@ fn parse_file_scan_tasks(
                 )
                 .transpose()?;
 
+            // Parse partition data if available (for proper constant identification per Iceberg spec)
+            let partition = if let (Some(partition_json), Some(partition_type_json)) = (
+                proto_task.partition_data_json.as_ref(),
+                proto_task.partition_type_json.as_ref(),
+            ) {
+                // Parse the partition type schema
+                let partition_type: iceberg::spec::StructType =
+                    serde_json::from_str(partition_type_json).map_err(|e| {
+                        ExecutionError::GeneralError(format!(
+                            "Failed to parse partition type JSON: {}",
+                            e
+                        ))
+                    })?;
+
+                // Parse the partition data JSON with the proper schema
+                let partition_data_value: serde_json::Value = serde_json::from_str(partition_json)
+                    .map_err(|e| {
+                        ExecutionError::GeneralError(format!(
+                            "Failed to parse partition data JSON: {}",
+                            e
+                        ))
+                    })?;
+
+                // Convert to Iceberg Literal using the partition type
+                match iceberg::spec::Literal::try_from_json(
+                    partition_data_value,
+                    &iceberg::spec::Type::Struct(partition_type),
+                ) {
+                    Ok(Some(iceberg::spec::Literal::Struct(s))) => Some(s),
+                    Ok(None) => None,
+                    Ok(_) => None,
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+
+            // Parse partition spec if available
+            let partition_spec = if let Some(partition_spec_json) =
+                proto_task.partition_spec_json.as_ref()
+            {
+                match serde_json::from_str::<iceberg::spec::PartitionSpec>(partition_spec_json) {
+                    Ok(spec) => Some(Arc::new(spec)),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+
+            let partition_spec_id = proto_task.partition_spec_id;
+
             // Build FileScanTask matching iceberg-rust's structure
             Ok(iceberg::scan::FileScanTask {
                 data_file_path: proto_task.data_file_path.clone(),
@@ -2880,6 +2931,9 @@ fn parse_file_scan_tasks(
                 project_field_ids: proto_task.project_field_ids.clone(),
                 predicate: bound_predicate,
                 deletes,
+                partition,
+                partition_spec_id,
+                partition_spec,
             })
         })
         .collect();

@@ -158,6 +158,21 @@ message IcebergFileScanTask {
   // Example: if scan filter is "date >= '2024-01-01' AND status = 'active'"
   // and file partition is date='2024-06-15', residual is "status = 'active'"
   optional spark.spark_expression.Expr residual = 9;
+
+  // Partition data from manifest entry (for proper constant identification)
+  // Serialized as JSON to represent the Struct of partition values
+  optional string partition_data_json = 10;
+
+  // Partition spec ID for this file (used to lookup the PartitionSpec)
+  optional int32 partition_spec_id = 11;
+
+  // Partition type schema as JSON (Iceberg StructType for partition fields)
+  // Used to deserialize partition_data_json into proper Iceberg types
+  optional string partition_type_json = 12;
+
+  // Partition spec as JSON (entire PartitionSpec object)
+  // Used to determine which partition fields are identity-transformed (constants)
+  optional string partition_spec_json = 13;
 }
 
 // Iceberg delete file for MOR tables (positional or equality deletes)

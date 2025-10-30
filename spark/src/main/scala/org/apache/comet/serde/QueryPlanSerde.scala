@@ -1365,30 +1365,46 @@ object QueryPlanSerde extends Logging with CometExprShim {
                                   val value =
                                     getMethod.invoke(partitionStruct, Int.box(i), classOf[Object])
 
-                                  // Get the source field ID from the partition spec
+                                  // Get the partition field and check its transform type
                                   val partitionField = fields.get(i)
-                                  val sourceIdMethod =
-                                    partitionField.getClass.getMethod("sourceId")
-                                  val sourceFieldId =
-                                    sourceIdMethod.invoke(partitionField).asInstanceOf[Int]
 
-                                  // Convert value to appropriate JValue type
-                                  val jsonValue: JValue = if (value == null) {
-                                    JNull
-                                  } else {
-                                    value match {
-                                      case s: String => JString(s)
-                                      case i: java.lang.Integer => JInt(BigInt(i.intValue()))
-                                      case l: java.lang.Long => JInt(BigInt(l.longValue()))
-                                      case d: java.lang.Double => JDouble(d.doubleValue())
-                                      case f: java.lang.Float => JDouble(f.doubleValue())
-                                      case b: java.lang.Boolean => JBool(b.booleanValue())
-                                      case n: Number => JDecimal(BigDecimal(n.toString))
-                                      case other => JString(other.toString)
+                                  // Only inject partition values for IDENTITY transforms
+                                  // Per Iceberg spec: "Return the value from partition metadata
+                                  // if an Identity Transform exists"
+                                  // Non-identity transforms (bucket, truncate, year, etc.)
+                                  // store DERIVED values
+                                  // in partition metadata, not source column values. Source
+                                  // columns must be read from data files.
+                                  val transformMethod =
+                                    partitionField.getClass.getMethod("transform")
+                                  val transform = transformMethod.invoke(partitionField)
+                                  val isIdentity = transform.toString == "identity"
+
+                                  if (isIdentity) {
+                                    // Get the source field ID
+                                    val sourceIdMethod =
+                                      partitionField.getClass.getMethod("sourceId")
+                                    val sourceFieldId =
+                                      sourceIdMethod.invoke(partitionField).asInstanceOf[Int]
+
+                                    // Convert value to appropriate JValue type
+                                    val jsonValue: JValue = if (value == null) {
+                                      JNull
+                                    } else {
+                                      value match {
+                                        case s: String => JString(s)
+                                        case i: java.lang.Integer => JInt(BigInt(i.intValue()))
+                                        case l: java.lang.Long => JInt(BigInt(l.longValue()))
+                                        case d: java.lang.Double => JDouble(d.doubleValue())
+                                        case f: java.lang.Float => JDouble(f.doubleValue())
+                                        case b: java.lang.Boolean => JBool(b.booleanValue())
+                                        case n: Number => JDecimal(BigDecimal(n.toString))
+                                        case other => JString(other.toString)
+                                      }
                                     }
-                                  }
 
-                                  partitionMap(sourceFieldId.toString) = jsonValue
+                                    partitionMap(sourceFieldId.toString) = jsonValue
+                                  }
                                 }
                               }
 
@@ -1603,6 +1619,131 @@ object QueryPlanSerde extends Logging with CometExprShim {
                             logWarning(
                               "Failed to extract residual expression from FileScanTask: " +
                                 s"${e.getMessage}")
+                        }
+
+                        // Extract partition data and spec ID for proper constant identification
+                        try {
+                          // Get partition spec from the task first
+                          val specMethod = fileScanTaskClass.getMethod("spec")
+                          val spec = specMethod.invoke(task)
+
+                          if (spec != null) {
+                            val specIdMethod = spec.getClass.getMethod("specId")
+                            val specId = specIdMethod.invoke(spec).asInstanceOf[Int]
+                            taskBuilder.setPartitionSpecId(specId)
+
+                            // Serialize the entire PartitionSpec to JSON
+                            try {
+                              // scalastyle:off classforname
+                              val partitionSpecParserClass =
+                                Class.forName("org.apache.iceberg.PartitionSpecParser")
+                              val toJsonMethod = partitionSpecParserClass.getMethod(
+                                "toJson",
+                                Class.forName("org.apache.iceberg.PartitionSpec"))
+                              // scalastyle:on classforname
+                              val partitionSpecJson = toJsonMethod
+                                .invoke(null, spec)
+                                .asInstanceOf[String]
+                              taskBuilder.setPartitionSpecJson(partitionSpecJson)
+                            } catch {
+                              case e: Exception =>
+                                logWarning(
+                                  s"Failed to serialize partition spec to JSON: ${e.getMessage}")
+                            }
+
+                            // Get partition data from the task (via file().partition())
+                            val partitionMethod = contentScanTaskClass.getMethod("partition")
+                            val partitionData = partitionMethod.invoke(task)
+
+                            if (partitionData != null) {
+                              // Get the partition type/schema from the spec
+                              val partitionTypeMethod = spec.getClass.getMethod("partitionType")
+                              val partitionType = partitionTypeMethod.invoke(spec)
+
+                              // Serialize partition type to JSON using Iceberg's SchemaParser
+                              // Allows Rust to deserialize partition data with proper types
+                              try {
+                                // scalastyle:off classforname
+                                val schemaParserClass =
+                                  Class.forName("org.apache.iceberg.SchemaParser")
+                                val toJsonMethod = schemaParserClass.getMethod(
+                                  "toJson",
+                                  Class.forName("org.apache.iceberg.types.Type"))
+                                // scalastyle:on classforname
+                                val partitionTypeJson = toJsonMethod
+                                  .invoke(null, partitionType)
+                                  .asInstanceOf[String]
+                                taskBuilder.setPartitionTypeJson(partitionTypeJson)
+                              } catch {
+                                case e: Exception =>
+                                  logWarning(
+                                    s"Failed to serialize partition type to JSON: ${e.getMessage}")
+                              }
+
+                              // Serialize partition data to JSON using Iceberg's StructLike
+                              // Build JSON object with field IDs (not names) as keys
+                              val fieldsMethod = partitionType.getClass.getMethod("fields")
+                              val fields = fieldsMethod
+                                .invoke(partitionType)
+                                .asInstanceOf[java.util.List[_]]
+
+                              val jsonBuilder = new StringBuilder()
+                              jsonBuilder.append("{")
+
+                              var first = true
+                              val iter = fields.iterator()
+                              var idx = 0
+                              while (iter.hasNext) {
+                                val field = iter.next()
+                                // Use field ID as key for proper Iceberg JSON deserialization
+                                val fieldIdMethod = field.getClass.getMethod("fieldId")
+                                val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
+
+                                // Get value from partition data at this index
+                                val getMethod = partitionData.getClass.getMethod(
+                                  "get",
+                                  classOf[Int],
+                                  classOf[Class[_]])
+                                val value = getMethod.invoke(
+                                  partitionData,
+                                  Integer.valueOf(idx),
+                                  classOf[Object])
+
+                                if (!first) jsonBuilder.append(",")
+                                first = false
+
+                                // Use field ID as the JSON key
+                                jsonBuilder.append("\"").append(fieldId.toString).append("\":")
+                                if (value == null) {
+                                  jsonBuilder.append("null")
+                                } else {
+                                  // Simple JSON encoding for basic types
+                                  value match {
+                                    case s: String =>
+                                      jsonBuilder.append("\"").append(s).append("\"")
+                                    case n: Number =>
+                                      jsonBuilder.append(n.toString)
+                                    case b: java.lang.Boolean =>
+                                      jsonBuilder.append(b.toString)
+                                    case _ =>
+                                      jsonBuilder.append("\"").append(value.toString).append("\"")
+                                  }
+                                }
+
+                                idx += 1
+                              }
+
+                              jsonBuilder.append("}")
+                              val partitionJson = jsonBuilder.toString()
+                              taskBuilder.setPartitionDataJson(partitionJson)
+                            } else {}
+                          } else {}
+                        } catch {
+                          case e: Exception =>
+                            logWarning(
+                              "Failed to extract partition data from FileScanTask: " +
+                                s"${e.getMessage}")
+                            e.printStackTrace()
                         }
 
                         partitionBuilder.addFileScanTasks(taskBuilder.build())
