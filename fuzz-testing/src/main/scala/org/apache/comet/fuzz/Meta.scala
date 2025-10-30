@@ -126,15 +126,11 @@ object Meta {
         SparkTypeOneOf(
           Seq(
             SparkStringType,
-            SparkNumericType,
-            SparkBinaryType,
             SparkArrayType(
               SparkTypeOneOf(Seq(SparkStringType, SparkNumericType, SparkBinaryType))))),
         SparkTypeOneOf(
           Seq(
             SparkStringType,
-            SparkNumericType,
-            SparkBinaryType,
             SparkArrayType(
               SparkTypeOneOf(Seq(SparkStringType, SparkNumericType, SparkBinaryType))))))),
     createFunctionWithInputTypes("concat_ws", Seq(SparkStringType, SparkStringType)),
