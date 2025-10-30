@@ -260,7 +260,8 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       val qe = sql(queryString).queryExecution
       val plan = qe.executedPlan
       val explain = normalizeLocation(normalizeIds(qe.explainString(FormattedMode)))
-      val extended = new ExtendedExplainInfo().generateExtendedInfo(qe.executedPlan)
+      val extendedExplain = new ExtendedExplainInfo().generateExtendedInfo(qe.executedPlan)
+      val extended = normalizeLocation(normalizeIds(extendedExplain))
       val simplified = getSimplifiedPlan(plan)
       assert(ValidateRequirements.validate(plan))
 
