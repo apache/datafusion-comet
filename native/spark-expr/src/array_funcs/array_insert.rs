@@ -198,114 +198,122 @@ fn array_insert<O: OffsetSizeTrait>(
     pos_array: &ArrayRef,
     legacy_mode: bool,
 ) -> DataFusionResult<ColumnarValue> {
-    // The code is based on the implementation of the array_append from the Apache DataFusion
-    // https://github.com/apache/datafusion/blob/main/datafusion/functions-nested/src/concat.rs#L513
-    //
-    // This code is also based on the implementation of the array_insert from the Apache Spark
-    // https://github.com/apache/spark/blob/branch-3.5/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/collectionOperations.scala#L4713
-
     let values = list_array.values();
     let offsets = list_array.offsets();
     let values_data = values.to_data();
     let item_data = items_array.to_data();
+
+    // 预估容量
     let new_capacity = Capacities::Array(values_data.len() + item_data.len());
 
     let mut mutable_values =
         MutableArrayData::with_capacities(vec![&values_data, &item_data], true, new_capacity);
 
-    let mut new_offsets = vec![O::usize_as(0)];
-    let mut new_nulls = Vec::<bool>::with_capacity(list_array.len());
+    // offsets 和 list 有效位图
+    let mut new_offsets = Vec::with_capacity(list_array.len() + 1);
+    new_offsets.push(O::usize_as(0));
+    let mut list_valid = Vec::<bool>::with_capacity(list_array.len());
 
-    let pos_data: &Int32Array = as_primitive_array(&pos_array); // Spark supports only i32 for positions
+    // Spark 只支持 Int32 的位置索引
+    let pos_data: &Int32Array = as_primitive_array(&pos_array);
 
-    for (row_index, offset_window) in offsets.windows(2).enumerate() {
-        let pos = pos_data.values()[row_index];
-        let start = offset_window[0].as_usize();
-        let end = offset_window[1].as_usize();
-        let is_item_null = items_array.is_null(row_index);
+    for (row_index, window) in offsets.windows(2).enumerate() {
+        let start = window[0].as_usize();
+        let end = window[1].as_usize();
+        let len = end - start;
+        let pos = pos_data.value(row_index);
 
         if list_array.is_null(row_index) {
-            // In Spark if value of the array is NULL than nothing happens
-            mutable_values.extend_nulls(1);
-            new_offsets.push(new_offsets[row_index] + O::one());
-            new_nulls.push(false);
+            // 列表为 NULL：不往子数组写任何元素，offset 保持不变
+            new_offsets.push(new_offsets[row_index]);
+            list_valid.push(false);
             continue;
         }
 
         if pos == 0 {
             return Err(DataFusionError::Internal(
-                "Position for array_insert should be greter or less than zero".to_string(),
+                "Position for array_insert should be greater or less than zero".to_string(),
             ));
         }
 
-        if (pos > 0) || ((-pos).as_usize() < (end - start + 1)) {
-            let corrected_pos = if pos > 0 {
-                (pos - 1).as_usize()
-            } else {
-                end - start - (-pos).as_usize() + if legacy_mode { 0 } else { 1 }
-            };
-            let new_array_len = std::cmp::max(end - start + 1, corrected_pos);
-            if new_array_len > MAX_ROUNDED_ARRAY_LENGTH {
-                return Err(DataFusionError::Internal(format!(
-                    "Max array length in Spark is {MAX_ROUNDED_ARRAY_LENGTH:?}, but got {new_array_len:?}"
-                )));
-            }
+        let mut final_len: usize;
 
-            if (start + corrected_pos) <= end {
-                mutable_values.extend(0, start, start + corrected_pos);
+        if pos > 0 {
+            // 正数位置（1-based）
+            let pos1 = pos as usize;
+            if pos1 <= len + 1 {
+                // 插入范围内（包含追加到末尾）
+                let corrected = pos1 - 1; // 0-based
+                mutable_values.extend(0, start, start + corrected);
                 mutable_values.extend(1, row_index, row_index + 1);
-                mutable_values.extend(0, start + corrected_pos, end);
-                new_offsets.push(new_offsets[row_index] + O::usize_as(new_array_len));
+                mutable_values.extend(0, start + corrected, end);
+                final_len = len + 1;
             } else {
+                // 超出末尾，需要填充 null
+                let corrected = pos1 - 1;
+                let padding = corrected - len;
                 mutable_values.extend(0, start, end);
-                mutable_values.extend_nulls(new_array_len - (end - start));
+                mutable_values.extend_nulls(padding);
                 mutable_values.extend(1, row_index, row_index + 1);
-                // In that case spark actualy makes array longer than expected;
-                // For example, if pos is equal to 5, len is eq to 3, than resulted len will be 5
-                new_offsets.push(new_offsets[row_index] + O::usize_as(new_array_len) + O::one());
+                final_len = corrected + 1; // 等于 pos1
             }
         } else {
-            // This comment is takes from the Apache Spark source code as is:
-            // special case- if the new position is negative but larger than the current array size
-            // place the new item at start of array, place the current array contents at the end
-            // and fill the newly created array elements inbetween with a null
-            let base_offset = if legacy_mode { 1 } else { 0 };
-            let new_array_len = (-pos + base_offset).as_usize();
-            if new_array_len > MAX_ROUNDED_ARRAY_LENGTH {
-                return Err(DataFusionError::Internal(format!(
-                    "Max array length in Spark is {MAX_ROUNDED_ARRAY_LENGTH:?}, but got {new_array_len:?}"
-                )));
-            }
-            mutable_values.extend(1, row_index, row_index + 1);
-            mutable_values.extend_nulls(new_array_len - (end - start + 1));
-            mutable_values.extend(0, start, end);
-            new_offsets.push(new_offsets[row_index] + O::usize_as(new_array_len));
-        }
-        if is_item_null {
-            if (start == end) || (values.is_null(row_index)) {
-                new_nulls.push(false)
+            // 负索引（从末尾数，1-based）
+            let k = (-pos) as usize;
+
+            if k <= len {
+                // 可插入范围内
+                // 非 legacy：-1 视为追加到末尾（corrected = len - k + 1）
+                // legacy：   -1 视为插在最后一个元素前面（corrected = len - k）
+                let base_offset = if legacy_mode { 0 } else { 1 };
+                let corrected = len - k + base_offset;
+                mutable_values.extend(0, start, start + corrected);
+                mutable_values.extend(1, row_index, row_index + 1);
+                mutable_values.extend(0, start + corrected, end);
+                final_len = len + 1;
             } else {
-                new_nulls.push(true)
+                // 负索引超出开头的 Spark 特例：
+                // 放 item 到最前，然后补若干 null，再拼接原数组
+                // 最终长度 = k + base_offset，其中 legacy 模式下 base_offset = 1，否则为 0
+                let base_offset = if legacy_mode { 1 } else { 0 };
+                let target_len = k + base_offset;
+                let padding = target_len.saturating_sub(len + 1);
+                mutable_values.extend(1, row_index, row_index + 1); // 先放 item
+                mutable_values.extend_nulls(padding); // 中间补 null
+                mutable_values.extend(0, start, end); // 再拼原数组
+                final_len = target_len;
             }
-        } else {
-            new_nulls.push(true)
         }
+
+        if final_len > MAX_ROUNDED_ARRAY_LENGTH {
+            return Err(DataFusionError::Internal(format!(
+                "Max array length in Spark is {MAX_ROUNDED_ARRAY_LENGTH}, but got {final_len}"
+            )));
+        }
+
+        let prev = new_offsets[row_index].as_usize();
+        new_offsets.push(O::usize_as(prev + final_len));
+        list_valid.push(true);
     }
 
-    let data = make_array(mutable_values.freeze());
-    let data_type = match list_array.data_type() {
-        DataType::List(field) => field.data_type(),
-        DataType::LargeList(field) => field.data_type(),
+    let child = make_array(mutable_values.freeze());
+
+    // 复用原元素字段（名字/可空性/类型）
+    let elem_field = match list_array.data_type() {
+        DataType::List(field) => Arc::clone(field),
+        DataType::LargeList(field) => Arc::clone(field),
         _ => unreachable!(),
     };
-    let new_array = GenericListArray::<O>::try_new(
-        Arc::new(Field::new("item", data_type.clone(), true)),
+
+    // 构造新的 List
+    let new_list = GenericListArray::<O>::try_new(
+        elem_field,
         OffsetBuffer::new(new_offsets.into()),
-        data,
-        Some(NullBuffer::new(new_nulls.into())),
+        child,
+        Some(NullBuffer::new(list_valid.into())),
     )?;
 
-    Ok(ColumnarValue::Array(Arc::new(new_array)))
+    Ok(ColumnarValue::Array(Arc::new(new_list)))
 }
 
 impl Display for ArrayInsert {
