@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::operators::CopyExec;
 use arrow::datatypes::SchemaRef;
 use datafusion::physical_plan::ExecutionPlan;
 use std::sync::Arc;
@@ -43,15 +42,11 @@ impl SparkPlan {
         native_plan: Arc<dyn ExecutionPlan>,
         children: Vec<Arc<SparkPlan>>,
     ) -> Self {
-        let mut additional_native_plans: Vec<Arc<dyn ExecutionPlan>> = vec![];
-        for child in &children {
-            collect_additional_plans(Arc::clone(&child.native_plan), &mut additional_native_plans);
-        }
         Self {
             plan_id,
             native_plan,
             children,
-            additional_native_plans,
+            additional_native_plans: vec![],
         }
     }
 
@@ -65,9 +60,6 @@ impl SparkPlan {
         let mut accum: Vec<Arc<dyn ExecutionPlan>> = vec![];
         for plan in &additional_native_plans {
             accum.push(Arc::clone(plan));
-        }
-        for child in &children {
-            collect_additional_plans(Arc::clone(&child.native_plan), &mut accum);
         }
         Self {
             plan_id,
@@ -85,14 +77,5 @@ impl SparkPlan {
     /// Get the child SparkPlan instances
     pub(crate) fn children(&self) -> &Vec<Arc<SparkPlan>> {
         &self.children
-    }
-}
-
-fn collect_additional_plans(
-    child: Arc<dyn ExecutionPlan>,
-    additional_native_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
-) {
-    if child.as_any().is::<CopyExec>() {
-        additional_native_plans.push(Arc::clone(&child));
     }
 }
