@@ -42,6 +42,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.serde.CometConcat
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -3233,30 +3234,48 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   // https://github.com/apache/datafusion-comet/issues/2647
-  ignore("test concat function - arrays") {
+  test("test concat function - arrays") {
     withTable("t1") {
       sql(
-        "create table t1 using parquet as select array(id, id+1) c1, array(id+2, id+3) c2, array() c3, array(null) c4, cast(null as array<int>) c5 from range(10)")
-      checkSparkAnswerAndOperator("select concat(c1, c2) AS x FROM t1")
-      checkSparkAnswerAndOperator("select concat(c1, c1) AS x FROM t1")
-      checkSparkAnswerAndOperator("select concat(c1, c2, c3) AS x FROM t1")
-      checkSparkAnswerAndOperator("select concat(c1, c2, c3, c5) AS x FROM t1")
-      checkSparkAnswerAndOperator(
-        "select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1")
+        "create table t1 using parquet as select array(id, id+1) c1, array(id+2, id+3) c2, CAST(array() AS array<int>) c3, CAST(array(null) as array<int>) c4, cast(null as array<int>) c5 from range(10)")
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c2) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c1) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c2, c3) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c2, c3, c5) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1",
+        CometConcat.unsupportedReason)
     }
   }
 
   // https://github.com/apache/datafusion-comet/issues/2647
-  ignore("test concat function - binary") {
+  test("test concat function - binary") {
     withTable("t1") {
       sql(
         "create table t1 using parquet as select cast(uuid() as binary) c1, cast(uuid() as binary) c2, cast(uuid() as binary) c3, cast(uuid() as binary) c4, cast(null as binary) c5 from range(10)")
-      checkSparkAnswerAndOperator("select concat(c1, c2) AS x FROM t1")
-      checkSparkAnswerAndOperator("select concat(c1, c1) AS x FROM t1")
-      checkSparkAnswerAndOperator("select concat(c1, c2, c3) AS x FROM t1")
-      checkSparkAnswerAndOperator("select concat(c1, c2, c3, c5) AS x FROM t1")
-      checkSparkAnswerAndOperator(
-        "select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1")
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c2) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c1) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c2, c3) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c2, c3, c5) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1",
+        CometConcat.unsupportedReason)
     }
   }
 }
