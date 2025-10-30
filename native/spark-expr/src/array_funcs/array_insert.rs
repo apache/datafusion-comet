@@ -479,7 +479,7 @@ mod test {
 
         let expected = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
             Some(vec![None, Some(0), None, Some(0)]),
-            Some(vec![None, Some(1), None, Some(1)])
+            Some(vec![None, Some(1), None, Some(1)]),
         ]);
         assert_eq!(&result.to_data(), &expected.to_data());
         Ok(())
