@@ -48,5 +48,7 @@ $SPARK_HOME/bin/spark-submit \
     --benchmark tpcds \
     --data $TPCDS_DATA \
     --queries $TPCDS_QUERIES \
+    --query 5 \
     --output . \
+    --write . \
     --iterations 1
