@@ -198,23 +198,25 @@ fn array_insert<O: OffsetSizeTrait>(
     pos_array: &ArrayRef,
     legacy_mode: bool,
 ) -> DataFusionResult<ColumnarValue> {
+    // Implementation aligned with Arrow's half-open offset ranges and Spark semantics.
+
     let values = list_array.values();
     let offsets = list_array.offsets();
     let values_data = values.to_data();
     let item_data = items_array.to_data();
 
-    // 预估容量
+    // Estimate capacity (original values + inserted items upper bound)
     let new_capacity = Capacities::Array(values_data.len() + item_data.len());
 
     let mut mutable_values =
         MutableArrayData::with_capacities(vec![&values_data, &item_data], true, new_capacity);
 
-    // offsets 和 list 有效位图
+    // New offsets and top-level list validity bitmap
     let mut new_offsets = Vec::with_capacity(list_array.len() + 1);
     new_offsets.push(O::usize_as(0));
     let mut list_valid = Vec::<bool>::with_capacity(list_array.len());
 
-    // Spark 只支持 Int32 的位置索引
+    // Spark supports only Int32 position indices
     let pos_data: &Int32Array = as_primitive_array(&pos_array);
 
     for (row_index, window) in offsets.windows(2).enumerate() {
@@ -224,7 +226,7 @@ fn array_insert<O: OffsetSizeTrait>(
         let pos = pos_data.value(row_index);
 
         if list_array.is_null(row_index) {
-            // 列表为 NULL：不往子数组写任何元素，offset 保持不变
+            // Top-level list row is NULL: do not write any child values and do not advance offset
             new_offsets.push(new_offsets[row_index]);
             list_valid.push(false);
             continue;
@@ -239,32 +241,32 @@ fn array_insert<O: OffsetSizeTrait>(
         let mut final_len: usize;
 
         if pos > 0 {
-            // 正数位置（1-based）
+            // Positive index (1-based)
             let pos1 = pos as usize;
             if pos1 <= len + 1 {
-                // 插入范围内（包含追加到末尾）
-                let corrected = pos1 - 1; // 0-based
+                // In-range insertion (including appending to end)
+                let corrected = pos1 - 1; // 0-based insertion point
                 mutable_values.extend(0, start, start + corrected);
                 mutable_values.extend(1, row_index, row_index + 1);
                 mutable_values.extend(0, start + corrected, end);
                 final_len = len + 1;
             } else {
-                // 超出末尾，需要填充 null
+                // Beyond end: pad with nulls then insert
                 let corrected = pos1 - 1;
                 let padding = corrected - len;
                 mutable_values.extend(0, start, end);
                 mutable_values.extend_nulls(padding);
                 mutable_values.extend(1, row_index, row_index + 1);
-                final_len = corrected + 1; // 等于 pos1
+                final_len = corrected + 1; // equals pos1
             }
         } else {
-            // 负索引（从末尾数，1-based）
+            // Negative index (1-based from the end)
             let k = (-pos) as usize;
 
             if k <= len {
-                // 可插入范围内
-                // 非 legacy：-1 视为追加到末尾（corrected = len - k + 1）
-                // legacy：   -1 视为插在最后一个元素前面（corrected = len - k）
+                // In-range negative insertion
+                // Non-legacy: -1 behaves like append to end (corrected = len - k + 1)
+                // Legacy:     -1 behaves like insert before the last element (corrected = len - k)
                 let base_offset = if legacy_mode { 0 } else { 1 };
                 let corrected = len - k + base_offset;
                 mutable_values.extend(0, start, start + corrected);
@@ -272,15 +274,15 @@ fn array_insert<O: OffsetSizeTrait>(
                 mutable_values.extend(0, start + corrected, end);
                 final_len = len + 1;
             } else {
-                // 负索引超出开头的 Spark 特例：
-                // 放 item 到最前，然后补若干 null，再拼接原数组
-                // 最终长度 = k + base_offset，其中 legacy 模式下 base_offset = 1，否则为 0
+                // Negative index beyond the start (Spark-specific behavior):
+                // Place item first, then pad with nulls, then append the original array.
+                // Final length = k + base_offset, where base_offset = 1 in legacy mode, otherwise 0.
                 let base_offset = if legacy_mode { 1 } else { 0 };
                 let target_len = k + base_offset;
                 let padding = target_len.saturating_sub(len + 1);
-                mutable_values.extend(1, row_index, row_index + 1); // 先放 item
-                mutable_values.extend_nulls(padding); // 中间补 null
-                mutable_values.extend(0, start, end); // 再拼原数组
+                mutable_values.extend(1, row_index, row_index + 1); // insert item first
+                mutable_values.extend_nulls(padding); // pad nulls
+                mutable_values.extend(0, start, end); // append original values
                 final_len = target_len;
             }
         }
@@ -298,14 +300,14 @@ fn array_insert<O: OffsetSizeTrait>(
 
     let child = make_array(mutable_values.freeze());
 
-    // 复用原元素字段（名字/可空性/类型）
+    // Reuse the original list element field (name/type/nullability)
     let elem_field = match list_array.data_type() {
         DataType::List(field) => Arc::clone(field),
         DataType::LargeList(field) => Arc::clone(field),
         _ => unreachable!(),
     };
 
-    // 构造新的 List
+    // Build the resulting list array
     let new_list = GenericListArray::<O>::try_new(
         elem_field,
         OffsetBuffer::new(new_offsets.into()),
