@@ -92,37 +92,8 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     new File(goldenFilePath, goldenFileName)
   }
 
-  /**
-   * Serialize and save this SparkPlan. The resulting file is used by [[checkWithApproved]] to
-   * check stability.
-   *
-   * @param dir
-   *   the directory to write to
-   * @param simplified
-   *   the simplified plan
-   * @param explain
-   *   the full explain output; this is saved to help debug later as the simplified plan is not
-   *   too useful for debugging
-   * @param extended
-   *   Extended explain plan showing fallback reasons
-   */
-  private def generateGoldenFile(
-      dir: File,
-      simplified: String,
-      explain: String,
-      extended: String): Unit = {
-    FileUtils.deleteDirectory(dir)
-    if (!dir.mkdirs()) {
-      fail(s"Could not create dir: $dir")
-    }
-
-    writeGoldenFile(dir, "simplified.txt", simplified)
-    writeGoldenFile(dir, "explain.txt", explain)
-    writeGoldenFile(dir, "extended.txt", extended)
-  }
-
   private def writeGoldenFile(dir: File, filename: String, plan: String): Unit = {
-    FileUtils.writeStringToFile(new File(dir, filename), plan, StandardCharsets.UTF_8)
+    FileUtils.writeStringToFile(new File(dir, s"$filename.txt"), plan, StandardCharsets.UTF_8)
     logDebug(s"APPROVED: $filename")
   }
 
@@ -269,7 +240,13 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       val dir = getDirForTest(name)
 
       if (regenerateGoldenFiles) {
-        generateGoldenFile(dir, simplified, explain, extended)
+        FileUtils.deleteDirectory(dir)
+        if (!dir.mkdirs()) {
+          fail(s"Could not create dir: $dir")
+        }
+        writeGoldenFile(dir, "simplified", simplified)
+        writeGoldenFile(dir, "explain", explain)
+        writeGoldenFile(dir, "extended", extended)
       } else {
         checkWithApproved(dir, name, "simplified", simplified)
         checkWithApproved(dir, name, "explain", explain)

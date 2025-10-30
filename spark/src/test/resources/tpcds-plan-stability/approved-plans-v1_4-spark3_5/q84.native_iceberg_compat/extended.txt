@@ -1,6 +1,6 @@
- TakeOrderedAndProject [COMET: ]
-+-  Project [COMET: concat is not supported]
-   +- CometColumnarToRow
+CometColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometProject
       +- CometBroadcastHashJoin
          :- CometBroadcastExchange
          :  +- CometProject
@@ -32,4 +32,4 @@
             +- CometFilter
                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns
 
-Comet accelerated 30 out of 32 eligible operators (93%). Final plan contains 1 transitions between Spark and Comet.
+Comet accelerated 32 out of 32 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet.
