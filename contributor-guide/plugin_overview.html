@@ -65,7 +65,7 @@ under the License.
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Comet Development Guide" href="development.html" />
+    <link rel="next" title="Arrow FFI Usage in Comet" href="ffi.html" />
     <link rel="prev" title="Contributing to Apache DataFusion Comet" href="contributing.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -356,6 +356,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="contributing.html">Getting Started</a></li>
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Comet Plugin Architecture</a></li>
 <li class="toctree-l2"><a class="reference internal" href="#plugin-components">Plugin Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ffi.html">Arrow FFI</a></li>
 <li class="toctree-l2"><a class="reference internal" href="development.html">Development Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
 <li class="toctree-l2"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a></li>
@@ -545,21 +546,6 @@ writing the batches to the shuffle file.</p>
 <code class="docutils literal notranslate"><span class="pre">ArrowReaderIterator</span></code> to process the blocks using Arrow’s <code class="docutils literal notranslate"><span class="pre">StreamReader</span></code> for decoding IPC batches.</p>
 </section>
 </section>
-<section id="arrow-ffi">
-<h2>Arrow FFI<a class="headerlink" href="#arrow-ffi" title="Link to this heading">#</a></h2>
-<p>Due to the hybrid execution model, it is necessary to pass batches of data between the JVM and native code.</p>
-<p>The foundation for Arrow FFI is the <a class="reference external" href="https://arrow.apache.org/docs/format/CDataInterface.html">Arrow C Data Interface</a>, which provides a stable ABI-compatible interface for
-accessing Arrow data structures from multiple languages.</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> invokes native plans and uses Arrow FFI to read the output batches</p></li>
-<li><p>Native <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> operators call <code class="docutils literal notranslate"><span class="pre">CometBatchIterator</span></code> via JNI to fetch input batches from the JVM</p></li>
-</ul>
-</section>
-<section id="end-to-end-flow">
-<h2>End to End Flow<a class="headerlink" href="#end-to-end-flow" title="Link to this heading">#</a></h2>
-<p>The following diagram shows an example of the end-to-end flow for a query stage.</p>
-<p><img alt="Diagram of Comet Data Flow" src="../_images/comet-dataflow.svg" /></p>
-</section>
 </section>
 
 
@@ -582,11 +568,11 @@ accessing Arrow data structures from multiple languages.</p>
       </div>
     </a>
     <a class="right-next"
-       href="development.html"
+       href="ffi.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Comet Development Guide</p>
+        <p class="prev-next-title">Arrow FFI Usage in Comet</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>

@@ -1,0 +1,877 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Arrow FFI Usage in Comet &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=cd442bcd" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/ffi';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Comet Development Guide" href="development.html" />
+    <link rel="prev" title="Comet Plugin Architecture" href="plugin_overview.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../about/index.html">Comet Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/index.html">User Guide</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Contributor Guide</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="contributing.html">Getting Started</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html#plugin-components">Plugin Components</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Arrow FFI</a></li>
+<li class="toctree-l2"><a class="reference internal" href="development.html">Development Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tracing.html">Tracing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="profiling_native_code.html">Profiling Native Code</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../asf/index.html">ASF Links</a></li>
+</ul>
+
+  </div>
+</nav>
+</div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Arrow FFI Usage in Comet</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<section id="arrow-ffi-usage-in-comet">
+<h1>Arrow FFI Usage in Comet<a class="headerlink" href="#arrow-ffi-usage-in-comet" title="Link to this heading">#</a></h1>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<p>Comet uses the <a class="reference external" href="https://arrow.apache.org/docs/format/CDataInterface.html">Arrow C Data Interface</a> for zero-copy data transfer in two directions:</p>
+<ol class="arabic simple">
+<li><p><strong>JVM → Native</strong>: Native code pulls batches from JVM using <code class="docutils literal notranslate"><span class="pre">CometBatchIterator</span></code></p></li>
+<li><p><strong>Native → JVM</strong>: JVM pulls batches from native code using <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code></p></li>
+</ol>
+<p>The following diagram shows an example of the end-to-end flow for a query stage.</p>
+<p><img alt="Diagram of Comet Data Flow" src="../_images/comet-dataflow.svg" /></p>
+<p>Both scenarios use the same FFI mechanism but have different ownership semantics and memory management implications.</p>
+</section>
+<section id="arrow-ffi-basics">
+<h2>Arrow FFI Basics<a class="headerlink" href="#arrow-ffi-basics" title="Link to this heading">#</a></h2>
+<p>The Arrow C Data Interface defines two C structures:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">ArrowArray</span></code>: Contains pointers to data buffers and metadata</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ArrowSchema</span></code>: Contains type information</p></li>
+</ul>
+<section id="key-characteristics">
+<h3>Key Characteristics<a class="headerlink" href="#key-characteristics" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Zero-copy</strong>: Data buffers can be shared across language boundaries without copying</p></li>
+<li><p><strong>Ownership transfer</strong>: Clear semantics for who owns and must free the data</p></li>
+<li><p><strong>Release callbacks</strong>: Custom cleanup functions for proper resource management</p></li>
+</ul>
+</section>
+</section>
+<section id="jvm-native-data-flow-scanexec">
+<h2>JVM → Native Data Flow (ScanExec)<a class="headerlink" href="#jvm-native-data-flow-scanexec" title="Link to this heading">#</a></h2>
+<section id="architecture">
+<h3>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">#</a></h3>
+<p>When native code needs data from the JVM, it uses <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> which calls into <code class="docutils literal notranslate"><span class="pre">CometBatchIterator</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>┌─────────────────┐
+│  Spark/Scala    │
+│ CometExecIter   │
+└────────┬────────┘
+         │ produces batches
+         ▼
+┌─────────────────┐
+│ CometBatchIter  │ ◄─── JNI call from native
+│  (JVM side)     │
+└────────┬────────┘
+         │ Arrow FFI
+         │ (transfers ArrowArray/ArrowSchema pointers)
+         ▼
+┌─────────────────┐
+│    ScanExec     │
+│  (Rust/native)  │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   DataFusion    │
+│   operators     │
+└─────────────────┘
+</pre></div>
+</div>
+</section>
+<section id="ffi-transfer-process">
+<h3>FFI Transfer Process<a class="headerlink" href="#ffi-transfer-process" title="Link to this heading">#</a></h3>
+<p>The data transfer happens in <code class="docutils literal notranslate"><span class="pre">ScanExec::get_next()</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// 1. Allocate FFI structures on native side (Rust heap)</span>
+<span class="k">for</span><span class="w"> </span><span class="n">_</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="mi">0</span><span class="o">..</span><span class="n">num_cols</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">arrow_array</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Rc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">FFI_ArrowArray</span><span class="p">::</span><span class="n">empty</span><span class="p">());</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">arrow_schema</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Rc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">FFI_ArrowSchema</span><span class="p">::</span><span class="n">empty</span><span class="p">());</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">array_ptr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Rc</span><span class="p">::</span><span class="n">into_raw</span><span class="p">(</span><span class="n">arrow_array</span><span class="p">)</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">i64</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">schema_ptr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Rc</span><span class="p">::</span><span class="n">into_raw</span><span class="p">(</span><span class="n">arrow_schema</span><span class="p">)</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">i64</span><span class="p">;</span>
+<span class="w">    </span><span class="c1">// Store pointers...</span>
+<span class="p">}</span>
+
+<span class="c1">// 2. Call JVM to populate FFI structures</span>
+<span class="kd">let</span><span class="w"> </span><span class="n">num_rows</span><span class="p">:</span><span class="w"> </span><span class="kt">i32</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">unsafe</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">jni_call</span><span class="o">!</span><span class="p">(</span><span class="n">env</span><span class="p">,</span><span class="w"> </span><span class="n">comet_batch_iterator</span><span class="p">(</span><span class="n">iter</span><span class="p">).</span><span class="n">next</span><span class="p">(</span><span class="n">array_obj</span><span class="p">,</span><span class="w"> </span><span class="n">schema_obj</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="kt">i32</span><span class="p">)</span><span class="o">?</span>
+<span class="p">};</span>
+
+<span class="c1">// 3. Import data from FFI structures</span>
+<span class="k">for</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="mi">0</span><span class="o">..</span><span class="n">num_cols</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">array_data</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ArrayData</span><span class="p">::</span><span class="n">from_spark</span><span class="p">((</span><span class="n">array_ptr</span><span class="p">,</span><span class="w"> </span><span class="n">schema_ptr</span><span class="p">))</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">array</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">make_array</span><span class="p">(</span><span class="n">array_data</span><span class="p">);</span>
+<span class="w">    </span><span class="c1">// ... process array</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="memory-layout">
+<h3>Memory Layout<a class="headerlink" href="#memory-layout" title="Link to this heading">#</a></h3>
+<p>When a batch is transferred from JVM to native:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>JVM Heap:                           Native Memory:
+┌──────────────────┐               ┌──────────────────┐
+│ ColumnarBatch    │               │ FFI_ArrowArray   │
+│ ┌──────────────┐ │               │ ┌──────────────┐ │
+│ │ ArrowBuf     │─┼──────────────&gt;│ │ buffers[0]   │ │
+│ │ (off-heap)   │ │               │ │ (pointer)    │ │
+│ └──────────────┘ │               │ └──────────────┘ │
+└──────────────────┘               └──────────────────┘
+        │                                   │
+        │                                   │
+Off-heap Memory:                            │
+┌──────────────────┐ &lt;──────────────────────┘
+│ Actual Data      │
+│ (e.g., int32[])  │
+└──────────────────┘
+</pre></div>
+</div>
+<p><strong>Key Point</strong>: The actual data buffers can be off-heap, but the <code class="docutils literal notranslate"><span class="pre">ArrowArray</span></code> and <code class="docutils literal notranslate"><span class="pre">ArrowSchema</span></code> wrapper objects are <strong>always allocated on the JVM heap</strong>.</p>
+</section>
+<section id="wrapper-object-lifecycle">
+<h3>Wrapper Object Lifecycle<a class="headerlink" href="#wrapper-object-lifecycle" title="Link to this heading">#</a></h3>
+<p>When arrays are created in the JVM and passed to native code, the JVM creates the array data off-heap and creates
+wrapper objects <code class="docutils literal notranslate"><span class="pre">ArrowArray</span></code> and <code class="docutils literal notranslate"><span class="pre">ArrowSchema</span></code> on-heap. These wrapper objects can consume significant memory over
+time.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Per batch overhead on JVM heap:
+- ArrowArray object: ~100 bytes
+- ArrowSchema object: ~100 bytes
+- Per column: ~200 bytes
+- 100 columns × 1000 batches = ~20 MB of wrapper objects
+</pre></div>
+</div>
+<p>When native code pulls batches from the JVM, the JVM wrapper objects are kept alive until the native code drops
+all references to the arrays.</p>
+<p>When operators such as <code class="docutils literal notranslate"><span class="pre">SortExec</span></code> fetch many batches and buffer them in native code, the number of wrapper objects
+in Java on-heap memory keeps growing until the batches are released in native code at the end of the sort operation.</p>
+</section>
+<section id="ownership-transfer">
+<h3>Ownership Transfer<a class="headerlink" href="#ownership-transfer" title="Link to this heading">#</a></h3>
+<p>The Arrow C data interface supports ownership transfer by registering callbacks in the C struct that is passed over
+the JNI boundary for the function to delete the array data.  For example, the <code class="docutils literal notranslate"><span class="pre">ArrowArray</span></code> struct has:</p>
+<div class="highlight-c notranslate"><div class="highlight"><pre><span></span><span class="c1">// Release callback</span>
+<span class="kt">void</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">release</span><span class="p">)(</span><span class="k">struct</span><span class="w"> </span><span class="nc">ArrowArray</span><span class="o">*</span><span class="p">);</span>
+</pre></div>
+</div>
+<p>Comet currently does not always follow best practice around ownership transfer because there are some cases where
+Comet JVM code will retain references to arrays after passing them to native code and may mutate the underlying
+buffers. There is an <code class="docutils literal notranslate"><span class="pre">arrow_ffi_safe</span></code> flag in the protocol buffer definition of <code class="docutils literal notranslate"><span class="pre">Scan</span></code> that indicates whether
+ownership is being transferred according to the Arrow C data interface specification.</p>
+<div class="highlight-protobuf notranslate"><div class="highlight"><pre><span></span><span class="kd">message</span><span class="w"> </span><span class="nc">Scan</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">repeated</span><span class="w"> </span><span class="n">spark.spark_expression.DataType</span><span class="w"> </span><span class="na">fields</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<span class="w">  </span><span class="c1">// The source of the scan (e.g. file scan, broadcast exchange, shuffle, etc). This</span>
+<span class="w">  </span><span class="c1">// is purely for informational purposes when viewing native query plans in</span>
+<span class="w">  </span><span class="c1">// debug mode.</span>
+<span class="w">  </span><span class="kt">string</span><span class="w"> </span><span class="na">source</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span>
+<span class="w">  </span><span class="c1">// Whether native code can assume ownership of batches that it receives</span>
+<span class="w">  </span><span class="kt">bool</span><span class="w"> </span><span class="na">arrow_ffi_safe</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<section id="when-ownership-is-not-transferred-to-native">
+<h4>When ownership is NOT transferred to native:<a class="headerlink" href="#when-ownership-is-not-transferred-to-native" title="Link to this heading">#</a></h4>
+<p>If the data originates from <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> scan (or from <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> in some cases), then ownership is
+not transferred to native and the JVM may re-use the underlying buffers in the future.</p>
+<p>It is critical that the native code performs a deep copy of the arrays if the arrays are to be buffered by
+operators such as <code class="docutils literal notranslate"><span class="pre">SortExec</span></code> or <code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code>, otherwise data corruption is likely to occur.</p>
+</section>
+<section id="when-ownership-is-transferred-to-native">
+<h4>When ownership IS transferred to native:<a class="headerlink" href="#when-ownership-is-transferred-to-native" title="Link to this heading">#</a></h4>
+<p>When ownership is transferred, it is safe to buffer batches in native. However, JVM wrapper objects will not be
+released until the native batches are dropped. This can lead to OOM or GC pressure if there is not enough Java
+heap memory configured.</p>
+</section>
+</section>
+</section>
+<section id="native-jvm-data-flow-cometexeciterator">
+<h2>Native → JVM Data Flow (CometExecIterator)<a class="headerlink" href="#native-jvm-data-flow-cometexeciterator" title="Link to this heading">#</a></h2>
+<section id="id1">
+<h3>Architecture<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
+<p>When JVM needs results from native execution:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>┌─────────────────┐
+│ DataFusion Plan │
+│   (native)      │
+└────────┬────────┘
+         │ produces RecordBatch
+         ▼
+┌─────────────────┐
+│ CometExecIter   │
+│  (Rust/native)  │
+└────────┬────────┘
+         │ Arrow FFI
+         │ (transfers ArrowArray/ArrowSchema pointers)
+         ▼
+┌─────────────────┐
+│ CometExecIter   │ ◄─── JNI call from Spark
+│  (Scala side)   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Spark Actions  │
+│  (collect, etc) │
+└─────────────────┘
+</pre></div>
+</div>
+</section>
+<section id="id2">
+<h3>FFI Transfer Process<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
+<p>The transfer happens in <code class="docutils literal notranslate"><span class="pre">CometExecIterator::getNextBatch()</span></code>:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="c1">// Scala side</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">getNextBatch</span><span class="p">():</span><span class="w"> </span><span class="nc">ColumnarBatch</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">batchHandle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Native</span><span class="p">.</span><span class="n">getNextBatch</span><span class="p">(</span><span class="n">nativeHandle</span><span class="p">)</span>
+
+<span class="w">  </span><span class="c1">// Import from FFI structures</span>
+<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">vectors</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="mi">0</span><span class="w"> </span><span class="n">until</span><span class="w"> </span><span class="n">schema</span><span class="p">.</span><span class="n">length</span><span class="p">).</span><span class="n">map</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">    </span><span class="kd">val</span><span class="w"> </span><span class="n">array</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Array</span><span class="p">.</span><span class="n">empty</span><span class="p">[</span><span class="nc">Long</span><span class="p">](</span><span class="mi">1</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">val</span><span class="w"> </span><span class="n">schemaPtr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Array</span><span class="p">.</span><span class="n">empty</span><span class="p">[</span><span class="nc">Long</span><span class="p">](</span><span class="mi">1</span><span class="p">)</span>
+
+<span class="w">    </span><span class="c1">// Get FFI pointers from native</span>
+<span class="w">    </span><span class="nc">Native</span><span class="p">.</span><span class="n">exportVector</span><span class="p">(</span><span class="n">batchHandle</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="p">,</span><span class="w"> </span><span class="n">array</span><span class="p">,</span><span class="w"> </span><span class="n">schemaPtr</span><span class="p">)</span>
+
+<span class="w">    </span><span class="c1">// Import into Arrow Java</span>
+<span class="w">    </span><span class="nc">Data</span><span class="p">.</span><span class="n">importVector</span><span class="p">(</span><span class="n">allocator</span><span class="p">,</span><span class="w"> </span><span class="n">array</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span><span class="w"> </span><span class="n">schemaPtr</span><span class="p">(</span><span class="mi">0</span><span class="p">))</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="k">new</span><span class="w"> </span><span class="nc">ColumnarBatch</span><span class="p">(</span><span class="n">vectors</span><span class="p">.</span><span class="n">toArray</span><span class="p">,</span><span class="w"> </span><span class="n">numRows</span><span class="p">)</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// Native side (simplified)</span>
+<span class="cp">#[no_mangle]</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">extern</span><span class="w"> </span><span class="s">&quot;system&quot;</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">Java_</span><span class="o">..</span><span class="p">.</span><span class="n">_getNextBatch</span><span class="p">(</span>
+<span class="w">    </span><span class="n">env</span><span class="p">:</span><span class="w"> </span><span class="nc">JNIEnv</span><span class="p">,</span>
+<span class="w">    </span><span class="n">handle</span><span class="p">:</span><span class="w"> </span><span class="nc">jlong</span><span class="p">,</span>
+<span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">jlong</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">context</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">get_exec_context</span><span class="p">(</span><span class="n">handle</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">batch</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">context</span><span class="p">.</span><span class="n">stream</span><span class="p">.</span><span class="n">next</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+
+<span class="w">    </span><span class="c1">// Store batch and return handle</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">batch_handle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">Box</span><span class="p">::</span><span class="n">into_raw</span><span class="p">(</span><span class="nb">Box</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">batch</span><span class="p">))</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">i64</span><span class="p">;</span>
+<span class="w">    </span><span class="n">batch_handle</span>
+<span class="p">}</span>
+
+<span class="cp">#[no_mangle]</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">extern</span><span class="w"> </span><span class="s">&quot;system&quot;</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">Java_</span><span class="o">..</span><span class="p">.</span><span class="n">_exportVector</span><span class="p">(</span>
+<span class="w">    </span><span class="n">env</span><span class="p">:</span><span class="w"> </span><span class="nc">JNIEnv</span><span class="p">,</span>
+<span class="w">    </span><span class="n">batch_handle</span><span class="p">:</span><span class="w"> </span><span class="nc">jlong</span><span class="p">,</span>
+<span class="w">    </span><span class="n">col_idx</span><span class="p">:</span><span class="w"> </span><span class="nc">jint</span><span class="p">,</span>
+<span class="w">    </span><span class="n">array_ptr</span><span class="p">:</span><span class="w"> </span><span class="nc">jlongArray</span><span class="p">,</span>
+<span class="w">    </span><span class="n">schema_ptr</span><span class="p">:</span><span class="w"> </span><span class="nc">jlongArray</span><span class="p">,</span>
+<span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">batch</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">get_batch</span><span class="p">(</span><span class="n">batch_handle</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">array</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">batch</span><span class="p">.</span><span class="n">column</span><span class="p">(</span><span class="n">col_idx</span><span class="p">);</span>
+
+<span class="w">    </span><span class="c1">// Export to FFI structures</span>
+<span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="p">(</span><span class="n">array_ffi</span><span class="p">,</span><span class="w"> </span><span class="n">schema_ffi</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">to_ffi</span><span class="p">(</span><span class="n">array</span><span class="p">.</span><span class="n">to_data</span><span class="p">())</span><span class="o">?</span><span class="p">;</span>
+
+<span class="w">    </span><span class="c1">// Write pointers back to JVM</span>
+<span class="w">    </span><span class="n">env</span><span class="p">.</span><span class="n">set_long_array_region</span><span class="p">(</span><span class="n">array_ptr</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="p">[</span><span class="n">array_ffi</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">i64</span><span class="p">])</span><span class="o">?</span><span class="p">;</span>
+<span class="w">    </span><span class="n">env</span><span class="p">.</span><span class="n">set_long_array_region</span><span class="p">(</span><span class="n">schema_ptr</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="p">[</span><span class="n">schema_ffi</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="kt">i64</span><span class="p">])</span><span class="o">?</span><span class="p">;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="wrapper-object-lifecycle-native-jvm">
+<h3>Wrapper Object Lifecycle (Native → JVM)<a class="headerlink" href="#wrapper-object-lifecycle-native-jvm" title="Link to this heading">#</a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Time    Native Memory              JVM Heap              Off-heap/Native
+────────────────────────────────────────────────────────────────────────
+t0      RecordBatch produced       -                     Data in native
+        in DataFusion
+
+t1      FFI_ArrowArray created     -                     Data in native
+        FFI_ArrowSchema created
+        (native heap)
+
+t2      Pointers exported to JVM   ArrowBuf created      Data in native
+                                   (wraps native ptr)
+
+t3      FFI structures kept alive  Spark processes       Data in native
+        via batch handle           ColumnarBatch         ✓ Valid
+
+t4      Batch handle released      ArrowBuf freed        Data freed
+        Release callback runs      (triggers native      (via release
+                                   release callback)     callback)
+</pre></div>
+</div>
+<p><strong>Key Difference from JVM → Native</strong>:</p>
+<ul class="simple">
+<li><p>Native code controls lifecycle through batch handle</p></li>
+<li><p>JVM creates <code class="docutils literal notranslate"><span class="pre">ArrowBuf</span></code> wrappers that point to native memory</p></li>
+<li><p>Release callback ensures proper cleanup when JVM is done</p></li>
+<li><p>No GC pressure issue because native allocator manages the data</p></li>
+</ul>
+</section>
+<section id="release-callbacks">
+<h3>Release Callbacks<a class="headerlink" href="#release-callbacks" title="Link to this heading">#</a></h3>
+<p>Critical for proper cleanup:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// Native release callback (simplified)</span>
+<span class="k">extern</span><span class="w"> </span><span class="s">&quot;C&quot;</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">release_batch</span><span class="p">(</span><span class="n">array</span><span class="p">:</span><span class="w"> </span><span class="o">*</span><span class="k">mut</span><span class="w"> </span><span class="n">FFI_ArrowArray</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="n">array</span><span class="p">.</span><span class="n">is_null</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">unsafe</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="c1">// Free the data buffers</span>
+<span class="w">            </span><span class="k">for</span><span class="w"> </span><span class="n">buffer</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">array</span><span class="p">).</span><span class="n">buffers</span><span class="w"> </span><span class="p">{</span>
+<span class="w">                </span><span class="nb">drop</span><span class="p">(</span><span class="nb">Box</span><span class="p">::</span><span class="n">from_raw</span><span class="p">(</span><span class="n">buffer</span><span class="p">));</span>
+<span class="w">            </span><span class="p">}</span>
+<span class="w">            </span><span class="c1">// Free the array structure itself</span>
+<span class="w">            </span><span class="nb">drop</span><span class="p">(</span><span class="nb">Box</span><span class="p">::</span><span class="n">from_raw</span><span class="p">(</span><span class="n">array</span><span class="p">));</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>When JVM is done with the data:</p>
+<div class="highlight-java notranslate"><div class="highlight"><pre><span></span><span class="c1">// ArrowBuf.close() triggers the release callback</span>
+<span class="n">arrowBuf</span><span class="p">.</span><span class="na">close</span><span class="p">();</span><span class="w">  </span><span class="c1">// → calls native release_batch()</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="memory-ownership-rules">
+<h2>Memory Ownership Rules<a class="headerlink" href="#memory-ownership-rules" title="Link to this heading">#</a></h2>
+<section id="jvm-native">
+<h3>JVM → Native<a class="headerlink" href="#jvm-native" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Scenario</p></th>
+<th class="head"><p><code class="docutils literal notranslate"><span class="pre">arrow_ffi_safe</span></code></p></th>
+<th class="head"><p>Ownership</p></th>
+<th class="head"><p>Action Required</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Temporary scan</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>JVM keeps</p></td>
+<td><p><strong>Must deep copy</strong> to avoid corruption</p></td>
+</tr>
+<tr class="row-odd"><td><p>Ownership transfer</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Native owns</p></td>
+<td><p>Copy only to unpack dictionaries</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="native-jvm">
+<h3>Native → JVM<a class="headerlink" href="#native-jvm" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Scenario</p></th>
+<th class="head"><p>Ownership</p></th>
+<th class="head"><p>Action Required</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>All cases</p></td>
+<td><p>Native allocates, JVM references</p></td>
+<td><p>JVM must call <code class="docutils literal notranslate"><span class="pre">close()</span></code> to trigger native release callback</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+<section id="further-reading">
+<h2>Further Reading<a class="headerlink" href="#further-reading" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><a class="reference external" href="https://arrow.apache.org/docs/format/CDataInterface.html">Arrow C Data Interface Specification</a></p></li>
+<li><p><a class="reference external" href="https://github.com/apache/arrow/tree/main/java/c">Arrow Java FFI Implementation</a></p></li>
+<li><p><a class="reference external" href="https://docs.rs/arrow/latest/arrow/ffi/">Arrow Rust FFI Implementation</a></p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="plugin_overview.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Comet Plugin Architecture</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="development.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Comet Development Guide</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
