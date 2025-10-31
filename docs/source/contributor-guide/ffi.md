@@ -148,9 +148,19 @@ in Java on-heap memory keeps growing until the batches are released in native co
 
 ### Ownership Transfer
 
-When native code fetches batches from the JVM, there is different behavior depending on whether ownership
-is transferred to native. There is an `arrow_ffi_safe` flag in the protocol buffer definition of `Scan` that 
-indicates whether ownership is being transferred.
+The Arrow C data interface supports ownership transfer by registering callbacks in the C struct that is passed over 
+the JNI boundary for the function to delete the array data.  For example, the `ArrowArray` struct has:
+
+```c
+// Release callback
+void (*release)(struct ArrowArray*);
+```
+
+Comet currently does not always follow best practice around ownership transfer because there are some cases where
+Comet JVM code will retain references to arrays after passing them to native code and may mutate the underlying
+buffers. There is an `arrow_ffi_safe` flag in the protocol buffer definition of `Scan` that indicates whether 
+ownership is being transferred according to the Arrow C data interface specification.
+
 
 ```protobuf
 message Scan {
