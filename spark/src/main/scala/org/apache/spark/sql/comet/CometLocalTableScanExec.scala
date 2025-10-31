@@ -22,7 +22,7 @@ package org.apache.spark.sql.comet
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.{Attribute, UnsafeProjection}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
 import org.apache.spark.sql.execution.LocalTableScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -44,12 +44,21 @@ case class CometLocalTableScanExec(
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
+  @transient private lazy val unsafeRows: Array[InternalRow] = {
+    if (rows.isEmpty) {
+      Array.empty
+    } else {
+      val proj = UnsafeProjection.create(output, output)
+      rows.map(r => proj(r).copy()).toArray
+    }
+  }
+
   @transient private lazy val rdd: RDD[InternalRow] = {
     if (rows.isEmpty) {
       sparkContext.emptyRDD
     } else {
-      val numSlices = math.min(rows.length, session.leafNodeDefaultParallelism)
-      sparkContext.parallelize(rows, numSlices)
+      val numSlices = math.min(unsafeRows.length, session.leafNodeDefaultParallelism)
+      sparkContext.parallelize(unsafeRows, numSlices)
     }
   }
 
@@ -60,7 +69,7 @@ case class CometLocalTableScanExec(
       val context = TaskContext.get()
       CometArrowConverters.rowToArrowBatchIter(
         sparkBatches,
-        schema,
+        originalPlan.schema,
         maxRecordsPerBatch,
         timeZoneId,
         context)
@@ -78,5 +87,4 @@ case class CometLocalTableScanExec(
   }
 
   override def hashCode(): Int = Objects.hashCode(originalPlan, serializedPlanOpt)
-
 }

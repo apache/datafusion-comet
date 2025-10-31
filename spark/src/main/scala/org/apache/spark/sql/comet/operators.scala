@@ -298,7 +298,6 @@ abstract class CometNativeExec extends CometExec {
         if (containsBroadcastInput && firstNonBroadcastPlan.isEmpty) {
           throw new CometRuntimeException(s"Cannot find the first non broadcast plan: $this")
         }
-
         // If the first non broadcast plan is found, we need to adjust the partition number of
         // the broadcast plans to make sure they have the same partition number as the first non
         // broadcast plan.
