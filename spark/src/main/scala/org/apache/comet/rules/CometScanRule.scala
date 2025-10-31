@@ -280,8 +280,44 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
         }
 
+        // Check if table uses a FileIO implementation compatible with iceberg-rust
+        // InMemoryFileIO stores files in Java memory rather than on filesystem/object storage,
+        // which is incompatible with iceberg-rust's FileIO
+        val fileIOCompatible = if (schemaSupported) {
+          try {
+            // table() is a protected method in SparkScan,
+            // so we need getDeclaredMethod + setAccessible
+            val tableMethod = scanExec.scan.getClass.getSuperclass.getSuperclass
+              .getDeclaredMethod("table")
+            tableMethod.setAccessible(true)
+            val table = tableMethod.invoke(scanExec.scan)
+
+            // Check if table uses InMemoryFileIO which stores files in Java HashMap
+            // rather than on filesystem (incompatible with iceberg-rust FileIO)
+            val ioMethod = table.getClass.getMethod("io")
+            val fileIO = ioMethod.invoke(table)
+            // scalastyle:off classforname
+            val fileIOClassName = fileIO.getClass.getName
+            // scalastyle:on classforname
+
+            if (fileIOClassName == "org.apache.iceberg.inmemory.InMemoryFileIO") {
+              fallbackReasons += "Comet does not support InMemoryFileIO table locations"
+              false
+            } else {
+              // FileIO is compatible with iceberg-rust
+              true
+            }
+          } catch {
+            case e: Exception =>
+              fallbackReasons += s"Could not check FileIO compatibility: ${e.getMessage}"
+              false
+          }
+        } else {
+          false
+        }
+
         // Check Iceberg table format version
-        val formatVersionSupported = if (schemaSupported) {
+        val formatVersionSupported = if (schemaSupported && fileIOCompatible) {
           try {
             // table() is a protected method in SparkScan,
             // so we need getDeclaredMethod + setAccessible
@@ -360,14 +396,44 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
                   allParquet = false
                 }
 
-                // Check filesystem scheme
+                // Check filesystem scheme for data file
                 val filePath = pathMethod.invoke(dataFile).toString
-                val scheme = new URI(filePath).getScheme
+                val uri = new URI(filePath)
+                val scheme = uri.getScheme
+
                 if (scheme != null && !supportedSchemes.contains(scheme)) {
                   allSupportedFs = false
                   fallbackReasons += "Iceberg scan contains files with unsupported filesystem" +
                     s"scheme: $scheme. " +
                     s"Comet only supports: ${supportedSchemes.mkString(", ")}"
+                }
+
+                // Check delete files if they exist
+                try {
+                  val deletesMethod = task.getClass.getMethod("deletes")
+                  val deleteFiles = deletesMethod.invoke(task).asInstanceOf[java.util.List[_]]
+
+                  deleteFiles.asScala.foreach { deleteFile =>
+                    val deletePath =
+                      try {
+                        val locationMethod = contentFileClass.getMethod("location")
+                        locationMethod.invoke(deleteFile).asInstanceOf[String]
+                      } catch {
+                        case _: NoSuchMethodException =>
+                          val pathMethod = contentFileClass.getMethod("path")
+                          pathMethod.invoke(deleteFile).asInstanceOf[CharSequence].toString
+                      }
+
+                    val deleteUri = new URI(deletePath)
+                    val deleteScheme = deleteUri.getScheme
+
+                    if (deleteScheme != null && !supportedSchemes.contains(deleteScheme)) {
+                      allSupportedFs = false
+                    }
+                  }
+                } catch {
+                  case _: Exception =>
+                  // Ignore errors accessing delete files - they may not be supported
                 }
               }
 
