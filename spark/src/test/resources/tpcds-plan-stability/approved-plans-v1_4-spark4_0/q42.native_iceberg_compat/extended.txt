@@ -1,0 +1,21 @@
+ TakeOrderedAndProject [COMET: ]
++-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(d_year#1, i_category_id#2, i_category#3, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#4))#5,17,2) AS sum(ss_ext_sales_price)#6)]
+   +- CometColumnarToRow
+      +- CometExchange
+         +- CometHashAggregate
+            +- CometProject
+               +- CometBroadcastHashJoin
+                  :- CometProject
+                  :  +- CometBroadcastHashJoin
+                  :     :- CometProject
+                  :     :  +- CometFilter
+                  :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                  :     +- CometBroadcastExchange
+                  :        +- CometFilter
+                  :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                  +- CometBroadcastExchange
+                     +- CometProject
+                        +- CometFilter
+                           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+
+Comet accelerated 16 out of 18 eligible operators (88%). Final plan contains 1 transitions between Spark and Comet.

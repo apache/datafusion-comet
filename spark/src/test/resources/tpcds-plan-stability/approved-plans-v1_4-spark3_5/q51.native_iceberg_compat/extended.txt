@@ -1,0 +1,53 @@
+ TakeOrderedAndProject [COMET: ]
++- Filter
+   +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+      +- CometColumnarToRow
+         +- CometSort
+            +- CometExchange
+               +- CometProject
+                  +- CometSortMergeJoin
+                     :- CometSort
+                     :  +- CometColumnarExchange
+                     :     +- Project
+                     :        +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                     :           +- CometColumnarToRow
+                     :              +- CometSort
+                     :                 +- CometExchange
+                     :                    +- CometHashAggregate
+                     :                       +- CometExchange
+                     :                          +- CometHashAggregate
+                     :                             +- CometProject
+                     :                                +- CometBroadcastHashJoin
+                     :                                   :- CometFilter
+                     :                                   :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales
+                     :                                   :        +- SubqueryBroadcast
+                     :                                   :           +- BroadcastExchange
+                     :                                   :              +- CometColumnarToRow
+                     :                                   :                 +- CometProject
+                     :                                   :                    +- CometFilter
+                     :                                   :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                     :                                   +- CometBroadcastExchange
+                     :                                      +- CometProject
+                     :                                         +- CometFilter
+                     :                                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                     +- CometSort
+                        +- CometColumnarExchange
+                           +- Project
+                              +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                                 +- CometColumnarToRow
+                                    +- CometSort
+                                       +- CometExchange
+                                          +- CometHashAggregate
+                                             +- CometExchange
+                                                +- CometHashAggregate
+                                                   +- CometProject
+                                                      +- CometBroadcastHashJoin
+                                                         :- CometFilter
+                                                         :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                                                         :        +- ReusedSubquery
+                                                         +- CometBroadcastExchange
+                                                            +- CometProject
+                                                               +- CometFilter
+                                                                  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+
+Comet accelerated 37 out of 47 eligible operators (78%). Final plan contains 4 transitions between Spark and Comet.
