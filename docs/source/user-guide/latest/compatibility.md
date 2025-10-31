@@ -62,11 +62,6 @@ the [Comet Supported Expressions Guide](expressions.md) for more information on 
 It is also possible to specify `spark.comet.expression.allowIncompatible=true` to enable all
 incompatible expressions.
 
-## Array Expressions
-
-Comet has experimental support for a number of array expressions. These are experimental and currently marked
-as incompatible and can be enabled by setting `spark.comet.expression.allowIncompatible=true`.
-
 ## Regular Expressions
 
 Comet uses the Rust regexp crate for evaluating regular expressions, and this has different behavior from Java's

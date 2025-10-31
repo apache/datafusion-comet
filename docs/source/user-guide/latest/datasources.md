@@ -163,7 +163,7 @@ Or use `spark-shell` with HDFS support as described [above](#using-experimental-
 
 ## S3
 
-DataFusion Comet has [multiple Parquet scan implementations](./compatibility.md#parquet-scans) that use different approaches to read data from S3.
+DataFusion Comet has [multiple Parquet scan implementations](../../contributor-guide/parquet_scans.md) that use different approaches to read data from S3.
 
 ### `native_comet`
 
