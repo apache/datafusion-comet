@@ -1,0 +1,64 @@
+CometColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometHashAggregate
+      +- CometExchange
+         +- CometHashAggregate
+            +- CometUnion
+               :- CometHashAggregate
+               :  +- CometExchange
+               :     +- CometHashAggregate
+               :        +- CometProject
+               :           +- CometBroadcastHashJoin
+               :              :- CometProject
+               :              :  +- CometBroadcastHashJoin
+               :              :     :- CometProject
+               :              :     :  +- CometBroadcastHashJoin
+               :              :     :     :- CometProject
+               :              :     :     :  +- CometBroadcastHashJoin
+               :              :     :     :     :- CometFilter
+               :              :     :     :     :  +- CometNativeScan parquet spark_catalog.default.web_sales
+               :              :     :     :     +- CometBroadcastExchange
+               :              :     :     :        +- CometProject
+               :              :     :     :           +- CometFilter
+               :              :     :     :              +- CometNativeScan parquet spark_catalog.default.warehouse
+               :              :     :     +- CometBroadcastExchange
+               :              :     :        +- CometFilter
+               :              :     :           +- CometNativeScan parquet spark_catalog.default.date_dim
+               :              :     +- CometBroadcastExchange
+               :              :        +- CometProject
+               :              :           +- CometFilter
+               :              :              +- CometNativeScan parquet spark_catalog.default.time_dim
+               :              +- CometBroadcastExchange
+               :                 +- CometProject
+               :                    +- CometFilter
+               :                       +- CometNativeScan parquet spark_catalog.default.ship_mode
+               +- CometHashAggregate
+                  +- CometExchange
+                     +- CometHashAggregate
+                        +- CometProject
+                           +- CometBroadcastHashJoin
+                              :- CometProject
+                              :  +- CometBroadcastHashJoin
+                              :     :- CometProject
+                              :     :  +- CometBroadcastHashJoin
+                              :     :     :- CometProject
+                              :     :     :  +- CometBroadcastHashJoin
+                              :     :     :     :- CometFilter
+                              :     :     :     :  +- CometNativeScan parquet spark_catalog.default.catalog_sales
+                              :     :     :     +- CometBroadcastExchange
+                              :     :     :        +- CometProject
+                              :     :     :           +- CometFilter
+                              :     :     :              +- CometNativeScan parquet spark_catalog.default.warehouse
+                              :     :     +- CometBroadcastExchange
+                              :     :        +- CometFilter
+                              :     :           +- CometNativeScan parquet spark_catalog.default.date_dim
+                              :     +- CometBroadcastExchange
+                              :        +- CometProject
+                              :           +- CometFilter
+                              :              +- CometNativeScan parquet spark_catalog.default.time_dim
+                              +- CometBroadcastExchange
+                                 +- CometProject
+                                    +- CometFilter
+                                       +- CometNativeScan parquet spark_catalog.default.ship_mode
+
+Comet accelerated 61 out of 61 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet.
