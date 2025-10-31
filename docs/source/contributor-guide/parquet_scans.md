@@ -58,5 +58,25 @@ The `native_datafusion` scan has some additional limitations:
 - There are failures in the Spark SQL test suite [#1545]
 - Setting Spark configs `ignoreMissingFiles` or `ignoreCorruptFiles` to `true` is not compatible with Spark
 
+## S3 Support
+
+There are some 
+
+### `native_comet`
+
+The default `native_comet` Parquet scan implementation reads data from S3 using the [Hadoop-AWS module](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html), which 
+is identical to the approach commonly used with vanilla Spark. AWS credential configuration and other Hadoop S3A 
+configurations works the same way as in vanilla Spark.
+
+### `native_datafusion` and `native_iceberg_compat`
+
+The `native_datafusion` and `native_iceberg_compat` Parquet scan implementations completely offload data loading 
+to native code. They use the [`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and 
+support configuring S3 access using standard [Hadoop S3A configurations](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration) by translating them to 
+the `object_store` crate's format.
+
+This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will 
+continue to work as long as the configurations are supported and can be translated without loss of functionality.
+
 [#1545]: https://github.com/apache/datafusion-comet/issues/1545
 [#1758]: https://github.com/apache/datafusion-comet/issues/1758
