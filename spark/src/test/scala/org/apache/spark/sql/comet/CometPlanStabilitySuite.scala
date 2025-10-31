@@ -63,7 +63,10 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plu
  */
 trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBase {
   protected val scanImpls: Seq[String] =
-    Seq(CometConf.SCAN_AUTO, CometConf.SCAN_NATIVE_ICEBERG_COMPAT)
+    Seq(
+      CometConf.SCAN_AUTO,
+      CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
+      CometConf.SCAN_NATIVE_DATAFUSION)
 
   protected val baseResourcePath: File = {
     getWorkspaceFilePath("spark", "src", "test", "resources", "tpcds-plan-stability").toFile
@@ -215,12 +218,17 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       s"$tpcdsGroup/$query.sql",
       classLoader = Thread.currentThread().getContextClassLoader)
 
+    // native_datafusion does not support DPP yet
+    val dppEnabled =
+      CometConf.COMET_NATIVE_SCAN_IMPL.get(conf) != CometConf.SCAN_NATIVE_DATAFUSION
+
     withSQLConf(
       CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
       CometConf.COMET_EXPLAIN_VERBOSE_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> dppEnabled.toString,
       CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
