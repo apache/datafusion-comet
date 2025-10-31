@@ -271,6 +271,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
         val fallbackReasons = new ListBuffer[String]()
 
+        // Iceberg transform functions not yet supported by iceberg-rust
+        // These functions may be pushed down in filters but return incorrect results
+        val unsupportedTransforms = Set("truncate")
+
         val typeChecker = CometScanTypeChecker(SCAN_NATIVE_DATAFUSION)
         val schemaSupported =
           typeChecker.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
@@ -578,9 +582,50 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             false
           }
 
+        // Check for unsupported Iceberg transform functions in filter expressions
+        val transformFunctionsSupported =
+          if (schemaSupported && formatVersionSupported && allParquetFiles &&
+            allSupportedFilesystems && partitionTypesSupported &&
+            complexTypePredicatesSupported) {
+            try {
+              val filterExpressionsMethod =
+                scanExec.scan.getClass.getSuperclass.getSuperclass
+                  .getDeclaredMethod("filterExpressions")
+              filterExpressionsMethod.setAccessible(true)
+              val filters =
+                filterExpressionsMethod.invoke(scanExec.scan).asInstanceOf[java.util.List[_]]
+
+              val hasUnsupportedTransform = filters.asScala.exists { expr =>
+                val exprStr = expr.toString
+                unsupportedTransforms.exists { transform =>
+                  // Match patterns like: truncate[4](ref(name="data"))
+                  exprStr.contains(s"$transform[")
+                }
+              }
+
+              if (hasUnsupportedTransform) {
+                val foundTransforms = unsupportedTransforms.filter { transform =>
+                  filters.asScala.exists(expr => expr.toString.contains(s"$transform["))
+                }
+                fallbackReasons += "Iceberg transform function(s) in filter not yet supported " +
+                  s"by iceberg-rust: ${foundTransforms.mkString(", ")}"
+                false
+              } else {
+                true
+              }
+            } catch {
+              case e: Exception =>
+                // Avoid blocking valid queries if reflection fails
+                logWarning(s"Could not check for transform functions: ${e.getMessage}")
+                true
+            }
+          } else {
+            false
+          }
+
         if (schemaSupported && formatVersionSupported && allParquetFiles &&
           allSupportedFilesystems && partitionTypesSupported &&
-          complexTypePredicatesSupported) {
+          complexTypePredicatesSupported && transformFunctionsSupported) {
           // Iceberg tables require type promotion for schema evolution (add/drop columns)
           SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
           CometBatchScanExec(
