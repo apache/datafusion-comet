@@ -1,0 +1,46 @@
+CometColumnarToRow
++- CometSort
+   +- CometColumnarExchange
+      +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(cc_call_center_id#1 AS Call_Center#2, cc_name#3 AS Call_Center_Name#4, cc_manager#5 AS Manager#6, MakeDecimal(sum(UnscaledValue(cr_net_loss#7))#8,17,2) AS Returns_Loss#9)]
+         +- CometColumnarToRow
+            +- CometExchange
+               +- CometHashAggregate
+                  +- CometProject
+                     +- CometBroadcastHashJoin
+                        :- CometProject
+                        :  +- CometBroadcastHashJoin
+                        :     :- CometProject
+                        :     :  +- CometBroadcastHashJoin
+                        :     :     :- CometProject
+                        :     :     :  +- CometBroadcastHashJoin
+                        :     :     :     :- CometProject
+                        :     :     :     :  +- CometBroadcastHashJoin
+                        :     :     :     :     :- CometProject
+                        :     :     :     :     :  +- CometBroadcastHashJoin
+                        :     :     :     :     :     :- CometProject
+                        :     :     :     :     :     :  +- CometFilter
+                        :     :     :     :     :     :     +- CometNativeScan parquet spark_catalog.default.call_center
+                        :     :     :     :     :     +- CometBroadcastExchange
+                        :     :     :     :     :        +- CometFilter
+                        :     :     :     :     :           +- CometNativeScan parquet spark_catalog.default.catalog_returns
+                        :     :     :     :     +- CometBroadcastExchange
+                        :     :     :     :        +- CometProject
+                        :     :     :     :           +- CometFilter
+                        :     :     :     :              +- CometNativeScan parquet spark_catalog.default.date_dim
+                        :     :     :     +- CometBroadcastExchange
+                        :     :     :        +- CometFilter
+                        :     :     :           +- CometNativeScan parquet spark_catalog.default.customer
+                        :     :     +- CometBroadcastExchange
+                        :     :        +- CometProject
+                        :     :           +- CometFilter
+                        :     :              +- CometNativeScan parquet spark_catalog.default.customer_address
+                        :     +- CometBroadcastExchange
+                        :        +- CometProject
+                        :           +- CometFilter
+                        :              +- CometNativeScan parquet spark_catalog.default.customer_demographics
+                        +- CometBroadcastExchange
+                           +- CometProject
+                              +- CometFilter
+                                 +- CometNativeScan parquet spark_catalog.default.household_demographics
+
+Comet accelerated 41 out of 42 eligible operators (97%). Final plan contains 2 transitions between Spark and Comet.

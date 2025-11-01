@@ -1,0 +1,188 @@
+ TakeOrderedAndProject [COMET: ]
++- Filter
+   +- HashAggregate
+      +- HashAggregate
+         +- Project
+            +- BroadcastHashJoin
+               :-  Window [COMET: Partitioning and sorting specifications must be the same.]
+               :  +- CometColumnarToRow
+               :     +- CometSort
+               :        +- CometExchange
+               :           +- CometProject
+               :              +- CometFilter
+               :                 +- CometSortMergeJoin
+               :                    :- CometSort
+               :                    :  +- CometColumnarExchange
+               :                    :     +- HashAggregate
+               :                    :        +- CometColumnarToRow
+               :                    :           +- CometColumnarExchange
+               :                    :              +- HashAggregate
+               :                    :                 +- Project
+               :                    :                    +- BroadcastHashJoin
+               :                    :                       :- Project
+               :                    :                       :  +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+               :                    :                       :     +- CometColumnarToRow
+               :                    :                       :        +- CometSort
+               :                    :                       :           +- CometExchange
+               :                    :                       :              +- CometHashAggregate
+               :                    :                       :                 +- CometExchange
+               :                    :                       :                    +- CometHashAggregate
+               :                    :                       :                       +- CometProject
+               :                    :                       :                          +- CometBroadcastHashJoin
+               :                    :                       :                             :- CometFilter
+               :                    :                       :                             :  +- CometNativeScan parquet spark_catalog.default.web_sales
+               :                    :                       :                             +- CometBroadcastExchange
+               :                    :                       :                                +- CometProject
+               :                    :                       :                                   +- CometFilter
+               :                    :                       :                                      +- CometNativeScan parquet spark_catalog.default.date_dim
+               :                    :                       +- BroadcastExchange
+               :                    :                          +- Project
+               :                    :                             +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+               :                    :                                +- CometColumnarToRow
+               :                    :                                   +- CometSort
+               :                    :                                      +- CometExchange
+               :                    :                                         +- CometHashAggregate
+               :                    :                                            +- CometExchange
+               :                    :                                               +- CometHashAggregate
+               :                    :                                                  +- CometProject
+               :                    :                                                     +- CometBroadcastHashJoin
+               :                    :                                                        :- CometFilter
+               :                    :                                                        :  +- CometNativeScan parquet spark_catalog.default.web_sales
+               :                    :                                                        +- CometBroadcastExchange
+               :                    :                                                           +- CometProject
+               :                    :                                                              +- CometFilter
+               :                    :                                                                 +- CometNativeScan parquet spark_catalog.default.date_dim
+               :                    +- CometSort
+               :                       +- CometColumnarExchange
+               :                          +- HashAggregate
+               :                             +- CometColumnarToRow
+               :                                +- CometColumnarExchange
+               :                                   +- HashAggregate
+               :                                      +- Project
+               :                                         +- BroadcastHashJoin
+               :                                            :- Project
+               :                                            :  +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+               :                                            :     +- CometColumnarToRow
+               :                                            :        +- CometSort
+               :                                            :           +- CometExchange
+               :                                            :              +- CometHashAggregate
+               :                                            :                 +- CometExchange
+               :                                            :                    +- CometHashAggregate
+               :                                            :                       +- CometProject
+               :                                            :                          +- CometBroadcastHashJoin
+               :                                            :                             :- CometFilter
+               :                                            :                             :  +- CometNativeScan parquet spark_catalog.default.store_sales
+               :                                            :                             +- CometBroadcastExchange
+               :                                            :                                +- CometProject
+               :                                            :                                   +- CometFilter
+               :                                            :                                      +- CometNativeScan parquet spark_catalog.default.date_dim
+               :                                            +- BroadcastExchange
+               :                                               +- Project
+               :                                                  +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+               :                                                     +- CometColumnarToRow
+               :                                                        +- CometSort
+               :                                                           +- CometExchange
+               :                                                              +- CometHashAggregate
+               :                                                                 +- CometExchange
+               :                                                                    +- CometHashAggregate
+               :                                                                       +- CometProject
+               :                                                                          +- CometBroadcastHashJoin
+               :                                                                             :- CometFilter
+               :                                                                             :  +- CometNativeScan parquet spark_catalog.default.store_sales
+               :                                                                             +- CometBroadcastExchange
+               :                                                                                +- CometProject
+               :                                                                                   +- CometFilter
+               :                                                                                      +- CometNativeScan parquet spark_catalog.default.date_dim
+               +- BroadcastExchange
+                  +- Project
+                     +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                        +- CometColumnarToRow
+                           +- CometSort
+                              +- CometExchange
+                                 +- CometProject
+                                    +- CometFilter
+                                       +- CometSortMergeJoin
+                                          :- CometSort
+                                          :  +- CometColumnarExchange
+                                          :     +- HashAggregate
+                                          :        +- CometColumnarToRow
+                                          :           +- CometColumnarExchange
+                                          :              +- HashAggregate
+                                          :                 +- Project
+                                          :                    +- BroadcastHashJoin
+                                          :                       :- Project
+                                          :                       :  +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                                          :                       :     +- CometColumnarToRow
+                                          :                       :        +- CometSort
+                                          :                       :           +- CometExchange
+                                          :                       :              +- CometHashAggregate
+                                          :                       :                 +- CometExchange
+                                          :                       :                    +- CometHashAggregate
+                                          :                       :                       +- CometProject
+                                          :                       :                          +- CometBroadcastHashJoin
+                                          :                       :                             :- CometFilter
+                                          :                       :                             :  +- CometNativeScan parquet spark_catalog.default.web_sales
+                                          :                       :                             +- CometBroadcastExchange
+                                          :                       :                                +- CometProject
+                                          :                       :                                   +- CometFilter
+                                          :                       :                                      +- CometNativeScan parquet spark_catalog.default.date_dim
+                                          :                       +- BroadcastExchange
+                                          :                          +- Project
+                                          :                             +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                                          :                                +- CometColumnarToRow
+                                          :                                   +- CometSort
+                                          :                                      +- CometExchange
+                                          :                                         +- CometHashAggregate
+                                          :                                            +- CometExchange
+                                          :                                               +- CometHashAggregate
+                                          :                                                  +- CometProject
+                                          :                                                     +- CometBroadcastHashJoin
+                                          :                                                        :- CometFilter
+                                          :                                                        :  +- CometNativeScan parquet spark_catalog.default.web_sales
+                                          :                                                        +- CometBroadcastExchange
+                                          :                                                           +- CometProject
+                                          :                                                              +- CometFilter
+                                          :                                                                 +- CometNativeScan parquet spark_catalog.default.date_dim
+                                          +- CometSort
+                                             +- CometColumnarExchange
+                                                +- HashAggregate
+                                                   +- CometColumnarToRow
+                                                      +- CometColumnarExchange
+                                                         +- HashAggregate
+                                                            +- Project
+                                                               +- BroadcastHashJoin
+                                                                  :- Project
+                                                                  :  +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                                                                  :     +- CometColumnarToRow
+                                                                  :        +- CometSort
+                                                                  :           +- CometExchange
+                                                                  :              +- CometHashAggregate
+                                                                  :                 +- CometExchange
+                                                                  :                    +- CometHashAggregate
+                                                                  :                       +- CometProject
+                                                                  :                          +- CometBroadcastHashJoin
+                                                                  :                             :- CometFilter
+                                                                  :                             :  +- CometNativeScan parquet spark_catalog.default.store_sales
+                                                                  :                             +- CometBroadcastExchange
+                                                                  :                                +- CometProject
+                                                                  :                                   +- CometFilter
+                                                                  :                                      +- CometNativeScan parquet spark_catalog.default.date_dim
+                                                                  +- BroadcastExchange
+                                                                     +- Project
+                                                                        +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                                                                           +- CometColumnarToRow
+                                                                              +- CometSort
+                                                                                 +- CometExchange
+                                                                                    +- CometHashAggregate
+                                                                                       +- CometExchange
+                                                                                          +- CometHashAggregate
+                                                                                             +- CometProject
+                                                                                                +- CometBroadcastHashJoin
+                                                                                                   :- CometFilter
+                                                                                                   :  +- CometNativeScan parquet spark_catalog.default.store_sales
+                                                                                                   +- CometBroadcastExchange
+                                                                                                      +- CometProject
+                                                                                                         +- CometFilter
+                                                                                                            +- CometNativeScan parquet spark_catalog.default.date_dim
+
+Comet accelerated 126 out of 172 eligible operators (73%). Final plan contains 14 transitions between Spark and Comet.
