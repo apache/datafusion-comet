@@ -23,6 +23,7 @@ import java.io.{File, FileFilter}
 import java.math.{BigDecimal, BigInteger}
 import java.time.{ZoneId, ZoneOffset}
 
+import scala.annotation.nowarn
 import scala.collection.mutable.ListBuffer
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
@@ -1532,6 +1533,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("test pre-fetching multiple files") {
+    @nowarn("msg=implicit numeric widening")
     def makeRawParquetFile(
         path: Path,
         dictionaryEnabled: Boolean,
@@ -1577,7 +1579,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         opt match {
           case Some(i) =>
             record.add(0, i % 2 == 0)
-            record.add(1, i.toByte.toInt)
+            record.add(1, i.toByte)
             record.add(2, i.toShort.toInt)
             record.add(3, i)
             record.add(4, i.toLong)
