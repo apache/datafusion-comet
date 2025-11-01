@@ -74,10 +74,6 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("Broadcast HashJoin without join filter") {
-    // TODO enable native_datafusion tests
-    // https://github.com/apache/datafusion-comet/issues/2660
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-
     withSQLConf(
       CometConf.COMET_BATCH_SIZE.key -> "100",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
@@ -105,10 +101,6 @@ class CometJoinSuite extends CometTestBase {
   }
 
   test("Broadcast HashJoin with join filter") {
-    // TODO enable native_datafusion tests
-    // https://github.com/apache/datafusion-comet/issues/2660
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-
     withSQLConf(
       CometConf.COMET_BATCH_SIZE.key -> "100",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
