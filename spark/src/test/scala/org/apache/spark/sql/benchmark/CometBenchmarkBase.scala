@@ -81,7 +81,7 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
     withTempTable(tbl) {
       import spark.implicits._
       spark
-        .range(values)
+        .range(values.toLong)
         .map(_ => if (useDictionary) Random.nextLong % 5 else Random.nextLong)
         .createOrReplaceTempView(tbl)
       runBenchmark(benchmarkName)(f(values))
@@ -168,7 +168,7 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
 
     val div = if (useDictionary) 5 else values
     spark
-      .range(values)
+      .range(values.toLong)
       .map(_ % div)
       .select((($"value" - 500) / 100.0) cast decimal as Symbol("dec"))
   }

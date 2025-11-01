@@ -88,7 +88,7 @@ case class CometCollectLimitExec(
           outputPartitioning,
           serializer,
           metrics)
-        metrics("numPartitions").set(dep.partitioner.numPartitions)
+        metrics("numPartitions").set(dep.partitioner.numPartitions.toLong)
 
         new CometShuffledBatchRDD(dep, readMetrics)
       }
