@@ -157,8 +157,7 @@ case class CometScanExec(
 
   /**
    * Returns the data filters that are supported for this scan implementation. For
-   * native_datafusion scans, this excludes dynamic pruning filters (subqueries) since they are
-   * not supported by DataFusion. See: https://github.com/apache/datafusion-comet/issues/2424
+   * native_datafusion scans, this excludes dynamic pruning filters (subqueries)
    */
   lazy val supportedDataFilters: Seq[Expression] = {
     if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION) {
