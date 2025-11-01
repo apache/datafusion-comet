@@ -26,6 +26,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
@@ -770,6 +771,30 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
               .createOrReplaceTempView("t2")
             checkSparkAnswer(sql("SELECT reverse(a) FROM t2"))
           }
+        }
+      }
+    }
+  }
+
+  test("array_reverse 2") {
+    // This test validates data correctness for array<binary> columns with nullable elements.
+    // See https://github.com/apache/datafusion-comet/issues/2612
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val schemaOptions =
+          SchemaGenOptions(generateArray = true, generateStruct = false, generateMap = false)
+        val dataOptions = DataGenOptions(allowNull = true, generateNegativeZero = false)
+        ParquetGenerator.makeParquetFile(random, spark, filename, 100, schemaOptions, dataOptions)
+      }
+      withTempView("t1") {
+        val table = spark.read.parquet(filename)
+        table.createOrReplaceTempView("t1")
+        for (field <- table.schema.fields.filter(_.dataType.isInstanceOf[ArrayType])) {
+          val sql = s"SELECT ${field.name}, reverse(${field.name}) FROM t1 ORDER BY ${field.name}"
+          checkSparkAnswer(sql)
         }
       }
     }
