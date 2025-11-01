@@ -45,7 +45,7 @@ import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
+import org.apache.comet.parquet.{CometParquetScan, Native}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.shims.CometTypeShim
 
@@ -265,25 +265,368 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           withInfos(scanExec, fallbackReasons.toSet)
         }
 
-      // Iceberg scan
-      case s: SupportsComet =>
+      // Iceberg scan - detected by class name (works with unpatched Iceberg)
+      case _
+          if scanExec.scan.getClass.getName ==
+            "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
         val fallbackReasons = new ListBuffer[String]()
 
-        if (!s.isCometEnabled) {
-          fallbackReasons += "Comet extension is not enabled for " +
-            s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side"
-        }
+        // Iceberg transform functions not yet supported by iceberg-rust
+        // These functions may be pushed down in filters but return incorrect results
+        val unsupportedTransforms = Set("truncate")
 
+        val typeChecker = CometScanTypeChecker(SCAN_NATIVE_DATAFUSION)
         val schemaSupported =
-          CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
+          typeChecker.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
 
         if (!schemaSupported) {
           fallbackReasons += "Comet extension is not enabled for " +
             s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
         }
 
-        if (s.isCometEnabled && schemaSupported) {
-          // When reading from Iceberg, we automatically enable type promotion
+        // Check if table uses a FileIO implementation compatible with iceberg-rust
+        // InMemoryFileIO stores files in Java memory rather than on filesystem/object storage,
+        // which is incompatible with iceberg-rust's FileIO
+        val fileIOCompatible = if (schemaSupported) {
+          try {
+            // table() is a protected method in SparkScan,
+            // so we need getDeclaredMethod + setAccessible
+            val tableMethod = scanExec.scan.getClass.getSuperclass.getSuperclass
+              .getDeclaredMethod("table")
+            tableMethod.setAccessible(true)
+            val table = tableMethod.invoke(scanExec.scan)
+
+            // Check if table uses InMemoryFileIO which stores files in Java HashMap
+            // rather than on filesystem (incompatible with iceberg-rust FileIO)
+            val ioMethod = table.getClass.getMethod("io")
+            val fileIO = ioMethod.invoke(table)
+            // scalastyle:off classforname
+            val fileIOClassName = fileIO.getClass.getName
+            // scalastyle:on classforname
+
+            if (fileIOClassName == "org.apache.iceberg.inmemory.InMemoryFileIO") {
+              fallbackReasons += "Comet does not support InMemoryFileIO table locations"
+              false
+            } else {
+              // FileIO is compatible with iceberg-rust
+              true
+            }
+          } catch {
+            case e: Exception =>
+              fallbackReasons += s"Could not check FileIO compatibility: ${e.getMessage}"
+              false
+          }
+        } else {
+          false
+        }
+
+        // Check Iceberg table format version
+        val formatVersionSupported = if (schemaSupported && fileIOCompatible) {
+          try {
+            // table() is a protected method in SparkScan,
+            // so we need getDeclaredMethod + setAccessible
+            val tableMethod = scanExec.scan.getClass.getSuperclass.getSuperclass
+              .getDeclaredMethod("table")
+            tableMethod.setAccessible(true)
+            val table = tableMethod.invoke(scanExec.scan)
+
+            // Try to get formatVersion directly from table
+            val formatVersion =
+              try {
+                val formatVersionMethod = table.getClass.getMethod("formatVersion")
+                formatVersionMethod.invoke(table).asInstanceOf[Int]
+              } catch {
+                case _: NoSuchMethodException =>
+                  // If not directly available, access via operations/metadata
+                  val opsMethod = table.getClass.getMethod("operations")
+                  val ops = opsMethod.invoke(table)
+                  val currentMethod = ops.getClass.getMethod("current")
+                  val metadata = currentMethod.invoke(ops)
+                  val formatVersionMethod = metadata.getClass.getMethod("formatVersion")
+                  formatVersionMethod.invoke(metadata).asInstanceOf[Int]
+              }
+
+            if (formatVersion > 2) {
+              fallbackReasons += "Iceberg table format version " +
+                s"$formatVersion is not supported. " +
+                "Comet only supports Iceberg table format V1 and V2"
+              false
+            } else {
+              true
+            }
+          } catch {
+            case e: Exception =>
+              fallbackReasons += "Could not verify Iceberg table " +
+                s"format version: ${e.getMessage}"
+              false
+          }
+        } else {
+          false
+        }
+
+        // Check if all files are Parquet format and use supported filesystem schemes
+        val (allParquetFiles, allSupportedFilesystems) =
+          if (schemaSupported && formatVersionSupported) {
+            try {
+              // Use reflection to access the protected tasks() method
+              val tasksMethod = scanExec.scan.getClass.getSuperclass
+                .getDeclaredMethod("tasks")
+              tasksMethod.setAccessible(true)
+              val tasks = tasksMethod.invoke(scanExec.scan).asInstanceOf[java.util.List[_]]
+
+              // scalastyle:off classforname
+              val contentScanTaskClass = Class.forName("org.apache.iceberg.ContentScanTask")
+              val contentFileClass = Class.forName("org.apache.iceberg.ContentFile")
+              // scalastyle:on classforname
+
+              val fileMethod = contentScanTaskClass.getMethod("file")
+              val formatMethod = contentFileClass.getMethod("format")
+              val pathMethod = contentFileClass.getMethod("path")
+
+              // Filesystem schemes supported by iceberg-rust
+              // See: iceberg-rust/crates/iceberg/src/io/storage.rs parse_scheme()
+              val supportedSchemes =
+                Set("file", "s3", "s3a", "gs", "gcs", "oss", "abfss", "abfs", "wasbs", "wasb")
+
+              var allParquet = true
+              var allSupportedFs = true
+
+              tasks.asScala.foreach { task =>
+                val dataFile = fileMethod.invoke(task)
+                val fileFormat = formatMethod.invoke(dataFile)
+
+                // Check file format
+                if (fileFormat.toString != "PARQUET") {
+                  allParquet = false
+                }
+
+                // Check filesystem scheme for data file
+                val filePath = pathMethod.invoke(dataFile).toString
+                val uri = new URI(filePath)
+                val scheme = uri.getScheme
+
+                if (scheme != null && !supportedSchemes.contains(scheme)) {
+                  allSupportedFs = false
+                  fallbackReasons += "Iceberg scan contains files with unsupported filesystem" +
+                    s"scheme: $scheme. " +
+                    s"Comet only supports: ${supportedSchemes.mkString(", ")}"
+                }
+
+                // Check delete files if they exist
+                try {
+                  val deletesMethod = task.getClass.getMethod("deletes")
+                  val deleteFiles = deletesMethod.invoke(task).asInstanceOf[java.util.List[_]]
+
+                  deleteFiles.asScala.foreach { deleteFile =>
+                    val deletePath =
+                      try {
+                        val locationMethod = contentFileClass.getMethod("location")
+                        locationMethod.invoke(deleteFile).asInstanceOf[String]
+                      } catch {
+                        case _: NoSuchMethodException =>
+                          val pathMethod = contentFileClass.getMethod("path")
+                          pathMethod.invoke(deleteFile).asInstanceOf[CharSequence].toString
+                      }
+
+                    val deleteUri = new URI(deletePath)
+                    val deleteScheme = deleteUri.getScheme
+
+                    if (deleteScheme != null && !supportedSchemes.contains(deleteScheme)) {
+                      allSupportedFs = false
+                    }
+                  }
+                } catch {
+                  case _: Exception =>
+                  // Ignore errors accessing delete files - they may not be supported
+                }
+              }
+
+              if (!allParquet) {
+                fallbackReasons += "Iceberg scan contains non-Parquet files (ORC or Avro). " +
+                  "Comet only supports Parquet files in Iceberg tables"
+              }
+
+              (allParquet, allSupportedFs)
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Could not verify file formats or filesystem schemes: " +
+                  s"${e.getMessage}"
+                (false, false)
+            }
+          } else {
+            (false, false)
+          }
+
+        // Partition values are deserialized via iceberg-rust's Literal::try_from_json()
+        // which has incomplete type support (binary/fixed unimplemented, decimals limited)
+        val partitionTypesSupported =
+          if (schemaSupported && formatVersionSupported && allParquetFiles &&
+            allSupportedFilesystems) {
+            try {
+              val tableMethod = scanExec.scan.getClass.getSuperclass.getSuperclass
+                .getDeclaredMethod("table")
+              tableMethod.setAccessible(true)
+              val table = tableMethod.invoke(scanExec.scan)
+
+              val specMethod = table.getClass.getMethod("spec")
+              val partitionSpec = specMethod.invoke(table)
+              val fieldsMethod = partitionSpec.getClass.getMethod("fields")
+              val fields = fieldsMethod.invoke(partitionSpec).asInstanceOf[java.util.List[_]]
+
+              // scalastyle:off classforname
+              val partitionFieldClass = Class.forName("org.apache.iceberg.PartitionField")
+              // scalastyle:on classforname
+              val sourceIdMethod = partitionFieldClass.getMethod("sourceId")
+
+              val schemaMethod = table.getClass.getMethod("schema")
+              val schema = schemaMethod.invoke(table)
+              val findFieldMethod = schema.getClass.getMethod("findField", classOf[Int])
+
+              var allSupported = true
+              fields.asScala.foreach { field =>
+                val sourceId = sourceIdMethod.invoke(field).asInstanceOf[Int]
+                val column = findFieldMethod.invoke(schema, sourceId.asInstanceOf[Object])
+
+                if (column != null) {
+                  val typeMethod = column.getClass.getMethod("type")
+                  val icebergType = typeMethod.invoke(column)
+                  val typeStr = icebergType.toString
+
+                  // iceberg-rust/crates/iceberg/src/spec/values.rs Literal::try_from_json()
+                  if (typeStr.startsWith("decimal(")) {
+                    val precisionStr = typeStr.substring(8, typeStr.indexOf(','))
+                    val precision = precisionStr.toInt
+                    // rust_decimal crate maximum precision
+                    if (precision > 28) {
+                      allSupported = false
+                      fallbackReasons += "Partition column with high-precision decimal " +
+                        s"(precision=$precision) is not yet supported by iceberg-rust. " +
+                        "Maximum supported precision for partition columns is 28 " +
+                        "(rust_decimal limitation)"
+                    }
+                  } else if (typeStr == "binary" || typeStr.startsWith("fixed[")) {
+                    // Literal::try_from_json returns todo!() for these types
+                    allSupported = false
+                    fallbackReasons += "Partition column with binary or fixed type is not yet " +
+                      "supported by iceberg-rust (Literal::try_from_json todo!())"
+                  }
+                }
+              }
+
+              allSupported
+            } catch {
+              case _: Exception =>
+                // Avoid blocking valid queries if reflection fails
+                true
+            }
+          } else {
+            false
+          }
+
+        // IS NULL/NOT NULL on complex types fail because iceberg-rust's accessor creation
+        // only handles primitive fields. Nested field filters work because Iceberg Java
+        // pre-binds them to field IDs. Element/key access filters don't push down to FileScanTasks.
+        val complexTypePredicatesSupported =
+          if (schemaSupported && formatVersionSupported && allParquetFiles &&
+            allSupportedFilesystems && partitionTypesSupported) {
+            try {
+              val filterExpressionsMethod =
+                scanExec.scan.getClass.getSuperclass.getSuperclass
+                  .getDeclaredMethod("filterExpressions")
+              filterExpressionsMethod.setAccessible(true)
+              val filters =
+                filterExpressionsMethod.invoke(scanExec.scan).asInstanceOf[java.util.List[_]]
+
+              // Empty filters can't trigger accessor issues
+              if (filters.isEmpty) {
+                true
+              } else {
+                val readSchema = scanExec.scan.readSchema()
+
+                // Identify complex type columns that would trigger accessor creation failures
+                val complexColumns = readSchema
+                  .filter(field => isComplexType(field.dataType))
+                  .map(_.name)
+                  .toSet
+
+                // Detect IS NULL/NOT NULL on complex columns (pattern: is_null(ref(name="col")))
+                // Nested field filters use different patterns and don't trigger this issue
+                val hasComplexNullCheck = filters.asScala.exists { expr =>
+                  val exprStr = expr.toString
+                  val isNullCheck = exprStr.contains("is_null") || exprStr.contains("not_null")
+                  if (isNullCheck) {
+                    complexColumns.exists { colName =>
+                      exprStr.contains(s"""ref(name="$colName")""")
+                    }
+                  } else {
+                    false
+                  }
+                }
+
+                if (hasComplexNullCheck) {
+                  fallbackReasons += "IS NULL / IS NOT NULL predicates on complex type columns " +
+                    "(struct/array/map) are not yet supported by iceberg-rust " +
+                    "(nested field filters like address.city = 'NYC' are supported)"
+                  false
+                } else {
+                  true
+                }
+              }
+            } catch {
+              case e: Exception =>
+                // Avoid blocking valid queries if reflection fails
+                logWarning(s"Could not check for complex type predicates: ${e.getMessage}")
+                true
+            }
+          } else {
+            false
+          }
+
+        // Check for unsupported Iceberg transform functions in filter expressions
+        val transformFunctionsSupported =
+          if (schemaSupported && formatVersionSupported && allParquetFiles &&
+            allSupportedFilesystems && partitionTypesSupported &&
+            complexTypePredicatesSupported) {
+            try {
+              val filterExpressionsMethod =
+                scanExec.scan.getClass.getSuperclass.getSuperclass
+                  .getDeclaredMethod("filterExpressions")
+              filterExpressionsMethod.setAccessible(true)
+              val filters =
+                filterExpressionsMethod.invoke(scanExec.scan).asInstanceOf[java.util.List[_]]
+
+              val hasUnsupportedTransform = filters.asScala.exists { expr =>
+                val exprStr = expr.toString
+                unsupportedTransforms.exists { transform =>
+                  // Match patterns like: truncate[4](ref(name="data"))
+                  exprStr.contains(s"$transform[")
+                }
+              }
+
+              if (hasUnsupportedTransform) {
+                val foundTransforms = unsupportedTransforms.filter { transform =>
+                  filters.asScala.exists(expr => expr.toString.contains(s"$transform["))
+                }
+                fallbackReasons += "Iceberg transform function(s) in filter not yet supported " +
+                  s"by iceberg-rust: ${foundTransforms.mkString(", ")}"
+                false
+              } else {
+                true
+              }
+            } catch {
+              case e: Exception =>
+                // Avoid blocking valid queries if reflection fails
+                logWarning(s"Could not check for transform functions: ${e.getMessage}")
+                true
+            }
+          } else {
+            false
+          }
+
+        if (schemaSupported && formatVersionSupported && allParquetFiles &&
+          allSupportedFilesystems && partitionTypesSupported &&
+          complexTypePredicatesSupported && transformFunctionsSupported) {
+          // Iceberg tables require type promotion for schema evolution (add/drop columns)
           SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
