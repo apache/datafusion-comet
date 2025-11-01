@@ -1430,23 +1430,25 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     testDoubleScalarExpr("expm1")
   }
 
-  // https://github.com/apache/datafusion-comet/issues/666
-  ignore("abs") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 100)
-        withParquetTable(path.toString, "tbl") {
-          Seq(2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 15, 16, 17).foreach { col =>
-            checkSparkAnswerAndOperator(s"SELECT abs(_${col}) FROM tbl")
+  test("abs") {
+    Seq(true, false).foreach { ansi_enabled =>
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi_enabled.toString) {
+          withTempDir { dir =>
+            val path = new Path(dir.toURI.toString, "test.parquet")
+            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 100)
+            withParquetTable(path.toString, "tbl") {
+              Seq(2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 15, 16, 17).foreach { col =>
+                checkSparkAnswerAndOperator(s"SELECT abs(_${col}) FROM tbl")
+              }
+            }
           }
         }
       }
     }
   }
 
-  // https://github.com/apache/datafusion-comet/issues/666
-  ignore("abs Overflow ansi mode") {
+  test("abs Overflow ANSI mode") {
 
     def testAbsAnsiOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
       withParquetTable(data, "tbl") {
@@ -1479,8 +1481,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // https://github.com/apache/datafusion-comet/issues/666
-  ignore("abs Overflow legacy mode") {
+  test("abs Overflow legacy mode") {
 
     def testAbsLegacyOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
       withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {

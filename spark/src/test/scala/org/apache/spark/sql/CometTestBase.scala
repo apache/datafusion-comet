@@ -621,10 +621,10 @@ abstract class CometTestBase
        |  optional float                    _6;
        |  optional double                   _7;
        |  optional binary                   _8(UTF8);
-       |  optional int32                    _9(UINT_8);
-       |  optional int32                    _10(UINT_16);
-       |  optional int32                    _11(UINT_32);
-       |  optional int64                    _12(UINT_64);
+       |  optional int32                    _9(INT_8);
+       |  optional int32                    _10(INT_16);
+       |  optional int32                    _11(INT_32);
+       |  optional int64                    _12(INT_64);
        |  optional binary                   _13(ENUM);
        |  optional FIXED_LEN_BYTE_ARRAY(3)  _14;
        |  optional int32                    _15(DECIMAL(5, 2));
