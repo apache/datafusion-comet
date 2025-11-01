@@ -28,7 +28,8 @@ import org.apache.spark.sql.types.{ByteType, DecimalType, IntegerType, LongType,
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
+import org.apache.comet.shims.CometEvalModeUtil
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
 
@@ -201,19 +202,7 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
       return None
     }
 
-    sum.evalMode match {
-      case EvalMode.ANSI if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
-        withInfo(
-          aggExpr,
-          "ANSI mode is not supported. Set " +
-            s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true to allow it anyway")
-        return None
-      case EvalMode.TRY =>
-        withInfo(aggExpr, "TRY mode is not supported")
-        return None
-      case _ =>
-      // supported
-    }
+    val evalMode = sum.evalMode
 
     val childExpr = exprToProto(sum.child, inputs, binding)
     val dataType = serializeDataType(sum.dataType)
@@ -222,7 +211,7 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
       val builder = ExprOuterClass.Sum.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
-      builder.setFailOnError(sum.evalMode == EvalMode.ANSI)
+      builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(evalMode)))
 
       Some(
         ExprOuterClass.AggExpr
