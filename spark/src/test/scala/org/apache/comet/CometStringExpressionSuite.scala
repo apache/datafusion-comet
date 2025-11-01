@@ -139,7 +139,9 @@ class CometStringExpressionSuite extends CometTestBase {
           } else {
             // Comet will fall back to Spark because the plan contains a staticinvoke instruction
             // which is not supported
-            checkSparkAnswerAndFallbackReason(sql, "staticinvoke is not supported")
+            checkSparkAnswerAndFallbackReason(
+              sql,
+              s"Static invoke expression: $expr is not supported")
           }
         }
       }
