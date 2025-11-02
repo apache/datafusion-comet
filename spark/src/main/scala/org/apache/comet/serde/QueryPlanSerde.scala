@@ -168,6 +168,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[BitLength] -> CometScalarFunction("bit_length"),
     classOf[Chr] -> CometScalarFunction("char"),
     classOf[ConcatWs] -> CometScalarFunction("concat_ws"),
+    classOf[Concat] -> CometConcat,
     classOf[Contains] -> CometScalarFunction("contains"),
     classOf[EndsWith] -> CometScalarFunction("ends_with"),
     classOf[InitCap] -> CometInitCap,
@@ -225,7 +226,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Cast] -> CometCast)
 
   private val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    // TODO SortOrder (?)
     // TODO PromotePrecision
     // TODO KnownFloatingPointNormalized
     // TODO ScalarSubquery
@@ -239,7 +239,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Coalesce] -> CometCoalesce,
     classOf[Literal] -> CometLiteral,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
-    classOf[SparkPartitionID] -> CometSparkPartitionId)
+    classOf[SparkPartitionID] -> CometSparkPartitionId,
+    classOf[SortOrder] -> CometSortOrder)
 
   /**
    * Mapping of Spark expression class to Comet expression handler.
@@ -702,33 +703,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
     versionSpecificExprToProtoInternal(expr, inputs, binding).orElse(expr match {
 
-      case SortOrder(child, direction, nullOrdering, _) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-
-        if (childExpr.isDefined) {
-          val sortOrderBuilder = ExprOuterClass.SortOrder.newBuilder()
-          sortOrderBuilder.setChild(childExpr.get)
-
-          direction match {
-            case Ascending => sortOrderBuilder.setDirectionValue(0)
-            case Descending => sortOrderBuilder.setDirectionValue(1)
-          }
-
-          nullOrdering match {
-            case NullsFirst => sortOrderBuilder.setNullOrderingValue(0)
-            case NullsLast => sortOrderBuilder.setNullOrderingValue(1)
-          }
-
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setSortOrder(sortOrderBuilder)
-              .build())
-        } else {
-          withInfo(expr, child)
-          None
-        }
-
       case UnaryExpression(child) if expr.prettyName == "promote_precision" =>
         // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
         // `PromotePrecision` is just a wrapper, don't need to serialize it.
@@ -1098,19 +1072,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val cond = exprToProto(condition, child.output)
 
         if (cond.isDefined && childOp.nonEmpty) {
-          // Some native expressions do not support operating on dictionary-encoded arrays, so
-          // wrap the child in a CopyExec to unpack dictionaries first.
-          def wrapChildInCopyExec(condition: Expression): Boolean = {
-            condition.exists(expr => {
-              expr.isInstanceOf[StartsWith] || expr.isInstanceOf[EndsWith] || expr
-                .isInstanceOf[Contains]
-            })
-          }
-
           val filterBuilder = OperatorOuterClass.Filter
             .newBuilder()
             .setPredicate(cond.get)
-            .setWrapChildInCopyExec(wrapChildInCopyExec(condition))
           Some(builder.setFilter(filterBuilder).build())
         } else {
           withInfo(op, condition, child)

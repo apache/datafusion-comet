@@ -17,12 +17,11 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
-use crate::execution::operators::CopyMode;
 use crate::{
     errors::ExpressionError,
     execution::{
         expressions::subquery::Subquery,
-        operators::{CopyExec, ExecutionError, ExpandExec, ScanExec},
+        operators::{ExecutionError, ExpandExec, ScanExec},
         serde::to_arrow_datatype,
         shuffle::ShuffleWriterExec,
     },
@@ -1091,17 +1090,10 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter: Arc<dyn ExecutionPlan> = if filter.wrap_child_in_copy_exec {
-                    Arc::new(FilterExec::try_new(
-                        predicate,
-                        Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
-                    )?)
-                } else {
-                    Arc::new(FilterExec::try_new(
-                        predicate,
-                        Arc::clone(&child.native_plan),
-                    )?)
-                };
+                let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(
+                    predicate,
+                    Arc::clone(&child.native_plan),
+                )?);
 
                 Ok((
                     scans,
@@ -1229,15 +1221,13 @@ impl PhysicalPlanner {
                     .collect();
 
                 let fetch = sort.fetch.map(|num| num as usize);
-                // SortExec caches batches so we need to make a copy of incoming batches. Also,
-                // SortExec fails in some cases if we do not unpack dictionary-encoded arrays, and
-                // it would be more efficient if we could avoid that.
-                // https://github.com/apache/datafusion-comet/issues/963
-                let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
 
                 let mut sort_exec: Arc<dyn ExecutionPlan> = Arc::new(
-                    SortExec::new(LexOrdering::new(exprs?).unwrap(), Arc::clone(&child_copied))
-                        .with_fetch(fetch),
+                    SortExec::new(
+                        LexOrdering::new(exprs?).unwrap(),
+                        Arc::clone(&child.native_plan),
+                    )
+                    .with_fetch(fetch),
                 );
 
                 if let Some(skip) = sort.skip.filter(|&n| n > 0).map(|n| n as usize) {
@@ -1401,13 +1391,9 @@ impl PhysicalPlanner {
                 assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
-                // We wrap native shuffle in a CopyExec. This existed previously, but for
-                // RangePartitioning at least we want to ensure that dictionaries are unpacked.
-                let wrapped_child = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
-
                 let partitioning = self.create_partitioning(
                     writer.partitioning.as_ref().unwrap(),
-                    wrapped_child.schema(),
+                    child.native_plan.schema(),
                 )?;
 
                 let codec = match writer.codec.try_into() {
@@ -1424,7 +1410,7 @@ impl PhysicalPlanner {
                 }?;
 
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    wrapped_child,
+                    Arc::clone(&child.native_plan),
                     partitioning,
                     codec,
                     writer.output_data_file.clone(),
@@ -1514,8 +1500,8 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
-                let left = Self::wrap_in_copy_exec(Arc::clone(&join_params.left.native_plan));
-                let right = Self::wrap_in_copy_exec(Arc::clone(&join_params.right.native_plan));
+                let left = Arc::clone(&join_params.left.native_plan);
+                let right = Arc::clone(&join_params.right.native_plan);
 
                 let join = Arc::new(SortMergeJoinExec::try_new(
                     Arc::clone(&left),
@@ -1577,12 +1563,8 @@ impl PhysicalPlanner {
                     partition_count,
                 )?;
 
-                // HashJoinExec may cache the input batch internally. We need
-                // to copy the input batch to avoid the data corruption from reusing the input
-                // batch. We also need to unpack dictionary arrays, because the join operators
-                // do not support them.
-                let left = Self::wrap_in_copy_exec(Arc::clone(&join_params.left.native_plan));
-                let right = Self::wrap_in_copy_exec(Arc::clone(&join_params.right.native_plan));
+                let left = Arc::clone(&join_params.left.native_plan);
+                let right = Arc::clone(&join_params.right.native_plan);
 
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     left,
@@ -1810,11 +1792,6 @@ impl PhysicalPlanner {
             },
             left_scans,
         ))
-    }
-
-    /// Wrap an ExecutionPlan in a CopyExec, which will unpack any dictionary-encoded arrays.
-    fn wrap_in_copy_exec(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-        Arc::new(CopyExec::new(plan, CopyMode::UnpackOrClone))
     }
 
     /// Create a DataFusion physical aggregate expression from Spark physical aggregate expression
@@ -3208,7 +3185,6 @@ mod tests {
             children: vec![child_op],
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
-                wrap_child_in_copy_exec: false,
             })),
         }
     }

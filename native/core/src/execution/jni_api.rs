@@ -47,6 +47,7 @@ use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::string::char::CharFunc;
+use datafusion_spark::function::string::concat::SparkConcat;
 use futures::poll;
 use futures::stream::StreamExt;
 use jni::objects::JByteBuffer;
@@ -317,8 +318,15 @@ fn prepare_datafusion_session_context(
     let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
 
     datafusion::functions_nested::register_all(&mut session_ctx)?;
+    register_datafusion_spark_function(&session_ctx);
+    // Must be the last one to override existing functions with the same name
+    datafusion_comet_spark_expr::register_all_comet_functions(&mut session_ctx)?;
 
-    // register UDFs from datafusion-spark crate
+    Ok(session_ctx)
+}
+
+// register UDFs from datafusion-spark crate
+fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(CharFunc::default()));
@@ -326,11 +334,7 @@ fn prepare_datafusion_session_context(
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateAdd::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
-
-    // Must be the last one to override existing functions with the same name
-    datafusion_comet_spark_expr::register_all_comet_functions(&mut session_ctx)?;
-
-    Ok(session_ctx)
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));
 }
 
 /// Prepares arrow arrays for output.
