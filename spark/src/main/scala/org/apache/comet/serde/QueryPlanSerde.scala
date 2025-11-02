@@ -55,7 +55,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithIn
 import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.literals.CometLiteral
-import org.apache.comet.serde.operator.{CometLocalTableScan, CometProject, CometSort}
+import org.apache.comet.serde.operator.{CometLocalTableScan, CometProject, CometSort, CometSortOrder}
 import org.apache.comet.shims.CometExprShim
 
 /**

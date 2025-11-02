@@ -24,7 +24,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, UnsafeProjection}
 import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
-import org.apache.spark.sql.execution.LocalTableScanExec
+import org.apache.spark.sql.execution.{InputRDDCodegen, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -75,6 +75,8 @@ case class CometLocalTableScanExec(
         context)
     }
   }
+
+  override def supportsColumnar: Boolean = true
 
   override def equals(obj: Any): Boolean = {
     obj match {
