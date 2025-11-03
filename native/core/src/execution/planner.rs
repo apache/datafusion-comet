@@ -1388,11 +1388,6 @@ impl PhysicalPlanner {
                 let required_schema: SchemaRef =
                     convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
 
-                // No projection needed - Spark already projects columns before the scan.
-                // The required_schema contains exactly the columns we need to read.
-                // Passing None tells iceberg-rust to use the full required_schema,
-                // which is the same as passing Some([0, 1, 2, ...]).
-
                 // Extract catalog configuration
                 let catalog_properties: HashMap<String, String> = scan
                     .catalog_properties
@@ -2752,18 +2747,13 @@ fn parse_file_scan_tasks(
 
             let schema_ref = Arc::new(schema);
 
-            // Parse file format
-            let data_file_format = match proto_task.data_file_format.as_str() {
-                "PARQUET" => iceberg::spec::DataFileFormat::Parquet,
-                "AVRO" => iceberg::spec::DataFileFormat::Avro,
-                "ORC" => iceberg::spec::DataFileFormat::Orc,
-                other => {
-                    return Err(ExecutionError::GeneralError(format!(
-                        "Unsupported file format: {}",
-                        other
-                    )));
-                }
-            };
+            // CometScanRule validates all files are PARQUET before serialization
+            debug_assert_eq!(
+                proto_task.data_file_format.as_str(),
+                "PARQUET",
+                "Only PARQUET format is supported. This indicates a bug in CometScanRule validation."
+            );
+            let data_file_format = iceberg::spec::DataFileFormat::Parquet;
 
             // Parse delete files for MOR (Merge-On-Read) table support
             // Delete files allow Iceberg to track deletions separately from data files:
@@ -2783,8 +2773,8 @@ fn parse_file_scan_tasks(
                         "POSITION_DELETES" => iceberg::spec::DataContentType::PositionDeletes,
                         "EQUALITY_DELETES" => iceberg::spec::DataContentType::EqualityDeletes,
                         other => {
-                            return Err(ExecutionError::GeneralError(format!(
-                                "Unsupported delete content type: {}",
+                            return Err(GeneralError(format!(
+                                "Invalid delete content type '{}'. This indicates a bug in Scala serialization.",
                                 other
                             )))
                         }
@@ -2865,8 +2855,18 @@ fn parse_file_scan_tasks(
                 ) {
                     Ok(Some(iceberg::spec::Literal::Struct(s))) => Some(s),
                     Ok(None) => None,
-                    Ok(_) => None,
-                    Err(_) => None,
+                    Ok(other) => {
+                        return Err(GeneralError(format!(
+                            "Expected struct literal for partition data, got: {:?}",
+                            other
+                        )))
+                    }
+                    Err(e) => {
+                        return Err(GeneralError(format!(
+                            "Failed to deserialize partition data from JSON: {}",
+                            e
+                        )))
+                    }
                 }
             } else {
                 None
@@ -2876,10 +2876,14 @@ fn parse_file_scan_tasks(
             let partition_spec = if let Some(partition_spec_json) =
                 proto_task.partition_spec_json.as_ref()
             {
-                match serde_json::from_str::<iceberg::spec::PartitionSpec>(partition_spec_json) {
-                    Ok(spec) => Some(Arc::new(spec)),
-                    Err(_) => None,
-                }
+                let spec = serde_json::from_str::<iceberg::spec::PartitionSpec>(partition_spec_json)
+                    .map_err(|e| {
+                        GeneralError(format!(
+                            "Failed to parse partition spec JSON: {}",
+                            e
+                        ))
+                    })?;
+                Some(Arc::new(spec))
             } else {
                 None
             };
