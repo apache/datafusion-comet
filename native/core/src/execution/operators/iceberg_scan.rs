@@ -47,9 +47,9 @@ use datafusion::datasource::schema_adapter::SchemaAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::file_stream::FileStreamMetrics;
 
-/// Native Iceberg scan operator that uses iceberg-rust to read Iceberg tables.
+/// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
 ///
-/// Bypasses Spark's DataSource V2 API by reading pre-planned FileScanTasks directly.
+/// Executes pre-planned FileScanTasks for efficient parallel scanning.
 #[derive(Debug)]
 pub struct IcebergScanExec {
     /// Iceberg table metadata location for FileIO initialization
@@ -60,7 +60,7 @@ pub struct IcebergScanExec {
     plan_properties: PlanProperties,
     /// Catalog-specific configuration for FileIO
     catalog_properties: HashMap<String, String>,
-    /// Pre-planned file scan tasks from Scala, grouped by Spark partition
+    /// Pre-planned file scan tasks, grouped by partition
     file_task_groups: Vec<Vec<iceberg::scan::FileScanTask>>,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
@@ -73,12 +73,8 @@ impl IcebergScanExec {
         catalog_properties: HashMap<String, String>,
         file_task_groups: Vec<Vec<iceberg::scan::FileScanTask>>,
     ) -> Result<Self, ExecutionError> {
-        // Don't normalize - just use the schema as provided by Spark
         let output_schema = schema;
-
-        // Derive num_partitions from file_task_groups length
         let num_partitions = file_task_groups.len();
-
         let plan_properties = Self::compute_properties(Arc::clone(&output_schema), num_partitions);
 
         let metrics = ExecutionPlanMetricsSet::new();
@@ -94,7 +90,6 @@ impl IcebergScanExec {
     }
 
     fn compute_properties(schema: SchemaRef, num_partitions: usize) -> PlanProperties {
-        // Matches Spark partition count to ensure proper parallelism
         PlanProperties::new(
             EquivalenceProperties::new(schema),
             Partitioning::UnknownPartitioning(num_partitions),
@@ -137,7 +132,6 @@ impl ExecutionPlan for IcebergScanExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
-        // Execute pre-planned tasks from Scala (planning happens via Iceberg's Java API)
         if partition < self.file_task_groups.len() {
             let tasks = &self.file_task_groups[partition];
             self.execute_with_tasks(tasks.clone(), partition, context)
@@ -165,14 +159,9 @@ impl IcebergScanExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
-
-        // Create FileIO synchronously
         let file_io = Self::load_file_io(&self.catalog_properties, &self.metadata_location)?;
-
-        // Get batch size from context
         let batch_size = context.session_config().batch_size();
 
-        // Create metrics for this partition (wraps both baseline and file stream metrics)
         let metrics = IcebergScanMetrics::new(&self.metrics, partition);
 
         // Create parallel file stream that overlaps opening next file with reading current file
@@ -279,7 +268,6 @@ impl IcebergFileStream {
         })
     }
 
-    /// Start opening the next file
     fn start_next_file(
         &mut self,
     ) -> Option<BoxFuture<'static, DFResult<SendableRecordBatchStream>>> {
@@ -292,37 +280,30 @@ impl IcebergFileStream {
         let schema = Arc::clone(&self.schema);
 
         Some(Box::pin(async move {
-            // Create a single-task stream
             let task_stream = futures::stream::iter(vec![Ok(task)]).boxed();
 
-            // Create reader with optimizations
             let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io)
                 .with_batch_size(batch_size)
                 .with_row_selection_enabled(true)
                 .build();
 
-            // Read the task
             let stream = reader.read(task_stream).map_err(|e| {
                 DataFusionError::Execution(format!("Failed to read Iceberg task: {}", e))
             })?;
 
-            // Clone schema for transformation
             let target_schema = Arc::clone(&schema);
 
-            // Apply schema adaptation to each batch (same approach as regular Parquet scans)
-            // This handles differences in field names ("element" vs "item", "key_value" vs "entries")
-            // and metadata (PARQUET:field_id) just like regular Parquet scans
+            // Schema adaptation handles differences in Arrow field names and metadata
+            // between the file schema and expected output schema
             let mapped_stream = stream
                 .map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)))
                 .and_then(move |batch| {
-                    // Use SparkSchemaAdapter to transform the batch
                     let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
                     let adapter_factory = SparkSchemaAdapterFactory::new(spark_options, None);
                     let file_schema = batch.schema();
                     let adapter = adapter_factory
                         .create(Arc::clone(&target_schema), Arc::clone(&file_schema));
 
-                    // Apply the schema mapping
                     let result = match adapter.map_schema(file_schema.as_ref()) {
                         Ok((schema_mapper, _projection)) => {
                             schema_mapper.map_batch(batch).map_err(|e| {
@@ -348,7 +329,6 @@ impl IcebergFileStream {
         loop {
             match &mut self.state {
                 FileStreamState::Idle => {
-                    // Start opening the first file
                     self.metrics.file_stream.time_opening.start();
                     match self.start_next_file() {
                         Some(future) => {
@@ -357,31 +337,26 @@ impl IcebergFileStream {
                         None => return Poll::Ready(None),
                     }
                 }
-                FileStreamState::Opening { future } => {
-                    // Wait for file to open
-                    match ready!(future.poll_unpin(cx)) {
-                        Ok(stream) => {
-                            // File opened, start reading and open next file in parallel
-                            self.metrics.file_stream.time_opening.stop();
-                            self.metrics.file_stream.time_scanning_until_data.start();
-                            self.metrics.file_stream.time_scanning_total.start();
-                            let next = self.start_next_file();
-                            self.state = FileStreamState::Reading {
-                                current: stream,
-                                next,
-                            };
-                        }
-                        Err(e) => {
-                            self.state = FileStreamState::Error;
-                            return Poll::Ready(Some(Err(e)));
-                        }
+                FileStreamState::Opening { future } => match ready!(future.poll_unpin(cx)) {
+                    Ok(stream) => {
+                        self.metrics.file_stream.time_opening.stop();
+                        self.metrics.file_stream.time_scanning_until_data.start();
+                        self.metrics.file_stream.time_scanning_total.start();
+                        let next = self.start_next_file();
+                        self.state = FileStreamState::Reading {
+                            current: stream,
+                            next,
+                        };
                     }
-                }
+                    Err(e) => {
+                        self.state = FileStreamState::Error;
+                        return Poll::Ready(Some(Err(e)));
+                    }
+                },
                 FileStreamState::Reading { current, next } => {
                     // Poll next file opening future to drive it forward (background IO)
                     if let Some(next_future) = next {
                         if let Poll::Ready(result) = next_future.poll_unpin(cx) {
-                            // Next file is ready, store it
                             match result {
                                 Ok(stream) => {
                                     *next = Some(Box::pin(futures::future::ready(Ok(stream))));
@@ -394,7 +369,6 @@ impl IcebergFileStream {
                         }
                     }
 
-                    // Poll current stream for next batch and record metrics
                     match ready!(self
                         .metrics
                         .baseline
@@ -409,39 +383,30 @@ impl IcebergFileStream {
                             return Poll::Ready(Some(result));
                         }
                         None => {
-                            // Current file is done, move to next file if available
                             self.metrics.file_stream.time_scanning_until_data.stop();
                             self.metrics.file_stream.time_scanning_total.stop();
                             match next.take() {
-                                Some(mut next_future) => {
-                                    // Check if next file is already opened
-                                    match next_future.poll_unpin(cx) {
-                                        Poll::Ready(Ok(stream)) => {
-                                            self.metrics
-                                                .file_stream
-                                                .time_scanning_until_data
-                                                .start();
-                                            self.metrics.file_stream.time_scanning_total.start();
-                                            let next_next = self.start_next_file();
-                                            self.state = FileStreamState::Reading {
-                                                current: stream,
-                                                next: next_next,
-                                            };
-                                        }
-                                        Poll::Ready(Err(e)) => {
-                                            self.state = FileStreamState::Error;
-                                            return Poll::Ready(Some(Err(e)));
-                                        }
-                                        Poll::Pending => {
-                                            // Still opening, wait for it
-                                            self.state = FileStreamState::Opening {
-                                                future: next_future,
-                                            };
-                                        }
+                                Some(mut next_future) => match next_future.poll_unpin(cx) {
+                                    Poll::Ready(Ok(stream)) => {
+                                        self.metrics.file_stream.time_scanning_until_data.start();
+                                        self.metrics.file_stream.time_scanning_total.start();
+                                        let next_next = self.start_next_file();
+                                        self.state = FileStreamState::Reading {
+                                            current: stream,
+                                            next: next_next,
+                                        };
                                     }
-                                }
+                                    Poll::Ready(Err(e)) => {
+                                        self.state = FileStreamState::Error;
+                                        return Poll::Ready(Some(Err(e)));
+                                    }
+                                    Poll::Pending => {
+                                        self.state = FileStreamState::Opening {
+                                            future: next_future,
+                                        };
+                                    }
+                                },
                                 None => {
-                                    // No more files
                                     return Poll::Ready(None);
                                 }
                             }
@@ -473,8 +438,8 @@ impl RecordBatchStream for IcebergFileStream {
     }
 }
 
-/// Wrapper around iceberg-rust's stream that reports Comet's schema without validation.
-/// This avoids strict schema checks that would reject batches with PARQUET:field_id metadata.
+/// Wrapper around iceberg-rust's stream that avoids strict schema checks.
+/// Returns the expected output schema to prevent rejection of batches with metadata differences.
 struct IcebergStreamWrapper<S> {
     inner: S,
     schema: SchemaRef,
@@ -496,7 +461,6 @@ where
     S: Stream<Item = DFResult<RecordBatch>> + Unpin,
 {
     fn schema(&self) -> SchemaRef {
-        // Return Comet's schema, not the batch schema with metadata
         Arc::clone(&self.schema)
     }
 }
