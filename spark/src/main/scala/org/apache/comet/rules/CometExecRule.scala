@@ -162,10 +162,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
 
       // Fully native Iceberg scan for V2 - convert CometBatchScanExec to CometIcebergNativeScanExec
+      // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometScanRule
       case scan: CometBatchScanExec
-          if CometConf.COMET_ICEBERG_NATIVE_ENABLED.get(conf) &&
-            CometConf.COMET_EXEC_ENABLED.get(conf) &&
-            scan.wrapped.scan.getClass.getName ==
+          if scan.wrapped.scan.getClass.getName ==
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
         // Extract metadata location for CometIcebergNativeScanExec
         try {

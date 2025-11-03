@@ -271,6 +271,19 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
         val fallbackReasons = new ListBuffer[String]()
 
+        // Native Iceberg scan requires both configs to be enabled
+        if (!COMET_ICEBERG_NATIVE_ENABLED.get()) {
+          fallbackReasons += s"Native Iceberg scan disabled because " +
+            s"${COMET_ICEBERG_NATIVE_ENABLED.key} is not enabled"
+          return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+        if (!COMET_EXEC_ENABLED.get()) {
+          fallbackReasons += s"Native Iceberg scan disabled because " +
+            s"${COMET_EXEC_ENABLED.key} is not enabled"
+          return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
         // Iceberg transform functions not yet supported by iceberg-rust
         // These functions may be pushed down in filters but return incorrect results
         val unsupportedTransforms = Set("truncate")
