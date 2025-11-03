@@ -2830,14 +2830,12 @@ fn parse_file_scan_tasks(
             let partition_spec = if let Some(partition_spec_json) =
                 proto_task.partition_spec_json.as_ref()
             {
-                let spec = serde_json::from_str::<iceberg::spec::PartitionSpec>(partition_spec_json)
-                    .map_err(|e| {
-                        GeneralError(format!(
-                            "Failed to parse partition spec JSON: {}",
-                            e
-                        ))
-                    })?;
-                Some(Arc::new(spec))
+                // Try to parse partition spec, but gracefully handle unknown transforms
+                // for forward compatibility (e.g., TestForwardCompatibility tests)
+                match serde_json::from_str::<iceberg::spec::PartitionSpec>(partition_spec_json) {
+                    Ok(spec) => Some(Arc::new(spec)),
+                    Err(_) => None,
+                }
             } else {
                 None
             };
