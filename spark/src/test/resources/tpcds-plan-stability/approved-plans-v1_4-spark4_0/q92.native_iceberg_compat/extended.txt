@@ -1,0 +1,42 @@
+ HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(MakeDecimal(sum(UnscaledValue(ws_ext_discount_amt#1))#2,17,2) AS Excess Discount Amount #3)]
++- CometColumnarToRow
+   +- CometExchange
+      +- CometHashAggregate
+         +- CometProject
+            +- CometBroadcastHashJoin
+               :- CometProject
+               :  +- CometBroadcastHashJoin
+               :     :- CometProject
+               :     :  +- CometBroadcastHashJoin
+               :     :     :- CometFilter
+               :     :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales
+               :     :     :        +- SubqueryBroadcast
+               :     :     :           +- BroadcastExchange
+               :     :     :              +- CometColumnarToRow
+               :     :     :                 +- CometProject
+               :     :     :                    +- CometFilter
+               :     :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               :     :     +- CometBroadcastExchange
+               :     :        +- CometProject
+               :     :           +- CometFilter
+               :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+               :     +- CometBroadcastExchange
+               :        +- CometFilter
+               :           +- CometHashAggregate
+               :              +- CometExchange
+               :                 +- CometHashAggregate
+               :                    +- CometProject
+               :                       +- CometBroadcastHashJoin
+               :                          :- CometFilter
+               :                          :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales
+               :                          :        +- ReusedSubquery
+               :                          +- CometBroadcastExchange
+               :                             +- CometProject
+               :                                +- CometFilter
+               :                                   +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               +- CometBroadcastExchange
+                  +- CometProject
+                     +- CometFilter
+                        +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+
+Comet accelerated 34 out of 38 eligible operators (89%). Final plan contains 2 transitions between Spark and Comet.

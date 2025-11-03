@@ -1319,17 +1319,11 @@ impl PhysicalPlanner {
                     &object_store_options,
                 )?;
 
-                // Generate file groups
-                let mut file_groups: Vec<Vec<PartitionedFile>> =
-                    Vec::with_capacity(partition_count);
-                scan.file_partitions.iter().try_for_each(|partition| {
-                    let files = self.get_partitioned_files(partition)?;
-                    file_groups.push(files);
-                    Ok::<(), ExecutionError>(())
-                })?;
-
-                // TODO: I think we can remove partition_count in the future, but leave for testing.
-                assert_eq!(file_groups.len(), partition_count);
+                // Comet serializes all partitions' PartitionedFiles, but we only want to read this
+                // Spark partition's PartitionedFiles
+                let files =
+                    self.get_partitioned_files(&scan.file_partitions[self.partition as usize])?;
+                let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
                 let partition_fields: Vec<Field> = partition_schema
                     .fields()
                     .iter()
