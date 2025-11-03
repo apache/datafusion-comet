@@ -1403,31 +1403,27 @@ impl PhysicalPlanner {
                 // Get metadata location from separate field
                 let metadata_location = scan.metadata_location.clone();
 
-                // Parse pre-planned FileScanTasks if provided (grouped by partition)
+                // Parse pre-planned FileScanTasks for this partition only
                 //
                 // NOTE: We no longer convert scan-level data_filters to predicates here.
                 // Instead, each FileScanTask contains its own residual expression, which is
                 // the result of Iceberg's ResidualEvaluator partially evaluating the scan
                 // filter against that file's partition data. This per-file residual is what
                 // gets used for row-group level filtering in the Parquet reader.
+                //
+                // Comet's native side corresponds to a single Spark partition, so we extract
+                // only this partition's FileScanTasks and pass them as partition 0 for execution.
                 let file_task_groups = if !scan.file_partitions.is_empty() {
-                    let mut task_groups: Vec<Vec<iceberg::scan::FileScanTask>> =
-                        Vec::with_capacity(scan.file_partitions.len());
-                    for partition in &scan.file_partitions {
-                        let tasks = parse_file_scan_tasks(&partition.file_scan_tasks)?;
-                        task_groups.push(tasks);
-                    }
-                    Some(task_groups)
+                    let tasks = parse_file_scan_tasks(
+                        &scan.file_partitions[self.partition as usize].file_scan_tasks,
+                    )?;
+                    Some(vec![tasks]) // Single partition (partition 0) for execution
                 } else {
                     None
                 };
 
-                // Get num_partitions (default to 1 if not specified)
-                let num_partitions = if scan.num_partitions > 0 {
-                    scan.num_partitions as usize
-                } else {
-                    1
-                };
+                // Always use 1 partition since we're only passing this partition's tasks
+                let num_partitions = 1;
 
                 // Create IcebergScanExec
                 let iceberg_scan = IcebergScanExec::new(
