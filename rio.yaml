@@ -967,8 +967,8 @@ builds:
         - git clone git@github.pie.apple.com:IPR/apache-incubator-iceberg.git --depth 1 --branch ${ICEBERG_BRANCH}
         - cd apache-incubator-iceberg
 
-        -  sed -i -E "s|(org.apache.comet:comet-spark-spark.*:).*|\1${NEXT_VERSION}\"|g" spark/v3.4/build.gradle
-        - git apply ../dev/diffs/iceberg/${ICEBERG_BRANCH}.diff
+        - sed -i -E "s|(org.apache.comet:comet-spark-spark.*:).*|\1${NEXT_VERSION}\"|g" spark/v3.4/build.gradle
+        - if [ -f ../dev/diffs/iceberg/${ICEBERG_BRANCH}.diff ]; then git apply ../dev/diffs/iceberg/${ICEBERG_BRANCH}.diff; fi
         - ENABLE_COMET=true ./gradlew ${PROXY_OPTS} -DscalaVersion=${ICEBERG_SCALA_VERSION} :iceberg-spark:iceberg-spark-${ICEBERG_TAG}:test :iceberg-spark:iceberg-spark-extensions-${ICEBERG_TAG}:test :iceberg-spark:iceberg-spark-runtime-${ICEBERG_TAG}:integrationTest
     reports: &test_iceberg_reports
       junit:
