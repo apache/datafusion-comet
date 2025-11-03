@@ -127,10 +127,9 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.scan.icebergNative.enabled")
       .category(CATEGORY_SCAN)
       .doc(
-        "Whether to enable native Iceberg scan using iceberg-rust. When enabled, Comet will " +
-          "replace Spark's Iceberg BatchScanExec with CometIcebergNativeScanExec. Iceberg " +
-          "planning is performed by Spark, and the resulting FileScanTasks are serialized " +
-          "and passed to the native execution layer for reading data files.")
+        "Whether to enable native Iceberg table scan using iceberg-rust. When enabled, " +
+          "Iceberg tables are read directly through native execution, bypassing Spark's " +
+          "DataSource V2 API for better performance.")
       .booleanConf
       .createWithDefault(false)
 

@@ -363,6 +363,7 @@ abstract class CometNativeExec extends CometExec {
    * The input sources include the following operators:
    *   - CometScanExec - Comet scan node
    *   - CometBatchScanExec - Comet scan node
+   *   - CometIcebergNativeScanExec - Native Iceberg scan node
    *   - ShuffleQueryStageExec - AQE shuffle stage node on top of Comet shuffle
    *   - AQEShuffleReadExec - AQE shuffle read node on top of Comet shuffle
    *   - CometShuffleExchangeExec - Comet shuffle exchange node
