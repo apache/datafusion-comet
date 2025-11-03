@@ -189,10 +189,10 @@ JVM (Scala/Java)                                    Native (Rust)
 │ (BatchReader.java:90)         │  Reads Parquet files via Hadoop APIs
 │                               │
 │ Key components:               │
-│ ├─ ParquetFileReader         │  Opens Parquet file, reads metadata
-│ ├─ PageReadStore             │  Reads column pages from file
-│ ├─ ColumnDescriptors         │  Parquet column metadata
-│ └─ Capacity (batch size)     │  Configurable batch size
+│ ├─ ParquetFileReader          │  Opens Parquet file, reads metadata
+│ ├─ PageReadStore              │  Reads column pages from file
+│ ├─ ColumnDescriptors          │  Parquet column metadata
+│ └─ Capacity (batch size)      │  Configurable batch size
 │                               │
 │ Process per row group:        │
 │ 1. Read file footer/metadata  │
@@ -221,7 +221,7 @@ JVM (Scala/Java)                                    Native (Rust)
             │
             │ Passed to native execution via JNI
             │
-            ↓                            ┌───────────────────────────┐
+            ↓                           ┌───────────────────────────┐
 ┌───────────────────────────────┐       │ ScanExec                  │
 │ CometExecIterator             │──────→│ (operators/scan.rs:54)    │
 │ (JNI boundary)                │  JNI  │                           │
@@ -331,7 +331,7 @@ JVM (Scala/Java)                                    Native (Rust)
             │
             │ Deserialization in native code
             │
-            ↓                            ┌───────────────────────────┐
+            ↓                           ┌───────────────────────────┐
                                         │ PhysicalPlanner           │
                                         │ (planner.rs)              │
                                         │                           │
@@ -376,17 +376,17 @@ JVM (Scala/Java)                                    Native (Rust)
                                         └───────────┬───────────────┘
                                                     │
                                                     ↓
-                                        ┌───────────────────────────┐
-                                        │ Arrow Parquet Reader      │
-                                        │ (from arrow-rs crate)     │
-                                        │                           │
-                                        │ Operations:               │
-                                        │ ├─ Open file              │
-                                        │ ├─ Read metadata/footer   │
-                                        │ ├─ Decode pages           │
-                                        │ ├─ Build RecordBatches    │
+                                        ┌────────────────────────────┐
+                                        │ Arrow Parquet Reader       │
+                                        │ (from arrow-rs crate)      │
+                                        │                            │
+                                        │ Operations:                │
+                                        │ ├─ Open file               │
+                                        │ ├─ Read metadata/foote r   │
+                                        │ ├─ Decode pages            │
+                                        │ ├─ Build RecordBatches     │
                                         │ └─ Apply filters/projection│
-                                        └───────────┬───────────────┘
+                                        └───────────┬────────────────┘
                                                     │
                                                     │ RecordBatch stream
                                                     ↓
@@ -522,7 +522,7 @@ JVM (Scala/Java)                                    Native (Rust)
             │ Uses same native path as
             │ native_datafusion for execution
             │
-            ↓                            ┌───────────────────────────┐
+            ↓                           ┌───────────────────────────┐
 ┌───────────────────────────────┐       │ Same as native_datafusion:│
 │ CometExecIterator             │──────→│                           │
 │ (JNI boundary)                │  JNI  │ - init_datasource_exec()  │
@@ -573,15 +573,15 @@ STORAGE ACCESS (native_iceberg_compat)
 
 JVM Side:                                Native Side:
 
-┌────────────────────────────────┐      ┌───────────────────────────┐
-│ Hadoop FileSystem API          │      │ object_store crate        │
+┌────────────────────────────────┐      ┌────────────────────────────┐
+│ Hadoop FileSystem API          │      │ object_store crate         │
 │ (used by IcebergCometBatch     │      │ (same as native_datafusion)│
-│  Reader for metadata)          │      │                           │
-│                                │      │ - LocalFileSystem         │
-│ - Local files                  │      │ - S3 (aws-sdk-rust)       │
-│ - S3A (for metadata)           │      │ - GCS                     │
-│                                │      │ - Azure                   │
-└────────────────────────────────┘      └───────────────────────────┘
+│  Reader for metadata)          │      │                            │
+│                                │      │ - LocalFileSystem          │
+│ - Local files                  │      │ - S3 (aws-sdk-rust)        │
+│ - S3A (for metadata)           │      │ - GCS                      │
+│                                │      │ - Azure                    │
+└────────────────────────────────┘      └────────────────────────────┘
 
 Auto-Selection Criteria (CometScanRule.scala:303-365):
 ────────────────────────────────────────────────────────
