@@ -2734,8 +2734,6 @@ fn parse_file_scan_tasks(
             );
             let data_file_format = iceberg::spec::DataFileFormat::Parquet;
 
-            // Spark's DataSource V2 API does not expose delete files through InputPartitions.
-            // Spark applies MOR deletes during query planning before creating FileScanTasks.
             let deletes: Vec<iceberg::scan::FileScanTaskDeleteFile> = proto_task
                 .delete_files
                 .iter()
