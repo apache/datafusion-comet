@@ -104,7 +104,7 @@ def main(benchmark: str, data_path: str, query_path: str, iterations: int, outpu
                     if len(sql) > 0:
                         print(f"Executing: {sql}")
                         df = spark.sql(sql)
-                        df.explain()
+                        df.explain("formatted")
 
                         if write_path is not None:
                             # skip results with empty schema
@@ -123,8 +123,6 @@ def main(benchmark: str, data_path: str, query_path: str, iterations: int, outpu
                         else:
                             rows = df.collect()
                             print(f"Query {query} returned {len(rows)} rows")
-                        df.explain()
-
 
                 end_time = time.time()
                 print(f"Query {query} took {end_time - start_time} seconds")
