@@ -772,12 +772,13 @@ object IcebergScanSerde extends Logging {
                             .invoke(partitionType)
                             .asInstanceOf[java.util.List[_]]
 
-                            // Only serialize partition type if there are actual partition fields
+                          // Only serialize partition type if there are actual partition fields
                           if (!fields.isEmpty) {
                             // Serialize partition type to JSON using Iceberg's SchemaParser
                             try {
                               // scalastyle:off classforname
-                              val jsonUtilClass = Class.forName("org.apache.iceberg.util.JsonUtil")
+                              val jsonUtilClass =
+                                Class.forName("org.apache.iceberg.util.JsonUtil")
                               val factoryMethod = jsonUtilClass.getMethod("factory")
                               val factory = factoryMethod.invoke(null)
 
