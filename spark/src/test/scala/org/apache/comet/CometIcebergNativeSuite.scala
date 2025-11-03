@@ -2101,6 +2101,69 @@ class CometIcebergNativeSuite extends CometTestBase {
     }
   }
 
+  test("partition type JSON serialization for identity-partitioned tables") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create an identity-partitioned table
+        spark.sql("""
+          CREATE TABLE test_cat.db.partition_type_test (
+            id INT,
+            category STRING,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (category)
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.partition_type_test VALUES
+          (1, 'A', 10.5), (2, 'B', 20.3), (3, 'A', 30.7)
+        """)
+
+        // Execute a query and get the plan
+        val df = spark.sql("SELECT * FROM test_cat.db.partition_type_test")
+        val scanNodes = df.queryExecution.executedPlan
+          .collectLeaves()
+          .collect { case s: CometIcebergNativeScanExec => s }
+
+        assert(scanNodes.nonEmpty, "Expected at least one CometIcebergNativeScanExec node")
+
+        // Verify that partition_type_json is populated in the protobuf
+        val icebergScan = scanNodes.head.nativeOp.getIcebergScan
+        assert(icebergScan.getFilePartitionsCount > 0, "Expected at least one file partition")
+
+        var foundPartitionTypeJson = false
+        val partitions = icebergScan.getFilePartitionsList
+        partitions.forEach { partition =>
+          partition.getFileScanTasksList.forEach { task =>
+            if (task.hasPartitionTypeJson && task.getPartitionTypeJson.nonEmpty) {
+              foundPartitionTypeJson = true
+              // Verify it's valid JSON by checking it contains expected Iceberg type structure
+              assert(
+                task.getPartitionTypeJson.contains("\"type\"") &&
+                  task.getPartitionTypeJson.contains("\"fields\""),
+                s"partition_type_json should contain Iceberg type structure, got: ${task.getPartitionTypeJson}")
+            }
+          }
+        }
+
+        assert(
+          foundPartitionTypeJson,
+          "Expected at least one task to have partition_type_json populated for identity-partitioned table")
+
+        spark.sql("DROP TABLE test_cat.db.partition_type_test")
+      }
+    }
+  }
+
   // Helper to create temp directory
   def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile

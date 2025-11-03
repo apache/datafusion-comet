@@ -766,31 +766,58 @@ object IcebergScanSerde extends Logging {
                           val partitionTypeMethod = spec.getClass.getMethod("partitionType")
                           val partitionType = partitionTypeMethod.invoke(spec)
 
-                          // Serialize partition type to JSON using Iceberg's SchemaParser
-                          try {
-                            // scalastyle:off classforname
-                            val schemaParserClass =
-                              Class.forName("org.apache.iceberg.SchemaParser")
-                            val toJsonMethod = schemaParserClass.getMethod(
-                              "toJson",
-                              Class.forName("org.apache.iceberg.types.Type"))
-                            // scalastyle:on classforname
-                            val partitionTypeJson = toJsonMethod
-                              .invoke(null, partitionType)
-                              .asInstanceOf[String]
-                            taskBuilder.setPartitionTypeJson(partitionTypeJson)
-                          } catch {
-                            case e: Exception =>
-                              logWarning(
-                                s"Failed to serialize partition type to JSON: ${e.getMessage}")
-                          }
-
-                          // Serialize partition data to JSON using Iceberg's StructLike
+                          // Check if partition type has any fields before serializing
                           val fieldsMethod = partitionType.getClass.getMethod("fields")
                           val fields = fieldsMethod
                             .invoke(partitionType)
                             .asInstanceOf[java.util.List[_]]
 
+                            // Only serialize partition type if there are actual partition fields
+                          if (!fields.isEmpty) {
+                            // Serialize partition type to JSON using Iceberg's SchemaParser
+                            try {
+                              // scalastyle:off classforname
+                              val jsonUtilClass = Class.forName("org.apache.iceberg.util.JsonUtil")
+                              val factoryMethod = jsonUtilClass.getMethod("factory")
+                              val factory = factoryMethod.invoke(null)
+
+                              val writer = new java.io.StringWriter()
+                              val createGeneratorMethod =
+                                factory.getClass.getMethod(
+                                  "createGenerator",
+                                  classOf[java.io.Writer])
+                              val generator = createGeneratorMethod.invoke(factory, writer)
+
+                              val schemaParserClass =
+                                Class.forName("org.apache.iceberg.SchemaParser")
+                              val typeClass = Class.forName("org.apache.iceberg.types.Type")
+                              // Use shaded Jackson class from Iceberg
+                              val generatorClass = Class.forName(
+                                "org.apache.iceberg.shaded.com.fasterxml.jackson.core.JsonGenerator")
+                              val toJsonMethod = schemaParserClass.getDeclaredMethod(
+                                "toJson",
+                                typeClass,
+                                generatorClass)
+                              // scalastyle:on classforname
+
+                              toJsonMethod.setAccessible(true)
+                              toJsonMethod.invoke(null, partitionType, generator)
+
+                              // Close the generator to ensure all data is written
+                              val closeMethod = generator.getClass.getMethod("close")
+                              closeMethod.invoke(generator)
+                              val partitionTypeJson = writer.toString
+                              taskBuilder.setPartitionTypeJson(partitionTypeJson)
+                            } catch {
+                              case e: Exception =>
+                                logWarning(
+                                  s"Failed to serialize partition type to JSON: ${e.getMessage}")
+                            }
+                          } else {
+                            // No partition fields to serialize (unpartitioned table or all non-identity transforms)
+                          }
+
+                          // Serialize partition data to JSON using Iceberg's StructLike
                           val jsonBuilder = new StringBuilder()
                           jsonBuilder.append("{")
 
