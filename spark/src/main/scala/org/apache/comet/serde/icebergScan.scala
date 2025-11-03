@@ -23,12 +23,10 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.catalyst.plans.physical.KeyGroupedPartitioning
 import org.apache.spark.sql.comet.CometBatchScanExec
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometConf
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
@@ -325,16 +323,6 @@ object IcebergScanSerde extends Logging {
       icebergScanBuilder.putCatalogProperties(key, value)
     }
 
-    // Determine number of partitions from Iceberg's output partitioning
-    val numParts = scan.wrapped.outputPartitioning match {
-      case p: KeyGroupedPartitioning =>
-        p.numPartitions
-      case _ =>
-        scan.wrapped.inputRDD.getNumPartitions
-    }
-
-    icebergScanBuilder.setNumPartitions(numParts)
-
     // Set required_schema from output
     scan.output.foreach { attr =>
       val field = SparkStructField
@@ -402,7 +390,6 @@ object IcebergScanSerde extends Logging {
     }
 
     // Extract FileScanTasks from the InputPartitions in the RDD
-    var actualNumPartitions = 0
     try {
       scan.wrapped.inputRDD match {
         case rdd: org.apache.spark.sql.execution.datasources.v2.DataSourceRDD =>
@@ -874,7 +861,6 @@ object IcebergScanSerde extends Logging {
 
             val builtPartition = partitionBuilder.build()
             icebergScanBuilder.addFilePartitions(builtPartition)
-            actualNumPartitions += 1
           }
         case _ =>
       }
@@ -882,10 +868,6 @@ object IcebergScanSerde extends Logging {
       case e: Exception =>
         logWarning(s"Failed to extract FileScanTasks from Iceberg scan RDD: ${e.getMessage}")
     }
-
-    val numPartitions =
-      if (actualNumPartitions > 0) actualNumPartitions else numParts
-    icebergScanBuilder.setNumPartitions(numPartitions)
 
     builder.clearChildren()
     Some(builder.setIcebergScan(icebergScanBuilder).build())

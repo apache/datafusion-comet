@@ -118,11 +118,8 @@ message IcebergScan {
   // Pre-planned file scan tasks grouped by Spark partition
   repeated IcebergFilePartition file_partitions = 3;
 
-  // Number of Spark partitions for DataFusion parallelism
-  int32 num_partitions = 4;
-
   // Table metadata file path for FileIO initialization
-  string metadata_location = 5;
+  string metadata_location = 4;
 }
 
 // Groups FileScanTasks for a single Spark partition

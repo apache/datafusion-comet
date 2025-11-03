@@ -273,13 +273,13 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
         // Native Iceberg scan requires both configs to be enabled
         if (!COMET_ICEBERG_NATIVE_ENABLED.get()) {
-          fallbackReasons += s"Native Iceberg scan disabled because " +
+          fallbackReasons += "Native Iceberg scan disabled because " +
             s"${COMET_ICEBERG_NATIVE_ENABLED.key} is not enabled"
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
         if (!COMET_EXEC_ENABLED.get()) {
-          fallbackReasons += s"Native Iceberg scan disabled because " +
+          fallbackReasons += "Native Iceberg scan disabled because " +
             s"${COMET_EXEC_ENABLED.key} is not enabled"
           return withInfos(scanExec, fallbackReasons.toSet)
         }

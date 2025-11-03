@@ -61,7 +61,7 @@ pub struct IcebergScanExec {
     /// Catalog-specific configuration for FileIO
     catalog_properties: HashMap<String, String>,
     /// Pre-planned file scan tasks from Scala, grouped by Spark partition
-    file_task_groups: Option<Vec<Vec<iceberg::scan::FileScanTask>>>,
+    file_task_groups: Vec<Vec<iceberg::scan::FileScanTask>>,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
 }
@@ -71,11 +71,13 @@ impl IcebergScanExec {
         metadata_location: String,
         schema: SchemaRef,
         catalog_properties: HashMap<String, String>,
-        file_task_groups: Option<Vec<Vec<iceberg::scan::FileScanTask>>>,
-        num_partitions: usize,
+        file_task_groups: Vec<Vec<iceberg::scan::FileScanTask>>,
     ) -> Result<Self, ExecutionError> {
         // Don't normalize - just use the schema as provided by Spark
         let output_schema = schema;
+
+        // Derive num_partitions from file_task_groups length
+        let num_partitions = file_task_groups.len();
 
         let plan_properties = Self::compute_properties(Arc::clone(&output_schema), num_partitions);
 
@@ -136,25 +138,16 @@ impl ExecutionPlan for IcebergScanExec {
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         // Execute pre-planned tasks from Scala (planning happens via Iceberg's Java API)
-        if let Some(ref task_groups) = self.file_task_groups {
-            if partition < task_groups.len() {
-                let tasks = &task_groups[partition];
-
-                return self.execute_with_tasks(tasks.clone(), partition, context);
-            } else {
-                return Err(DataFusionError::Execution(format!(
-                    "IcebergScanExec: Partition index {} out of range (only {} task groups available)",
-                    partition,
-                    task_groups.len()
-                )));
-            }
+        if partition < self.file_task_groups.len() {
+            let tasks = &self.file_task_groups[partition];
+            self.execute_with_tasks(tasks.clone(), partition, context)
+        } else {
+            Err(DataFusionError::Execution(format!(
+                "IcebergScanExec: Partition index {} out of range (only {} task groups available)",
+                partition,
+                self.file_task_groups.len()
+            )))
         }
-
-        Err(DataFusionError::Execution(format!(
-            "IcebergScanExec: No FileScanTasks provided for partition {}. \
-             All scan planning must happen on the Scala side.",
-            partition
-        )))
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -510,13 +503,11 @@ where
 
 impl DisplayAs for IcebergScanExec {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut fmt::Formatter) -> fmt::Result {
+        let num_tasks: usize = self.file_task_groups.iter().map(|g| g.len()).sum();
         write!(
             f,
-            "IcebergScanExec: metadata_location={}, num_tasks={:?}",
-            self.metadata_location,
-            self.file_task_groups
-                .as_ref()
-                .map(|groups| groups.iter().map(|g| g.len()).sum::<usize>())
+            "IcebergScanExec: metadata_location={}, num_tasks={}",
+            self.metadata_location, num_tasks
         )
     }
 }

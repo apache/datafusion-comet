@@ -1413,17 +1413,17 @@ impl PhysicalPlanner {
                 //
                 // Comet's native side corresponds to a single Spark partition, so we extract
                 // only this partition's FileScanTasks and pass them as partition 0 for execution.
-                let file_task_groups = if !scan.file_partitions.is_empty() {
-                    let tasks = parse_file_scan_tasks(
-                        &scan.file_partitions[self.partition as usize].file_scan_tasks,
-                    )?;
-                    Some(vec![tasks]) // Single partition (partition 0) for execution
-                } else {
-                    None
-                };
 
-                // Always use 1 partition since we're only passing this partition's tasks
-                let num_partitions = 1;
+                // If file_partitions is empty, this is a logic error in Scala serialization
+                debug_assert!(
+                    !scan.file_partitions.is_empty(),
+                    "IcebergScan must have at least one file partition. This indicates a bug in Scala serialization."
+                );
+
+                let tasks = parse_file_scan_tasks(
+                    &scan.file_partitions[self.partition as usize].file_scan_tasks,
+                )?;
+                let file_task_groups = vec![tasks]; // Single partition (partition 0) for execution
 
                 // Create IcebergScanExec
                 let iceberg_scan = IcebergScanExec::new(
@@ -1431,7 +1431,6 @@ impl PhysicalPlanner {
                     required_schema,
                     catalog_properties,
                     file_task_groups,
-                    num_partitions,
                 )?;
 
                 Ok((
