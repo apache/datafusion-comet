@@ -34,41 +34,12 @@ import com.google.common.base.Objects
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
- * Comet fully native Iceberg scan node for DataSource V2.
+ * Native Iceberg scan operator that delegates file reading to iceberg-rust.
  *
- * Replaces Spark's Iceberg BatchScanExec by extracting FileScanTasks from Iceberg's planning and
- * serializing them to protobuf for native execution. All catalog access and planning happens in
- * Spark's Iceberg integration; the Rust side uses iceberg-rust's FileIO and ArrowReader to read
- * data files based on the pre-planned FileScanTasks. Catalog properties are used to configure the
- * FileIO (for credentials, regions, etc.)
- *
- * **How FileScanTask Serialization Works:**
- *
- * This implementation follows the same pattern as CometNativeScanExec for PartitionedFiles:
- *
- *   1. **At Planning Time (on Driver):**
- *      - CometScanRule creates CometIcebergNativeScanExec with originalPlan (BatchScanExec)
- *      - originalPlan.inputRDD is a DataSourceRDD containing DataSourceRDDPartition objects
- *      - Each partition contains InputPartition objects (from Iceberg's planInputPartitions())
- *      - Each InputPartition wraps a ScanTaskGroup containing FileScanTask objects
- *
- * 2. **During Serialization (in QueryPlanSerde.operator2Proto):**
- *   - When serializing CometIcebergNativeScanExec, we iterate through ALL RDD partitions
- *   - For each partition, extract InputPartitions and their FileScanTasks using reflection
- *   - Serialize each FileScanTask (file path, start, length, delete files) into protobuf
- *   - This happens ONCE on the driver, not per-worker
- *
- * 3. **At Execution Time (on Workers):**
- *   - The serialized plan (with all FileScanTasks) is sent to workers
- *   - Standard CometNativeExec.doExecuteColumnar() flow executes the native plan
- *   - Rust receives IcebergScan operator with FileScanTasks for ALL partitions
- *   - Each worker reads only the tasks for its partition index
- *
- * All tasks are extracted at planning time because the RDD and partitions exist on the driver,
- * and Iceberg has already assigned tasks to partitions.
- *
- * **Filters:** When a filter is on top of this scan, both are serialized together and executed as
- * one unit. No special RDD or per-partition logic needed.
+ * Replaces Spark's Iceberg BatchScanExec to bypass the DataSource V2 API and enable native
+ * execution. Iceberg's catalog and planning run in Spark to produce FileScanTasks, which are
+ * serialized to protobuf for the native side to execute using iceberg-rust's FileIO and
+ * ArrowReader. This provides better performance than reading through Spark's abstraction layers.
  */
 case class CometIcebergNativeScanExec(
     override val nativeOp: Operator,
@@ -76,18 +47,13 @@ case class CometIcebergNativeScanExec(
     @transient override val originalPlan: BatchScanExec,
     override val serializedPlanOpt: SerializedPlan,
     metadataLocation: String,
-    catalogProperties: Map[String, String], // TODO: Extract for authentication
     numPartitions: Int)
     extends CometLeafExec {
 
   override val supportsColumnar: Boolean = true
 
-  // FileScanTasks are serialized at planning time in QueryPlanSerde.operator2Proto()
-
   override val nodeName: String = "CometIcebergNativeScan"
 
-  // FileScanTasks are serialized at planning time and grouped by partition.
-  // Rust uses the partition index to select the correct task group.
   override lazy val outputPartitioning: Partitioning =
     UnknownPartitioning(numPartitions)
 
@@ -151,15 +117,9 @@ case class CometIcebergNativeScanExec(
    */
   private class ImmutableSQLMetric(metricType: String) extends SQLMetric(metricType, 0) {
 
-    // Override merge to do nothing - planning metrics are not updated during execution
-    override def merge(other: AccumulatorV2[Long, Long]): Unit = {
-      // Do nothing - this metric's value is immutable
-    }
+    override def merge(other: AccumulatorV2[Long, Long]): Unit = {}
 
-    // Override reset to do nothing - planning metrics should never be reset
-    override def reset(): Unit = {
-      // Do nothing - this metric's value is immutable
-    }
+    override def reset(): Unit = {}
   }
 
   override lazy val metrics: Map[String, SQLMetric] = {
@@ -204,7 +164,6 @@ case class CometIcebergNativeScanExec(
       originalPlan.doCanonicalize(),
       SerializedPlan(None),
       metadataLocation,
-      catalogProperties,
       numPartitions)
   }
 
@@ -215,7 +174,6 @@ case class CometIcebergNativeScanExec(
     obj match {
       case other: CometIcebergNativeScanExec =>
         this.metadataLocation == other.metadataLocation &&
-        this.catalogProperties == other.catalogProperties &&
         this.output == other.output &&
         this.serializedPlanOpt == other.serializedPlanOpt &&
         this.numPartitions == other.numPartitions
@@ -310,7 +268,6 @@ object CometIcebergNativeScanExec {
       scanExec,
       SerializedPlan(None),
       metadataLocation,
-      Map.empty, // TODO: Extract catalog properties for authentication
       numParts)
 
     scanExec.logicalLink.foreach(exec.setLogicalLink)
