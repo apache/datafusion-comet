@@ -464,71 +464,11 @@ under the License.
 <p>This guide offers information about areas of functionality where there are known differences.</p>
 <section id="parquet">
 <h2>Parquet<a class="headerlink" href="#parquet" title="Link to this heading">#</a></h2>
-<section id="data-type-support">
-<h3>Data Type Support<a class="headerlink" href="#data-type-support" title="Link to this heading">#</a></h3>
-<p>Comet does not support reading decimals encoded in binary format.</p>
-</section>
-<section id="parquet-scans">
-<h3>Parquet Scans<a class="headerlink" href="#parquet-scans" title="Link to this heading">#</a></h3>
-<p>Comet currently has three distinct implementations of the Parquet scan operator. The configuration property
-<code class="docutils literal notranslate"><span class="pre">spark.comet.scan.impl</span></code> is used to select an implementation. The default setting is <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.impl=auto</span></code>, and
-Comet will choose the most appropriate implementation based on the Parquet schema and other Comet configuration
-settings. Most users should not need to change this setting. However, it is possible to force Comet to try and use
-a particular implementation for all scan operations by setting this configuration property to one of the following
-implementations.</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Implementation</p></th>
-<th class="head"><p>Description</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">native_comet</span></code></p></td>
-<td><p>This implementation provides strong compatibility with Spark but does not support complex types. This is the original scan implementation in Comet and may eventually be removed.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code></p></td>
-<td><p>This implementation delegates to DataFusion’s <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code> but uses a hybrid approach of JVM and native code. This scan is designed to be integrated with Iceberg in the future.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code></p></td>
-<td><p>This experimental implementation delegates to DataFusion’s <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code> for full native execution. There are known compatibility issues when using this scan.</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> scans provide the following benefits over the <code class="docutils literal notranslate"><span class="pre">native_comet</span></code>
-implementation:</p>
+<p>Comet has the following limitations when reading Parquet files:</p>
 <ul class="simple">
-<li><p>Leverages the DataFusion community’s ongoing improvements to <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code></p></li>
-<li><p>Provides support for reading complex types (structs, arrays, and maps)</p></li>
-<li><p>Removes the use of reusable mutable-buffers in Comet, which is complex to maintain</p></li>
-<li><p>Improves performance</p></li>
-</ul>
-<p>The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> and <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> scans share the following limitations:</p>
-<ul class="simple">
-<li><p>When reading Parquet files written by systems other than Spark that contain columns with the logical types <code class="docutils literal notranslate"><span class="pre">UINT_8</span></code>
-or <code class="docutils literal notranslate"><span class="pre">UINT_16</span></code>, Comet will produce different results than Spark because Spark does not preserve or understand these
-logical types. Arrow-based readers, such as DataFusion and Comet do respect these types and read the data as unsigned
-rather than signed. By default, Comet will fall back to <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> when scanning Parquet files containing <code class="docutils literal notranslate"><span class="pre">byte</span></code> or <code class="docutils literal notranslate"><span class="pre">short</span></code>
-types (regardless of the logical type). This behavior can be disabled by setting
-<code class="docutils literal notranslate"><span class="pre">spark.comet.scan.allowIncompatible=true</span></code>.</p></li>
+<li><p>Comet does not support reading decimals encoded in binary format.</p></li>
 <li><p>No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.</p></li>
 </ul>
-<p>The <code class="docutils literal notranslate"><span class="pre">native_datafusion</span></code> scan has some additional limitations:</p>
-<ul class="simple">
-<li><p>Bucketed scans are not supported</p></li>
-<li><p>No support for row indexes</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">PARQUET_FIELD_ID_READ_ENABLED</span></code> is not respected <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1758">#1758</a></p></li>
-<li><p>There are failures in the Spark SQL test suite <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1545">#1545</a></p></li>
-<li><p>Setting Spark configs <code class="docutils literal notranslate"><span class="pre">ignoreMissingFiles</span></code> or <code class="docutils literal notranslate"><span class="pre">ignoreCorruptFiles</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> is not compatible with Spark</p></li>
-</ul>
-</section>
-<section id="s3-support-with-native-iceberg-compat">
-<h3>S3 Support with <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code><a class="headerlink" href="#s3-support-with-native-iceberg-compat" title="Link to this heading">#</a></h3>
-<ul class="simple">
-<li><p>When using the default AWS S3 endpoint (no custom endpoint configured), a valid region is required. Comet
-will attempt to resolve the region if it is not provided.</p></li>
-</ul>
-</section>
 </section>
 <section id="ansi-mode">
 <h2>ANSI Mode<a class="headerlink" href="#ansi-mode" title="Link to this heading">#</a></h2>
@@ -551,18 +491,14 @@ So Comet will add additional normalization expression of NaN and zero for compar
 <p>Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
 Spark if the data contains both zero and negative zero. This is likely an edge case that is not of concern for many users
 and sorting on floating-point data can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.allowIncompatible=true</span></code>.</p>
-<p>There is a known bug with using count(distinct) within aggregate queries, where each NaN value will be counted
-separately <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1824">#1824</a>.</p>
 </section>
 <section id="incompatible-expressions">
 <h2>Incompatible Expressions<a class="headerlink" href="#incompatible-expressions" title="Link to this heading">#</a></h2>
-<p>Some Comet native expressions are not 100% compatible with Spark and are disabled by default. These expressions
-will fall back to Spark but can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.allowIncompatible=true</span></code>.</p>
-</section>
-<section id="array-expressions">
-<h2>Array Expressions<a class="headerlink" href="#array-expressions" title="Link to this heading">#</a></h2>
-<p>Comet has experimental support for a number of array expressions. These are experimental and currently marked
-as incompatible and can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.allowIncompatible=true</span></code>.</p>
+<p>Expressions that are not 100% Spark-compatible will fall back to Spark by default and can be enabled by setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code>, where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the Spark expression class name. See
+the <a class="reference internal" href="expressions.html"><span class="std std-doc">Comet Supported Expressions Guide</span></a> for more information on this configuration setting.</p>
+<p>It is also possible to specify <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.allowIncompatible=true</span></code> to enable all
+incompatible expressions.</p>
 </section>
 <section id="regular-expressions">
 <h2>Regular Expressions<a class="headerlink" href="#regular-expressions" title="Link to this heading">#</a></h2>
@@ -577,7 +513,7 @@ this can be overridden by setting <code class="docutils literal notranslate"><sp
 <li><p><strong>Compatible</strong>: The results match Apache Spark</p></li>
 <li><p><strong>Incompatible</strong>: The results may match Apache Spark for some inputs, but there are known issues where some inputs
 will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
-<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.allowIncompatible=true</span></code> will allow all incompatible casts to run natively in Comet, but this is not
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Cast.allowIncompatible=true</span></code> will allow all incompatible casts to run natively in Comet, but this is not
 recommended for production use.</p></li>
 <li><p><strong>Unsupported</strong>: Comet does not provide a native version of this cast expression and the query stage will fall back to
 Spark.</p></li>
