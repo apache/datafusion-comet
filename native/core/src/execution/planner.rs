@@ -1384,32 +1384,17 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::IcebergScan(scan) => {
-                // Convert schema
                 let required_schema: SchemaRef =
                     convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
 
-                // Extract catalog configuration
                 let catalog_properties: HashMap<String, String> = scan
                     .catalog_properties
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
 
-                // Get metadata location from separate field
                 let metadata_location = scan.metadata_location.clone();
 
-                // Parse pre-planned FileScanTasks for this partition only
-                //
-                // NOTE: We no longer convert scan-level data_filters to predicates here.
-                // Instead, each FileScanTask contains its own residual expression, which is
-                // the result of Iceberg's ResidualEvaluator partially evaluating the scan
-                // filter against that file's partition data. This per-file residual is what
-                // gets used for row-group level filtering in the Parquet reader.
-                //
-                // Comet's native side corresponds to a single Spark partition, so we extract
-                // only this partition's FileScanTasks and pass them as partition 0 for execution.
-
-                // If file_partitions is empty, this is a logic error in Scala serialization
                 debug_assert!(
                     !scan.file_partitions.is_empty(),
                     "IcebergScan must have at least one file partition. This indicates a bug in Scala serialization."
@@ -1418,9 +1403,8 @@ impl PhysicalPlanner {
                 let tasks = parse_file_scan_tasks(
                     &scan.file_partitions[self.partition as usize].file_scan_tasks,
                 )?;
-                let file_task_groups = vec![tasks]; // Single partition (partition 0) for execution
+                let file_task_groups = vec![tasks];
 
-                // Create IcebergScanExec
                 let iceberg_scan = IcebergScanExec::new(
                     metadata_location,
                     required_schema,
@@ -2725,21 +2709,16 @@ fn convert_spark_types_to_arrow_schema(
     arrow_schema
 }
 
-/// Parse protobuf FileScanTasks into iceberg-rust FileScanTask objects.
+/// Converts protobuf FileScanTasks from Scala into iceberg-rust FileScanTask objects.
 ///
-/// This converts the protobuf representation of Iceberg file scan tasks (passed from Scala)
-/// into native iceberg-rust FileScanTask objects that can be executed directly.
-///
-/// Each task contains a residual expression which is the result of Iceberg's ResidualEvaluator
-/// partially evaluating the scan filter against that file's partition data. This residual is
-/// used for row-group level filtering during Parquet scanning.
+/// Each task contains a residual predicate that is used for row-group level filtering
+/// during Parquet scanning.
 fn parse_file_scan_tasks(
     proto_tasks: &[spark_operator::IcebergFileScanTask],
 ) -> Result<Vec<iceberg::scan::FileScanTask>, ExecutionError> {
     let results: Result<Vec<_>, _> = proto_tasks
         .iter()
         .map(|proto_task| {
-            // Parse schema from JSON (already contains partition values injected on Scala side)
             let schema: iceberg::spec::Schema = serde_json::from_str(&proto_task.schema_json)
                 .map_err(|e| {
                     ExecutionError::GeneralError(format!("Failed to parse schema JSON: {}", e))
@@ -2747,7 +2726,7 @@ fn parse_file_scan_tasks(
 
             let schema_ref = Arc::new(schema);
 
-            // CometScanRule validates all files are PARQUET before serialization
+            // CometScanRule validates format before serialization
             debug_assert_eq!(
                 proto_task.data_file_format.as_str(),
                 "PARQUET",
@@ -2755,16 +2734,8 @@ fn parse_file_scan_tasks(
             );
             let data_file_format = iceberg::spec::DataFileFormat::Parquet;
 
-            // Parse delete files for MOR (Merge-On-Read) table support
-            // Delete files allow Iceberg to track deletions separately from data files:
-            // - Positional deletes: Specify exact row positions to skip in data files
-            // - Equality deletes: Specify column values that should be filtered out
-            // These deletes are automatically applied by iceberg-rust's ArrowReader during scanning.
-            //
-            // NOTE: Spark's DataSource V2 API does not expose delete files through InputPartitions.
-            // Spark applies MOR deletes during query planning before creating FileScanTasks, so
-            // task.deletes() typically returns empty even for MOR tables. This is expected.
-
+            // Spark's DataSource V2 API does not expose delete files through InputPartitions.
+            // Spark applies MOR deletes during query planning before creating FileScanTasks.
             let deletes: Vec<iceberg::scan::FileScanTaskDeleteFile> = proto_task
                 .delete_files
                 .iter()
@@ -2793,22 +2764,12 @@ fn parse_file_scan_tasks(
                 })
                 .collect::<Result<Vec<_>, ExecutionError>>()?;
 
-            // Extract and convert residual expression from this task
-            //
-            // The residual is a Spark expression that represents the remaining filter
-            // conditions after partition pruning. Iceberg's ResidualEvaluator creates
-            // these by partially evaluating the scan filter against each file's partition data.
-            //
-            // Process:
-            // 1. Residuals are serialized from Scala with binding=false, so we receive
-            //    UnboundReference (name-based) expressions rather than BoundReference (index-based)
-            // 2. Convert Spark expression to Iceberg predicate (name-based)
-            // 3. Bind the predicate to this file's schema for row-group filtering
+            // Residuals are serialized with binding=false (name-based references).
+            // Convert to Iceberg predicate and bind to this file's schema for row-group filtering.
             let bound_predicate = proto_task
                 .residual
                 .as_ref()
                 .and_then(|residual_expr| {
-                    // Convert Spark expression to Iceberg predicate
                     convert_spark_expr_to_predicate(residual_expr)
                 })
                 .map(
@@ -2825,12 +2786,10 @@ fn parse_file_scan_tasks(
                 )
                 .transpose()?;
 
-            // Parse partition data if available (for proper constant identification per Iceberg spec)
             let partition = if let (Some(partition_json), Some(partition_type_json)) = (
                 proto_task.partition_data_json.as_ref(),
                 proto_task.partition_type_json.as_ref(),
             ) {
-                // Parse the partition type schema
                 let partition_type: iceberg::spec::StructType =
                     serde_json::from_str(partition_type_json).map_err(|e| {
                         ExecutionError::GeneralError(format!(
@@ -2839,7 +2798,6 @@ fn parse_file_scan_tasks(
                         ))
                     })?;
 
-                // Parse the partition data JSON with the proper schema
                 let partition_data_value: serde_json::Value = serde_json::from_str(partition_json)
                     .map_err(|e| {
                         ExecutionError::GeneralError(format!(
@@ -2848,7 +2806,6 @@ fn parse_file_scan_tasks(
                         ))
                     })?;
 
-                // Convert to Iceberg Literal using the partition type
                 match iceberg::spec::Literal::try_from_json(
                     partition_data_value,
                     &iceberg::spec::Type::Struct(partition_type),
@@ -2872,7 +2829,6 @@ fn parse_file_scan_tasks(
                 None
             };
 
-            // Parse partition spec if available
             let partition_spec = if let Some(partition_spec_json) =
                 proto_task.partition_spec_json.as_ref()
             {
@@ -2890,7 +2846,6 @@ fn parse_file_scan_tasks(
 
             let partition_spec_id = proto_task.partition_spec_id;
 
-            // Build FileScanTask matching iceberg-rust's structure
             Ok(iceberg::scan::FileScanTask {
                 data_file_path: proto_task.data_file_path.clone(),
                 start: proto_task.start,
@@ -3154,49 +3109,17 @@ fn literal_to_array_ref(
 // Spark Expression to Iceberg Predicate Conversion
 // ============================================================================
 //
-// Predicate Pushdown Design:
-// ===========================
-// For row-group level filtering in Parquet files, predicates follow this conversion path:
+// Predicates are converted through Spark expressions rather than directly from
+// Iceberg Java to Iceberg Rust. This leverages Comet's existing expression
+// serialization infrastructure, which handles hundreds of expression types.
 //
-// 1. Iceberg Expression (Java) - extracted from Spark's Iceberg scan planning
-//       | [~100 lines: Scala convertIcebergExpression() in QueryPlanSerde.scala]
-//       v
-// 2. Spark Catalyst Expression - standard Spark filter representation
-//       | [~3000 lines: existing exprToProto() infrastructure in QueryPlanSerde.scala]
-//       v
-// 3. Protobuf Spark Expr - serialized for Rust communication (data_filters field)
-//       | [~200 lines: convert_spark_filters_to_iceberg_predicate() below]
-//       v
-// 4. Iceberg Predicate (Rust) - bound to each file's schema for row-group pruning
+// Conversion path:
+//   Iceberg Expression (Java) -> Spark Catalyst Expression -> Protobuf -> Iceberg Predicate (Rust)
 //
-// This design leverages Comet's existing expression serialization infrastructure
-// (which handles hundreds of expression types) rather than implementing a separate
-// Iceberg Java -> Iceberg Rust serialization path. Any new expression types added
-// to Comet automatically flow through to Iceberg predicate pushdown.
-//
-// Supported predicates: =, !=, <, <=, >, >=, IS NULL, IS NOT NULL, IN, AND, OR, NOT
-//
-// Note: NOT IN predicates are intentionally skipped here because iceberg-rust's
-// RowGroupMetricsEvaluator::not_in() always returns MIGHT_MATCH (never prunes).
-// These are handled by post-scan CometFilter instead.
-//
-// Example: For query "SELECT * FROM table WHERE id > 10 AND status = 'active'"
-//   1. Iceberg planning extracts: [GreaterThan(id, 10), EqualTo(status, "active")]
-//   2. Converted to Catalyst: [GreaterThan(AttributeRef("id"), Literal(10)), ...]
-//   3. Serialized to protobuf: [Expr{gt: BinaryExpr{left: ..., right: ...}}, ...]
-//   4. Converted here to: Predicate::And(Predicate::Binary(...), Predicate::Binary(...))
-//   5. Bound to schema and passed to iceberg-rust's ArrowReader for row-group filtering
-//
-// Performance improvement from predicate pushdown:
-//   - Fewer row groups read (Parquet statistics used for pruning)
-//   - Reduced I/O (skip row groups that can't match)
-//   - Faster query execution
+// Note: NOT IN predicates are skipped because iceberg-rust's RowGroupMetricsEvaluator::not_in()
+// always returns MIGHT_MATCH (never prunes row groups). These are handled by CometFilter post-scan.
 
 /// Converts a protobuf Spark expression to an Iceberg predicate for row-group filtering.
-/// This allows predicate pushdown into Parquet readers.
-///
-/// Residuals are serialized with binding=false, so they contain UnboundReference (name-based)
-/// rather than BoundReference (index-based), which makes conversion straightforward.
 fn convert_spark_expr_to_predicate(
     expr: &spark_expression::Expr,
 ) -> Option<iceberg::expr::Predicate> {
@@ -3336,7 +3259,6 @@ fn convert_binary_to_predicate(
     let left_ref = left.as_ref()?;
     let right_ref = right.as_ref()?;
 
-    // Try left as column, right as literal
     if let (Some(column), Some(datum)) = (
         extract_column_reference(left_ref),
         extract_literal_as_datum(right_ref),
@@ -3346,7 +3268,6 @@ fn convert_binary_to_predicate(
         ));
     }
 
-    // Try right as column, left as literal (reverse operator)
     if let (Some(datum), Some(column)) = (
         extract_literal_as_datum(left_ref),
         extract_column_reference(right_ref),
@@ -3392,12 +3313,10 @@ fn extract_literal_as_datum(expr: &spark_expression::Expr) -> Option<iceberg::sp
 
     match &expr.expr_struct {
         Some(ExprStruct::Literal(literal)) => {
-            // Check for null literals
             if literal.is_null {
                 return None;
             }
 
-            // Match on the oneof value field
             match &literal.value {
                 Some(spark_expression::literal::Value::IntVal(v)) => {
                     Some(iceberg::spec::Datum::int(*v))
