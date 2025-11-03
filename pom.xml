@@ -138,6 +138,10 @@ under the License.
             <artifactId>parquet-column</artifactId>
           </exclusion>
           <exclusion>
+            <groupId>org.apache.parquet</groupId>
+            <artifactId>parquet-format-structures</artifactId>
+          </exclusion>
+          <exclusion>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
           </exclusion>
@@ -215,6 +219,12 @@ under the License.
       <dependency>
         <groupId>org.apache.parquet</groupId>
         <artifactId>parquet-column</artifactId>
+        <version>${parquet.version}</version>
+        <scope>${parquet.maven.scope}</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.parquet</groupId>
+        <artifactId>parquet-format-structures</artifactId>
         <version>${parquet.version}</version>
         <scope>${parquet.maven.scope}</scope>
       </dependency>

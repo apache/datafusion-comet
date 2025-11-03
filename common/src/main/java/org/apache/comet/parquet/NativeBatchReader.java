@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.channels.Channels;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -101,36 +102,88 @@ import static scala.jdk.javaapi.CollectionConverters.asJava;
  * </pre>
  */
 public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> implements Closeable {
+
+  /**
+   * A class that contains the necessary file information for reading a Parquet file. This class
+   * provides an abstraction over PartitionedFile properties.
+   */
+  public static class FileInfo {
+    private final long start;
+    private final long length;
+    private final String filePath;
+    private final long fileSize;
+
+    public FileInfo(long start, long length, String filePath, long fileSize)
+        throws URISyntaxException {
+      this.start = start;
+      this.length = length;
+      URI uri = new URI(filePath);
+      if (uri.getScheme() == null) {
+        this.filePath = "file://" + filePath;
+      } else {
+        this.filePath = filePath;
+      }
+      this.fileSize = fileSize;
+    }
+
+    public static FileInfo fromPartitionedFile(PartitionedFile file) throws URISyntaxException {
+      return new FileInfo(file.start(), file.length(), file.filePath().toString(), file.fileSize());
+    }
+
+    public long start() {
+      return start;
+    }
+
+    public long length() {
+      return length;
+    }
+
+    public String filePath() {
+      return filePath;
+    }
+
+    public long fileSize() {
+      return fileSize;
+    }
+
+    public URI pathUri() throws Exception {
+      URI uri = new URI(filePath);
+      return uri;
+    }
+  }
+
   private static final Logger LOG = LoggerFactory.getLogger(NativeBatchReader.class);
   protected static final BufferAllocator ALLOCATOR = new RootAllocator();
   private NativeUtil nativeUtil = new NativeUtil();
 
-  private Configuration conf;
-  private int capacity;
-  private boolean isCaseSensitive;
-  private boolean useFieldId;
-  private boolean ignoreMissingIds;
-  private StructType partitionSchema;
-  private InternalRow partitionValues;
-  private PartitionedFile file;
-  private final Map<String, SQLMetric> metrics;
+  protected Configuration conf;
+  protected int capacity;
+  protected boolean isCaseSensitive;
+  protected boolean useFieldId;
+  protected boolean ignoreMissingIds;
+  protected StructType partitionSchema;
+  protected InternalRow partitionValues;
+  protected PartitionedFile file;
+  protected FileInfo fileInfo;
+  protected final Map<String, SQLMetric> metrics;
   // Unfortunately CometMetricNode is from the "spark" package and cannot be used directly here
   // TODO: Move it to common package?
-  private Object metricsNode = null;
+  protected Object metricsNode = null;
 
-  private StructType sparkSchema;
-  private StructType dataSchema;
+  protected StructType sparkSchema;
+  protected StructType dataSchema;
   MessageType fileSchema;
-  private MessageType requestedSchema;
-  private CometVector[] vectors;
-  private AbstractColumnReader[] columnReaders;
-  private CometSchemaImporter importer;
-  private ColumnarBatch currentBatch;
+  protected MessageType requestedSchema;
+  protected CometVector[] vectors;
+  protected AbstractColumnReader[] columnReaders;
+  protected CometSchemaImporter importer;
+  protected ColumnarBatch currentBatch;
   //  private FileReader fileReader;
-  private boolean[] missingColumns;
-  private boolean isInitialized;
-  private ParquetMetadata footer;
-  private byte[] nativeFilter;
+  protected boolean[] missingColumns;
+  protected boolean isInitialized;
+  protected ParquetMetadata footer;
+  protected byte[] nativeFilter;
+  protected AbstractColumnReader[] preInitializedReaders;
 
   private ParquetColumn parquetColumn;
 
@@ -156,6 +209,12 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
 
   private long totalRowCount = 0;
   private long handle;
+
+  // Protected no-arg constructor for subclasses
+  protected NativeBatchReader() {
+    this.taskContext = TaskContext$.MODULE$.get();
+    this.metrics = new HashMap<>();
+  }
 
   // Only for testing
   public NativeBatchReader(String file, int capacity) {
@@ -237,6 +296,41 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.taskContext = TaskContext$.MODULE$.get();
   }
 
+  /** Alternate constructor that accepts FileInfo instead of PartitionedFile. */
+  NativeBatchReader(
+      Configuration conf,
+      FileInfo fileInfo,
+      ParquetMetadata footer,
+      byte[] nativeFilter,
+      int capacity,
+      StructType sparkSchema,
+      StructType dataSchema,
+      boolean isCaseSensitive,
+      boolean useFieldId,
+      boolean ignoreMissingIds,
+      boolean useLegacyDateTimestamp,
+      StructType partitionSchema,
+      InternalRow partitionValues,
+      Map<String, SQLMetric> metrics,
+      Object metricsNode) {
+    this.conf = conf;
+    this.capacity = capacity;
+    this.sparkSchema = sparkSchema;
+    this.dataSchema = dataSchema;
+    this.isCaseSensitive = isCaseSensitive;
+    this.useFieldId = useFieldId;
+    this.ignoreMissingIds = ignoreMissingIds;
+    this.useLegacyDateTimestamp = useLegacyDateTimestamp;
+    this.partitionSchema = partitionSchema;
+    this.partitionValues = partitionValues;
+    this.fileInfo = fileInfo;
+    this.footer = footer;
+    this.nativeFilter = nativeFilter;
+    this.metrics = metrics;
+    this.metricsNode = metricsNode;
+    this.taskContext = TaskContext$.MODULE$.get();
+  }
+
   /**
    * Initialize this reader. The reason we don't do it in the constructor is that we want to close
    * any resource hold by this reader when error happens during the initialization.
@@ -248,10 +342,12 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
             CometConf.COMET_USE_DECIMAL_128().key(),
             (Boolean) CometConf.COMET_USE_DECIMAL_128().defaultValue().get());
 
-    long start = file.start();
-    long length = file.length();
-    String filePath = file.filePath().toString();
-    long fileSize = file.fileSize();
+    // Use fileInfo if available, otherwise fall back to file
+    long start = fileInfo != null ? fileInfo.start() : file.start();
+    long length = fileInfo != null ? fileInfo.length() : file.length();
+    String filePath = fileInfo != null ? fileInfo.filePath() : file.filePath().toString();
+    long fileSize = fileInfo != null ? fileInfo.fileSize() : file.fileSize();
+    URI pathUri = fileInfo != null ? fileInfo.pathUri() : file.pathUri();
 
     ParquetReadOptions.Builder builder = HadoopReadOptions.builder(conf, new Path(filePath));
 
@@ -261,7 +357,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     ParquetReadOptions readOptions = builder.build();
 
     Map<String, String> objectStoreOptions =
-        asJava(NativeConfig.extractObjectStoreOptions(conf, file.pathUri()));
+        asJava(NativeConfig.extractObjectStoreOptions(conf, pathUri));
 
     // TODO: enable off-heap buffer when they are ready
     ReadOptions cometReadOptions = ReadOptions.builder(conf).build();
@@ -269,7 +365,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     Path path = new Path(new URI(filePath));
     try (FileReader fileReader =
         new FileReader(
-            CometInputFile.fromPath(path, conf), footer, readOptions, cometReadOptions, metrics)) {
+            CometInputFile.fromPath(path, conf), readOptions, cometReadOptions, metrics)) {
 
       requestedSchema = footer.getFileMetaData().getSchema();
       fileSchema = requestedSchema;
@@ -299,14 +395,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         sparkSchema =
             getSparkSchemaByFieldId(sparkSchema, requestedSchema.asGroupType(), caseSensitive);
       }
-      this.parquetColumn = getParquetColumn(requestedSchema, this.sparkSchema);
 
-      String timeZoneId = conf.get("spark.sql.session.timeZone");
-      // Native code uses "UTC" always as the timeZoneId when converting from spark to arrow schema.
-      Schema arrowSchema = Utils$.MODULE$.toArrowSchema(sparkSchema, "UTC");
-      byte[] serializedRequestedArrowSchema = serializeArrowSchema(arrowSchema);
-      Schema dataArrowSchema = Utils$.MODULE$.toArrowSchema(dataSchema, "UTC");
-      byte[] serializedDataArrowSchema = serializeArrowSchema(dataArrowSchema);
+      this.parquetColumn = getParquetColumn(requestedSchema, this.sparkSchema);
 
       // Create Column readers
       List<Type> fields = requestedSchema.getFields();
@@ -364,23 +454,28 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
           checkColumn(parquetFields[i]);
           missingColumns[i] = false;
         } else {
-          if (field.getRepetition() == Type.Repetition.REQUIRED) {
-            throw new IOException(
-                "Required column '"
-                    + field.getName()
-                    + "' is missing"
-                    + " in data file "
-                    + filePath);
-          }
-          if (field.isPrimitive()) {
-            ConstantColumnReader reader =
-                new ConstantColumnReader(nonPartitionFields[i], capacity, useDecimal128);
-            columnReaders[i] = reader;
+          if (preInitializedReaders != null && preInitializedReaders[i] != null) {
+            columnReaders[i] = preInitializedReaders[i];
             missingColumns[i] = true;
           } else {
-            // the column requested is not in the file, but the native reader can handle that
-            // and will return nulls for all rows requested
-            missingColumns[i] = false;
+            if (field.getRepetition() == Type.Repetition.REQUIRED) {
+              throw new IOException(
+                  "Required column '"
+                      + field.getName()
+                      + "' is missing"
+                      + " in data file "
+                      + filePath);
+            }
+            if (field.isPrimitive()) {
+              ConstantColumnReader reader =
+                  new ConstantColumnReader(nonPartitionFields[i], capacity, useDecimal128);
+              columnReaders[i] = reader;
+              missingColumns[i] = true;
+            } else {
+              // the column requested is not in the file, but the native reader can handle that
+              // and will return nulls for all rows requested
+              missingColumns[i] = false;
+            }
           }
         }
       }
@@ -421,8 +516,29 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       CometFileKeyUnwrapper keyUnwrapper = null;
       if (encryptionEnabled) {
         keyUnwrapper = new CometFileKeyUnwrapper();
-        keyUnwrapper.storeDecryptionKeyRetriever(file.filePath().toString(), conf);
+        keyUnwrapper.storeDecryptionKeyRetriever(filePath, conf);
       }
+
+      // Filter out columns with preinitialized readers from sparkSchema before making the
+      // call to native
+      if (preInitializedReaders != null) {
+        StructType filteredSchema = new StructType();
+        StructField[] sparkFields = sparkSchema.fields();
+        for (int i = 0; i < sparkFields.length; i++) {
+          if (i >= preInitializedReaders.length || preInitializedReaders[i] == null) {
+            filteredSchema = filteredSchema.add(sparkFields[i]);
+          }
+        }
+        sparkSchema = filteredSchema;
+      }
+
+      //      String timeZoneId = conf.get("spark.sql.session.timeZone");
+      String timeZoneId = "UTC";
+      // Native code uses "UTC" always as the timeZoneId when converting from spark to arrow schema.
+      Schema arrowSchema = Utils$.MODULE$.toArrowSchema(sparkSchema, "UTC");
+      byte[] serializedRequestedArrowSchema = serializeArrowSchema(arrowSchema);
+      Schema dataArrowSchema = Utils$.MODULE$.toArrowSchema(dataSchema, "UTC");
+      byte[] serializedDataArrowSchema = serializeArrowSchema(dataArrowSchema);
 
       int batchSize =
           conf.getInt(
@@ -648,11 +764,39 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       }
     } else { // A missing column which is either primitive or complex
       if (column.required()) {
-        // Column is missing in data but the required data is non-nullable. This file is invalid.
-        throw new IOException(
-            "Required column is missing in data file. Col: " + Arrays.toString(path));
+        // check if we have a preinitialized column reader for this column.
+        int columnIndex = getColumnIndexFromParquetColumn(column);
+        if (columnIndex == -1
+            || preInitializedReaders == null
+            || preInitializedReaders[columnIndex] == null) {
+          // Column is missing in data but the required data is non-nullable. This file is invalid.
+          throw new IOException(
+              "Required column is missing in data file. Col: " + Arrays.toString(path));
+        }
       }
     }
+  }
+
+  /**
+   * Get the column index in the requested schema for a given ParquetColumn. Returns -1 if not
+   * found.
+   */
+  private int getColumnIndexFromParquetColumn(ParquetColumn column) {
+    String[] targetPath = asJava(column.path()).toArray(new String[0]);
+    if (targetPath.length == 0) {
+      return -1;
+    }
+
+    // For top-level columns, match by name
+    String columnName = targetPath[0];
+    ParquetColumn[] parquetFields = asJava(parquetColumn.children()).toArray(new ParquetColumn[0]);
+    for (int i = 0; i < parquetFields.length; i++) {
+      String[] fieldPath = asJava(parquetFields[i].path()).toArray(new String[0]);
+      if (fieldPath.length > 0 && fieldPath[0].equals(columnName)) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   /**
