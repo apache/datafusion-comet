@@ -817,7 +817,8 @@ object IcebergScanSerde extends Logging {
                                     s" ${e.getMessage}")
                             }
                           } else {
-                            // No partition fields to serialize (unpartitioned table or all non-identity transforms)
+                            // No partition fields to serialize (unpartitioned table or
+                            // all non-identity transforms)
                           }
 
                           // Serialize partition data to JSON using Iceberg's StructLike
