@@ -70,7 +70,7 @@ object RewriteJoin extends JoinSelectionHelper {
         case Some(BuildRight) if smj.joinType == LeftAnti || smj.joinType == LeftSemi =>
           withInfo(
             smj,
-            "Cannot rewrite SortMergeJoin to HashJoin: BuildRight with LeftSemi/LeftAnti is not supported")
+            s"Cannot rewrite SortMergeJoin to HashJoin: BuildRight with ${smj.joinType} is not supported")
           // LeftAnti https://github.com/apache/datafusion-comet/issues/457
           // LeftSemi https://github.com/apache/datafusion-comet/issues/2667
           plan
