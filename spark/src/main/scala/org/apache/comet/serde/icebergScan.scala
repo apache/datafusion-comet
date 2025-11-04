@@ -323,6 +323,17 @@ object IcebergScanSerde extends Logging {
       icebergScanBuilder.putCatalogProperties(key, value)
     }
 
+    // Extract name mapping from table metadata (once per scan, shared by all tasks)
+    val nameMappingJson =
+      try {
+        CometIcebergNativeScanExec.extractNameMapping(scan.wrapped)
+      } catch {
+        case e: Exception =>
+          logWarning(s"Failed to extract name mapping from Iceberg table: ${e.getMessage}")
+          e.printStackTrace()
+          None
+      }
+
     // Set required_schema from output
     scan.output.foreach { attr =>
       val field = SparkStructField
@@ -727,18 +738,14 @@ object IcebergScanSerde extends Logging {
                             s"${e.getMessage}")
                     }
 
-                    // Extract partition data and spec ID for proper constant identification
+                    // Extract partition spec for proper constant identification
                     try {
-                      // Get partition spec from the task first
+                      // Get partition spec from the task
                       val specMethod = fileScanTaskClass.getMethod("spec")
                       val spec = specMethod.invoke(task)
 
                       if (spec != null) {
-                        val specIdMethod = spec.getClass.getMethod("specId")
-                        val specId = specIdMethod.invoke(spec).asInstanceOf[Int]
-                        taskBuilder.setPartitionSpecId(specId)
-
-                        // Serialize the entire PartitionSpec to JSON
+                        // Serialize the entire PartitionSpec to JSON (includes spec-id)
                         try {
                           // scalastyle:off classforname
                           val partitionSpecParserClass =
@@ -775,40 +782,19 @@ object IcebergScanSerde extends Logging {
                           // Only serialize partition type if there are actual partition fields
                           if (!fields.isEmpty) {
                             // Serialize partition type to JSON using Iceberg's SchemaParser
+                            // Use the simple overload that returns String directly
                             try {
                               // scalastyle:off classforname
-                              val jsonUtilClass =
-                                Class.forName("org.apache.iceberg.util.JsonUtil")
-                              val factoryMethod = jsonUtilClass.getMethod("factory")
-                              val factory = factoryMethod.invoke(null)
-
-                              val writer = new java.io.StringWriter()
-                              val createGeneratorMethod =
-                                factory.getClass.getMethod(
-                                  "createGenerator",
-                                  classOf[java.io.Writer])
-                              val generator = createGeneratorMethod.invoke(factory, writer)
-
                               val schemaParserClass =
                                 Class.forName("org.apache.iceberg.SchemaParser")
                               val typeClass = Class.forName("org.apache.iceberg.types.Type")
-                              // Use shaded Jackson class from Iceberg
-                              val generatorClass = Class.forName(
-                                "org.apache.iceberg.shaded.com." +
-                                  "fasterxml.jackson.core.JsonGenerator")
-                              val toJsonMethod = schemaParserClass.getDeclaredMethod(
-                                "toJson",
-                                typeClass,
-                                generatorClass)
+                              // Use the simple toJson(Type) method that returns String
+                              val toJsonMethod = schemaParserClass.getMethod("toJson", typeClass)
                               // scalastyle:on classforname
 
-                              toJsonMethod.setAccessible(true)
-                              toJsonMethod.invoke(null, partitionType, generator)
-
-                              // Close the generator to ensure all data is written
-                              val closeMethod = generator.getClass.getMethod("close")
-                              closeMethod.invoke(generator)
-                              val partitionTypeJson = writer.toString
+                              val partitionTypeJson = toJsonMethod
+                                .invoke(null, partitionType)
+                                .asInstanceOf[String]
                               taskBuilder.setPartitionTypeJson(partitionTypeJson)
                             } catch {
                               case e: Exception =>
@@ -875,6 +861,11 @@ object IcebergScanSerde extends Logging {
                           "Failed to extract partition data from FileScanTask: " +
                             s"${e.getMessage}")
                         e.printStackTrace()
+                    }
+
+                    // Set name mapping if available (shared by all tasks in this scan)
+                    nameMappingJson.foreach { nameMappingStr =>
+                      taskBuilder.setNameMappingJson(nameMappingStr)
                     }
 
                     partitionBuilder.addFileScanTasks(taskBuilder.build())

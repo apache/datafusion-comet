@@ -2840,7 +2840,16 @@ fn parse_file_scan_tasks(
                 None
             };
 
-            let partition_spec_id = proto_task.partition_spec_id;
+            // Extract name mapping from JSON if present
+            let name_mapping = if let Some(name_mapping_json) = proto_task.name_mapping_json.as_ref()
+            {
+                match serde_json::from_str::<iceberg::spec::NameMapping>(name_mapping_json) {
+                    Ok(mapping) => Some(Arc::new(mapping)),
+                    Err(_) => None, // Name mapping is optional
+                }
+            } else {
+                None
+            };
 
             Ok(iceberg::scan::FileScanTask {
                 data_file_path: proto_task.data_file_path.clone(),
@@ -2853,8 +2862,8 @@ fn parse_file_scan_tasks(
                 predicate: bound_predicate,
                 deletes,
                 partition,
-                partition_spec_id,
                 partition_spec,
+                name_mapping,
             })
         })
         .collect();

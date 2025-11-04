@@ -160,16 +160,21 @@ message IcebergFileScanTask {
   // Serialized as JSON to represent the Struct of partition values
   optional string partition_data_json = 10;
 
-  // Partition spec ID for this file (used to lookup the PartitionSpec)
-  optional int32 partition_spec_id = 11;
-
   // Partition type schema as JSON (Iceberg StructType for partition fields)
   // Used to deserialize partition_data_json into proper Iceberg types
   optional string partition_type_json = 12;
 
   // Partition spec as JSON (entire PartitionSpec object)
   // Used to determine which partition fields are identity-transformed (constants)
+  // The spec includes spec-id embedded in the JSON.
   optional string partition_spec_json = 13;
+
+  // Name mapping from table metadata (property: schema.name-mapping.default)
+  // Used to resolve field IDs from column names when Parquet files lack field IDs
+  // or have field ID conflicts (e.g., Hive table migrations via add_files).
+  // Per Iceberg spec rule #2: "Use schema.name-mapping.default metadata to map
+  // field id to columns without field id".
+  optional string name_mapping_json = 14;
 }
 
 // Iceberg delete file for MOR tables (positional or equality deletes)
