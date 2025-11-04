@@ -21,6 +21,7 @@ package org.apache.comet.fuzz
 
 import java.io.{BufferedWriter, FileWriter}
 
+import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.util.Random
 
@@ -103,7 +104,12 @@ object QueryGen {
     val func = Utils.randomChoice(Meta.scalarFunc, r)
     try {
       val signature = Utils.randomChoice(func.signatures, r)
-      val args = signature.inputTypes.map(x => pickRandomColumn(r, table, x))
+      val args =
+        if (signature.varArgs) {
+          pickRandomColumns(r, table, signature.inputTypes.head)
+        } else {
+          signature.inputTypes.map(x => pickRandomColumn(r, table, x))
+        }
 
       // Example SELECT c0, log(c0) as x FROM test0
       s"SELECT ${args.mkString(", ")}, ${func.name}(${args.mkString(", ")}) AS x " +
@@ -114,6 +120,21 @@ object QueryGen {
         throw new IllegalStateException(
           s"Failed to generate SQL for scalar function ${func.name}",
           e)
+    }
+  }
+
+  @tailrec
+  private def pickRandomColumns(r: Random, df: DataFrame, targetType: SparkType): Seq[String] = {
+    targetType match {
+      case SparkTypeOneOf(choices) =>
+        val chosenType = Utils.randomChoice(choices, r)
+        pickRandomColumns(r, df, chosenType)
+      case _ =>
+        var columns = Set.empty[String]
+        for (_ <- 0 to r.nextInt(df.columns.length)) {
+          columns += pickRandomColumn(r, df, targetType)
+        }
+        columns.toSeq
     }
   }
 
