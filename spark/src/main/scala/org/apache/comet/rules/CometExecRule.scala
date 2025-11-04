@@ -645,9 +645,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         normalizedPlan
       }
 
-      println(normalizedPlan)
-      println(planWithJoinRewritten)
-
       var newPlan = transform(planWithJoinRewritten)
 
       // if the plan cannot be run fully natively then explain why (when appropriate
