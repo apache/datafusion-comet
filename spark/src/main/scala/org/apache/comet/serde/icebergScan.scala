@@ -740,7 +740,6 @@ object IcebergScanSerde extends Logging {
 
                     // Extract partition spec for proper constant identification
                     try {
-                      // Get partition spec from the task
                       val specMethod = fileScanTaskClass.getMethod("spec")
                       val spec = specMethod.invoke(task)
 

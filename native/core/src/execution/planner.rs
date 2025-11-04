@@ -2840,7 +2840,6 @@ fn parse_file_scan_tasks(
                 None
             };
 
-            // Extract name mapping from JSON if present
             let name_mapping = if let Some(name_mapping_json) = proto_task.name_mapping_json.as_ref()
             {
                 match serde_json::from_str::<iceberg::spec::NameMapping>(name_mapping_json) {
