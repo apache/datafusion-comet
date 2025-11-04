@@ -794,7 +794,8 @@ object IcebergScanSerde extends Logging {
                               val typeClass = Class.forName("org.apache.iceberg.types.Type")
                               // Use shaded Jackson class from Iceberg
                               val generatorClass = Class.forName(
-                                "org.apache.iceberg.shaded.com.fasterxml.jackson.core.JsonGenerator")
+                                "org.apache.iceberg.shaded.com." +
+                                  "fasterxml.jackson.core.JsonGenerator")
                               val toJsonMethod = schemaParserClass.getDeclaredMethod(
                                 "toJson",
                                 typeClass,
@@ -812,7 +813,8 @@ object IcebergScanSerde extends Logging {
                             } catch {
                               case e: Exception =>
                                 logWarning(
-                                  s"Failed to serialize partition type to JSON: ${e.getMessage}")
+                                  "Failed to serialize partition type to JSON:" +
+                                    s" ${e.getMessage}")
                             }
                           } else {
                             // No partition fields to serialize (unpartitioned table or all non-identity transforms)
