@@ -66,6 +66,7 @@ incompatible expressions.
 | Ascii           | Yes               |                                                                                                            |
 | BitLength       | Yes               |                                                                                                            |
 | Chr             | Yes               |                                                                                                            |
+| Concat          | Yes               | Only string inputs are supported                                                                           |
 | ConcatWs        | Yes               |                                                                                                            |
 | Contains        | Yes               |                                                                                                            |
 | EndsWith        | Yes               |                                                                                                            |
