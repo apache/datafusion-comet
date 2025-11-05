@@ -68,11 +68,12 @@ object RewriteJoin extends JoinSelectionHelper {
     case smj: SortMergeJoinExec =>
       getSmjBuildSide(smj) match {
         case Some(BuildRight) if smj.joinType == LeftAnti || smj.joinType == LeftSemi =>
-          withInfo(
-            smj,
-            s"Cannot rewrite SortMergeJoin to HashJoin: BuildRight with ${smj.joinType} is not supported")
           // LeftAnti https://github.com/apache/datafusion-comet/issues/457
           // LeftSemi https://github.com/apache/datafusion-comet/issues/2667
+          withInfo(
+            smj,
+            s"Cannot rewrite SortMergeJoin to HashJoin: " +
+              s"BuildRight with ${smj.joinType} is not supported")
           plan
         case Some(buildSide) =>
           ShuffledHashJoinExec(
