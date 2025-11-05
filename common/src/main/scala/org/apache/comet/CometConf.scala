@@ -709,6 +709,13 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(sys.env.getOrElse("ENABLE_COMET_STRICT_TESTING", "false").toBoolean)
 
+  val COMET_TEST_SHOW_ANSWERS: ConfigEntry[Boolean] = conf(s"$COMET_PREFIX.testing.showAnswers")
+    .category(CATEGORY_TESTING)
+    .doc("When enabled, print query plan and subset of results from calls to testing methods " +
+      "starting with `checkSparkAnswer`.")
+    .booleanConf
+    .createWithDefault(sys.env.getOrElse("COMET_TESTING_SHOW_ANSWERS", "false").toBoolean)
+
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
       exec: String,

@@ -108,14 +108,26 @@ abstract class CometTestBase
       excludedClasses: Seq[Class[_]] = Seq.empty,
       withTol: Option[Double] = None): (SparkPlan, SparkPlan) = {
 
+    val showAnswers = CometConf.COMET_TEST_SHOW_ANSWERS.get()
+
     var expected: Array[Row] = Array.empty
     var sparkPlan = null.asInstanceOf[SparkPlan]
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       val dfSpark = datasetOfRows(spark, df.logicalPlan)
       expected = dfSpark.collect()
       sparkPlan = dfSpark.queryExecution.executedPlan
+      if (showAnswers) {
+        Console.err.println(s"Spark Plan: ${sparkPlan}")
+        Console.err.println("Spark Answers:")
+        dfSpark.show(truncate = false)
+      }
     }
     val dfComet = datasetOfRows(spark, df.logicalPlan)
+    if (showAnswers) {
+      Console.err.println(s"Comet Plan: ${dfComet.queryExecution.executedPlan}")
+      Console.err.println("Comet Answers:")
+      dfComet.show(truncate = false)
+    }
 
     if (withTol.isDefined) {
       checkAnswerWithTolerance(dfComet, expected, withTol.get)
