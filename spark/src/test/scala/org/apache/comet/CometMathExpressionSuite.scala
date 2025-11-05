@@ -31,7 +31,7 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("abs") {
-    val df = createTestData
+    val df = createTestData(generateNegativeZero = false)
     df.createOrReplaceTempView("tbl")
     for (field <- df.schema.fields) {
       val col = field.name
@@ -39,8 +39,19 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
+  test("abs - negative zero") {
+    val df = createTestData(generateNegativeZero = true)
+    df.createOrReplaceTempView("tbl")
+    for (field <- df.schema.fields.filter(f =>
+        f.dataType == DataTypes.FloatType || f.dataType == DataTypes.DoubleType)) {
+      val col = field.name
+      checkSparkAnswerAndOperator(
+        s"SELECT $col, abs($col) FROM tbl WHERE signum($col) < 0 ORDER BY $col")
+    }
+  }
+
   test("abs (ANSI mode)") {
-    val df = createTestData
+    val df = createTestData(generateNegativeZero = false)
     df.createOrReplaceTempView("tbl")
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       for (field <- df.schema.fields) {
@@ -61,7 +72,7 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
-  private def createTestData = {
+  private def createTestData(generateNegativeZero: Boolean) = {
     val r = new Random(42)
     val schema = StructType(
       Seq(
@@ -77,6 +88,6 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       spark,
       schema,
       1000,
-      DataGenOptions(generateNegativeZero = false))
+      DataGenOptions(generateNegativeZero))
   }
 }
