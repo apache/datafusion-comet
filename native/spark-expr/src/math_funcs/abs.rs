@@ -652,6 +652,8 @@ mod tests {
                 Some(f32::NAN),
                 Some(f32::NEG_INFINITY),
                 Some(f32::INFINITY),
+                Some(-0.0),
+                Some(0.0),
             ]);
             let args = ColumnarValue::Array(Arc::new(input));
             let expected = Float32Array::from(vec![
@@ -662,6 +664,8 @@ mod tests {
                 Some(f32::NAN),
                 Some(f32::INFINITY),
                 Some(f32::INFINITY),
+                Some(0.0),
+                Some(0.0),
             ]);
             let fail_on_error_arg =
                 ColumnarValue::Scalar(ScalarValue::Boolean(Some(fail_on_error)));
