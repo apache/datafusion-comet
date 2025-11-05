@@ -74,6 +74,11 @@ object Meta {
   }
 
   private def createFunctions(name: String, signatures: Seq[FunctionSignature]): Function = {
+    signatures.foreach { s =>
+      assert(
+        !s.varArgs || s.inputTypes.length == 1,
+        s"Variadic function $s must have exactly one input type")
+    }
     Function(name, signatures)
   }
 
