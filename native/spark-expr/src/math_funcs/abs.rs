@@ -198,66 +198,71 @@ pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
             | ScalarValue::UInt16(_)
             | ScalarValue::UInt32(_)
             | ScalarValue::UInt64(_) => Ok(args[0].clone()),
-            ScalarValue::Int8(a) => a
-                .map(|v| match v.checked_abs() {
+            ScalarValue::Int8(a) => match a {
+                None => Ok(args[0].clone()),
+                Some(v) => match v.checked_abs() {
                     Some(abs_val) => Ok(ColumnarValue::Scalar(ScalarValue::Int8(Some(abs_val)))),
                     None => {
                         if !fail_on_error {
                             // return the original value
-                            Ok(ColumnarValue::Scalar(ScalarValue::Int8(Some(v))))
+                            Ok(ColumnarValue::Scalar(ScalarValue::Int8(Some(*v))))
                         } else {
                             Err(arithmetic_overflow_error("Int8").into())
                         }
                     }
-                })
-                .unwrap(),
-            ScalarValue::Int16(a) => a
-                .map(|v| match v.checked_abs() {
+                },
+            },
+            ScalarValue::Int16(a) => match a {
+                None => Ok(args[0].clone()),
+                Some(v) => match v.checked_abs() {
                     Some(abs_val) => Ok(ColumnarValue::Scalar(ScalarValue::Int16(Some(abs_val)))),
                     None => {
                         if !fail_on_error {
                             // return the original value
-                            Ok(ColumnarValue::Scalar(ScalarValue::Int16(Some(v))))
+                            Ok(ColumnarValue::Scalar(ScalarValue::Int16(Some(*v))))
                         } else {
                             Err(arithmetic_overflow_error("Int16").into())
                         }
                     }
-                })
-                .unwrap(),
-            ScalarValue::Int32(a) => a
-                .map(|v| match v.checked_abs() {
+                },
+            },
+            ScalarValue::Int32(a) => match a {
+                None => Ok(args[0].clone()),
+                Some(v) => match v.checked_abs() {
                     Some(abs_val) => Ok(ColumnarValue::Scalar(ScalarValue::Int32(Some(abs_val)))),
                     None => {
                         if !fail_on_error {
                             // return the original value
-                            Ok(ColumnarValue::Scalar(ScalarValue::Int32(Some(v))))
+                            Ok(ColumnarValue::Scalar(ScalarValue::Int32(Some(*v))))
                         } else {
                             Err(arithmetic_overflow_error("Int32").into())
                         }
                     }
-                })
-                .unwrap(),
-            ScalarValue::Int64(a) => a
-                .map(|v| match v.checked_abs() {
+                },
+            },
+            ScalarValue::Int64(a) => match a {
+                None => Ok(args[0].clone()),
+                Some(v) => match v.checked_abs() {
                     Some(abs_val) => Ok(ColumnarValue::Scalar(ScalarValue::Int64(Some(abs_val)))),
                     None => {
                         if !fail_on_error {
                             // return the original value
-                            Ok(ColumnarValue::Scalar(ScalarValue::Int64(Some(v))))
+                            Ok(ColumnarValue::Scalar(ScalarValue::Int64(Some(*v))))
                         } else {
                             Err(arithmetic_overflow_error("Int64").into())
                         }
                     }
-                })
-                .unwrap(),
+                },
+            },
             ScalarValue::Float32(a) => Ok(ColumnarValue::Scalar(ScalarValue::Float32(
                 a.map(|x| x.abs()),
             ))),
             ScalarValue::Float64(a) => Ok(ColumnarValue::Scalar(ScalarValue::Float64(
                 a.map(|x| x.abs()),
             ))),
-            ScalarValue::Decimal128(a, precision, scale) => a
-                .map(|v| match v.checked_abs() {
+            ScalarValue::Decimal128(a, precision, scale) => match a {
+                None => Ok(args[0].clone()),
+                Some(v) => match v.checked_abs() {
                     Some(abs_val) => Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(
                         Some(abs_val),
                         *precision,
@@ -267,7 +272,7 @@ pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
                         if !fail_on_error {
                             // return the original value
                             Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(
-                                Some(v),
+                                Some(*v),
                                 *precision,
                                 *scale,
                             )))
@@ -275,10 +280,11 @@ pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
                             Err(arithmetic_overflow_error("Decimal128").into())
                         }
                     }
-                })
-                .unwrap(),
-            ScalarValue::Decimal256(a, precision, scale) => a
-                .map(|v| match v.checked_abs() {
+                },
+            },
+            ScalarValue::Decimal256(a, precision, scale) => match a {
+                None => Ok(args[0].clone()),
+                Some(v) => match v.checked_abs() {
                     Some(abs_val) => Ok(ColumnarValue::Scalar(ScalarValue::Decimal256(
                         Some(abs_val),
                         *precision,
@@ -288,7 +294,7 @@ pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
                         if !fail_on_error {
                             // return the original value
                             Ok(ColumnarValue::Scalar(ScalarValue::Decimal256(
-                                Some(v),
+                                Some(*v),
                                 *precision,
                                 *scale,
                             )))
@@ -296,8 +302,8 @@ pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
                             Err(arithmetic_overflow_error("Decimal256").into())
                         }
                     }
-                })
-                .unwrap(),
+                },
+            },
             dt => exec_err!("Not supported datatype for ABS: {dt}"),
         },
     }
@@ -801,6 +807,73 @@ mod tests {
                 }
                 _ => unreachable!(),
             }
+        });
+    }
+
+    #[test]
+    fn test_abs_null_scalars() {
+        // Test that NULL scalars return NULL (no panic) for all signed types
+        with_fail_on_error(|fail_on_error| {
+            let fail_on_error_arg =
+                ColumnarValue::Scalar(ScalarValue::Boolean(Some(fail_on_error)));
+
+            // Test Int8
+            let args = ColumnarValue::Scalar(ScalarValue::Int8(None));
+            match abs(&[args.clone(), fail_on_error_arg.clone()]) {
+                Ok(ColumnarValue::Scalar(ScalarValue::Int8(None))) => {}
+                _ => panic!("Expected NULL Int8, got different result"),
+            }
+
+            // Test Int16
+            let args = ColumnarValue::Scalar(ScalarValue::Int16(None));
+            match abs(&[args.clone(), fail_on_error_arg.clone()]) {
+                Ok(ColumnarValue::Scalar(ScalarValue::Int16(None))) => {}
+                _ => panic!("Expected NULL Int16, got different result"),
+            }
+
+            // Test Int32
+            let args = ColumnarValue::Scalar(ScalarValue::Int32(None));
+            match abs(&[args.clone(), fail_on_error_arg.clone()]) {
+                Ok(ColumnarValue::Scalar(ScalarValue::Int32(None))) => {}
+                _ => panic!("Expected NULL Int32, got different result"),
+            }
+
+            // Test Int64
+            let args = ColumnarValue::Scalar(ScalarValue::Int64(None));
+            match abs(&[args.clone(), fail_on_error_arg.clone()]) {
+                Ok(ColumnarValue::Scalar(ScalarValue::Int64(None))) => {}
+                _ => panic!("Expected NULL Int64, got different result"),
+            }
+
+            // Test Decimal128
+            let args = ColumnarValue::Scalar(ScalarValue::Decimal128(None, 10, 2));
+            match abs(&[args.clone(), fail_on_error_arg.clone()]) {
+                Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(None, 10, 2))) => {}
+                _ => panic!("Expected NULL Decimal128, got different result"),
+            }
+
+            // Test Decimal256
+            let args = ColumnarValue::Scalar(ScalarValue::Decimal256(None, 10, 2));
+            match abs(&[args.clone(), fail_on_error_arg.clone()]) {
+                Ok(ColumnarValue::Scalar(ScalarValue::Decimal256(None, 10, 2))) => {}
+                _ => panic!("Expected NULL Decimal256, got different result"),
+            }
+
+            // Test Float32
+            let args = ColumnarValue::Scalar(ScalarValue::Float32(None));
+            match abs(&[args.clone(), fail_on_error_arg.clone()]) {
+                Ok(ColumnarValue::Scalar(ScalarValue::Float32(None))) => {}
+                _ => panic!("Expected NULL Float32, got different result"),
+            }
+
+            // Test Float64
+            let args = ColumnarValue::Scalar(ScalarValue::Float64(None));
+            match abs(&[args.clone(), fail_on_error_arg.clone()]) {
+                Ok(ColumnarValue::Scalar(ScalarValue::Float64(None))) => {}
+                _ => panic!("Expected NULL Float64, got different result"),
+            }
+
+            Ok(())
         });
     }
 }
