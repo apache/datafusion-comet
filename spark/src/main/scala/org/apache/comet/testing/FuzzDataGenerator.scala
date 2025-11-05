@@ -168,6 +168,7 @@ object FuzzDataGenerator {
             case 4 => Float.MaxValue
             case 5 => 0.0f
             case 6 if options.generateNegativeZero => -0.0f
+            case 7 => Float.NaN
             case _ => r.nextFloat()
           }
         })
@@ -181,6 +182,7 @@ object FuzzDataGenerator {
             case 4 => Double.MaxValue
             case 5 => 0.0
             case 6 if options.generateNegativeZero => -0.0
+            case 7 => Double.NaN
             case _ => r.nextDouble()
           }
         })
