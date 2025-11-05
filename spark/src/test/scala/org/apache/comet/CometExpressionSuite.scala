@@ -30,7 +30,7 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Literal, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec, CometWindowExec}
 import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, SparkPlan, WholeStageCodegenExec}
@@ -42,6 +42,8 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.serde.CometConcat
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
@@ -59,6 +61,70 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     """org.apache.comet.CometNativeException: [ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+
+  test("sort floating point with negative zero") {
+    val schema = StructType(
+      Seq(
+        StructField("c0", DataTypes.FloatType, true),
+        StructField("c1", DataTypes.DoubleType, true)))
+    val df = FuzzDataGenerator.generateDataFrame(
+      new Random(42),
+      spark,
+      schema,
+      1000,
+      DataGenOptions(generateNegativeZero = true))
+    df.createOrReplaceTempView("tbl")
+
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+      checkSparkAnswerAndFallbackReason(
+        "select * from tbl order by 1, 2",
+        "unsupported range partitioning sort order")
+    }
+  }
+
+  test("sort array of floating point with negative zero") {
+    val schema = StructType(
+      Seq(
+        StructField("c0", DataTypes.createArrayType(DataTypes.FloatType), true),
+        StructField("c1", DataTypes.createArrayType(DataTypes.DoubleType), true)))
+    val df = FuzzDataGenerator.generateDataFrame(
+      new Random(42),
+      spark,
+      schema,
+      1000,
+      DataGenOptions(generateNegativeZero = true))
+    df.createOrReplaceTempView("tbl")
+
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+      checkSparkAnswerAndFallbackReason(
+        "select * from tbl order by 1, 2",
+        "unsupported range partitioning sort order")
+    }
+  }
+
+  test("sort struct containing floating point with negative zero") {
+    val schema = StructType(
+      Seq(
+        StructField(
+          "float_struct",
+          StructType(Seq(StructField("c0", DataTypes.FloatType, true)))),
+        StructField(
+          "float_double",
+          StructType(Seq(StructField("c0", DataTypes.DoubleType, true))))))
+    val df = FuzzDataGenerator.generateDataFrame(
+      new Random(42),
+      spark,
+      schema,
+      1000,
+      DataGenOptions(generateNegativeZero = true))
+    df.createOrReplaceTempView("tbl")
+
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+      checkSparkAnswerAndFallbackReason(
+        "select * from tbl order by 1, 2",
+        "unsupported range partitioning sort order")
+    }
+  }
 
   test("compare true/false to negative zero") {
     Seq(false, true).foreach { dictionary =>
@@ -414,41 +480,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
   }
-  test("Verify rpad expr support for second arg instead of just literal") {
-    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("తెలుగు", 2))
-    withParquetTable(data, "t1") {
-      val res = sql("select rpad(_1,_2) , rpad(_1,2) from t1 order by _1")
-      checkSparkAnswerAndOperator(res)
-    }
-  }
-
-  test("RPAD with character support other than default space") {
-    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("hi", 2))
-    withParquetTable(data, "t1") {
-      val res = sql(
-        """ select rpad(_1,_2,'?'), rpad(_1,_2,'??') , rpad(_1,2, '??'), hex(rpad(unhex('aabb'), 5)),
-          rpad(_1, 5, '??') from t1 order by _1 """.stripMargin)
-      checkSparkAnswerAndOperator(res)
-    }
-  }
-
-  test("test lpad expression support") {
-    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("తెలుగు", 2))
-    withParquetTable(data, "t1") {
-      val res = sql("select lpad(_1,_2) , lpad(_1,2) from t1 order by _1")
-      checkSparkAnswerAndOperator(res)
-    }
-  }
-
-  test("LPAD with character support other than default space") {
-    val data = Seq(("IfIWasARoadIWouldBeBent", 10), ("hi", 2))
-    withParquetTable(data, "t1") {
-      val res = sql(
-        """ select lpad(_1,_2,'?'), lpad(_1,_2,'??') , lpad(_1,2, '??'), hex(lpad(unhex('aabb'), 5)),
-          rpad(_1, 5, '??') from t1 order by _1 """.stripMargin)
-      checkSparkAnswerAndOperator(res)
-    }
-  }
 
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
@@ -675,11 +706,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val path = new Path(dir.toURI.toString, "date_trunc_with_format.parquet")
         makeDateTimeWithFormatTable(path, dictionaryEnabled = dictionaryEnabled, numRows)
         withParquetTable(path.toString, "dateformattbl") {
-          checkSparkAnswerAndOperator(
-            "SELECT " +
-              "dateformat, _7, " +
-              "trunc(_7, dateformat) " +
-              " from dateformattbl ")
+          withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[TruncDate]) -> "true") {
+            checkSparkAnswerAndOperator(
+              "SELECT " +
+                "dateformat, _7, " +
+                "trunc(_7, dateformat) " +
+                " from dateformattbl ")
+          }
         }
       }
     }
@@ -756,13 +789,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("date_trunc with format array") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-      val numRows = 1000
-      Seq(true, false).foreach { dictionaryEnabled =>
-        withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "timestamp_trunc_with_format.parquet")
-          makeDateTimeWithFormatTable(path, dictionaryEnabled = dictionaryEnabled, numRows)
-          withParquetTable(path.toString, "timeformattbl") {
+    val numRows = 1000
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "timestamp_trunc_with_format.parquet")
+        makeDateTimeWithFormatTable(path, dictionaryEnabled = dictionaryEnabled, numRows)
+        withParquetTable(path.toString, "timeformattbl") {
+          withSQLConf(
+            CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
+            CometConf.getExprAllowIncompatConfigKey(classOf[TruncTimestamp]) -> "true") {
             checkSparkAnswerAndOperator(
               "SELECT " +
                 "format, _0, _1, _2, _3, _4, _5, " +
@@ -816,10 +851,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 "SECOND",
                 "MILLISECOND",
                 "MICROSECOND").foreach { format =>
-                checkSparkAnswer(
-                  "SELECT " +
-                    s"date_trunc('$format', ts )" +
-                    " from int96timetbl")
+                val sql = "SELECT " +
+                  s"date_trunc('$format', ts )" +
+                  " from int96timetbl"
+
+                if (conversionEnabled) {
+                  // plugin is disabled if PARQUET_INT96_TIMESTAMP_CONVERSION is true
+                  checkSparkAnswer(sql)
+                } else {
+                  checkSparkAnswerAndOperator(sql)
+                }
               }
             }
           }
@@ -948,7 +989,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql(s"create table $table(id int, name varchar(20)) using parquet")
       sql(s"insert into $table values(1,'James Smith')")
       val query = sql(s"select cast(id as string) from $table")
-      val (_, cometPlan) = checkSparkAnswer(query)
+      val (_, cometPlan) = checkSparkAnswerAndOperator(query)
       val project = cometPlan
         .asInstanceOf[WholeStageCodegenExec]
         .child
@@ -1313,17 +1354,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "sin",
           "sqrt",
           "tan")) {
-        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1), $expr(_2) FROM tbl")
-        val cometProjectExecs = collect(df.queryExecution.executedPlan) {
-          case op: CometProjectExec => op
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
+        val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+          op
         }
         assert(cometProjectExecs.length == 1, expr)
       }
       // expressions with two args
       for (expr <- Seq("atan2", "pow")) {
-        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1, _2) FROM tbl")
-        val cometProjectExecs = collect(df.queryExecution.executedPlan) {
-          case op: CometProjectExec => op
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
+        val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
+          op
         }
         assert(cometProjectExecs.length == 1, expr)
       }
@@ -1334,8 +1377,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val testValuesRepeated = doubleValues.flatMap(v => Seq.fill(1000)(v))
     for (withDictionary <- Seq(true, false)) {
       withParquetTable(testValuesRepeated.map(n => (n, n)), "tbl", withDictionary) {
-        val df = checkSparkAnswerWithTol(s"SELECT $expr(_1) FROM tbl")
-        val projections = collect(df.queryExecution.executedPlan) { case p: CometProjectExec =>
+        val (_, cometPlan) = checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1) FROM tbl"))
+        val projections = collect(cometPlan) { case p: CometProjectExec =>
           p
         }
         assert(projections.length == 1)
@@ -1351,10 +1394,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
     withParquetTable(Seq(0, 1, 2).map(n => (n, n)), "tbl") {
       val sql = "select _1+_2 from tbl"
-      val (_, cometPlan) = checkSparkAnswer(sql)
+      val (_, cometPlan) = checkSparkAnswerAndOperator(sql)
       assert(0 == countSparkProjectExec(cometPlan))
       withSQLConf(CometConf.getExprEnabledConfigKey("Add") -> "false") {
-        val (_, cometPlan) = checkSparkAnswer(sql)
+        val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+          sql,
+          "Expression support is disabled. Set spark.comet.expression.Add.enabled=true to enable it.")
         assert(1 == countSparkProjectExec(cometPlan))
       }
     }
@@ -1371,7 +1416,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val (_, cometPlan) = checkSparkAnswer(sql)
       assert(1 == countSparkProjectExec(cometPlan))
       withSQLConf(CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true") {
-        val (_, cometPlan) = checkSparkAnswer(sql)
+        val (_, cometPlan) = checkSparkAnswerAndOperator(sql)
         assert(0 == countSparkProjectExec(cometPlan))
       }
     }
@@ -1648,7 +1693,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               s"SELECT * FROM $table WHERE name in ('Smith', 'Brown', NULL)")
 
             // TODO: why with not in, the plan is only `LocalTableScan`?
-            checkSparkAnswer(s"SELECT * FROM $table WHERE id not in (1)")
+            checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE id not in (1)")
             checkSparkAnswer(s"SELECT * FROM $table WHERE name not in ('Smith', 'Brown', NULL)")
           }
         }
@@ -1976,7 +2021,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val expected = test._2
             val df = sql(qry)
             df.collect() // force an execution
-            checkSparkAnswerAndCompareExplainPlan(df, expected)
+            checkSparkAnswerAndFallbackReasons(df, expected)
           })
       }
     }
@@ -2001,7 +2046,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val expected = test._2
             val df = sql(qry)
             df.collect() // force an execution
-            checkSparkAnswerAndCompareExplainPlan(df, expected)
+            checkSparkAnswerAndFallbackReasons(df, expected)
           })
       }
     }
@@ -2025,7 +2070,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |md5(col), md5(cast(a as string)), md5(cast(b as string)),
               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
               |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
-              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1)
+              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1),
+              |sha1(col), sha1(cast(a as string)), sha1(cast(b as string))
               |from test
               |""".stripMargin)
         }
@@ -2137,7 +2183,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |md5(col), md5(cast(a as string)), --md5(cast(b as string)),
               |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
               |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
-              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1)
+              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1),
+              |sha1(col), sha1(cast(a as string))
               |from test
               |""".stripMargin)
         }
@@ -2288,33 +2335,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       sql(s"insert into $table values('ab')")
 
       checkSparkAnswerAndOperator(s"SELECT * FROM $table")
-    }
-  }
-
-  test("rpad") {
-    val table = "rpad"
-    val gen = new DataGenerator(new Random(42))
-    withTable(table) {
-      // generate some data
-      val dataChars = "abc123"
-      sql(s"create table $table(id int, name1 char(8), name2 varchar(8)) using parquet")
-      val testData = gen.generateStrings(100, dataChars, 6) ++ Seq(
-        "é", // unicode 'e\\u{301}'
-        "é" // unicode '\\u{e9}'
-      )
-      testData.zipWithIndex.foreach { x =>
-        sql(s"insert into $table values(${x._2}, '${x._1}', '${x._1}')")
-      }
-      // test 2-arg version
-      checkSparkAnswerAndOperator(
-        s"SELECT id, rpad(name1, 10), rpad(name2, 10) FROM $table ORDER BY id")
-      // test 3-arg version
-      for (length <- Seq(2, 10)) {
-        checkSparkAnswerAndOperator(
-          s"SELECT id, name1, rpad(name1, $length, ' ') FROM $table ORDER BY id")
-        checkSparkAnswerAndOperator(
-          s"SELECT id, name2, rpad(name2, $length, ' ') FROM $table ORDER BY id")
-      }
     }
   }
 
@@ -3205,4 +3225,62 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("test concat function - strings") {
+    withTable("t1") {
+      sql(
+        "create table t1 using parquet as select uuid() c1, uuid() c2, uuid() c3, uuid() c4, cast(null as string) c5 from range(10)")
+      checkSparkAnswerAndOperator("select concat(c1, c2) AS x FROM t1")
+      checkSparkAnswerAndOperator("select concat(c1, c1) AS x FROM t1")
+      checkSparkAnswerAndOperator("select concat(c1, c2, c3) AS x FROM t1")
+      checkSparkAnswerAndOperator("select concat(c1, c2, c3, c5) AS x FROM t1")
+      checkSparkAnswerAndOperator(
+        "select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1")
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/2647
+  test("test concat function - arrays") {
+    withTable("t1") {
+      sql(
+        "create table t1 using parquet as select array(id, id+1) c1, array(id+2, id+3) c2, CAST(array() AS array<int>) c3, CAST(array(null) as array<int>) c4, cast(null as array<int>) c5 from range(10)")
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c2) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c1) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c2, c3) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c2, c3, c5) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1",
+        CometConcat.unsupportedReason)
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/2647
+  test("test concat function - binary") {
+    withTable("t1") {
+      sql(
+        "create table t1 using parquet as select cast(uuid() as binary) c1, cast(uuid() as binary) c2, cast(uuid() as binary) c3, cast(uuid() as binary) c4, cast(null as binary) c5 from range(10)")
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c2) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c1) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c2, c3) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(c1, c2, c3, c5) AS x FROM t1",
+        CometConcat.unsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        "select concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM t1",
+        CometConcat.unsupportedReason)
+    }
+  }
 }

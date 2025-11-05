@@ -30,7 +30,7 @@ import org.apache.spark.sql.functions._
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CometArrayExcept, CometArrayRemove, CometArrayReverse, CometFlatten}
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -64,12 +64,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             spark,
             filename,
             100,
-            DataGenOptions(
-              allowNull = true,
-              generateNegativeZero = true,
-              generateArray = false,
-              generateStruct = false,
-              generateMap = false))
+            SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false),
+            DataGenOptions(allowNull = true, generateNegativeZero = true))
         }
         val table = spark.read.parquet(filename)
         table.createOrReplaceTempView("t1")
@@ -95,13 +91,13 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         val filename = path.toString
         val random = new Random(42)
         withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-          val options = DataGenOptions(
-            allowNull = true,
-            generateNegativeZero = true,
-            generateArray = true,
-            generateStruct = true,
-            generateMap = false)
-          ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+          ParquetGenerator.makeParquetFile(
+            random,
+            spark,
+            filename,
+            100,
+            SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = false),
+            DataGenOptions(allowNull = true, generateNegativeZero = true))
         }
         withSQLConf(
           CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
@@ -132,12 +128,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           .createOrReplaceTempView("t2")
         val expectedFallbackReasons = HashSet(
           "data type not supported: ArrayType(StructType(StructField(_1,BooleanType,true),StructField(_2,ByteType,true)),false)")
-        // note that checkExtended is disabled here due to an unrelated issue
-        // https://github.com/apache/datafusion-comet/issues/1313
-        checkSparkAnswerAndCompareExplainPlan(
+        checkSparkAnswerAndFallbackReasons(
           sql("SELECT array_remove(a, b) FROM t2"),
-          expectedFallbackReasons,
-          checkExplainString = false)
+          expectedFallbackReasons)
       }
     }
   }
@@ -266,12 +259,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             spark,
             filename,
             100,
-            DataGenOptions(
-              allowNull = true,
-              generateNegativeZero = true,
-              generateArray = true,
-              generateStruct = true,
-              generateMap = false))
+            SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = false),
+            DataGenOptions(allowNull = true, generateNegativeZero = true))
         }
         val table = spark.read.parquet(filename)
         table.createOrReplaceTempView("t1")
@@ -310,12 +299,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             spark,
             filename,
             100,
-            DataGenOptions(
-              allowNull = true,
-              generateNegativeZero = true,
-              generateArray = false,
-              generateStruct = false,
-              generateMap = false))
+            SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false),
+            DataGenOptions(allowNull = true, generateNegativeZero = true))
         }
         val table = spark.read.parquet(filename)
         table.createOrReplaceTempView("t2")
@@ -340,12 +325,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           spark,
           filename,
           100,
-          DataGenOptions(
-            allowNull = true,
-            generateNegativeZero = true,
-            generateArray = true,
-            generateStruct = true,
-            generateMap = false))
+          SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = false),
+          DataGenOptions(allowNull = true, generateNegativeZero = true))
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
@@ -588,12 +569,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           spark,
           filename,
           100,
-          DataGenOptions(
-            allowNull = true,
-            generateNegativeZero = true,
-            generateArray = false,
-            generateStruct = false,
-            generateMap = false))
+          SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false),
+          DataGenOptions(allowNull = true, generateNegativeZero = true))
       }
       withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
         withTempView("t1", "t2") {
@@ -622,13 +599,13 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val options = DataGenOptions(
-          allowNull = true,
-          generateNegativeZero = true,
-          generateArray = true,
-          generateStruct = true,
-          generateMap = false)
-        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = false),
+          DataGenOptions(allowNull = true, generateNegativeZero = true))
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
@@ -692,12 +669,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             spark,
             filename,
             100,
-            DataGenOptions(
-              allowNull = true,
-              generateNegativeZero = true,
-              generateArray = false,
-              generateStruct = false,
-              generateMap = false))
+            SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false),
+            DataGenOptions(allowNull = true, generateNegativeZero = true))
         }
         val table = spark.read.parquet(filename)
         table.createOrReplaceTempView("t1")
@@ -720,13 +693,13 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val options = DataGenOptions(
-          allowNull = true,
-          generateNegativeZero = true,
-          generateArray = true,
-          generateStruct = true,
-          generateMap = false)
-        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = false),
+          DataGenOptions(allowNull = true, generateNegativeZero = true))
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
@@ -773,13 +746,13 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val options = DataGenOptions(
-          allowNull = true,
-          generateNegativeZero = true,
-          generateArray = true,
-          generateStruct = true,
-          generateMap = false)
-        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = false),
+          DataGenOptions(allowNull = true, generateNegativeZero = true))
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",

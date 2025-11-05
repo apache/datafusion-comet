@@ -83,6 +83,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | `spark.comet.explain.native.enabled` | When this setting is enabled, Comet will provide a tree representation of the native query plan before execution and again after execution, with metrics. | false |
+| `spark.comet.explain.rules` | When this setting is enabled, Comet will log all plan transformations performed in physical optimizer rules. Default: false | false |
 | `spark.comet.explain.verbose.enabled` | When this setting is enabled, Comet's extended explain output will provide the full query plan annotated with fallback reasons as well as a summary of how much of the plan was accelerated by Comet. When this setting is disabled, a list of fallback reasons will be provided instead. | false |
 | `spark.comet.explainFallback.enabled` | When this setting is enabled, Comet will provide logging explaining the reason(s) why a query stage cannot be executed natively. Set this to false to reduce the amount of logging. | false |
 | `spark.comet.logFallbackReasons.enabled` | When this setting is enabled, Comet will log warnings for all fallback reasons. | false |
@@ -117,6 +118,19 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.exec.memoryPool` | The type of memory pool to be used for Comet native execution when running Spark in off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/tuning.html). | fair_unified |
 | `spark.comet.exec.memoryPool.fraction` | Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/tuning.html). | 1.0 |
 | `spark.comet.tracing.enabled` | Enable fine-grained tracing of events and memory usage. For more information, refer to the [Comet Tracing Guide](https://datafusion.apache.org/comet/user-guide/tracing.html). | false |
+<!--END:CONFIG_TABLE-->
+
+## Development & Testing Settings
+
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+<!--BEGIN:CONFIG_TABLE[testing]-->
+| Config | Description | Default Value |
+|--------|-------------|---------------|
+| `spark.comet.columnar.shuffle.memory.factor` | Fraction of Comet memory to be allocated per executor process for columnar shuffle when running in on-heap mode. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/tuning.html). | 1.0 |
+| `spark.comet.exec.onHeap.enabled` | Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests. | false |
+| `spark.comet.exec.onHeap.memoryPool` | The type of memory pool to be used for Comet native execution when running Spark in on-heap mode. Available pool types are `greedy`, `fair_spill`, `greedy_task_shared`, `fair_spill_task_shared`, `greedy_global`, `fair_spill_global`, and `unbounded`. | greedy_task_shared |
+| `spark.comet.memoryOverhead` | The amount of additional memory to be allocated per executor process for Comet, in MiB, when running Spark in on-heap mode. | 1024 MiB |
+| `spark.comet.testing.strict` | Experimental option to enable strict testing, which will fail tests that could be more comprehensive, such as checking for a specific fallback reason | false |
 <!--END:CONFIG_TABLE-->
 
 ## Enabling or Disabling Individual Operators
@@ -188,6 +202,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.CheckOverflow.enabled` | Enable Comet acceleration for `CheckOverflow` | true |
 | `spark.comet.expression.Chr.enabled` | Enable Comet acceleration for `Chr` | true |
 | `spark.comet.expression.Coalesce.enabled` | Enable Comet acceleration for `Coalesce` | true |
+| `spark.comet.expression.Concat.enabled` | Enable Comet acceleration for `Concat` | true |
 | `spark.comet.expression.ConcatWs.enabled` | Enable Comet acceleration for `ConcatWs` | true |
 | `spark.comet.expression.Contains.enabled` | Enable Comet acceleration for `Contains` | true |
 | `spark.comet.expression.Cos.enabled` | Enable Comet acceleration for `Cos` | true |
@@ -256,11 +271,13 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Reverse.enabled` | Enable Comet acceleration for `Reverse` | true |
 | `spark.comet.expression.Round.enabled` | Enable Comet acceleration for `Round` | true |
 | `spark.comet.expression.Second.enabled` | Enable Comet acceleration for `Second` | true |
+| `spark.comet.expression.Sha1.enabled` | Enable Comet acceleration for `Sha1` | true |
 | `spark.comet.expression.Sha2.enabled` | Enable Comet acceleration for `Sha2` | true |
 | `spark.comet.expression.ShiftLeft.enabled` | Enable Comet acceleration for `ShiftLeft` | true |
 | `spark.comet.expression.ShiftRight.enabled` | Enable Comet acceleration for `ShiftRight` | true |
 | `spark.comet.expression.Signum.enabled` | Enable Comet acceleration for `Signum` | true |
 | `spark.comet.expression.Sin.enabled` | Enable Comet acceleration for `Sin` | true |
+| `spark.comet.expression.SortOrder.enabled` | Enable Comet acceleration for `SortOrder` | true |
 | `spark.comet.expression.SparkPartitionID.enabled` | Enable Comet acceleration for `SparkPartitionID` | true |
 | `spark.comet.expression.Sqrt.enabled` | Enable Comet acceleration for `Sqrt` | true |
 | `spark.comet.expression.StartsWith.enabled` | Enable Comet acceleration for `StartsWith` | true |

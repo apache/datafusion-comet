@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::operators::copy_array;
+use crate::execution::operators::{copy_array, copy_or_unpack_array, CopyMode};
 use crate::{
     errors::CometError,
     execution::{
@@ -147,27 +147,13 @@ impl ScanExec {
         })
     }
 
-    /// Checks if the input data type `dt` is a dictionary type with primitive value type.
-    /// If so, unpacks it and returns the primitive value type.
-    ///
-    /// Otherwise, this returns the original data type.
-    ///
-    /// This is necessary since DataFusion doesn't handle dictionary array with values
-    /// being primitive type.
-    ///
-    /// TODO: revisit this once DF has improved its dictionary type support. Ideally we shouldn't
-    ///   do this in Comet but rather let DF to handle it for us.
+    /// Unpack all dictionary types because some DataFusion operators
+    /// and expressions do not support dictionary types
     fn unpack_dictionary_type(dt: &DataType) -> DataType {
         if let DataType::Dictionary(_, vt) = dt {
-            if !matches!(
-                vt.as_ref(),
-                DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
-            ) {
-                // return the underlying data type
-                return vt.as_ref().clone();
-            }
+            // return the underlying data type
+            return vt.as_ref().clone();
         }
-
         dt.clone()
     }
 
@@ -280,7 +266,8 @@ impl ScanExec {
 
             let array = if arrow_ffi_safe {
                 // ownership of this array has been transferred to native
-                array
+                // but we still need to unpack dictionary arrays
+                copy_or_unpack_array(&array, &CopyMode::UnpackOrClone)?
             } else {
                 // it is necessary to copy the array because the contents may be
                 // overwritten on the JVM side in the future

@@ -1,0 +1,21 @@
+CometColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometHashAggregate
+      +- CometExchange
+         +- CometHashAggregate
+            +- CometProject
+               +- CometBroadcastHashJoin
+                  :- CometProject
+                  :  +- CometFilter
+                  :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+                  +- CometBroadcastExchange
+                     +- CometProject
+                        +- CometFilter
+                           +- CometHashAggregate
+                              +- CometExchange
+                                 +- CometHashAggregate
+                                    +- CometProject
+                                       +- CometFilter
+                                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+
+Comet accelerated 18 out of 18 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet.

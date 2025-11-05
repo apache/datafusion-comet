@@ -26,7 +26,7 @@ import org.rogach.scallop.ScallopOption
 
 import org.apache.spark.sql.SparkSession
 
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
   object generateData extends Subcommand("data") {
@@ -47,7 +47,7 @@ class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
   addSubcommand(generateData)
   object generateQueries extends Subcommand("queries") {
     val numFiles: ScallopOption[Int] =
-      opt[Int](required = false, descr = "Number of input files to use")
+      opt[Int](required = true, descr = "Number of input files to use")
     val numQueries: ScallopOption[Int] =
       opt[Int](required = true, descr = "Number of queries to generate")
     val randomSeed: ScallopOption[Long] =
@@ -58,7 +58,9 @@ class Conf(arguments: Seq[String]) extends ScallopConf(arguments) {
     val filename: ScallopOption[String] =
       opt[String](required = true, descr = "File to write queries to")
     val numFiles: ScallopOption[Int] =
-      opt[Int](required = false, descr = "Number of input files to use")
+      opt[Int](required = true, descr = "Number of input files to use")
+    val showFailedSparkQueries: ScallopOption[Boolean] =
+      opt[Boolean](required = false, descr = "Whether to show failed Spark queries")
   }
   addSubcommand(runQueries)
   verify()
@@ -78,19 +80,23 @@ object Main {
           case Some(seed) => new Random(seed)
           case None => new Random()
         }
-        val options = DataGenOptions(
-          allowNull = true,
-          generateArray = conf.generateData.generateArrays(),
-          generateStruct = conf.generateData.generateStructs(),
-          generateMap = conf.generateData.generateMaps(),
-          generateNegativeZero = !conf.generateData.excludeNegativeZero())
         for (i <- 0 until conf.generateData.numFiles()) {
           ParquetGenerator.makeParquetFile(
             r,
             spark,
             s"test$i.parquet",
             numRows = conf.generateData.numRows(),
-            options)
+            SchemaGenOptions(
+              generateArray = conf.generateData.generateArrays(),
+              generateStruct = conf.generateData.generateStructs(),
+              generateMap = conf.generateData.generateMaps(),
+              // create two columns of each primitive type so that they can be used in binary
+              // expressions such as `a + b` and `a <  b`
+              primitiveTypes = SchemaGenOptions.defaultPrimitiveTypes ++
+                SchemaGenOptions.defaultPrimitiveTypes),
+            DataGenOptions(
+              allowNull = true,
+              generateNegativeZero = !conf.generateData.excludeNegativeZero()))
         }
       case Some(conf.generateQueries) =>
         val r = conf.generateQueries.randomSeed.toOption match {
@@ -103,7 +109,11 @@ object Main {
           numFiles = conf.generateQueries.numFiles(),
           conf.generateQueries.numQueries())
       case Some(conf.runQueries) =>
-        QueryRunner.runQueries(spark, conf.runQueries.numFiles(), conf.runQueries.filename())
+        QueryRunner.runQueries(
+          spark,
+          conf.runQueries.numFiles(),
+          conf.runQueries.filename(),
+          conf.runQueries.showFailedSparkQueries())
       case _ =>
         // scalastyle:off println
         println("Invalid subcommand")

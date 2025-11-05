@@ -50,7 +50,7 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometExecSuite extends CometTestBase {
 
@@ -659,12 +659,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: scan") {
-    withSQLConf(
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      // TODO: update this test to work with native_iceberg_compat/auto,
-      // scan is set to native_comet for now as a workaround
-      // https://github.com/apache/datafusion-comet/issues/1882
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "native-scan.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 10000)
@@ -676,28 +671,19 @@ class CometExecSuite extends CometTestBase {
             s.isInstanceOf[CometScanExec] || s.isInstanceOf[CometNativeScanExec])
             .foreach(scan => {
               val metrics = scan.metrics
-              scan match {
-                case _: CometScanExec => {
-                  assert(metrics.contains("scanTime"))
-                  assert(metrics.contains("cast_time"))
-                  assert(metrics("scanTime").value > 0)
-                  assert(metrics("cast_time").value > 0)
-                }
-                case _: CometNativeScanExec => {
-                  assert(metrics.contains("time_elapsed_scanning_total"))
-                  assert(metrics.contains("bytes_scanned"))
-                  assert(metrics.contains("output_rows"))
-                  assert(metrics.contains("time_elapsed_opening"))
-                  assert(metrics.contains("time_elapsed_processing"))
-                  assert(metrics.contains("time_elapsed_scanning_until_data"))
-                  assert(metrics("time_elapsed_scanning_total").value > 0)
-                  assert(metrics("bytes_scanned").value > 0)
-                  assert(metrics("output_rows").value == 0)
-                  assert(metrics("time_elapsed_opening").value > 0)
-                  assert(metrics("time_elapsed_processing").value > 0)
-                  assert(metrics("time_elapsed_scanning_until_data").value > 0)
-                }
-              }
+
+              assert(metrics.contains("time_elapsed_scanning_total"))
+              assert(metrics.contains("bytes_scanned"))
+              assert(metrics.contains("output_rows"))
+              assert(metrics.contains("time_elapsed_opening"))
+              assert(metrics.contains("time_elapsed_processing"))
+              assert(metrics.contains("time_elapsed_scanning_until_data"))
+              assert(metrics("time_elapsed_scanning_total").value > 0)
+              assert(metrics("bytes_scanned").value > 0)
+              assert(metrics("output_rows").value > 0)
+              assert(metrics("time_elapsed_opening").value > 0)
+              assert(metrics("time_elapsed_processing").value > 0)
+              assert(metrics("time_elapsed_scanning_until_data").value > 0)
             })
 
         }
@@ -1251,7 +1237,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("spill sort with (multiple) dictionaries") {
-    withSQLConf(CometConf.COMET_MEMORY_OVERHEAD.key -> "15MB") {
+    withSQLConf(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key -> "15MB") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "part-r-0.parquet")
         makeRawTimeParquetFileColumns(path, dictionaryEnabled = true, n = 1000, rowGroupSize = 10)
@@ -1270,7 +1256,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("spill sort with (multiple) dictionaries on mixed columns") {
-    withSQLConf(CometConf.COMET_MEMORY_OVERHEAD.key -> "15MB") {
+    withSQLConf(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key -> "15MB") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "part-r-0.parquet")
         makeRawTimeParquetFile(path, dictionaryEnabled = true, n = 1000, rowGroupSize = 10)
@@ -2052,13 +2038,16 @@ class CometExecSuite extends CometTestBase {
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val options = DataGenOptions(
-          allowNull = true,
-          generateNegativeZero = true,
-          generateArray = true,
-          generateStruct = true,
-          generateMap = true)
-        ParquetGenerator.makeParquetFile(random, spark, filename, 100, options)
+        val schemaGenOptions =
+          SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = true)
+        val dataGenOptions = DataGenOptions(allowNull = true, generateNegativeZero = true)
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          schemaGenOptions,
+          dataGenOptions)
       }
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
@@ -2087,16 +2076,16 @@ class CometExecSuite extends CometTestBase {
                     List(s"COUNT(_$col)", s"MAX(_$col)", s"MIN(_$col)", s"SUM(_$col)")
                   aggregateFunctions.foreach { function =>
                     val df1 = sql(s"SELECT $function OVER() FROM tbl")
-                    checkSparkAnswerWithTol(df1, 1e-6)
+                    checkSparkAnswerWithTolerance(df1, 1e-6)
 
                     val df2 = sql(s"SELECT $function OVER(order by _2) FROM tbl")
-                    checkSparkAnswerWithTol(df2, 1e-6)
+                    checkSparkAnswerWithTolerance(df2, 1e-6)
 
                     val df3 = sql(s"SELECT $function OVER(order by _2 desc) FROM tbl")
-                    checkSparkAnswerWithTol(df3, 1e-6)
+                    checkSparkAnswerWithTolerance(df3, 1e-6)
 
                     val df4 = sql(s"SELECT $function OVER(partition by _2 order by _2) FROM tbl")
-                    checkSparkAnswerWithTol(df4, 1e-6)
+                    checkSparkAnswerWithTolerance(df4, 1e-6)
                   }
                 }
 
@@ -2104,16 +2093,16 @@ class CometExecSuite extends CometTestBase {
                 val aggregateFunctionsWithoutSum = List("COUNT(_12)", "MAX(_12)", "MIN(_12)")
                 aggregateFunctionsWithoutSum.foreach { function =>
                   val df1 = sql(s"SELECT $function OVER() FROM tbl")
-                  checkSparkAnswerWithTol(df1, 1e-6)
+                  checkSparkAnswerWithTolerance(df1, 1e-6)
 
                   val df2 = sql(s"SELECT $function OVER(order by _2) FROM tbl")
-                  checkSparkAnswerWithTol(df2, 1e-6)
+                  checkSparkAnswerWithTolerance(df2, 1e-6)
 
                   val df3 = sql(s"SELECT $function OVER(order by _2 desc) FROM tbl")
-                  checkSparkAnswerWithTol(df3, 1e-6)
+                  checkSparkAnswerWithTolerance(df3, 1e-6)
 
                   val df4 = sql(s"SELECT $function OVER(partition by _2 order by _2) FROM tbl")
-                  checkSparkAnswerWithTol(df4, 1e-6)
+                  checkSparkAnswerWithTolerance(df4, 1e-6)
                 }
               }
             }

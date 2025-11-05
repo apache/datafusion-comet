@@ -27,20 +27,24 @@ use std::sync::Arc;
 /// Updates the metrics of a CometMetricNode. This function is called recursively to
 /// update the metrics of all the children nodes. The metrics are pulled from the
 /// native execution plan and pushed to the Java side through JNI.
-pub fn update_comet_metric(
+pub(crate) fn update_comet_metric(
     env: &mut JNIEnv,
     metric_node: &JObject,
     spark_plan: &Arc<SparkPlan>,
 ) -> Result<(), CometError> {
-    unsafe {
-        let native_metric = to_native_metric_node(spark_plan);
-        let jbytes = env.byte_array_from_slice(&native_metric?.encode_to_vec())?;
-        jni_call!(env, comet_metric_node(metric_node).set_all_from_bytes(&jbytes) -> ())?;
+    if metric_node.is_null() {
+        return Ok(());
     }
-    Ok(())
+
+    let native_metric = to_native_metric_node(spark_plan);
+    let jbytes = env.byte_array_from_slice(&native_metric?.encode_to_vec())?;
+
+    unsafe { jni_call!(env, comet_metric_node(metric_node).set_all_from_bytes(&jbytes) -> ()) }
 }
 
-pub fn to_native_metric_node(spark_plan: &Arc<SparkPlan>) -> Result<NativeMetricNode, CometError> {
+pub(crate) fn to_native_metric_node(
+    spark_plan: &Arc<SparkPlan>,
+) -> Result<NativeMetricNode, CometError> {
     let mut native_metric_node = NativeMetricNode {
         metrics: HashMap::new(),
         children: Vec::new(),
