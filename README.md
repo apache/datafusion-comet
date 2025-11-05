@@ -119,3 +119,5 @@ Apache DataFusion Comet is licensed under the Apache License 2.0. See the [LICEN
 
 We would like to express our gratitude to the Apache DataFusion community for their support and contributions to
 Comet. Together, we're building a faster, more efficient future for big data processing with Apache Spark.
+
+
