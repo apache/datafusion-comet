@@ -20,11 +20,13 @@
 package org.apache.comet
 
 import scala.util.Random
+
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
-import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
