@@ -3044,7 +3044,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "tbl") {
           val res = sql("SELECT _2, sum(_1) FROM tbl group by 1")
           checkSparkAnswerAndOperator(res)
-          assert(res.collect() === Array(Row("a", null), Row("b", null)))
+          assert(res.orderBy(col("_2")).collect() === Array(Row("a", null), Row("b", null)))
         }
       }
     }
@@ -3063,7 +3063,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "tbl") {
           val res = sql("SELECT _2, sum(_1) FROM tbl group by 1")
           checkSparkAnswerAndOperator(res)
-          assert(res.collect() === Array(Row("a", null), Row("b", null)))
+          assert(res.orderBy(col("_2")).collect() === Array(Row("a", null), Row("b", null)))
         }
       }
     }

@@ -17,8 +17,8 @@
 
 use crate::{arithmetic_overflow_error, EvalMode};
 use arrow::array::{
-    cast::AsArray, Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType,
-    BooleanArray, Int64Array, PrimitiveArray,
+    cast::AsArray, Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray,
+    Int64Array, PrimitiveArray,
 };
 use arrow::datatypes::{
     ArrowNativeType, DataType, Field, FieldRef, Int16Type, Int32Type, Int64Type, Int8Type,
