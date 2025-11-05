@@ -46,7 +46,7 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         f.dataType == DataTypes.FloatType || f.dataType == DataTypes.DoubleType)) {
       val col = field.name
       checkSparkAnswerAndOperator(
-        s"SELECT $col, abs($col) FROM tbl WHERE signum($col) < 0 ORDER BY $col")
+        s"SELECT $col, abs($col) FROM tbl WHERE CAST($col as string) = '-0.0' ORDER BY $col")
     }
   }
 
