@@ -3003,17 +3003,69 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("ANSI support for sum  - null test group by") {
-    withParquetTable(Seq((null.asInstanceOf[Long], "a"), (null.asInstanceOf[Long], "b")), "tbl") {
-      val res = sql("SELECT sum(_1) FROM tbl group by _2")
-      checkSparkAnswerAndOperator(res)
+  test("ANSI support for sum  - null test") {
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+        withParquetTable(
+          Seq((null.asInstanceOf[java.lang.Long], "a"), (null.asInstanceOf[java.lang.Long], "b")),
+          "null_tbl") {
+          val res = sql("SELECT sum(_1) FROM null_tbl")
+          checkSparkAnswerAndOperator(res)
+          assert(res.collect() === Array(Row(null)))
+        }
+      }
     }
   }
 
-  test("ANSI support for sum  - null test") {
-    withParquetTable(Seq((null.asInstanceOf[Long], "a"), (null.asInstanceOf[Long], "b")), "tbl") {
-      val res = sql("SELECT sum(_1) FROM tbl")
-      checkSparkAnswerAndOperator(res)
+  test("ANSI support for try_sum  - null test") {
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+        withParquetTable(
+          Seq((null.asInstanceOf[java.lang.Long], "a"), (null.asInstanceOf[java.lang.Long], "b")),
+          "null_tbl") {
+          val res = sql("SELECT try_sum(_1) FROM null_tbl")
+          checkSparkAnswerAndOperator(res)
+          assert(res.collect() === Array(Row(null)))
+        }
+      }
+    }
+  }
+
+  test("ANSI support for sum  - null test (group by)") {
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+        withParquetTable(
+          Seq(
+            (null.asInstanceOf[java.lang.Long], "a"),
+            (null.asInstanceOf[java.lang.Long], "a"),
+            (null.asInstanceOf[java.lang.Long], "b"),
+            (null.asInstanceOf[java.lang.Long], "b"),
+            (null.asInstanceOf[java.lang.Long], "b")),
+          "tbl") {
+          val res = sql("SELECT _2, sum(_1) FROM tbl group by 1")
+          checkSparkAnswerAndOperator(res)
+          assert(res.collect() === Array(Row("a", null), Row("b", null)))
+        }
+      }
+    }
+  }
+
+  test("ANSI support for try_sum  - null test (group by)") {
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+        withParquetTable(
+          Seq(
+            (null.asInstanceOf[java.lang.Long], "a"),
+            (null.asInstanceOf[java.lang.Long], "a"),
+            (null.asInstanceOf[java.lang.Long], "b"),
+            (null.asInstanceOf[java.lang.Long], "b"),
+            (null.asInstanceOf[java.lang.Long], "b")),
+          "tbl") {
+          val res = sql("SELECT _2, sum(_1) FROM tbl group by 1")
+          checkSparkAnswerAndOperator(res)
+          assert(res.collect() === Array(Row("a", null), Row("b", null)))
+        }
+      }
     }
   }
 
@@ -3034,7 +3086,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             checkSparkAnswerAndOperator(res)
           }
         }
-        //    Test long underflow
+        // Test long underflow
         withParquetTable(Seq((Long.MinValue, 1L), (-100L, 1L)), "tbl") {
           val res = sql("SELECT SUM(_1) FROM tbl")
           if (ansiEnabled) {
@@ -3068,7 +3120,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val res = sql("SELECT SUM(_1) FROM tbl")
           checkSparkAnswerAndOperator(res)
         }
-
       }
     }
   }
@@ -3135,7 +3186,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("try_sum overflow - with GROUP BY") {
-    // Test Long overflow with GROUP BY - some groups overflow, some don't
+    // Test Long overflow with GROUP BY - some groups overflow while some don't
     withParquetTable(Seq((Long.MaxValue, 1), (100L, 1), (200L, 2), (300L, 2)), "tbl") {
       val res = sql("SELECT _2, try_sum(_1) FROM tbl GROUP BY _2").repartition(2, col("_2"))
       // first group should return NULL (overflow) and group 2 should return 500
@@ -3164,7 +3215,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       checkSparkAnswerAndOperator(res)
     }
 
-    // Test Byte with GROUP BY (should NOT overflow)
+    // Test Byte with GROUP BY (no overflow)
     withParquetTable(
       Seq((Byte.MaxValue, 1), (Byte.MaxValue, 1), (10.toByte, 2), (20.toByte, 2)),
       "tbl") {
