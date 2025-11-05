@@ -65,8 +65,8 @@ macro_rules! ansi_compute_op {
 /// Spark's [ANSI-compliant]: https://spark.apache.org/docs/latest/sql-ref-ansi-compliance.html#arithmetic-operations dialect mode throws org.apache.spark.SparkArithmeticException
 /// when abs causes overflow.
 pub fn abs(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
-    if args.len() > 2 {
-        return exec_err!("abs takes at most 2 arguments, but got: {}", args.len());
+    if args.is_empty() || args.len() > 2 {
+        return exec_err!("abs takes 1 or 2 arguments, but got: {}", args.len());
     }
 
     let fail_on_error = if args.len() == 2 {
@@ -336,15 +336,7 @@ mod tests {
                     Ok(())
                 }
                 Err(e) => {
-                    if fail_on_error {
-                        assert!(
-                            e.to_string().contains("ARITHMETIC_OVERFLOW"),
-                            "Error message did not match. Actual message: {e}"
-                        );
-                        Ok(())
-                    } else {
-                        panic!("Didn't expect error, but got: {e:?}")
-                    }
+                    panic!("Didn't expect error, but got: {e:?}")
                 }
                 _ => unreachable!(),
             }
