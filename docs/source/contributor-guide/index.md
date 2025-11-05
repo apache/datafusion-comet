@@ -25,6 +25,8 @@ under the License.
 
 Getting Started <contributing>
 Comet Plugin Overview <plugin_overview>
+Arrow FFI <ffi>
+Parquet Scans <parquet_scans>
 Development Guide <development>
 Debugging Guide <debugging>
 Benchmarking Guide <benchmarking>

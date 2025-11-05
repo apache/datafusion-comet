@@ -200,10 +200,6 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
   }
 
   test("join") {
-    // TODO enable native_datafusion tests
-    // https://github.com/apache/datafusion-comet/issues/2660
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
     df.createOrReplaceTempView("t2")

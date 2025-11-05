@@ -485,12 +485,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 }
 
                 let task_ctx = exec_context.session_ctx.task_ctx();
+                // Each Comet native execution corresponds to a single Spark partition,
+                // so we should always execute partition 0.
                 let stream = exec_context
                     .root_op
                     .as_ref()
                     .unwrap()
                     .native_plan
-                    .execute(partition as usize, task_ctx)?;
+                    .execute(0, task_ctx)?;
                 exec_context.stream = Some(stream);
             } else {
                 // Pull input batches
