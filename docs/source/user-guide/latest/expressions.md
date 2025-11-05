@@ -200,6 +200,19 @@ incompatible expressions.
 | VariancePop   |            | Yes                       |                                                                  |
 | VarianceSamp  |            | Yes                       |                                                                  |
 
+## Window Functions
+
+Comet supports using aggregate functions within window contexts with PARTITION BY and ORDER BY clauses. Window frames (ROWS and RANGE) are supported with various bounds (UNBOUNDED PRECEDING, UNBOUNDED FOLLOWING, CURRENT ROW, and numeric offsets).
+
+| Expression | Spark-Compatible? | Compatibility Notes                          |
+| ---------- | ----------------- | -------------------------------------------- |
+| Count      | Yes               | Aggregate function used in window context    |
+| Max        | Yes               | Aggregate function used in window context    |
+| Min        | Yes               | Aggregate function used in window context    |
+| Sum        | Yes               | Aggregate function used in window context    |
+
+**Note:** Dedicated window functions such as `rank`, `dense_rank`, `row_number`, `lag`, `lead`, `ntile`, `cume_dist`, `percent_rank`, and `nth_value` are not currently supported and will fall back to Spark.
+
 ## Array Expressions
 
 | Expression     | Spark-Compatible? | Compatibility Notes                                                                                                                                                                       |
