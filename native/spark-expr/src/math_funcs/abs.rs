@@ -319,7 +319,7 @@ mod tests {
 
     fn with_fail_on_error<F: Fn(bool) -> Result<()>>(test_fn: F) {
         for fail_on_error in [true, false] {
-            let _ = test_fn(fail_on_error);
+            test_fn(fail_on_error).expect("test should pass on error successfully");
         }
     }
 
