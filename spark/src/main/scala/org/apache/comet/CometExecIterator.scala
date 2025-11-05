@@ -58,6 +58,8 @@ import org.apache.comet.vector.NativeUtil
  *   The index of the partition.
  * @param encryptedFilePaths
  *   Paths to encrypted Parquet files that need key unwrapping.
+ *
+ *
  */
 class CometExecIterator(
     val id: Long,
