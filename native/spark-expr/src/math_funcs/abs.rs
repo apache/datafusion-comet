@@ -389,7 +389,7 @@ mod tests {
                         );
                         Ok(())
                     } else {
-                        panic!("Didn't expect error, but got: {e:?}")
+                        unreachable!("Didn't expect error, but got: {e:?}")
                     }
                 }
                 _ => unreachable!(),
