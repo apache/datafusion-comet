@@ -644,10 +644,25 @@ mod tests {
     #[test]
     fn test_abs_f32_array() {
         with_fail_on_error(|fail_on_error| {
-            let input = Float32Array::from(vec![Some(-1f32), Some(f32::MIN), Some(f32::MAX), None]);
+            let input = Float32Array::from(vec![
+                Some(-1f32),
+                Some(f32::MIN),
+                Some(f32::MAX),
+                None,
+                Some(f32::NAN),
+                Some(f32::NEG_INFINITY),
+                Some(f32::INFINITY),
+            ]);
             let args = ColumnarValue::Array(Arc::new(input));
-            let expected =
-                Float32Array::from(vec![Some(1f32), Some(f32::MAX), Some(f32::MAX), None]);
+            let expected = Float32Array::from(vec![
+                Some(1f32),
+                Some(f32::MAX),
+                Some(f32::MAX),
+                None,
+                Some(f32::NAN),
+                Some(f32::INFINITY),
+                Some(f32::INFINITY),
+            ]);
             let fail_on_error_arg =
                 ColumnarValue::Scalar(ScalarValue::Boolean(Some(fail_on_error)));
 
