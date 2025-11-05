@@ -72,7 +72,7 @@ object RewriteJoin extends JoinSelectionHelper {
           // LeftSemi https://github.com/apache/datafusion-comet/issues/2667
           withInfo(
             smj,
-            s"Cannot rewrite SortMergeJoin to HashJoin: " +
+            "Cannot rewrite SortMergeJoin to HashJoin: " +
               s"BuildRight with ${smj.joinType} is not supported")
           plan
         case Some(buildSide) =>
