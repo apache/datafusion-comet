@@ -66,6 +66,7 @@ incompatible expressions.
 | Ascii           | Yes               |                                                                                                            |
 | BitLength       | Yes               |                                                                                                            |
 | Chr             | Yes               |                                                                                                            |
+| Concat          | Yes               | Only string inputs are supported                                                                           |
 | ConcatWs        | Yes               |                                                                                                            |
 | Contains        | Yes               |                                                                                                            |
 | EndsWith        | Yes               |                                                                                                            |
@@ -249,12 +250,21 @@ incompatible expressions.
 | ---------- | ------------------------ | ------------------------------------------------------------------------------------------- |
 | Cast       | Depends on specific cast | See the [Comet Compatibility Guide] for list of supported cast expressions and known issues |
 
+## SortOrder
+
+| Expression  | Spark-Compatible? | Compatibility Notes                                                         |
+|-------------| ----------------- | --------------------------------------------------------------------------- |
+| NullsFirst  | Yes               |                                                                             |
+| NullsLast   | Yes               |                                                                             |
+| Ascending   | Yes               |                                                                             |
+| Descending  | Yes               |                                                                             |
+
 ## Other
 
 | Expression                   | Spark-Compatible? | Compatibility Notes                                                         |
-| ---------------------------- | ----------------- | --------------------------------------------------------------------------- |
+|------------------------------| ----------------- | --------------------------------------------------------------------------- |
 | Alias                        | Yes               |                                                                             |
-| AttributeRefernce            | Yes               |                                                                             |
+| AttributeReference           | Yes               |                                                                             |
 | BloomFilterMightContain      | Yes               |                                                                             |
 | Coalesce                     | Yes               |                                                                             |
 | CheckOverflow                | Yes               |                                                                             |
