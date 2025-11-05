@@ -88,6 +88,6 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       spark,
       schema,
       1000,
-      DataGenOptions(generateNegativeZero))
+      DataGenOptions(generateNegativeZero = generateNegativeZero))
   }
 }
