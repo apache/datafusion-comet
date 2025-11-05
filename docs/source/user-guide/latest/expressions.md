@@ -256,7 +256,7 @@ incompatible expressions.
 | NullsFirst  | Yes               |                                                                             |
 | NullsLast   | Yes               |                                                                             |
 | Ascending   | Yes               |                                                                             |
-| Dewscending | Yes               |                                                                             |
+| Descending  | Yes               |                                                                             |
 
 ## Other
 
