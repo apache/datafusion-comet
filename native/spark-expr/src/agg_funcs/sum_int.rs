@@ -33,9 +33,7 @@ use std::{any::Any, sync::Arc};
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SumInteger {
-    /// Aggregate function signature
     signature: Signature,
-    /// eval mode : ANSI, Legacy, Try
     eval_mode: EvalMode,
 }
 
@@ -110,13 +108,13 @@ impl SumIntegerAccumulator {
             Self {
                 // Try mode starts with 0 (because if this is init to None we cant say if it is none due to all nulls or due to an overflow
                 sum: Some(0),
-                has_all_nulls: true, // true = no non-null values yet
+                has_all_nulls: true,
                 eval_mode,
             }
         } else {
             Self {
-                sum: None,            // Legacy/ANSI start with None
-                has_all_nulls: false, // not used for Legacy/ANSI
+                sum: None,
+                has_all_nulls: false,
                 eval_mode,
             }
         }
@@ -125,7 +123,7 @@ impl SumIntegerAccumulator {
 
 impl Accumulator for SumIntegerAccumulator {
     fn update_batch(&mut self, values: &[ArrayRef]) -> DFResult<()> {
-        // accumulator internal to add sum and return is_null: true if there is an overflow in Try Eval mode
+        // accumulator internal to add sum and return null sum (and has_nulls false) if there is an overflow in Try Eval mode
         fn update_sum_internal<T>(
             int_array: &PrimitiveArray<T>,
             eval_mode: EvalMode,
@@ -171,7 +169,7 @@ impl Accumulator for SumIntegerAccumulator {
         if values.len() == values.null_count() {
             Ok(())
         } else {
-            // No nulls so there should be a non-null sum. (null incase overflow in Try eval)
+            // No nulls so there should be a non-null sum / null incase overflow in Try eval
             let running_sum = self.sum.unwrap_or(0);
             let sum = match values.data_type() {
                 DataType::Int64 => update_sum_internal(
@@ -207,7 +205,7 @@ impl Accumulator for SumIntegerAccumulator {
                     running_sum,
                 )?,
                 _ => {
-                    panic!("Unsupported data type")
+                    panic!("Unsupported data type {}", values.data_type())
                 }
             };
             self.sum = sum;
@@ -335,7 +333,7 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
         {
             for (i, &group_index) in group_indices.iter().enumerate() {
                 if !int_array.is_null(i) {
-                    // there is an overflow in prev group in try eval . Skip processing
+                    // there is an overflow in prev group in try eval. Skip processing
                     if eval_mode == EvalMode::Try
                         && !has_all_nulls[group_index]
                         && sums[group_index].is_none()
@@ -437,7 +435,6 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
     fn evaluate(&mut self, emit_to: EmitTo) -> DFResult<ArrayRef> {
         match emit_to {
             EmitTo::All => {
-                // Create an Int64Array with nullability from has_nulls
                 let result = Arc::new(Int64Array::from_iter(
                     self.sums
                         .iter()
@@ -481,7 +478,6 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
     ) -> DFResult<()> {
         assert!(opt_filter.is_none(), "opt_filter is not supported yet");
 
-        // Extract incoming sums array
         let that_sums = values[0].as_primitive::<Int64Type>();
 
         if self.eval_mode == EvalMode::Try {
@@ -499,7 +495,6 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
         };
 
         for (idx, &group_index) in group_indices.iter().enumerate() {
-            // Extract incoming sum value (handle nulls)
             let that_sum = if that_sums.is_null(idx) {
                 None
             } else {
@@ -557,7 +552,7 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
                                     "integer",
                                 )));
                             } else {
-                                // overflow . update flag accordingly
+                                // overflow. update flag accordingly
                                 self.sums[group_index] = None;
                                 self.has_all_nulls[group_index] = false;
                             }
