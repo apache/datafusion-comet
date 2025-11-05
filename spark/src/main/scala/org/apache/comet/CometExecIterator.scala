@@ -59,7 +59,6 @@ import org.apache.comet.vector.NativeUtil
  * @param encryptedFilePaths
  *   Paths to encrypted Parquet files that need key unwrapping.
  *
- *
  */
 class CometExecIterator(
     val id: Long,
@@ -77,6 +76,7 @@ class CometExecIterator(
   private val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
   private val memoryMXBean = ManagementFactory.getMemoryMXBean
   private val nativeLib = new Native()
+
   private val nativeUtil = new NativeUtil()
   private val taskAttemptId = TaskContext.get().taskAttemptId
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
