@@ -19,34 +19,37 @@
 
 package org.apache.comet.exec
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
-import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import java.sql.Date
+import java.time.{Duration, Period}
+
+import scala.util.Random
+
+import org.scalactic.source.Position
+import org.scalatest.Tag
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
-import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, Hex}
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
+import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
+import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, Hex}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.reuse.ReuseExchangeAndSubquery
 import org.apache.spark.sql.execution.window.WindowExec
-import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
-import org.scalactic.source.Position
-import org.scalatest.Tag
 
-import java.sql.Date
-import java.time.{Duration, Period}
-import scala.util.Random
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometExecSuite extends CometTestBase {
 
@@ -330,8 +333,6 @@ class CometExecSuite extends CometTestBase {
       checkSparkAnswerAndOperator(df)
     }
   }
-
-
 
   test("fix CometNativeExec.doCanonicalize for ReusedExchangeExec") {
     withSQLConf(

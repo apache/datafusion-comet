@@ -21,12 +21,14 @@ package org.apache.comet.exec
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
-import org.apache.spark.sql.internal.SQLConf
-import org.apache.comet.CometConf
+
 import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{count, lead}
-import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.internal.SQLConf
+
+import org.apache.comet.CometConf
 
 class CometWindowExecSuite extends CometTestBase {
 
