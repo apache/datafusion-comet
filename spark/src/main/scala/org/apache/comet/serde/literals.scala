@@ -90,7 +90,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
             com.google.protobuf.ByteString.copyFrom(value.asInstanceOf[Array[Byte]])
           exprBuilder.setBytesVal(byteStr)
 
-        case arr: ArrayType =>
+        case arr: ArrayType if value.isInstanceOf[GenericArrayData] =>
           val listLiteralBuilder: ListLiteral.Builder =
             makeListLiteral(value.asInstanceOf[GenericArrayData].array, arr)
           exprBuilder.setListVal(listLiteralBuilder.build())
