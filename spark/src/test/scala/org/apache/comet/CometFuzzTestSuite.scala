@@ -29,6 +29,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.testing.FuzzDataGenerator.{doubleNaNLiteral, floatNaNLiteral}
 
 class CometFuzzTestSuite extends CometFuzzTestBase {
 
@@ -75,13 +76,13 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
             s"$defaultValueType(${defaultValueRow.get(0)})"
           case "FLOAT" =>
             if (Float.NaN.equals(defaultValueRow.get(0))) {
-              "FLOAT('NaN')"
+              floatNaNLiteral
             } else {
               s"$defaultValueType(${defaultValueRow.get(0)})"
             }
           case "DOUBLE" =>
             if (Double.NaN.equals(defaultValueRow.get(0))) {
-              "DOUBLE('NaN')"
+              doubleNaNLiteral
             } else {
               s"$defaultValueType(${defaultValueRow.get(0)})"
             }
