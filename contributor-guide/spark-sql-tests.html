@@ -484,6 +484,10 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 <h2>3. Run Spark SQL Tests<a class="headerlink" href="#run-spark-sql-tests" title="Link to this heading">#</a></h2>
 <section id="use-the-following-commands-to-run-the-spark-sql-test-suite-locally">
 <h3>Use the following commands to run the Spark SQL test suite locally.<a class="headerlink" href="#use-the-following-commands-to-run-the-spark-sql-test-suite-locally" title="Link to this heading">#</a></h3>
+<p>Optionally, enable Comet fallback logging, so that all fallback reasons are logged at <code class="docutils literal notranslate"><span class="pre">WARN</span></code> level.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">ENABLE_COMET_LOG_FALLBACK_REASONS</span><span class="o">=</span><span class="nb">true</span>
+</pre></div>
+</div>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span>catalyst/test
 <span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest&quot;</span>
 <span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest&quot;</span>
@@ -499,7 +503,7 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 <ol class="arabic simple">
 <li><p>Open SBT with Comet enabled</p></li>
 </ol>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>sbt<span class="w"> </span>-J-Xmx4096m<span class="w"> </span>-Dspark.test.includeSlowTests<span class="o">=</span><span class="nb">true</span><span class="w"> </span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>sbt<span class="w"> </span>-J-Xmx4096m<span class="w"> </span>-Dspark.test.includeSlowTests<span class="o">=</span><span class="nb">true</span>
 </pre></div>
 </div>
 <ol class="arabic simple" start="2">
