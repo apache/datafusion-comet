@@ -73,7 +73,7 @@ object CometUnhex extends CometExpressionSerde[Unhex] {
 The `CometExpressionSerde` trait provides three methods you can override:
 
 * `convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr]` - **Required**. Converts the Spark expression to protobuf. Return `None` if the expression cannot be converted.
-* `getSupportLevel(expr: T): SupportLevel` - Optional. Returns `Compatible()`, `Incompatible()`, or `Unsupported()` to indicate the level of support for the expression. This allows you to handle edge cases or unsupported data types.
+* `getSupportLevel(expr: T): SupportLevel` - Optional. Returns the level of support for the expression. See "Using getSupportLevel" section below for details.
 * `getExprConfigName(expr: T): String` - Optional. Returns a short name for configuration keys. Defaults to the Spark class name.
 
 For simple scalar functions that map directly to a DataFusion function, you can use the built-in `CometScalarFunction` implementation:
@@ -100,6 +100,113 @@ A few things to note:
 * The `convert` method is recursively called on child expressions using `exprToProtoInternal`, so you'll need to make sure that the child expressions are also converted to protobuf.
 * `scalarFunctionExprToProtoWithReturnType` is for scalar functions that need return type information. Your expression may use a different method depending on the type of expression.
 * Use helper methods like `createBinaryExpr` and `createUnaryExpr` from `QueryPlanSerde` for common expression patterns.
+
+#### Using getSupportLevel
+
+The `getSupportLevel` method allows you to control whether an expression should be executed by Comet based on various conditions such as data types, parameter values, or other expression-specific constraints. This is particularly useful when:
+
+1. Your expression only supports specific data types
+2. Your expression has known incompatibilities with Spark's behavior
+3. Your expression has edge cases that aren't yet supported
+
+The method returns one of three `SupportLevel` values:
+
+* **`Compatible(notes: Option[String] = None)`** - Comet supports this expression with full compatibility with Spark, or may have known differences in specific edge cases that are unlikely to be an issue for most users. This is the default if you don't override `getSupportLevel`.
+* **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can be different from Spark. The expression will only be used if `spark.comet.expr.allowIncompatible=true` or the expression-specific config `spark.comet.expr.<exprName>.allowIncompatible=true` is set.
+* **`Unsupported(notes: Option[String] = None)`** - Comet does not support this expression under the current conditions. The expression will not be used and Spark will fall back to its native execution.
+
+All three support levels accept an optional `notes` parameter to provide additional context about the support level.
+
+##### Examples
+
+**Example 1: Restricting to specific data types**
+
+The `Abs` expression only supports numeric types:
+
+```scala
+object CometAbs extends CometExpressionSerde[Abs] {
+  override def getSupportLevel(expr: Abs): SupportLevel = {
+    expr.child.dataType match {
+      case _: NumericType =>
+        Compatible()
+      case _ =>
+        // Spark supports NumericType, DayTimeIntervalType, and YearMonthIntervalType
+        Unsupported(Some("Only integral, floating-point, and decimal types are supported"))
+    }
+  }
+
+  override def convert(
+      expr: Abs,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // ... conversion logic ...
+  }
+}
+```
+
+**Example 2: Validating parameter values**
+
+The `TruncDate` expression only supports specific format strings:
+
+```scala
+object CometTruncDate extends CometExpressionSerde[TruncDate] {
+  val supportedFormats: Seq[String] =
+    Seq("year", "yyyy", "yy", "quarter", "mon", "month", "mm", "week")
+
+  override def getSupportLevel(expr: TruncDate): SupportLevel = {
+    expr.format match {
+      case Literal(fmt: UTF8String, _) =>
+        if (supportedFormats.contains(fmt.toString.toLowerCase(Locale.ROOT))) {
+          Compatible()
+        } else {
+          Unsupported(Some(s"Format $fmt is not supported"))
+        }
+      case _ =>
+        Incompatible(
+          Some("Invalid format strings will throw an exception instead of returning NULL"))
+    }
+  }
+
+  override def convert(
+      expr: TruncDate,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // ... conversion logic ...
+  }
+}
+```
+
+**Example 3: Marking known incompatibilities**
+
+The `ArrayAppend` expression has known behavioral differences from Spark:
+
+```scala
+object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
+  override def getSupportLevel(expr: ArrayAppend): SupportLevel = Incompatible(None)
+
+  override def convert(
+      expr: ArrayAppend,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // ... conversion logic ...
+  }
+}
+```
+
+This expression will only be used when users explicitly enable incompatible expressions via configuration.
+
+##### How getSupportLevel Affects Execution
+
+When the query planner encounters an expression:
+
+1. It first checks if the expression is explicitly disabled via `spark.comet.expr.<exprName>.enabled=false`
+2. It then calls `getSupportLevel` on the expression handler
+3. Based on the result:
+   - `Compatible()`: Expression proceeds to conversion
+   - `Incompatible()`: Expression is skipped unless `spark.comet.expr.allowIncompatible=true` or expression-specific allow config is set
+   - `Unsupported()`: Expression is skipped and a fallback to Spark occurs
+
+Any notes provided will be logged to help with debugging and understanding why an expression was not used.
 
 #### Adding Spark-side Tests for the New Expression
 
