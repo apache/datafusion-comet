@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index d3544881af1..9c174496a4b 100644
+index d3544881af1..fd66aa966c8 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -7,7 +7,7 @@ index d3544881af1..9c174496a4b 100644
      <ivy.version>2.5.1</ivy.version>
      <oro.version>2.0.8</oro.version>
 +    <spark.version.short>3.4</spark.version.short>
-+    <comet.version>0.12.0-SNAPSHOT</comet.version>
++    <comet.version>0.11.0-SNAPSHOT</comet.version>
      <!--
      If you changes codahale.metrics.version, you also need to change
      the link to metrics.dropwizard.io in docs/monitoring.md.
@@ -193,19 +193,6 @@ index 41fd4de2a09..44cd244d3b0 100644
  -- Test aggregate operator with codegen on and off.
  --CONFIG_DIM1 spark.sql.codegen.wholeStage=true
  --CONFIG_DIM1 spark.sql.codegen.wholeStage=false,spark.sql.codegen.factoryMode=CODEGEN_ONLY
-diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
-index 3a409eea348..38fed024c98 100644
---- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
-+++ b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int4.sql
-@@ -69,6 +69,8 @@ SELECT '' AS one, i.* FROM INT4_TBL i WHERE (i.f1 % smallint('2')) = smallint('1
- -- any evens
- SELECT '' AS three, i.* FROM INT4_TBL i WHERE (i.f1 % int('2')) = smallint('0');
- 
-+-- https://github.com/apache/datafusion-comet/issues/2215
-+--SET spark.comet.exec.enabled=false
- -- [SPARK-28024] Incorrect value when out of range
- SELECT '' AS five, i.f1, i.f1 * smallint('2') AS x FROM INT4_TBL i;
- 
 diff --git a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql b/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql
 index fac23b4a26f..2b73732c33f 100644
 --- a/sql/core/src/test/resources/sql-tests/inputs/postgreSQL/int8.sql
@@ -894,7 +881,7 @@ index b5b34922694..a72403780c4 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index 525d97e4998..843f0472c23 100644
+index 525d97e4998..5e04319dd97 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1508,7 +1508,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -907,27 +894,7 @@ index 525d97e4998..843f0472c23 100644
      AccumulatorSuite.verifyPeakExecutionMemorySet(sparkContext, "external sort") {
        sql("SELECT * FROM testData2 ORDER BY a ASC, b ASC").collect()
      }
-@@ -4429,7 +4430,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-   }
- 
-   test("SPARK-39166: Query context of binary arithmetic should be serialized to executors" +
--    " when WSCG is off") {
-+    " when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
-@@ -4450,7 +4452,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
-   }
- 
-   test("SPARK-39175: Query context of Cast should be serialized to executors" +
--    " when WSCG is off") {
-+    " when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
-@@ -4467,14 +4470,19 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
+@@ -4467,7 +4468,11 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
            val msg = intercept[SparkException] {
              sql(query).collect()
            }.getMessage
@@ -940,15 +907,6 @@ index 525d97e4998..843f0472c23 100644
          }
        }
      }
-   }
- 
-   test("SPARK-39190,SPARK-39208,SPARK-39210: Query context of decimal overflow error should " +
--    "be serialized to executors when WSCG is off") {
-+    "be serialized to executors when WSCG is off",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/2215")) {
-     withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
-       SQLConf.ANSI_ENABLED.key -> "true") {
-       withTable("t") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
 index 48ad10992c5..51d1ee65422 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
@@ -1945,7 +1903,7 @@ index 07e2849ce6f..3e73645b638 100644
        ParquetOutputFormat.WRITER_VERSION -> ParquetProperties.WriterVersion.PARQUET_2_0.toString
      )
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
-index 104b4e416cd..37ea65081e4 100644
+index 104b4e416cd..a7f20f21d64 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFilterSuite.scala
 @@ -1096,7 +1096,11 @@ abstract class ParquetFilterSuite extends QueryTest with ParquetTest with Shared
@@ -1978,7 +1936,7 @@ index 104b4e416cd..37ea65081e4 100644
 -          assert(actual > 1 && actual < data.length)
 +          // Only enable Comet test iff it's scan only, since with native execution
 +          // `stripSparkFilter` can't remove the native filter
-+          if (!isCometEnabled || isCometScanOnly) {
++          if (!isCometEnabled) {
 +            assert(actual > 1 && actual < data.length)
 +          }
          }
@@ -1991,7 +1949,7 @@ index 104b4e416cd..37ea65081e4 100644
 -        assert(actual > 1 && actual < data.length)
 +        // Only enable Comet test iff it's scan only, since with native execution
 +        // `stripSparkFilter` can't remove the native filter
-+        if (!isCometEnabled || isCometScanOnly) {
++        if (!isCometEnabled) {
 +          assert(actual > 1 && actual < data.length)
 +        }
        }
@@ -2136,7 +2094,7 @@ index 240bb4e6dcb..8287ffa03ca 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-index 351c6d698fc..583d9225cca 100644
+index 351c6d698fc..d01d1ba49dc 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 @@ -20,12 +20,14 @@ import java.io.File
@@ -2154,6 +2112,23 @@ index 351c6d698fc..583d9225cca 100644
  import org.apache.spark.sql.execution.FileSourceScanExec
  import org.apache.spark.sql.execution.datasources.FileFormat
  import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+@@ -157,11 +159,11 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+     ) ++ { if (useDataSourceV2) Seq(SQLConf.USE_V1_SOURCE_LIST.key -> "") else Seq.empty }
+   }
+ 
+-  for (useVectorizedReader <- Seq(true, false))
+-  for (useDataSourceV2 <- Seq(true, false))
+-  for (useSmallRowGroups <- Seq(true, false))
+-  for (useSmallPages <- Seq(true, false))
+-  for (useFilter <- Seq(true, false))
++  for (useVectorizedReader <- Seq(true))
++  for (useDataSourceV2 <- Seq(false))
++  for (useSmallRowGroups <- Seq(true))
++  for (useSmallPages <- Seq(true))
++  for (useFilter <- Seq(true))
+   for (useSmallSplits <- Seq(useSmallRowGroups, false).distinct) {
+     val conf = RowIndexTestConf(useVectorizedReader = useVectorizedReader,
+       useDataSourceV2 = useDataSourceV2, useSmallRowGroups = useSmallRowGroups,
 @@ -172,6 +174,8 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
  
    private def testRowIndexGeneration(label: String, conf: RowIndexTestConf): Unit = {
@@ -2163,7 +2138,26 @@ index 351c6d698fc..583d9225cca 100644
        withSQLConf(conf.sqlConfs: _*) {
          withTempPath { path =>
            val rowIndexColName = FileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
-@@ -230,6 +234,12 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+@@ -196,6 +200,9 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+             .format(conf.readFormat)
+             .schema(schemaWithRowIdx)
+             .load(path.getAbsolutePath)
++          // scalastyle:off
++          println("schemaWithRowIdx = " + schemaWithRowIdx)
++          println("dfRead.schema = " + dfRead.schema)
+ 
+           // Verify that the produced files are laid out as expected.
+           if (conf.useSmallRowGroups) {
+@@ -222,7 +229,7 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+ 
+           var numPartitions: Long = 0
+           var numOutputRows: Long = 0
+-          dfToAssert.collect()
++          val x = dfToAssert.collect()
+           dfToAssert.queryExecution.executedPlan.foreach {
+             case b: BatchScanExec =>
+               numPartitions += b.inputRDD.partitions.length
+@@ -230,11 +237,22 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
              case f: FileSourceScanExec =>
                numPartitions += f.inputRDD.partitions.length
                numOutputRows += f.metrics("numOutputRows").value
@@ -2176,7 +2170,17 @@ index 351c6d698fc..583d9225cca 100644
              case _ =>
            }
            assert(numPartitions > 0)
-@@ -291,6 +301,8 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
+           assert(numOutputRows > 0)
+ 
++          // scalastyle:off
++          println("numPartitions = " + numPartitions)
++          println("numOutputRows = " + numOutputRows)
++          println("actual rows = " + x.length)
++
+           if (conf.useSmallSplits) {
+             // SPARK-39634: Until the fix the fix for PARQUET-2161 is available is available,
+             // it is not possible to split Parquet files into multiple partitions while generating
+@@ -291,6 +309,8 @@ class ParquetRowIndexSuite extends QueryTest with SharedSparkSession {
      val conf = RowIndexTestConf(useDataSourceV2 = useDataSourceV2)
  
      test(s"invalid row index column type - ${conf.desc}") {
@@ -2755,7 +2759,7 @@ index abe606ad9c1..2d930b64cca 100644
      val tblTargetName = "tbl_target"
      val tblSourceQualified = s"default.$tblSourceName"
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
-index dd55fcfe42c..a1d390c93d0 100644
+index dd55fcfe42c..dc8a554bbbf 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SQLTestUtils.scala
 @@ -27,6 +27,7 @@ import scala.concurrent.duration._
@@ -2813,7 +2817,7 @@ index dd55fcfe42c..a1d390c93d0 100644
      }
    }
  
-@@ -242,6 +265,29 @@ private[sql] trait SQLTestUtilsBase
+@@ -242,6 +265,11 @@ private[sql] trait SQLTestUtilsBase
      protected override def _sqlContext: SQLContext = self.spark.sqlContext
    }
  
@@ -2822,28 +2826,10 @@ index dd55fcfe42c..a1d390c93d0 100644
 +   */
 +  protected def isCometEnabled: Boolean = SparkSession.isCometEnabled
 +
-+  /**
-+   * Whether to enable ansi mode This is only effective when
-+   * [[isCometEnabled]] returns true.
-+   */
-+  protected def enableCometAnsiMode: Boolean = {
-+    val v = System.getenv("ENABLE_COMET_ANSI_MODE")
-+    v != null && v.toBoolean
-+  }
-+
-+  /**
-+   * Whether Spark should only apply Comet scan optimization. This is only effective when
-+   * [[isCometEnabled]] returns true.
-+   */
-+  protected def isCometScanOnly: Boolean = {
-+    val v = System.getenv("ENABLE_COMET_SCAN_ONLY")
-+    v != null && v.toBoolean
-+  }
-+
    protected override def withSQLConf(pairs: (String, String)*)(f: => Unit): Unit = {
      SparkSession.setActiveSession(spark)
      super.withSQLConf(pairs: _*)(f)
-@@ -434,6 +480,8 @@ private[sql] trait SQLTestUtilsBase
+@@ -434,6 +462,8 @@ private[sql] trait SQLTestUtilsBase
      val schema = df.schema
      val withoutFilters = df.queryExecution.executedPlan.transform {
        case FilterExec(_, child) => child
@@ -2853,10 +2839,10 @@ index dd55fcfe42c..a1d390c93d0 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index ed2e309fa07..a5ea58146ad 100644
+index ed2e309fa07..b68a5f32e57 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-@@ -74,6 +74,31 @@ trait SharedSparkSessionBase
+@@ -74,6 +74,18 @@ trait SharedSparkSessionBase
        // this rule may potentially block testing of other optimization rules such as
        // ConstantPropagation etc.
        .set(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, ConvertToLocalRelation.ruleName)
@@ -2866,24 +2852,11 @@ index ed2e309fa07..a5ea58146ad 100644
 +        .set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
 +        .set("spark.comet.enabled", "true")
 +        .set("spark.comet.parquet.respectFilterPushdown", "true")
-+
-+      if (!isCometScanOnly) {
-+        conf
-+          .set("spark.comet.exec.enabled", "true")
-+          .set("spark.shuffle.manager",
-+            "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+          .set("spark.comet.exec.shuffle.enabled", "true")
-+          .set("spark.comet.memoryOverhead", "10g")
-+      } else {
-+        conf
-+          .set("spark.comet.exec.enabled", "false")
-+          .set("spark.comet.exec.shuffle.enabled", "false")
-+      }
-+
-+      if (enableCometAnsiMode) {
-+        conf
-+          .set("spark.sql.ansi.enabled", "true")
-+      }
++        .set("spark.comet.exec.enabled", "true")
++        .set("spark.shuffle.manager",
++          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++        .set("spark.comet.exec.shuffle.enabled", "true")
++        .set("spark.comet.memoryOverhead", "10g")
 +    }
      conf.set(
        StaticSQLConf.WAREHOUSE_PATH,
@@ -2974,10 +2947,10 @@ index a902cb3a69e..800a3acbe99 100644
  
    test("SPARK-4963 DataFrame sample on mutable row return wrong result") {
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-index 07361cfdce9..97dab2a3506 100644
+index 07361cfdce9..3dd41ebdc46 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-@@ -55,25 +55,54 @@ object TestHive
+@@ -55,25 +55,39 @@ object TestHive
      new SparkContext(
        System.getProperty("spark.sql.test.master", "local[1]"),
        "TestSQLContext",
@@ -3023,25 +2996,10 @@ index 07361cfdce9..97dab2a3506 100644
 +          conf
 +            .set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
 +            .set("spark.comet.enabled", "true")
-+
-+          val v = System.getenv("ENABLE_COMET_SCAN_ONLY")
-+          if (v == null || !v.toBoolean) {
-+            conf
-+              .set("spark.comet.exec.enabled", "true")
-+              .set("spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+              .set("spark.comet.exec.shuffle.enabled", "true")
-+          } else {
-+            conf
-+              .set("spark.comet.exec.enabled", "false")
-+              .set("spark.comet.exec.shuffle.enabled", "false")
-+          }
-+
-+          val a = System.getenv("ENABLE_COMET_ANSI_MODE")
-+          if (a != null && a.toBoolean) {
-+            conf
-+              .set("spark.sql.ansi.enabled", "true")
-+          }
++            .set("spark.comet.exec.enabled", "true")
++            .set("spark.shuffle.manager",
++              "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            .set("spark.comet.exec.shuffle.enabled", "true")
 +        }
  
 +        conf
