@@ -75,13 +75,13 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
             s"$defaultValueType(${defaultValueRow.get(0)})"
           case "FLOAT" =>
             if (Float.NaN.equals(defaultValueRow.get(0))) {
-              s"FLOAT('NaN')"
+              "FLOAT('NaN')"
             } else {
               s"$defaultValueType(${defaultValueRow.get(0)})"
             }
           case "DOUBLE" =>
             if (Double.NaN.equals(defaultValueRow.get(0))) {
-              s"DOUBLE('NaN')"
+              "DOUBLE('NaN')"
             } else {
               s"$defaultValueType(${defaultValueRow.get(0)})"
             }
