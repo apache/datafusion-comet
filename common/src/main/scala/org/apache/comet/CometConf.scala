@@ -84,8 +84,7 @@ object CometConf extends ShimCometConf {
     .doc(
       "Whether to enable Comet extension for Spark. When this is turned on, Spark will use " +
         "Comet to read Parquet data source. Note that to enable native vectorized execution, " +
-        "both this config and `spark.comet.exec.enabled` need to be enabled. By default, this " +
-        "config is the value of the env var `ENABLE_COMET` if set, or true otherwise.")
+        "both this config and `spark.comet.exec.enabled` need to be enabled.")
     .booleanConf
     .createWithEnvVarOrDefault("ENABLE_COMET", true)
 
