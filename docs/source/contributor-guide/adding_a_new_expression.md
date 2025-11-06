@@ -41,7 +41,7 @@ Once you know what you want to add, you'll need to update the query planner to r
 
 ### Adding the Expression in Scala
 
-DataFusion Comet uses a framework based on the `CometExpressionSerde` trait for converting Spark expressions to protobuf. Instead of a large match statement, each expression type has its own serialization handler.
+DataFusion Comet uses a framework based on the `CometExpressionSerde` trait for converting Spark expressions to protobuf. Instead of a large match statement, each expression type has its own serialization handler. For aggregate expressions, use the `CometAggregateExpressionSerde` trait instead.
 
 #### Creating a CometExpressionSerde Implementation
 
