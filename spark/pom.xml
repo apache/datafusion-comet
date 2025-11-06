@@ -326,6 +326,7 @@ under the License.
             </goals>
             <configuration>
               <mainClass>org.apache.comet.GenerateDocs</mainClass>
+              <arguments>${project.parent.basedir}/docs/source/user-guide/latest/</arguments>
               <classpathScope>compile</classpathScope>
             </configuration>
           </execution>
