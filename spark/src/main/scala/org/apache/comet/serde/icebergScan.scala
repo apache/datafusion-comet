@@ -780,10 +780,11 @@ object IcebergScanSerde extends Logging {
                           }
 
                           // Serialize partition data to JSON for iceberg-rust's constants_map.
-                          // The native execution engine uses partition_data_json + partition_type_json
-                          // to build a constants_map, which is the primary mechanism for providing
-                          // partition values to identity-transformed partition columns. Non-identity
-                          // transforms (bucket, truncate, days, etc.) read values from data files.
+                          // The native execution engine uses partition_data_json +
+                          // partition_type_json to build a constants_map, which is the primary
+                          // mechanism for providing partition values to identity-transformed
+                          // partition columns. Non-identity transforms (bucket, truncate, days,
+                          // etc.) read values from data files.
                           val jsonBuilder = new StringBuilder()
                           jsonBuilder.append("{")
 
@@ -814,15 +815,13 @@ object IcebergScanSerde extends Logging {
                               value match {
                                 case s: String =>
                                   jsonBuilder.append("\"").append(s).append("\"")
+                                // NaN/Infinity are not valid JSON number literals per the
+                                // JSON spec. Serialize as strings (e.g., "NaN", "Infinity")
+                                // which are valid JSON and can be parsed by Rust's
+                                // f32/f64::from_str().
                                 case f: java.lang.Float if f.isNaN || f.isInfinite =>
-                                  // NaN/Infinity are not valid JSON number literals per the JSON spec.
-                                  // Serialize as strings (e.g., "NaN", "Infinity") which are valid
-                                  // JSON and can be parsed by Rust's f32/f64::from_str().
                                   jsonBuilder.append("\"").append(f.toString).append("\"")
                                 case d: java.lang.Double if d.isNaN || d.isInfinite =>
-                                  // NaN/Infinity are not valid JSON number literals per the JSON spec.
-                                  // Serialize as strings (e.g., "NaN", "Infinity") which are valid
-                                  // JSON and can be parsed by Rust's f32/f64::from_str().
                                   jsonBuilder.append("\"").append(d.toString).append("\"")
                                 case n: Number =>
                                   jsonBuilder.append(n.toString)
