@@ -94,6 +94,7 @@ jobs:
               org.apache.comet.exec.CometAggregateSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
               org.apache.comet.CometArrayExpressionSuite
               org.apache.comet.CometCastSuite
