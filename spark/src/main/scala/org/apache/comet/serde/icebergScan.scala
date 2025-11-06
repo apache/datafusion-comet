@@ -233,54 +233,6 @@ object IcebergScanSerde extends Logging {
   }
 
   /**
-   * Injects partition values into Iceberg schema JSON as "initial-default" values.
-   *
-   * For Hive-style partitioned tables migrated to Iceberg, partition values are stored in
-   * directory structure, not in data files. This function adds those values to the schema so
-   * iceberg-rust's RecordBatchTransformer can populate partition columns.
-   */
-  def injectPartitionValuesIntoSchemaJson(schemaJson: String, partitionJson: String): String = {
-    import org.json4s._
-    import org.json4s.jackson.JsonMethods._
-
-    try {
-      // Parse both JSONs
-      implicit val formats: Formats = DefaultFormats
-      val schemaValue = parse(schemaJson)
-      val partitionMap = parse(partitionJson).extract[Map[String, JValue]]
-
-      // Transform the schema fields to inject initial-default values
-      val transformedSchema = schemaValue.transformField { case ("fields", JArray(fields)) =>
-        val updatedFields = fields.map {
-          case fieldObj: JObject =>
-            // Check if this field has a partition value
-            fieldObj \ "id" match {
-              case JInt(fieldId) =>
-                partitionMap.get(fieldId.toString) match {
-                  case Some(partitionValue) =>
-                    // Add "initial-default" to this field
-                    fieldObj merge JObject("initial-default" -> partitionValue)
-                  case None =>
-                    fieldObj
-                }
-              case _ =>
-                fieldObj
-            }
-          case other => other
-        }
-        ("fields", JArray(updatedFields))
-      }
-
-      // Serialize back to JSON
-      compact(render(transformedSchema))
-    } catch {
-      case e: Exception =>
-        logWarning(s"Failed to inject partition values into schema JSON: ${e.getMessage}")
-        schemaJson
-    }
-  }
-
-  /**
    * Serializes a CometBatchScanExec wrapping an Iceberg SparkBatchQueryScan to protobuf.
    *
    * This handles extraction of metadata location, catalog properties, file scan tasks, schemas,
@@ -576,13 +528,7 @@ object IcebergScanSerde extends Logging {
                       // scalastyle:on classforname
                       val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
                       toJsonMethod.setAccessible(true)
-                      var schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
-
-                      // Inject partition values into schema if present
-                      partitionJsonOpt.foreach { partitionJson =>
-                        schemaJson =
-                          injectPartitionValuesIntoSchemaJson(schemaJson, partitionJson)
-                      }
+                      val schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
 
                       taskBuilder.setSchemaJson(schemaJson)
 
@@ -780,33 +726,64 @@ object IcebergScanSerde extends Logging {
 
                           // Only serialize partition type if there are actual partition fields
                           if (!fields.isEmpty) {
-                            // Serialize partition type to JSON using Iceberg's SchemaParser
-                            // Use the simple overload that returns String directly
                             try {
-                              // scalastyle:off classforname
-                              val schemaParserClass =
-                                Class.forName("org.apache.iceberg.SchemaParser")
-                              val typeClass = Class.forName("org.apache.iceberg.types.Type")
-                              // Use the simple toJson(Type) method that returns String
-                              val toJsonMethod = schemaParserClass.getMethod("toJson", typeClass)
-                              // scalastyle:on classforname
+                              // Manually build StructType JSON to match iceberg-rust expectations.
+                              // Using Iceberg's SchemaParser.toJson() would include schema-level
+                              // metadata (e.g., "schema-id") that iceberg-rust's StructType
+                              // deserializer rejects. We need pure StructType format:
+                              // {"type":"struct","fields":[...]}
+                              val jsonBuilder = new StringBuilder()
+                              jsonBuilder.append("{\"type\":\"struct\",\"fields\":[")
 
-                              val partitionTypeJson = toJsonMethod
-                                .invoke(null, partitionType)
-                                .asInstanceOf[String]
+                              var firstField = true
+                              val iter = fields.iterator()
+                              while (iter.hasNext) {
+                                val field = iter.next()
+                                val fieldIdMethod = field.getClass.getMethod("fieldId")
+                                val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
+
+                                val nameMethod = field.getClass.getMethod("name")
+                                val fieldName = nameMethod.invoke(field).asInstanceOf[String]
+
+                                val isOptionalMethod = field.getClass.getMethod("isOptional")
+                                val isOptional =
+                                  isOptionalMethod.invoke(field).asInstanceOf[Boolean]
+                                val required = !isOptional
+
+                                val typeMethod = field.getClass.getMethod("type")
+                                val fieldType = typeMethod.invoke(field)
+                                val fieldTypeStr = fieldType.toString
+
+                                if (!firstField) jsonBuilder.append(",")
+                                firstField = false
+
+                                jsonBuilder.append("{")
+                                jsonBuilder.append("\"id\":").append(fieldId).append(",")
+                                jsonBuilder.append("\"name\":\"").append(fieldName).append("\",")
+                                jsonBuilder.append("\"required\":").append(required).append(",")
+                                jsonBuilder
+                                  .append("\"type\":\"")
+                                  .append(fieldTypeStr)
+                                  .append("\"")
+                                jsonBuilder.append("}")
+                              }
+
+                              jsonBuilder.append("]}")
+                              val partitionTypeJson = jsonBuilder.toString
+
                               taskBuilder.setPartitionTypeJson(partitionTypeJson)
                             } catch {
                               case e: Exception =>
                                 logWarning(
-                                  "Failed to serialize partition type to JSON:" +
-                                    s" ${e.getMessage}")
+                                  s"Failed to serialize partition type to JSON: ${e.getMessage}")
                             }
-                          } else {
-                            // No partition fields to serialize (unpartitioned table or
-                            // all non-identity transforms)
                           }
 
-                          // Serialize partition data to JSON using Iceberg's StructLike
+                          // Serialize partition data to JSON for iceberg-rust's constants_map.
+                          // The native execution engine uses partition_data_json + partition_type_json
+                          // to build a constants_map, which is the primary mechanism for providing
+                          // partition values to identity-transformed partition columns. Non-identity
+                          // transforms (bucket, truncate, days, etc.) read values from data files.
                           val jsonBuilder = new StringBuilder()
                           jsonBuilder.append("{")
 
@@ -837,6 +814,16 @@ object IcebergScanSerde extends Logging {
                               value match {
                                 case s: String =>
                                   jsonBuilder.append("\"").append(s).append("\"")
+                                case f: java.lang.Float if f.isNaN || f.isInfinite =>
+                                  // NaN/Infinity are not valid JSON number literals per the JSON spec.
+                                  // Serialize as strings (e.g., "NaN", "Infinity") which are valid
+                                  // JSON and can be parsed by Rust's f32/f64::from_str().
+                                  jsonBuilder.append("\"").append(f.toString).append("\"")
+                                case d: java.lang.Double if d.isNaN || d.isInfinite =>
+                                  // NaN/Infinity are not valid JSON number literals per the JSON spec.
+                                  // Serialize as strings (e.g., "NaN", "Infinity") which are valid
+                                  // JSON and can be parsed by Rust's f32/f64::from_str().
+                                  jsonBuilder.append("\"").append(d.toString).append("\"")
                                 case n: Number =>
                                   jsonBuilder.append(n.toString)
                                 case b: java.lang.Boolean =>
