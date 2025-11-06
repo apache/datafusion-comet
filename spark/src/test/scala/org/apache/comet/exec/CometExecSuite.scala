@@ -1789,7 +1789,7 @@ class CometExecSuite extends CometTestBase {
           spark
             .range(numRows)
             .selectExpr("if (id % 2 = 0, null, id) AS a", s"$numRows - id AS b")
-            .repartition(3) // Force repartition to test data will come to single partition
+            .repartition(3) // Move data across multiple partitions
             .write
             .saveAsTable("t1")
 
@@ -2274,6 +2274,772 @@ class CometExecSuite extends CometTestBase {
         assert(nodeNames.length == 1)
         assert(nodeNames.head == "CometSparkColumnarToColumnar")
       }
+    }
+  }
+
+  test("window: simple COUNT(*) without frame") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("SELECT a, b, c, COUNT(*) OVER () as cnt FROM window_test")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: simple SUM with PARTITION BY") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("SELECT a, b, c, SUM(c) OVER (PARTITION BY a) as sum_c FROM window_test")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: AVG with PARTITION BY and ORDER BY not supported
+  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
+  ignore("window: AVG with PARTITION BY and ORDER BY") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df =
+        sql("SELECT a, b, c, AVG(c) OVER (PARTITION BY a ORDER BY b) as avg_c FROM window_test")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: MIN and MAX with ORDER BY") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          MIN(c) OVER (ORDER BY b) as min_c,
+          MAX(c) OVER (ORDER BY b) as max_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: COUNT with ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW produces incorrect results
+  // Returns wrong cnt values - ordering issue causes swapped values for rows with same partition
+  ignore("window: COUNT with ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          COUNT(*) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as cnt
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: SUM with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING produces incorrect results
+  // Returns wrong sum_c values - ordering issue causes swapped values for rows with same partition
+  ignore("window: SUM with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) as sum_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: AVG with ROWS BETWEEN produces incorrect results
+  // Returns wrong avg_c values - calculation appears to be off
+  ignore("window: AVG with ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          AVG(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) as avg_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: SUM with ROWS BETWEEN produces incorrect results
+  // Returns wrong sum_c values for some rows
+  ignore("window: SUM with ROWS BETWEEN 2 PRECEDING AND CURRENT ROW") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) as sum_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: COUNT with ROWS BETWEEN not supported
+  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
+  ignore("window: COUNT with ROWS BETWEEN CURRENT ROW AND 2 FOLLOWING") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          COUNT(*) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN CURRENT ROW AND 2 FOLLOWING) as cnt
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: MAX with ROWS BETWEEN UNBOUNDED not supported
+  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
+  ignore("window: MAX with ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          MAX(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as max_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: ROW_NUMBER not supported
+  // Falls back to Spark Window operator
+  ignore("window: ROW_NUMBER with PARTITION BY and ORDER BY") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          ROW_NUMBER() OVER (PARTITION BY a ORDER BY b, c) as row_num
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: RANK not supported
+  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
+  ignore("window: RANK with PARTITION BY and ORDER BY") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          RANK() OVER (PARTITION BY a ORDER BY b) as rnk
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: DENSE_RANK not supported
+  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
+  ignore("window: DENSE_RANK with PARTITION BY and ORDER BY") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          DENSE_RANK() OVER (PARTITION BY a ORDER BY b) as dense_rnk
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: PERCENT_RANK not supported
+  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
+  ignore("window: PERCENT_RANK with PARTITION BY and ORDER BY") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          PERCENT_RANK() OVER (PARTITION BY a ORDER BY b) as pct_rnk
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: NTILE not supported
+  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
+  ignore("window: NTILE with PARTITION BY and ORDER BY") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          NTILE(4) OVER (PARTITION BY a ORDER BY b) as ntile_4
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: LAG produces incorrect results
+  // Returns wrong lag_c values - ordering issue in results
+  ignore("window: LAG with default offset") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          LAG(c) OVER (PARTITION BY a ORDER BY b) as lag_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: LAG with offset 2 produces incorrect results
+  // Returns wrong lag_c_2 values - ordering issue in results
+  ignore("window: LAG with offset 2 and default value") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          LAG(c, 2, -1) OVER (PARTITION BY a ORDER BY b) as lag_c_2
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: LEAD produces incorrect results
+  // Returns wrong lead_c values - ordering issue in results
+  ignore("window: LEAD with default offset") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          LEAD(c) OVER (PARTITION BY a ORDER BY b) as lead_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: LEAD with offset 2 produces incorrect results
+  // Returns wrong lead_c_2 values - ordering issue in results
+  ignore("window: LEAD with offset 2 and default value") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          LEAD(c, 2, -1) OVER (PARTITION BY a ORDER BY b) as lead_c_2
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: FIRST_VALUE causes encoder error
+  // org.apache.spark.SparkUnsupportedOperationException: [ENCODER_NOT_FOUND] Not found an encoder of the type Any
+  ignore("window: FIRST_VALUE with default ignore nulls") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, if (i % 7 == 0) null else i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          FIRST_VALUE(c) OVER (PARTITION BY a ORDER BY b) as first_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: LAST_VALUE causes encoder error
+  // org.apache.spark.SparkUnsupportedOperationException: [ENCODER_NOT_FOUND] Not found an encoder of the type Any
+  ignore("window: LAST_VALUE with ROWS frame") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, if (i % 7 == 0) null else i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          LAST_VALUE(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as last_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: NTH_VALUE returns incorrect results - produces 0 instead of null for first row,
+  // and incorrect values for subsequent rows in partition
+  ignore("window: NTH_VALUE with position 2") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          NTH_VALUE(c, 2) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as nth_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: CUME_DIST not supported - falls back to Spark Window operator
+  // Error: "Partitioning and sorting specifications must be the same"
+  ignore("window: CUME_DIST with PARTITION BY and ORDER BY") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          CUME_DIST() OVER (PARTITION BY a ORDER BY b) as cume_dist
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: Multiple window functions with mixed frame types (RowFrame and RangeFrame)
+  // produces incorrect row_num values - ordering issue in results
+  ignore("window: multiple window functions in single query") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          ROW_NUMBER() OVER (PARTITION BY a ORDER BY b) as row_num,
+          RANK() OVER (PARTITION BY a ORDER BY b) as rnk,
+          SUM(c) OVER (PARTITION BY a ORDER BY b) as sum_c,
+          AVG(c) OVER (PARTITION BY a ORDER BY b) as avg_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: Different window specifications not fully supported
+  // Falls back to Spark Project and Window operators
+  ignore("window: different window specifications in single query") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY b) as sum_by_a,
+          SUM(c) OVER (PARTITION BY b ORDER BY a) as sum_by_b,
+          COUNT(*) OVER () as total_count
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: ORDER BY DESC with aggregation not supported
+  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
+  ignore("window: ORDER BY DESC with aggregation") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY b DESC) as sum_c_desc
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: Multiple PARTITION BY columns not supported
+  // Falls back to Spark Window operator
+  ignore("window: multiple PARTITION BY columns") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i % 2, i))
+        .toDF("a", "b", "c", "d")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, d, c,
+          SUM(c) OVER (PARTITION BY a, b ORDER BY d) as sum_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: Multiple ORDER BY columns not supported
+  // Falls back to Spark Window operator
+  ignore("window: multiple ORDER BY columns") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i % 2, i))
+        .toDF("a", "b", "c", "d")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, d, c,
+          ROW_NUMBER() OVER (PARTITION BY a ORDER BY b, d, c) as row_num
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: RANGE BETWEEN with numeric ORDER BY not supported
+  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
+  ignore("window: RANGE BETWEEN with numeric ORDER BY") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i, i * 2))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY b RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) as sum_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW not supported
+  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
+  ignore("window: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i, i * 2))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY b RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as sum_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: Complex expressions in window functions not fully supported
+  // Falls back to Spark Project operator
+  ignore("window: complex expression in window function") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          SUM(c * 2 + 1) OVER (PARTITION BY a ORDER BY b) as sum_expr
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: Window function with WHERE clause not supported
+  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
+  ignore("window: window function with WHERE clause") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY b) as sum_c
+        FROM window_test
+        WHERE a > 0
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: Window function with GROUP BY not fully supported
+  // Falls back to Spark Project and Window operators
+  ignore("window: window function with GROUP BY") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, SUM(c) as total_c,
+          RANK() OVER (ORDER BY SUM(c) DESC) as rnk
+        FROM window_test
+        GROUP BY a, b
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: ROWS BETWEEN with negative offset produces incorrect results
+  // Returns wrong values for avg_c calculation
+  ignore("window: ROWS BETWEEN with negative offset") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          AVG(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING) as avg_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // TODO: All ranking functions together produce incorrect row_num values
+  // Ordering issue causes row numbers to be swapped for rows with same partition/order values
+  ignore("window: all ranking functions together") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          ROW_NUMBER() OVER (PARTITION BY a ORDER BY b) as row_num,
+          RANK() OVER (PARTITION BY a ORDER BY b) as rnk,
+          DENSE_RANK() OVER (PARTITION BY a ORDER BY b) as dense_rnk,
+          PERCENT_RANK() OVER (PARTITION BY a ORDER BY b) as pct_rnk,
+          CUME_DIST() OVER (PARTITION BY a ORDER BY b) as cume_dist,
+          NTILE(3) OVER (PARTITION BY a ORDER BY b) as ntile_3
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
     }
   }
 
