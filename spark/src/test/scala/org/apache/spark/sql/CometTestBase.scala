@@ -273,6 +273,13 @@ abstract class CometTestBase
 
   /** Check for the correct results as well as the expected fallback reasons */
   protected def checkSparkAnswerAndFallbackReasons(
+      query: String,
+      fallbackReasons: Set[String]): (SparkPlan, SparkPlan) = {
+    checkSparkAnswerAndFallbackReasons(sql(query), fallbackReasons)
+  }
+
+  /** Check for the correct results as well as the expected fallback reasons */
+  protected def checkSparkAnswerAndFallbackReasons(
       df: => DataFrame,
       fallbackReasons: Set[String]): (SparkPlan, SparkPlan) = {
     val (sparkPlan, cometPlan) = internalCheckSparkAnswer(df, assertCometNative = false)

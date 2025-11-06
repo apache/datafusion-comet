@@ -74,9 +74,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     df.createOrReplaceTempView("tbl")
 
     withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
-      checkSparkAnswerAndFallbackReason(
+      checkSparkAnswerAndFallbackReasons(
         "select * from tbl order by 1, 2",
-        "unsupported range partitioning sort order")
+        Set(
+          "unsupported range partitioning sort order",
+          "Sorting on floating-point is not 100% compatible with Spark"))
     }
   }
 
