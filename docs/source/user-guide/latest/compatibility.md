@@ -56,8 +56,8 @@ and sorting on floating-point data can be enabled by setting `spark.comet.expres
 ## Incompatible Expressions
 
 Expressions that are not 100% Spark-compatible will fall back to Spark by default and can be enabled by setting
-`spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See 
-the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.  
+`spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
+the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
 
 It is also possible to specify `spark.comet.expression.allowIncompatible=true` to enable all
 incompatible expressions.
