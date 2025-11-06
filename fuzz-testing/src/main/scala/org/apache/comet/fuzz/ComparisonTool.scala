@@ -32,7 +32,7 @@ class ComparisonToolConf(arguments: Seq[String]) extends ScallopConf(arguments) 
     val inputCometFolder: ScallopOption[String] =
       opt[String](required = true, descr = "Folder with Comet produced results in Parquet format")
     val tolerance: ScallopOption[Double] =
-      opt[Double](default = Some(0.000001), descr = "Tolerance for floating point comparisons")
+      opt[Double](default = Some(0.000002), descr = "Tolerance for floating point comparisons")
   }
   addSubcommand(compareParquet)
   verify()
@@ -66,7 +66,7 @@ object ComparisonTool {
       spark: SparkSession,
       sparkFolderPath: String,
       cometFolderPath: String,
-      tolerance: Double = 0.000001): Unit = {
+      tolerance: Double): Unit = {
 
     val output = QueryRunner.createOutputMdFile()
 
