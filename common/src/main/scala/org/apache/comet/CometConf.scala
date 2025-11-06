@@ -879,7 +879,19 @@ private class TypedConfigBuilder[T](
    */
   def createWithEnvVarOrDefault(envVar: String, default: T): ConfigEntry[T] = {
     val defaultValue = sys.env.get(envVar).map(converter).getOrElse(default)
-    createWithDefault(defaultValue)
+    val transformedDefault = converter(stringConverter(defaultValue))
+    val conf = new ConfigEntryWithDefault[T](
+      parent.key,
+      transformedDefault,
+      converter,
+      stringConverter,
+      parent._doc,
+      parent._category,
+      parent._public,
+      parent._version,
+      Some(envVar))
+    CometConf.register(conf)
+    conf
   }
 }
 
@@ -908,6 +920,11 @@ private[comet] abstract class ConfigEntry[T](
 
   def defaultValueString: String
 
+  /**
+   * The environment variable name that can override this config's default value, if applicable.
+   */
+  def envVar: Option[String] = None
+
   override def toString: String = {
     s"ConfigEntry(key=$key, defaultValue=$defaultValueString, doc=$doc, " +
       s"public=$isPublic, version=$version)"
@@ -922,11 +939,14 @@ private[comet] class ConfigEntryWithDefault[T](
     doc: String,
     category: String,
     isPublic: Boolean,
-    version: String)
+    version: String,
+    _envVar: Option[String] = None)
     extends ConfigEntry(key, valueConverter, stringConverter, doc, category, isPublic, version) {
   override def defaultValue: Option[T] = Some(_defaultValue)
 
   override def defaultValueString: String = stringConverter(_defaultValue)
+
+  override def envVar: Option[String] = _envVar
 
   def get(conf: SQLConf): T = {
     val tmp = conf.getConfString(key, null)
