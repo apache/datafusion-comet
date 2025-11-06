@@ -31,6 +31,8 @@ class ComparisonToolConf(arguments: Seq[String]) extends ScallopConf(arguments) 
       opt[String](required = true, descr = "Folder with Spark produced results in Parquet format")
     val inputCometFolder: ScallopOption[String] =
       opt[String](required = true, descr = "Folder with Comet produced results in Parquet format")
+    val tolerance: ScallopOption[Double] =
+      opt[Double](default = Some(0.000002), descr = "Tolerance for floating point comparisons")
   }
   addSubcommand(compareParquet)
   verify()
@@ -49,7 +51,8 @@ object ComparisonTool {
         compareParquetFolders(
           spark,
           conf.compareParquet.inputSparkFolder(),
-          conf.compareParquet.inputCometFolder())
+          conf.compareParquet.inputCometFolder(),
+          conf.compareParquet.tolerance())
 
       case _ =>
         // scalastyle:off println
@@ -62,7 +65,8 @@ object ComparisonTool {
   private def compareParquetFolders(
       spark: SparkSession,
       sparkFolderPath: String,
-      cometFolderPath: String): Unit = {
+      cometFolderPath: String,
+      tolerance: Double): Unit = {
 
     val output = QueryRunner.createOutputMdFile()
 
@@ -115,7 +119,7 @@ object ComparisonTool {
             val cometRows = cometDf.orderBy(cometDf.columns.map(functions.col): _*).collect()
 
             // Compare the results
-            if (QueryComparison.assertSameRows(sparkRows, cometRows, output)) {
+            if (QueryComparison.assertSameRows(sparkRows, cometRows, output, tolerance)) {
               output.write(s"Subfolder $subfolderName: ${sparkRows.length} rows matched\n\n")
             } else {
               // Output schema if dataframes are not equal
