@@ -27,8 +27,9 @@ import org.apache.spark.sql.execution.metric.SQLMetric;
 import org.apache.spark.sql.types.StructType;
 
 /**
- * A specialized NativeBatchReader for Iceberg that accepts ParquetMetadata as a JSON string. This
- * allows Iceberg to pass metadata in serialized form with a two-step initialization pattern.
+ * A specialized NativeBatchReader for Iceberg that accepts ParquetMetadata as a Thrift encoded byte
+ * array . This allows Iceberg to pass metadata in serialized form with a two-step initialization
+ * pattern.
  */
 public class IcebergCometNativeBatchReader extends NativeBatchReader {
 
@@ -65,9 +66,14 @@ public class IcebergCometNativeBatchReader extends NativeBatchReader {
     this.isCaseSensitive = isCaseSensitive;
     this.useFieldId = useFieldId;
     this.ignoreMissingIds = ignoreMissingIds;
+    this.useLegacyDateTimestamp = useLegacyDateTimestamp;
     this.partitionSchema = partitionSchema;
     this.partitionValues = partitionValues;
     this.preInitializedReaders = preInitializedReaders;
+    this.metrics.clear();
+    if (metrics != null) {
+      this.metrics.putAll(metrics);
+    }
 
     // Call parent init method
     super.init();

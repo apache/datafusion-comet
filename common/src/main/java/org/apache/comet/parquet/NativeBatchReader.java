@@ -117,12 +117,11 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         throws URISyntaxException {
       this.start = start;
       this.length = length;
-      URI uri = new URI(filePath);
+      URI uri = new Path(filePath).toUri();
       if (uri.getScheme() == null) {
-        this.filePath = "file://" + filePath;
-      } else {
-        this.filePath = filePath;
+        uri = new Path("file://" + filePath).toUri();
       }
+      this.filePath = uri.toString();
       this.fileSize = fileSize;
     }
 
@@ -202,7 +201,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
    * seeing these dates/timestamps.
    */
   // TODO: (ARROW NATIVE)
-  private boolean useLegacyDateTimestamp;
+  protected boolean useLegacyDateTimestamp;
 
   /** The TaskContext object for executing this task. */
   private final TaskContext taskContext;
@@ -524,8 +523,18 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       if (preInitializedReaders != null) {
         StructType filteredSchema = new StructType();
         StructField[] sparkFields = sparkSchema.fields();
+        // List<Type> fileFields = fileSchema.getFields();
         for (int i = 0; i < sparkFields.length; i++) {
-          if (i >= preInitializedReaders.length || preInitializedReaders[i] == null) {
+          // Keep the column if:
+          // 1. It doesn't have a preinitialized reader, OR
+          // 2. It has a preinitialized reader but exists in fileSchema
+          boolean hasPreInitializedReader =
+              i < preInitializedReaders.length && preInitializedReaders[i] != null;
+          int finalI = i;
+          boolean existsInFileSchema =
+              fileFields.stream().anyMatch(f -> f.getName().equals(sparkFields[finalI].name()));
+
+          if (!hasPreInitializedReader || existsInFileSchema) {
             filteredSchema = filteredSchema.add(sparkFields[i]);
           }
         }
@@ -978,16 +987,34 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     importer = new CometSchemaImporter(ALLOCATOR);
 
     List<Type> fields = requestedSchema.getFields();
+    StructField[] sparkFields = sparkSchema.fields();
+
     for (int i = 0; i < fields.size(); i++) {
       if (!missingColumns[i]) {
         if (columnReaders[i] != null) columnReaders[i].close();
         // TODO: (ARROW NATIVE) handle tz, datetime & int96 rebase
-        DataType dataType = sparkSchema.fields()[i].dataType();
         Type field = fields.get(i);
+
+        // Find the corresponding spark field by matching field names
+        DataType dataType = null;
+        int sparkSchemaIndex = -1;
+        for (int j = 0; j < sparkFields.length; j++) {
+          if (sparkFields[j].name().equals(field.getName())) {
+            dataType = sparkFields[j].dataType();
+            sparkSchemaIndex = j;
+            break;
+          }
+        }
+
+        if (dataType == null) {
+          throw new IOException(
+              "Could not find matching Spark field for Parquet field: " + field.getName());
+        }
+
         NativeColumnReader reader =
             new NativeColumnReader(
                 this.handle,
-                i,
+                sparkSchemaIndex,
                 dataType,
                 field,
                 null,
