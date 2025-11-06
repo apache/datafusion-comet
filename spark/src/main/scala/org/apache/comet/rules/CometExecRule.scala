@@ -887,7 +887,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         var supported = true
         for (o <- orderings) {
           if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
-            withInfo(s, s"unsupported range partitioning sort order: $o")
+            withInfo(s, s"unsupported range partitioning sort order: $o", o)
             supported = false
             // We don't short-circuit in case there is more than one unsupported expression
             // to provide info for.
