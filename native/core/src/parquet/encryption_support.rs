@@ -54,7 +54,7 @@ impl EncryptionFactory for CometEncryptionFactory {
         _options: &EncryptionFactoryOptions,
         _schema: &SchemaRef,
         _file_path: &Path,
-    ) -> Result<Option<FileEncryptionProperties>, DataFusionError> {
+    ) -> Result<Option<Arc<FileEncryptionProperties>>, DataFusionError> {
         Err(DataFusionError::NotImplemented(
             "Comet does not support Parquet encryption yet."
                 .parse()
@@ -69,7 +69,7 @@ impl EncryptionFactory for CometEncryptionFactory {
         &self,
         options: &EncryptionFactoryOptions,
         file_path: &Path,
-    ) -> Result<Option<FileDecryptionProperties>, DataFusionError> {
+    ) -> Result<Option<Arc<FileDecryptionProperties>>, DataFusionError> {
         let config: CometEncryptionConfig = options.to_extension_options()?;
 
         let full_path: String = config.uri_base + file_path.as_ref();

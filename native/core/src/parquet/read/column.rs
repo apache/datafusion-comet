@@ -331,19 +331,19 @@ impl ColumnReader {
                                 None
                             };
                             match unit {
-                                ParquetTimeUnit::MILLIS(_) => {
+                                ParquetTimeUnit::MILLIS => {
                                     typed_reader!(
                                         Int64TimestampMillisColumnReader,
                                         ArrowDataType::Timestamp(time_unit, time_zone)
                                     )
                                 }
-                                ParquetTimeUnit::MICROS(_) => {
+                                ParquetTimeUnit::MICROS => {
                                     typed_reader!(
                                         Int64TimestampMicrosColumnReader,
                                         ArrowDataType::Timestamp(time_unit, time_zone)
                                     )
                                 }
-                                ParquetTimeUnit::NANOS(_) => {
+                                ParquetTimeUnit::NANOS => {
                                     typed_reader!(
                                         Int64TimestampNanosColumnReader,
                                         ArrowDataType::Int64
