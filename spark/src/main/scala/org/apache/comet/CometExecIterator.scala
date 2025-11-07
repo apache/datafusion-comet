@@ -21,9 +21,7 @@ package org.apache.comet
 
 import java.io.FileNotFoundException
 import java.lang.management.ManagementFactory
-
 import scala.util.matching.Regex
-
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark._
 import org.apache.spark.broadcast.Broadcast
@@ -32,12 +30,12 @@ import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
 import org.apache.spark.sql.vectorized._
 import org.apache.spark.util.SerializableConfiguration
-
 import org.apache.comet.CometConf._
 import org.apache.comet.Tracing.withTrace
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.vector.NativeUtil
+import org.apache.spark.sql.internal.SQLConf
 
 /**
  * An iterator class used to execute Comet native query. It takes an input iterator which comes
@@ -124,7 +122,8 @@ class CometExecIterator(
       memoryConfig.memoryLimit,
       memoryConfig.memoryLimitPerTask,
       taskAttemptId,
-      keyUnwrapper)
+      keyUnwrapper,
+      SQLConf.get.sessionLocalTimeZone)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None

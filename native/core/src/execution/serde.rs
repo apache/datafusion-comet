@@ -91,7 +91,7 @@ pub fn deserialize_data_type(buf: &[u8]) -> Result<spark_expression::DataType, E
 }
 
 /// Converts Protobuf data type to Arrow data type.
-pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
+pub fn to_arrow_datatype(dt_value: &DataType, session_time_zone_id: &str) -> ArrowDataType {
     match DataTypeId::try_from(dt_value.type_id).unwrap() {
         Bool => ArrowDataType::Boolean,
         Int8 => ArrowDataType::Int8,
@@ -115,9 +115,10 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
             }
             _ => unreachable!(),
         },
-        DataTypeId::Timestamp => {
-            ArrowDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".to_string().into()))
-        }
+        DataTypeId::Timestamp => ArrowDataType::Timestamp(
+            TimeUnit::Microsecond,
+            Some(session_time_zone_id.to_string().into()),
+        ),
         DataTypeId::TimestampNtz => ArrowDataType::Timestamp(TimeUnit::Microsecond, None),
         DataTypeId::Date => ArrowDataType::Date32,
         DataTypeId::Null => ArrowDataType::Null,
@@ -132,7 +133,7 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
             DatatypeStruct::List(info) => {
                 let field = Field::new(
                     "item",
-                    to_arrow_datatype(info.element_type.as_ref().unwrap()),
+                    to_arrow_datatype(info.element_type.as_ref().unwrap(), session_time_zone_id),
                     info.contains_null,
                 );
                 ArrowDataType::List(Arc::new(field))
@@ -150,12 +151,12 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
             DatatypeStruct::Map(info) => {
                 let key_field = Field::new(
                     "key",
-                    to_arrow_datatype(info.key_type.as_ref().unwrap()),
+                    to_arrow_datatype(info.key_type.as_ref().unwrap(), session_time_zone_id),
                     false,
                 );
                 let value_field = Field::new(
                     "value",
-                    to_arrow_datatype(info.value_type.as_ref().unwrap()),
+                    to_arrow_datatype(info.value_type.as_ref().unwrap(), session_time_zone_id),
                     info.value_contains_null,
                 );
                 let struct_field = Field::new(
@@ -183,7 +184,7 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
                     .map(|(idx, name)| {
                         Field::new(
                             name,
-                            to_arrow_datatype(&info.field_datatypes[idx]),
+                            to_arrow_datatype(&info.field_datatypes[idx], session_time_zone_id),
                             info.field_nullable[idx],
                         )
                     })

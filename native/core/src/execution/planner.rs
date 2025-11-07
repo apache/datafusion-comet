@@ -152,19 +152,25 @@ pub struct PhysicalPlanner {
     exec_context_id: i64,
     partition: i32,
     session_ctx: Arc<SessionContext>,
+    session_time_zone_id: String,
 }
 
 impl Default for PhysicalPlanner {
     fn default() -> Self {
-        Self::new(Arc::new(SessionContext::new()), 0)
+        Self::new(Arc::new(SessionContext::new()), "UTC", 0)
     }
 }
 
 impl PhysicalPlanner {
-    pub fn new(session_ctx: Arc<SessionContext>, partition: i32) -> Self {
+    pub fn new(
+        session_ctx: Arc<SessionContext>,
+        session_time_zone_id: &str,
+        partition: i32,
+    ) -> Self {
         Self {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
+            session_time_zone_id: session_time_zone_id.to_string(),
             partition,
         }
     }
@@ -173,6 +179,7 @@ impl PhysicalPlanner {
         Self {
             exec_context_id,
             partition: self.partition,
+            session_time_zone_id: self.session_time_zone_id.clone(),
             session_ctx: Arc::clone(&self.session_ctx),
         }
     }
@@ -311,7 +318,10 @@ impl PhysicalPlanner {
                 let result = create_modulo_expr(
                     left,
                     right,
-                    expr.return_type.as_ref().map(to_arrow_datatype).unwrap(),
+                    expr.return_type
+                        .as_ref()
+                        .map(|dt| to_arrow_datatype(dt, &self.session_time_zone_id))
+                        .unwrap(),
                     input_schema,
                     eval_mode == EvalMode::Ansi,
                     &self.session_ctx.state(),
@@ -371,7 +381,10 @@ impl PhysicalPlanner {
                 Ok(Arc::new(Column::new(field.name().as_str(), idx)))
             }
             ExprStruct::Unbound(unbound) => {
-                let data_type = to_arrow_datatype(unbound.datatype.as_ref().unwrap());
+                let data_type = to_arrow_datatype(
+                    unbound.datatype.as_ref().unwrap(),
+                    &self.session_time_zone_id,
+                );
                 Ok(Arc::new(UnboundColumn::new(
                     unbound.name.as_str(),
                     data_type,
@@ -400,7 +413,10 @@ impl PhysicalPlanner {
                 Ok(Arc::new(BinaryExpr::new(left, op, right)))
             }
             ExprStruct::Literal(literal) => {
-                let data_type = to_arrow_datatype(literal.datatype.as_ref().unwrap());
+                let data_type = to_arrow_datatype(
+                    literal.datatype.as_ref().unwrap(),
+                    &self.session_time_zone_id,
+                );
                 let scalar_value = if literal.is_null {
                     match data_type {
                         DataType::Boolean => ScalarValue::Boolean(None),
@@ -491,7 +507,8 @@ impl PhysicalPlanner {
             }
             ExprStruct::Cast(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let datatype =
+                    to_arrow_datatype(expr.datatype.as_ref().unwrap(), &self.session_time_zone_id);
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                 Ok(Arc::new(Cast::new(
                     child,
@@ -593,7 +610,8 @@ impl PhysicalPlanner {
             }
             ExprStruct::CheckOverflow(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let data_type =
+                    to_arrow_datatype(expr.datatype.as_ref().unwrap(), &self.session_time_zone_id);
                 let fail_on_error = expr.fail_on_error;
 
                 Ok(Arc::new(CheckOverflow::new(
@@ -734,12 +752,14 @@ impl PhysicalPlanner {
             }
             ExprStruct::NormalizeNanAndZero(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let data_type =
+                    to_arrow_datatype(expr.datatype.as_ref().unwrap(), &self.session_time_zone_id);
                 Ok(Arc::new(NormalizeNaNAndZero::new(data_type, child)))
             }
             ExprStruct::Subquery(expr) => {
                 let id = expr.id;
-                let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let data_type =
+                    to_arrow_datatype(expr.datatype.as_ref().unwrap(), &self.session_time_zone_id);
                 Ok(Arc::new(Subquery::new(self.exec_context_id, id, data_type)))
             }
             ExprStruct::BloomFilterMightContain(expr) => {
@@ -937,7 +957,9 @@ impl PhysicalPlanner {
                     >= DECIMAL128_MAX_PRECISION)
                 || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
             {
-                let data_type = return_type.map(to_arrow_datatype).unwrap();
+                let data_type = return_type
+                    .map(|dt| to_arrow_datatype(dt, &self.session_time_zone_id))
+                    .unwrap();
                 // For some Decimal128 operations, we need wider internal digits.
                 // Cast left and right to Decimal256 and cast the result back to Decimal128
                 let left = Arc::new(Cast::new(
@@ -962,7 +984,9 @@ impl PhysicalPlanner {
                 Ok(DataType::Decimal128(_p1, _s1)),
                 Ok(DataType::Decimal128(_p2, _s2)),
             ) => {
-                let data_type = return_type.map(to_arrow_datatype).unwrap();
+                let data_type = return_type
+                    .map(|dt| to_arrow_datatype(dt, &self.session_time_zone_id))
+                    .unwrap();
                 let func_name = if options.is_integral_div {
                     // Decimal256 division in Arrow may overflow, so we still need this variant of decimal_div.
                     // Otherwise, we may be able to reuse the previous case-match instead of here,
@@ -987,7 +1011,9 @@ impl PhysicalPlanner {
                 )))
             }
             _ => {
-                let data_type = return_type.map(to_arrow_datatype).unwrap();
+                let data_type = return_type
+                    .map(|dt| to_arrow_datatype(dt, &self.session_time_zone_id))
+                    .unwrap();
                 if [EvalMode::Try, EvalMode::Ansi].contains(&eval_mode)
                     && (data_type.is_integer()
                         || (data_type.is_floating() && op == DataFusionOperator::Divide))
@@ -1231,11 +1257,18 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::NativeScan(scan) => {
-                let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
-                let required_schema: SchemaRef =
-                    convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
-                let partition_schema: SchemaRef =
-                    convert_spark_types_to_arrow_schema(scan.partition_schema.as_slice());
+                let data_schema = convert_spark_types_to_arrow_schema(
+                    scan.data_schema.as_slice(),
+                    &self.session_time_zone_id,
+                );
+                let required_schema: SchemaRef = convert_spark_types_to_arrow_schema(
+                    scan.required_schema.as_slice(),
+                    &self.session_time_zone_id,
+                );
+                let partition_schema: SchemaRef = convert_spark_types_to_arrow_schema(
+                    scan.partition_schema.as_slice(),
+                    &self.session_time_zone_id,
+                );
                 let projection_vector: Vec<usize> = scan
                     .projection_vector
                     .iter()
@@ -1337,7 +1370,11 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::Scan(scan) => {
-                let data_types = scan.fields.iter().map(to_arrow_datatype).collect_vec();
+                let data_types = scan
+                    .fields
+                    .iter()
+                    .map(|dt| to_arrow_datatype(dt, &self.session_time_zone_id))
+                    .collect_vec();
 
                 // If it is not test execution context for unit test, we should have at least one
                 // input source
@@ -1800,7 +1837,8 @@ impl PhysicalPlanner {
             }
             AggExprStruct::Min(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let datatype =
+                    to_arrow_datatype(expr.datatype.as_ref().unwrap(), &self.session_time_zone_id);
                 let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
 
                 AggregateExprBuilder::new(min_udaf(), vec![child])
@@ -1813,7 +1851,8 @@ impl PhysicalPlanner {
             }
             AggExprStruct::Max(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let datatype =
+                    to_arrow_datatype(expr.datatype.as_ref().unwrap(), &self.session_time_zone_id);
                 let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
 
                 AggregateExprBuilder::new(max_udaf(), vec![child])
@@ -1826,7 +1865,8 @@ impl PhysicalPlanner {
             }
             AggExprStruct::Sum(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let datatype =
+                    to_arrow_datatype(expr.datatype.as_ref().unwrap(), &self.session_time_zone_id);
 
                 let builder = match datatype {
                     DataType::Decimal128(_, _) => {
@@ -1851,8 +1891,12 @@ impl PhysicalPlanner {
             }
             AggExprStruct::Avg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                let input_datatype = to_arrow_datatype(expr.sum_datatype.as_ref().unwrap());
+                let datatype =
+                    to_arrow_datatype(expr.datatype.as_ref().unwrap(), &self.session_time_zone_id);
+                let input_datatype = to_arrow_datatype(
+                    expr.sum_datatype.as_ref().unwrap(),
+                    &self.session_time_zone_id,
+                );
                 let builder = match datatype {
                     DataType::Decimal128(_, _) => {
                         let func =
@@ -1939,7 +1983,8 @@ impl PhysicalPlanner {
                     self.create_expr(expr.child1.as_ref().unwrap(), Arc::clone(&schema))?;
                 let child2 =
                     self.create_expr(expr.child2.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let datatype =
+                    to_arrow_datatype(expr.datatype.as_ref().unwrap(), &self.session_time_zone_id);
                 match expr.stats_type {
                     0 => {
                         let func = AggregateUDF::new_from_impl(Covariance::new(
@@ -1978,7 +2023,8 @@ impl PhysicalPlanner {
             }
             AggExprStruct::Variance(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let datatype =
+                    to_arrow_datatype(expr.datatype.as_ref().unwrap(), &self.session_time_zone_id);
                 match expr.stats_type {
                     0 => {
                         let func = AggregateUDF::new_from_impl(Variance::new(
@@ -2007,7 +2053,8 @@ impl PhysicalPlanner {
             }
             AggExprStruct::Stddev(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let datatype =
+                    to_arrow_datatype(expr.datatype.as_ref().unwrap(), &self.session_time_zone_id);
                 match expr.stats_type {
                     0 => {
                         let func = AggregateUDF::new_from_impl(Stddev::new(
@@ -2039,7 +2086,8 @@ impl PhysicalPlanner {
                     self.create_expr(expr.child1.as_ref().unwrap(), Arc::clone(&schema))?;
                 let child2 =
                     self.create_expr(expr.child2.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let datatype =
+                    to_arrow_datatype(expr.datatype.as_ref().unwrap(), &self.session_time_zone_id);
                 let func = AggregateUDF::new_from_impl(Correlation::new(
                     "correlation",
                     datatype,
@@ -2053,7 +2101,8 @@ impl PhysicalPlanner {
                     self.create_expr(expr.num_items.as_ref().unwrap(), Arc::clone(&schema))?;
                 let num_bits =
                     self.create_expr(expr.num_bits.as_ref().unwrap(), Arc::clone(&schema))?;
-                let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let datatype =
+                    to_arrow_datatype(expr.datatype.as_ref().unwrap(), &self.session_time_zone_id);
                 let func = AggregateUDF::new_from_impl(BloomFilterAgg::new(
                     Arc::clone(&num_items),
                     Arc::clone(&num_bits),
@@ -2263,7 +2312,8 @@ impl PhysicalPlanner {
             }
             Some(AggExprStruct::Sum(expr)) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
-                let arrow_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                let arrow_type =
+                    to_arrow_datatype(expr.datatype.as_ref().unwrap(), &self.session_time_zone_id);
                 let datatype = child.data_type(&schema)?;
 
                 let child = if datatype != arrow_type {
@@ -2389,48 +2439,51 @@ impl PhysicalPlanner {
             .map(|x| x.data_type(input_schema.as_ref()))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let (data_type, coerced_input_types) =
-            match expr.return_type.as_ref().map(to_arrow_datatype) {
-                Some(t) => (t, input_expr_types.clone()),
-                None => {
-                    let fun_name = match fun_name.as_ref() {
-                        "read_side_padding" => "rpad", // use the same return type as rpad
-                        other => other,
-                    };
-                    let func = self.session_ctx.udf(fun_name)?;
-                    let coerced_types = func
-                        .coerce_types(&input_expr_types)
-                        .unwrap_or_else(|_| input_expr_types.clone());
+        let (data_type, coerced_input_types) = match expr
+            .return_type
+            .as_ref()
+            .map(|dt| to_arrow_datatype(dt, &self.session_time_zone_id))
+        {
+            Some(t) => (t, input_expr_types.clone()),
+            None => {
+                let fun_name = match fun_name.as_ref() {
+                    "read_side_padding" => "rpad", // use the same return type as rpad
+                    other => other,
+                };
+                let func = self.session_ctx.udf(fun_name)?;
+                let coerced_types = func
+                    .coerce_types(&input_expr_types)
+                    .unwrap_or_else(|_| input_expr_types.clone());
 
-                    let arg_fields = coerced_types
-                        .iter()
-                        .enumerate()
-                        .map(|(i, dt)| Arc::new(Field::new(format!("arg{i}"), dt.clone(), true)))
-                        .collect::<Vec<_>>();
+                let arg_fields = coerced_types
+                    .iter()
+                    .enumerate()
+                    .map(|(i, dt)| Arc::new(Field::new(format!("arg{i}"), dt.clone(), true)))
+                    .collect::<Vec<_>>();
 
-                    // TODO this should try and find scalar
-                    let arguments = args
-                        .iter()
-                        .map(|e| {
-                            e.as_ref()
-                                .as_any()
-                                .downcast_ref::<Literal>()
-                                .map(|lit| lit.value())
-                        })
-                        .collect::<Vec<_>>();
+                // TODO this should try and find scalar
+                let arguments = args
+                    .iter()
+                    .map(|e| {
+                        e.as_ref()
+                            .as_any()
+                            .downcast_ref::<Literal>()
+                            .map(|lit| lit.value())
+                    })
+                    .collect::<Vec<_>>();
 
-                    let args = ReturnFieldArgs {
-                        arg_fields: &arg_fields,
-                        scalar_arguments: &arguments,
-                    };
+                let args = ReturnFieldArgs {
+                    arg_fields: &arg_fields,
+                    scalar_arguments: &arguments,
+                };
 
-                    let data_type = Arc::clone(&func.inner().return_field_from_args(args)?)
-                        .data_type()
-                        .clone();
+                let data_type = Arc::clone(&func.inner().return_field_from_args(args)?)
+                    .data_type()
+                    .clone();
 
-                    (data_type, coerced_types)
-                }
-            };
+                (data_type, coerced_types)
+            }
+        };
 
         let fun_expr = create_comet_physical_fun(
             fun_name,
@@ -2641,13 +2694,14 @@ fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnumVal
 
 fn convert_spark_types_to_arrow_schema(
     spark_types: &[spark_operator::SparkStructField],
+    session_time_zone_id: &str,
 ) -> SchemaRef {
     let arrow_fields = spark_types
         .iter()
         .map(|spark_type| {
             Field::new(
                 String::clone(&spark_type.name),
-                to_arrow_datatype(spark_type.data_type.as_ref().unwrap()),
+                to_arrow_datatype(spark_type.data_type.as_ref().unwrap(), session_time_zone_id),
                 spark_type.nullable,
             )
         })

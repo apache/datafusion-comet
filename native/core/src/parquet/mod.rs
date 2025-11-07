@@ -669,8 +669,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_validateObjec
 ) {
     try_unwrap_or_throw(&e, |mut env| {
         let session_config = SessionConfig::new();
-        let planner =
-            PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)), 0);
+        let planner = PhysicalPlanner::new(
+            Arc::new(SessionContext::new_with_config(session_config)),
+            "UTC",
+            0,
+        );
         let session_ctx = planner.session_ctx();
         let path: String = env.get_string(&file_path).unwrap().into();
         let object_store_config = get_object_store_options(&mut env, object_store_options)?;
@@ -706,8 +709,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
     try_unwrap_or_throw(&e, |mut env| unsafe {
         JVMClasses::init(&mut env);
         let session_config = SessionConfig::new().with_batch_size(batch_size as usize);
-        let planner =
-            PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(session_config)), 0);
+        let planner = PhysicalPlanner::new(
+            Arc::new(SessionContext::new_with_config(session_config)),
+            "UTC",
+            0,
+        );
         let session_ctx = planner.session_ctx();
 
         let path: String = env.get_string(&file_path).unwrap().into();
