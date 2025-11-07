@@ -68,7 +68,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
 
     // TODO test fails with non-UTC timezone
     // https://github.com/apache/datafusion-comet/issues/2649
-    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Denver") {
       for (format <- supportedFormats) {
         checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }

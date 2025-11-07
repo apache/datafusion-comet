@@ -3297,7 +3297,7 @@ mod tests {
             datafusion_functions_nested::make_array::MakeArray::new(),
         ));
         let task_ctx = session_ctx.task_ctx();
-        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), "UTC", 0);
 
         // Create a plan for
         // ProjectionExec: expr=[make_array(col_0@0) as col_0]
@@ -3415,7 +3415,7 @@ mod tests {
     fn test_array_repeat() {
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
-        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), "UTC", 0);
 
         // Mock scan operator with 3 INT32 columns
         let op_scan = Operator {
