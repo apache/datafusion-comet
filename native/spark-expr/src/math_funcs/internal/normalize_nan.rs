@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::array::Array;
+use arrow::compute::cast;
 use arrow::datatypes::{DataType, Schema};
 use arrow::{
     array::{as_primitive_array, ArrayAccessor, ArrayIter, Float32Array, Float64Array},
@@ -92,7 +94,7 @@ impl PhysicalExpr for NormalizeNaNAndZero {
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        self.child.children()
+        vec![&self.child]
     }
 
     fn with_new_children(
