@@ -1697,7 +1697,9 @@ class CometExecSuite extends CometTestBase {
 
   test("TakeOrderedAndProjectExec") {
     Seq("true", "false").foreach(aqeEnabled =>
-      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled,
+        CometConf.COMET_EXEC_WINDOW_ENABLED.key -> "true") {
         withTable("t1") {
           val numRows = 10
           spark
