@@ -198,7 +198,9 @@ public abstract class SpillWriter {
             compressionCodec,
             compressionLevel,
             tracingEnabled,
-            SQLConf.get().sessionLocalTimeZone());
+            // TODO using session time zone causes regressions in Parquet scan
+            //SQLConf.get().sessionLocalTimeZone()
+            "UTC");
 
     long written = results[0];
     checksum = results[1];
