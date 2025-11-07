@@ -177,6 +177,13 @@ object CometQuarter extends CometExpressionSerde[Quarter] with CometExprGetDateF
 }
 
 object CometHour extends CometExpressionSerde[Hour] {
+  override def getSupportLevel(expr: Hour): SupportLevel = {
+    if (expr.timeZoneId.isEmpty) {
+      return Unsupported(Some("Missing timeZoneId"))
+    }
+    Compatible()
+  }
+
   override def convert(
       expr: Hour,
       inputs: Seq[Attribute],
@@ -186,9 +193,7 @@ object CometHour extends CometExpressionSerde[Hour] {
     if (childExpr.isDefined) {
       val builder = ExprOuterClass.Hour.newBuilder()
       builder.setChild(childExpr.get)
-
-      val timeZone = expr.timeZoneId.getOrElse("UTC")
-      builder.setTimezone(timeZone)
+      builder.setTimezone(expr.timeZoneId.get)
 
       Some(
         ExprOuterClass.Expr
@@ -203,6 +208,13 @@ object CometHour extends CometExpressionSerde[Hour] {
 }
 
 object CometMinute extends CometExpressionSerde[Minute] {
+  override def getSupportLevel(expr: Minute): SupportLevel = {
+    if (expr.timeZoneId.isEmpty) {
+      return Unsupported(Some("Missing timeZoneId"))
+    }
+    Compatible()
+  }
+
   override def convert(
       expr: Minute,
       inputs: Seq[Attribute],
@@ -212,9 +224,7 @@ object CometMinute extends CometExpressionSerde[Minute] {
     if (childExpr.isDefined) {
       val builder = ExprOuterClass.Minute.newBuilder()
       builder.setChild(childExpr.get)
-
-      val timeZone = expr.timeZoneId.getOrElse("UTC")
-      builder.setTimezone(timeZone)
+      builder.setTimezone(expr.timeZoneId.get)
 
       Some(
         ExprOuterClass.Expr
@@ -229,6 +239,13 @@ object CometMinute extends CometExpressionSerde[Minute] {
 }
 
 object CometSecond extends CometExpressionSerde[Second] {
+  override def getSupportLevel(expr: Second): SupportLevel = {
+    if (expr.timeZoneId.isEmpty) {
+      return Unsupported(Some("Missing timeZoneId"))
+    }
+    Compatible()
+  }
+
   override def convert(
       expr: Second,
       inputs: Seq[Attribute],
@@ -238,9 +255,7 @@ object CometSecond extends CometExpressionSerde[Second] {
     if (childExpr.isDefined) {
       val builder = ExprOuterClass.Second.newBuilder()
       builder.setChild(childExpr.get)
-
-      val timeZone = expr.timeZoneId.getOrElse("UTC")
-      builder.setTimezone(timeZone)
+      builder.setTimezone(expr.timeZoneId.get)
 
       Some(
         ExprOuterClass.Expr
@@ -315,6 +330,9 @@ object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
       "microsecond")
 
   override def getSupportLevel(expr: TruncTimestamp): SupportLevel = {
+    if (expr.timeZoneId.isEmpty) {
+      return Unsupported(Some("Missing timeZoneId"))
+    }
     expr.format match {
       case Literal(fmt: UTF8String, _) =>
         if (supportedFormats.contains(fmt.toString.toLowerCase(Locale.ROOT))) {
@@ -339,9 +357,7 @@ object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
       val builder = ExprOuterClass.TruncTimestamp.newBuilder()
       builder.setChild(childExpr.get)
       builder.setFormat(formatExpr.get)
-
-      val timeZone = expr.timeZoneId.getOrElse("UTC")
-      builder.setTimezone(timeZone)
+      builder.setTimezone(expr.timeZoneId.get)
 
       Some(
         ExprOuterClass.Expr

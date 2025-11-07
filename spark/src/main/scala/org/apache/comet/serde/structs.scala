@@ -103,6 +103,12 @@ object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFiel
 
 object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
 
+  override def getSupportLevel(expr: StructsToJson): SupportLevel = {
+    if (expr.timeZoneId.isEmpty) {
+      return Unsupported(Some("Missing timeZoneId"))
+    }
+    Compatible()
+  }
   override def convert(
       expr: StructsToJson,
       inputs: Seq[Attribute],
@@ -148,7 +154,7 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
             val toJson = ExprOuterClass.ToJson
               .newBuilder()
               .setChild(p)
-              .setTimezone(expr.timeZoneId.getOrElse("UTC"))
+              .setTimezone(expr.timeZoneId.get)
               .setIgnoreNullFields(true)
               .build()
             Some(
