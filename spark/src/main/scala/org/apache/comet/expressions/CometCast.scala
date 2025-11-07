@@ -49,6 +49,9 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
   // https://github.com/apache/datafusion-comet/issues/378
 
   override def getSupportLevel(cast: Cast): SupportLevel = {
+    if (cast.timeZoneId.isEmpty) {
+      return Unsupported(Some("Missing timeZoneId"))
+    }
     if (cast.child.isInstanceOf[Literal]) {
       // casting from literal is compatible because we delegate to Spark
       // further data type checks will be performed by CometLiteral
@@ -92,7 +95,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         castBuilder.setDatatype(dataType)
         castBuilder.setEvalMode(evalModeToProto(evalMode))
         castBuilder.setAllowIncompat(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get())
-        castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
+        // time is only needed for casts involving certain data types
+        timeZoneId.foreach(castBuilder.setTimezone)
         Some(
           ExprOuterClass.Expr
             .newBuilder()
