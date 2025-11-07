@@ -50,8 +50,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.7'}]
+        spark-version: [{short: '3.4', full: '3.4.3', java: 11}, {short: '3.5', full: '3.5.7', java: 11}, {short: '4.0', full: '4.0.1', java: 17}]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql_core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
@@ -61,7 +60,7 @@ jobs:
           - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
       fail-fast: false
-    name: spark-sql-${{ matrix.module.name }}/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
+    name: spark-sql-${{ matrix.module.name }}/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.spark-version.java }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -71,7 +70,7 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java-version }}
+          jdk-version: ${{ matrix.spark-version.java }}
       - name: Setup Spark
         uses: ./.github/actions/setup-spark-builder
         with:
@@ -92,7 +91,7 @@ jobs:
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
         uses: actions/upload-artifact@v5
         with:
-          name: fallback-log-spark-sql-${{ matrix.module.name }}-${{ matrix.os }}-spark-${{ matrix.spark-version.full }}-java-${{ matrix.java-version }}
+          name: fallback-log-spark-sql-${{ matrix.module.name }}-${{ matrix.os }}-spark-${{ matrix.spark-version.full }}-java-${{ matrix.spark-version.java }}
           path: "**/fallback.log"
 
   spark-sql-native-native-comet:
