@@ -1,8 +1,8 @@
 == Physical Plan ==
-TakeOrderedAndProject (25)
-+- * Project (24)
-   +- Window (23)
-      +- * CometColumnarToRow (22)
+* CometColumnarToRow (25)
++- CometTakeOrderedAndProject (24)
+   +- CometProject (23)
+      +- CometWindowExec (22)
          +- CometSort (21)
             +- CometColumnarExchange (20)
                +- * HashAggregate (19)
@@ -125,20 +125,20 @@ Arguments: hashpartitioning(_w1#20, _w2#21, 5), ENSURE_REQUIREMENTS, CometColumn
 Input [7]: [total_sum#17, i_category#12, i_class#13, lochierarchy#18, _w0#19, _w1#20, _w2#21]
 Arguments: [total_sum#17, i_category#12, i_class#13, lochierarchy#18, _w0#19, _w1#20, _w2#21], [_w1#20 ASC NULLS FIRST, _w2#21 ASC NULLS FIRST, _w0#19 DESC NULLS LAST]
 
-(22) CometColumnarToRow [codegen id : 2]
+(22) CometWindowExec
 Input [7]: [total_sum#17, i_category#12, i_class#13, lochierarchy#18, _w0#19, _w1#20, _w2#21]
+Arguments: [total_sum#17, i_category#12, i_class#13, lochierarchy#18, _w0#19, _w1#20, _w2#21, rank_within_parent#22], [rank(_w0#19) windowspecdefinition(_w1#20, _w2#21, _w0#19 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#22], [_w1#20, _w2#21], [_w0#19 DESC NULLS LAST]
 
-(23) Window
-Input [7]: [total_sum#17, i_category#12, i_class#13, lochierarchy#18, _w0#19, _w1#20, _w2#21]
-Arguments: [rank(_w0#19) windowspecdefinition(_w1#20, _w2#21, _w0#19 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#22], [_w1#20, _w2#21], [_w0#19 DESC NULLS LAST]
-
-(24) Project [codegen id : 3]
-Output [5]: [total_sum#17, i_category#12, i_class#13, lochierarchy#18, rank_within_parent#22]
+(23) CometProject
 Input [8]: [total_sum#17, i_category#12, i_class#13, lochierarchy#18, _w0#19, _w1#20, _w2#21, rank_within_parent#22]
+Arguments: [total_sum#17, i_category#12, i_class#13, lochierarchy#18, rank_within_parent#22], [total_sum#17, i_category#12, i_class#13, lochierarchy#18, rank_within_parent#22]
 
-(25) TakeOrderedAndProject
+(24) CometTakeOrderedAndProject
 Input [5]: [total_sum#17, i_category#12, i_class#13, lochierarchy#18, rank_within_parent#22]
-Arguments: 100, [lochierarchy#18 DESC NULLS LAST, CASE WHEN (lochierarchy#18 = 0) THEN i_category#12 END ASC NULLS FIRST, rank_within_parent#22 ASC NULLS FIRST], [total_sum#17, i_category#12, i_class#13, lochierarchy#18, rank_within_parent#22]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[lochierarchy#18 DESC NULLS LAST,CASE WHEN (lochierarchy#18 = 0) THEN i_category#12 END ASC NULLS FIRST,rank_within_parent#22 ASC NULLS FIRST], output=[total_sum#17,i_category#12,i_class#13,lochierarchy#18,rank_within_parent#22]), [total_sum#17, i_category#12, i_class#13, lochierarchy#18, rank_within_parent#22], 100, 0, [lochierarchy#18 DESC NULLS LAST, CASE WHEN (lochierarchy#18 = 0) THEN i_category#12 END ASC NULLS FIRST, rank_within_parent#22 ASC NULLS FIRST], [total_sum#17, i_category#12, i_class#13, lochierarchy#18, rank_within_parent#22]
+
+(25) CometColumnarToRow [codegen id : 2]
+Input [5]: [total_sum#17, i_category#12, i_class#13, lochierarchy#18, rank_within_parent#22]
 
 ===== Subqueries =====
 

@@ -1,8 +1,8 @@
 == Physical Plan ==
-TakeOrderedAndProject (23)
-+- * Project (22)
-   +- Window (21)
-      +- * CometColumnarToRow (20)
+* CometColumnarToRow (23)
++- CometTakeOrderedAndProject (22)
+   +- CometProject (21)
+      +- CometWindowExec (20)
          +- CometSort (19)
             +- CometExchange (18)
                +- CometHashAggregate (17)
@@ -114,20 +114,20 @@ Arguments: hashpartitioning(i_class#12, 5), ENSURE_REQUIREMENTS, CometNativeShuf
 Input [7]: [i_item_desc#7, i_category#13, i_class#12, i_current_price#8, itemrevenue#17, _w0#18, i_item_id#11]
 Arguments: [i_item_desc#7, i_category#13, i_class#12, i_current_price#8, itemrevenue#17, _w0#18, i_item_id#11], [i_class#12 ASC NULLS FIRST]
 
-(20) CometColumnarToRow [codegen id : 1]
+(20) CometWindowExec
 Input [7]: [i_item_desc#7, i_category#13, i_class#12, i_current_price#8, itemrevenue#17, _w0#18, i_item_id#11]
+Arguments: [i_item_desc#7, i_category#13, i_class#12, i_current_price#8, itemrevenue#17, _w0#18, i_item_id#11, _we0#19], [sum(_w0#18) windowspecdefinition(i_class#12, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS _we0#19], [i_class#12]
 
-(21) Window
-Input [7]: [i_item_desc#7, i_category#13, i_class#12, i_current_price#8, itemrevenue#17, _w0#18, i_item_id#11]
-Arguments: [sum(_w0#18) windowspecdefinition(i_class#12, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS _we0#19], [i_class#12]
-
-(22) Project [codegen id : 2]
-Output [7]: [i_item_desc#7, i_category#13, i_class#12, i_current_price#8, itemrevenue#17, ((_w0#18 * 100) / _we0#19) AS revenueratio#20, i_item_id#11]
+(21) CometProject
 Input [8]: [i_item_desc#7, i_category#13, i_class#12, i_current_price#8, itemrevenue#17, _w0#18, i_item_id#11, _we0#19]
+Arguments: [i_item_desc#7, i_category#13, i_class#12, i_current_price#8, itemrevenue#17, revenueratio#20, i_item_id#11], [i_item_desc#7, i_category#13, i_class#12, i_current_price#8, itemrevenue#17, ((_w0#18 * 100) / _we0#19) AS revenueratio#20, i_item_id#11]
 
-(23) TakeOrderedAndProject
+(22) CometTakeOrderedAndProject
 Input [7]: [i_item_desc#7, i_category#13, i_class#12, i_current_price#8, itemrevenue#17, revenueratio#20, i_item_id#11]
-Arguments: 100, [i_category#13 ASC NULLS FIRST, i_class#12 ASC NULLS FIRST, i_item_id#11 ASC NULLS FIRST, i_item_desc#7 ASC NULLS FIRST, revenueratio#20 ASC NULLS FIRST], [i_item_desc#7, i_category#13, i_class#12, i_current_price#8, itemrevenue#17, revenueratio#20]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_category#13 ASC NULLS FIRST,i_class#12 ASC NULLS FIRST,i_item_id#11 ASC NULLS FIRST,i_item_desc#7 ASC NULLS FIRST,revenueratio#20 ASC NULLS FIRST], output=[i_item_desc#7,i_category#13,i_class#12,i_current_price#8,itemrevenue#17,revenueratio#20]), [i_item_desc#7, i_category#13, i_class#12, i_current_price#8, itemrevenue#17, revenueratio#20], 100, 0, [i_category#13 ASC NULLS FIRST, i_class#12 ASC NULLS FIRST, i_item_id#11 ASC NULLS FIRST, i_item_desc#7 ASC NULLS FIRST, revenueratio#20 ASC NULLS FIRST], [i_item_desc#7, i_category#13, i_class#12, i_current_price#8, itemrevenue#17, revenueratio#20]
+
+(23) CometColumnarToRow [codegen id : 1]
+Input [6]: [i_item_desc#7, i_category#13, i_class#12, i_current_price#8, itemrevenue#17, revenueratio#20]
 
 ===== Subqueries =====
 

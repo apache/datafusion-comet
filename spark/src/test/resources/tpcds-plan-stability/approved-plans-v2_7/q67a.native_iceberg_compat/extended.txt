@@ -1,7 +1,7 @@
- TakeOrderedAndProject [COMET: ]
-+- Filter
-   +-  Window [COMET: Partitioning and sorting specifications must be the same.]
-      +- CometColumnarToRow
+CometColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometFilter
+      +- CometWindowExec
          +- CometSort
             +- CometExchange
                +- CometUnion
@@ -291,4 +291,4 @@
                                                 +- CometFilter
                                                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
 
-Comet accelerated 261 out of 282 eligible operators (92%). Final plan contains 10 transitions between Spark and Comet.
+Comet accelerated 264 out of 282 eligible operators (93%). Final plan contains 10 transitions between Spark and Comet.

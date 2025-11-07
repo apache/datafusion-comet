@@ -1,8 +1,8 @@
 == Physical Plan ==
-TakeOrderedAndProject (70)
-+- * Filter (69)
-   +- Window (68)
-      +- * CometColumnarToRow (67)
+* CometColumnarToRow (70)
++- CometTakeOrderedAndProject (69)
+   +- CometFilter (68)
+      +- CometWindowExec (67)
          +- CometSort (66)
             +- CometExchange (65)
                +- CometUnion (64)
@@ -376,20 +376,20 @@ Arguments: hashpartitioning(i_category#99, 5), ENSURE_REQUIREMENTS, CometNativeS
 Input [9]: [i_category#99, i_class#100, i_brand#101, i_product_name#102, d_year#103, d_qoy#104, d_moy#105, s_store_id#106, sumsales#107]
 Arguments: [i_category#99, i_class#100, i_brand#101, i_product_name#102, d_year#103, d_qoy#104, d_moy#105, s_store_id#106, sumsales#107], [i_category#99 ASC NULLS FIRST, sumsales#107 DESC NULLS LAST]
 
-(67) CometColumnarToRow [codegen id : 1]
+(67) CometWindowExec
 Input [9]: [i_category#99, i_class#100, i_brand#101, i_product_name#102, d_year#103, d_qoy#104, d_moy#105, s_store_id#106, sumsales#107]
+Arguments: [i_category#99, i_class#100, i_brand#101, i_product_name#102, d_year#103, d_qoy#104, d_moy#105, s_store_id#106, sumsales#107, rk#152], [rank(sumsales#107) windowspecdefinition(i_category#99, sumsales#107 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rk#152], [i_category#99], [sumsales#107 DESC NULLS LAST]
 
-(68) Window
-Input [9]: [i_category#99, i_class#100, i_brand#101, i_product_name#102, d_year#103, d_qoy#104, d_moy#105, s_store_id#106, sumsales#107]
-Arguments: [rank(sumsales#107) windowspecdefinition(i_category#99, sumsales#107 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rk#152], [i_category#99], [sumsales#107 DESC NULLS LAST]
-
-(69) Filter [codegen id : 2]
+(68) CometFilter
 Input [10]: [i_category#99, i_class#100, i_brand#101, i_product_name#102, d_year#103, d_qoy#104, d_moy#105, s_store_id#106, sumsales#107, rk#152]
 Condition : (rk#152 <= 100)
 
-(70) TakeOrderedAndProject
+(69) CometTakeOrderedAndProject
 Input [10]: [i_category#99, i_class#100, i_brand#101, i_product_name#102, d_year#103, d_qoy#104, d_moy#105, s_store_id#106, sumsales#107, rk#152]
-Arguments: 100, [i_category#99 ASC NULLS FIRST, i_class#100 ASC NULLS FIRST, i_brand#101 ASC NULLS FIRST, i_product_name#102 ASC NULLS FIRST, d_year#103 ASC NULLS FIRST, d_qoy#104 ASC NULLS FIRST, d_moy#105 ASC NULLS FIRST, s_store_id#106 ASC NULLS FIRST, sumsales#107 ASC NULLS FIRST, rk#152 ASC NULLS FIRST], [i_category#99, i_class#100, i_brand#101, i_product_name#102, d_year#103, d_qoy#104, d_moy#105, s_store_id#106, sumsales#107, rk#152]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_category#99 ASC NULLS FIRST,i_class#100 ASC NULLS FIRST,i_brand#101 ASC NULLS FIRST,i_product_name#102 ASC NULLS FIRST,d_year#103 ASC NULLS FIRST,d_qoy#104 ASC NULLS FIRST,d_moy#105 ASC NULLS FIRST,s_store_id#106 ASC NULLS FIRST,sumsales#107 ASC NULLS FIRST,rk#152 ASC NULLS FIRST], output=[i_category#99,i_class#100,i_brand#101,i_product_name#102,d_year#103,d_qoy#104,d_moy#105,s_store_id#106,sumsales#107,rk#152]), [i_category#99, i_class#100, i_brand#101, i_product_name#102, d_year#103, d_qoy#104, d_moy#105, s_store_id#106, sumsales#107, rk#152], 100, 0, [i_category#99 ASC NULLS FIRST, i_class#100 ASC NULLS FIRST, i_brand#101 ASC NULLS FIRST, i_product_name#102 ASC NULLS FIRST, d_year#103 ASC NULLS FIRST, d_qoy#104 ASC NULLS FIRST, d_moy#105 ASC NULLS FIRST, s_store_id#106 ASC NULLS FIRST, sumsales#107 ASC NULLS FIRST, rk#152 ASC NULLS FIRST], [i_category#99, i_class#100, i_brand#101, i_product_name#102, d_year#103, d_qoy#104, d_moy#105, s_store_id#106, sumsales#107, rk#152]
+
+(70) CometColumnarToRow [codegen id : 1]
+Input [10]: [i_category#99, i_class#100, i_brand#101, i_product_name#102, d_year#103, d_qoy#104, d_moy#105, s_store_id#106, sumsales#107, rk#152]
 
 ===== Subqueries =====
 
