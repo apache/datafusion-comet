@@ -55,7 +55,7 @@ import org.apache.comet.shims.CometExprShim
  */
 object QueryPlanSerde extends Logging with CometExprShim {
 
-  val integerTypes = Seq(ByteType, ShortType, IntegerType, LongType)
+  private val integerTypes = Seq(ByteType, ShortType, IntegerType, LongType)
 
   /**
    * Mapping of Spark operator class to Comet operator handler.

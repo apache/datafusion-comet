@@ -138,9 +138,7 @@ impl Accumulator for SumIntegerAccumulator {
         {
             for i in 0..int_array.len() {
                 if !int_array.is_null(i) {
-                    let v = int_array.value(i).to_i64().ok_or_else(|| {
-                        DataFusionError::Internal("Failed to convert value to i64".to_string())
-                    })?;
+                    let v = int_array.value(i).to_i64().unwrap();
                     match eval_mode {
                         EvalMode::Legacy => {
                             sum = v.add_wrapping(sum);
@@ -209,7 +207,10 @@ impl Accumulator for SumIntegerAccumulator {
                     running_sum,
                 )?,
                 _ => {
-                    panic!("Unsupported data type {}", values.data_type())
+                    return Err(DataFusionError::Internal(format!(
+                        "unsupported data type: {:?}",
+                        values.data_type()
+                    )));
                 }
             };
             self.sum = sum;
@@ -227,7 +228,7 @@ impl Accumulator for SumIntegerAccumulator {
     }
 
     fn size(&self) -> usize {
-        size_of_val(self)
+        std::mem::size_of_val(self)
     }
 
     fn state(&mut self) -> DFResult<Vec<ScalarValue>> {
@@ -314,6 +315,16 @@ impl SumIntGroupsAccumulator {
             has_all_nulls: Vec::new(),
         }
     }
+
+    fn resize_helper(&mut self, total_num_groups: usize) {
+        if self.eval_mode == EvalMode::Try {
+            self.sums.resize(total_num_groups, Some(0));
+            self.has_all_nulls.resize(total_num_groups, true);
+        } else {
+            self.sums.resize(total_num_groups, None);
+            self.has_all_nulls.resize(total_num_groups, false);
+        }
+    }
 }
 
 impl GroupsAccumulator for SumIntGroupsAccumulator {
@@ -375,15 +386,9 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
             Ok(())
         }
 
-        assert!(opt_filter.is_none(), "opt_filter is not supported yet");
+        debug_assert!(opt_filter.is_none(), "opt_filter is not supported yet");
         let values = &values[0];
-        if self.eval_mode == EvalMode::Try {
-            self.sums.resize(total_num_groups, Some(0));
-            self.has_all_nulls.resize(total_num_groups, true);
-        } else {
-            self.sums.resize(total_num_groups, None);
-            self.has_all_nulls.resize(total_num_groups, false);
-        }
+        self.resize_helper(total_num_groups);
 
         match values.data_type() {
             DataType::Int64 => update_groups_sum_internal(
@@ -480,17 +485,11 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        assert!(opt_filter.is_none(), "opt_filter is not supported yet");
+        debug_assert!(opt_filter.is_none(), "opt_filter is not supported yet");
 
         let that_sums = values[0].as_primitive::<Int64Type>();
 
-        if self.eval_mode == EvalMode::Try {
-            self.sums.resize(total_num_groups, Some(0));
-            self.has_all_nulls.resize(total_num_groups, true);
-        } else {
-            self.sums.resize(total_num_groups, None);
-            self.has_all_nulls.resize(total_num_groups, false);
-        }
+        self.resize_helper(total_num_groups);
 
         let that_sums_is_all_nulls = if self.eval_mode == EvalMode::Try {
             Some(values[1].as_boolean())
@@ -569,6 +568,6 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
     }
 
     fn size(&self) -> usize {
-        size_of_val(self)
+        std::mem::size_of_val(self)
     }
 }
