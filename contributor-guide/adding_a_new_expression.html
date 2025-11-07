@@ -474,24 +474,160 @@ under the License.
 <p>Once you know what you want to add, you’ll need to update the query planner to recognize the new expression in Scala and potentially add a new expression implementation in the Rust package.</p>
 <section id="adding-the-expression-in-scala">
 <h3>Adding the Expression in Scala<a class="headerlink" href="#adding-the-expression-in-scala" title="Link to this heading">#</a></h3>
-<p>The <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code> object has a method <code class="docutils literal notranslate"><span class="pre">exprToProto</span></code>, which is responsible for converting a Spark expression to a protobuf expression. Within that method is an <code class="docutils literal notranslate"><span class="pre">exprToProtoInternal</span></code> method that contains a large match statement for each expression type. You’ll need to add a new case to this match statement for your new expression.</p>
+<p>DataFusion Comet uses a framework based on the <code class="docutils literal notranslate"><span class="pre">CometExpressionSerde</span></code> trait for converting Spark expressions to protobuf. Instead of a large match statement, each expression type has its own serialization handler. For aggregate expressions, use the <code class="docutils literal notranslate"><span class="pre">CometAggregateExpressionSerde</span></code> trait instead.</p>
+<section id="creating-a-cometexpressionserde-implementation">
+<h4>Creating a CometExpressionSerde Implementation<a class="headerlink" href="#creating-a-cometexpressionserde-implementation" title="Link to this heading">#</a></h4>
+<p>First, create an object that extends <code class="docutils literal notranslate"><span class="pre">CometExpressionSerde[T]</span></code> where <code class="docutils literal notranslate"><span class="pre">T</span></code> is the Spark expression type. This is typically added to one of the serde files in <code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/serde/</span></code> (e.g., <code class="docutils literal notranslate"><span class="pre">math.scala</span></code>, <code class="docutils literal notranslate"><span class="pre">strings.scala</span></code>, <code class="docutils literal notranslate"><span class="pre">arrays.scala</span></code>, etc.).</p>
 <p>For example, the <code class="docutils literal notranslate"><span class="pre">unhex</span></code> function looks like this:</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">case</span><span class="w"> </span><span class="n">e</span><span class="p">:</span><span class="w"> </span><span class="nc">Unhex</span><span class="w"> </span><span class="o">=&gt;</span>
-<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">unHex</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">unhexSerde</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">object</span><span class="w"> </span><span class="nc">CometUnhex</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometExpressionSerde</span><span class="p">[</span><span class="nc">Unhex</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">convert</span><span class="p">(</span>
+<span class="w">      </span><span class="n">expr</span><span class="p">:</span><span class="w"> </span><span class="nc">Unhex</span><span class="p">,</span>
+<span class="w">      </span><span class="n">inputs</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">Attribute</span><span class="p">],</span>
+<span class="w">      </span><span class="n">binding</span><span class="p">:</span><span class="w"> </span><span class="nc">Boolean</span><span class="p">):</span><span class="w"> </span><span class="nc">Option</span><span class="p">[</span><span class="nc">ExprOuterClass</span><span class="p">.</span><span class="nc">Expr</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">val</span><span class="w"> </span><span class="n">childExpr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">exprToProtoInternal</span><span class="p">(</span><span class="n">expr</span><span class="p">.</span><span class="n">child</span><span class="p">,</span><span class="w"> </span><span class="n">inputs</span><span class="p">,</span><span class="w"> </span><span class="n">binding</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">val</span><span class="w"> </span><span class="n">failOnErrorExpr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">exprToProtoInternal</span><span class="p">(</span><span class="nc">Literal</span><span class="p">(</span><span class="n">expr</span><span class="p">.</span><span class="n">failOnError</span><span class="p">),</span><span class="w"> </span><span class="n">inputs</span><span class="p">,</span><span class="w"> </span><span class="n">binding</span><span class="p">)</span>
 
-<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">childExpr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">exprToProtoInternal</span><span class="p">(</span><span class="n">unHex</span><span class="p">.</span><span class="n">_1</span><span class="p">,</span><span class="w"> </span><span class="n">inputs</span><span class="p">)</span>
-<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">failOnErrorExpr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">exprToProtoInternal</span><span class="p">(</span><span class="n">unHex</span><span class="p">.</span><span class="n">_2</span><span class="p">,</span><span class="w"> </span><span class="n">inputs</span><span class="p">)</span>
-
-<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">optExpr</span><span class="w"> </span><span class="o">=</span>
-<span class="w">    </span><span class="n">scalarExprToProtoWithReturnType</span><span class="p">(</span><span class="s">&quot;unhex&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="n">dataType</span><span class="p">,</span><span class="w"> </span><span class="n">childExpr</span><span class="p">,</span><span class="w"> </span><span class="n">failOnErrorExpr</span><span class="p">)</span>
-<span class="w">  </span><span class="n">optExprWithInfo</span><span class="p">(</span><span class="n">optExpr</span><span class="p">,</span><span class="w"> </span><span class="n">expr</span><span class="p">,</span><span class="w"> </span><span class="n">unHex</span><span class="p">.</span><span class="n">_1</span><span class="p">)</span>
+<span class="w">    </span><span class="kd">val</span><span class="w"> </span><span class="n">optExpr</span><span class="w"> </span><span class="o">=</span>
+<span class="w">      </span><span class="n">scalarFunctionExprToProtoWithReturnType</span><span class="p">(</span>
+<span class="w">        </span><span class="s">&quot;unhex&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="n">expr</span><span class="p">.</span><span class="n">dataType</span><span class="p">,</span>
+<span class="w">        </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">        </span><span class="n">childExpr</span><span class="p">,</span>
+<span class="w">        </span><span class="n">failOnErrorExpr</span><span class="p">)</span>
+<span class="w">    </span><span class="n">optExprWithInfo</span><span class="p">(</span><span class="n">optExpr</span><span class="p">,</span><span class="w"> </span><span class="n">expr</span><span class="p">,</span><span class="w"> </span><span class="n">expr</span><span class="p">.</span><span class="n">child</span><span class="p">)</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
 </pre></div>
 </div>
-<p>A few things to note here:</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">CometExpressionSerde</span></code> trait provides three methods you can override:</p>
 <ul class="simple">
-<li><p>The function is recursively called on child expressions, so you’ll need to make sure that the child expressions are also converted to protobuf.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">scalarExprToProtoWithReturnType</span></code> is for scalar functions that need return type information. Your expression may use a different method depending on the type of expression.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">convert(expr:</span> <span class="pre">T,</span> <span class="pre">inputs:</span> <span class="pre">Seq[Attribute],</span> <span class="pre">binding:</span> <span class="pre">Boolean):</span> <span class="pre">Option[Expr]</span></code> - <strong>Required</strong>. Converts the Spark expression to protobuf. Return <code class="docutils literal notranslate"><span class="pre">None</span></code> if the expression cannot be converted.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">getSupportLevel(expr:</span> <span class="pre">T):</span> <span class="pre">SupportLevel</span></code> - Optional. Returns the level of support for the expression. See “Using getSupportLevel” section below for details.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">getExprConfigName(expr:</span> <span class="pre">T):</span> <span class="pre">String</span></code> - Optional. Returns a short name for configuration keys. Defaults to the Spark class name.</p></li>
 </ul>
+<p>For simple scalar functions that map directly to a DataFusion function, you can use the built-in <code class="docutils literal notranslate"><span class="pre">CometScalarFunction</span></code> implementation:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">classOf</span><span class="p">[</span><span class="nc">Cos</span><span class="p">]</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometScalarFunction</span><span class="p">(</span><span class="s">&quot;cos&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="registering-the-expression-handler">
+<h4>Registering the Expression Handler<a class="headerlink" href="#registering-the-expression-handler" title="Link to this heading">#</a></h4>
+<p>Once you’ve created your <code class="docutils literal notranslate"><span class="pre">CometExpressionSerde</span></code> implementation, register it in <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde.scala</span></code> by adding it to the appropriate expression map (e.g., <code class="docutils literal notranslate"><span class="pre">mathExpressions</span></code>, <code class="docutils literal notranslate"><span class="pre">stringExpressions</span></code>, <code class="docutils literal notranslate"><span class="pre">predicateExpressions</span></code>, etc.):</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">private</span><span class="w"> </span><span class="kd">val</span><span class="w"> </span><span class="n">mathExpressions</span><span class="p">:</span><span class="w"> </span><span class="nc">Map</span><span class="p">[</span><span class="nc">Class</span><span class="p">[</span><span class="n">_</span><span class="w"> </span><span class="o">&lt;:</span><span class="w"> </span><span class="nc">Expression</span><span class="p">],</span><span class="w"> </span><span class="nc">CometExpressionSerde</span><span class="p">[</span><span class="n">_</span><span class="p">]]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Map</span><span class="p">(</span>
+<span class="w">  </span><span class="c1">// ... other expressions ...</span>
+<span class="w">  </span><span class="k">classOf</span><span class="p">[</span><span class="nc">Unhex</span><span class="p">]</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometUnhex</span><span class="p">,</span>
+<span class="w">  </span><span class="k">classOf</span><span class="p">[</span><span class="nc">Hex</span><span class="p">]</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometHex</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">exprToProtoInternal</span></code> method will automatically use this mapping to find and invoke your handler when it encounters the corresponding Spark expression type.</p>
+<p>A few things to note:</p>
+<ul class="simple">
+<li><p>The <code class="docutils literal notranslate"><span class="pre">convert</span></code> method is recursively called on child expressions using <code class="docutils literal notranslate"><span class="pre">exprToProtoInternal</span></code>, so you’ll need to make sure that the child expressions are also converted to protobuf.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">scalarFunctionExprToProtoWithReturnType</span></code> is for scalar functions that need to return type information. Your expression may use a different method depending on the type of expression.</p></li>
+<li><p>Use helper methods like <code class="docutils literal notranslate"><span class="pre">createBinaryExpr</span></code> and <code class="docutils literal notranslate"><span class="pre">createUnaryExpr</span></code> from <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code> for common expression patterns.</p></li>
+</ul>
+</section>
+<section id="using-getsupportlevel">
+<h4>Using getSupportLevel<a class="headerlink" href="#using-getsupportlevel" title="Link to this heading">#</a></h4>
+<p>The <code class="docutils literal notranslate"><span class="pre">getSupportLevel</span></code> method allows you to control whether an expression should be executed by Comet based on various conditions such as data types, parameter values, or other expression-specific constraints. This is particularly useful when:</p>
+<ol class="arabic simple">
+<li><p>Your expression only supports specific data types</p></li>
+<li><p>Your expression has known incompatibilities with Spark’s behavior</p></li>
+<li><p>Your expression has edge cases that aren’t yet supported</p></li>
+</ol>
+<p>The method returns one of three <code class="docutils literal notranslate"><span class="pre">SupportLevel</span></code> values:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">Compatible(notes:</span> <span class="pre">Option[String]</span> <span class="pre">=</span> <span class="pre">None)</span></code></strong> - Comet supports this expression with full compatibility with Spark, or may have known differences in specific edge cases that are unlikely to be an issue for most users. This is the default if you don’t override <code class="docutils literal notranslate"><span class="pre">getSupportLevel</span></code>.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">Incompatible(notes:</span> <span class="pre">Option[String]</span> <span class="pre">=</span> <span class="pre">None)</span></code></strong> - Comet supports this expression but results can be different from Spark. The expression will only be used if <code class="docutils literal notranslate"><span class="pre">spark.comet.expr.allowIncompatible=true</span></code> or the expression-specific config <code class="docutils literal notranslate"><span class="pre">spark.comet.expr.&lt;exprName&gt;.allowIncompatible=true</span></code> is set.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">Unsupported(notes:</span> <span class="pre">Option[String]</span> <span class="pre">=</span> <span class="pre">None)</span></code></strong> - Comet does not support this expression under the current conditions. The expression will not be used and Spark will fall back to its native execution.</p></li>
+</ul>
+<p>All three support levels accept an optional <code class="docutils literal notranslate"><span class="pre">notes</span></code> parameter to provide additional context about the support level.</p>
+<section id="examples">
+<h5>Examples<a class="headerlink" href="#examples" title="Link to this heading">#</a></h5>
+<p><strong>Example 1: Restricting to specific data types</strong></p>
+<p>The <code class="docutils literal notranslate"><span class="pre">Abs</span></code> expression only supports numeric types:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">object</span><span class="w"> </span><span class="nc">CometAbs</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometExpressionSerde</span><span class="p">[</span><span class="nc">Abs</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getSupportLevel</span><span class="p">(</span><span class="n">expr</span><span class="p">:</span><span class="w"> </span><span class="nc">Abs</span><span class="p">):</span><span class="w"> </span><span class="nc">SupportLevel</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">expr</span><span class="p">.</span><span class="n">child</span><span class="p">.</span><span class="n">dataType</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="k">case</span><span class="w"> </span><span class="n">_:</span><span class="w"> </span><span class="nc">NumericType</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">        </span><span class="nc">Compatible</span><span class="p">()</span>
+<span class="w">      </span><span class="k">case</span><span class="w"> </span><span class="n">_</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">        </span><span class="c1">// Spark supports NumericType, DayTimeIntervalType, and YearMonthIntervalType</span>
+<span class="w">        </span><span class="nc">Unsupported</span><span class="p">(</span><span class="nc">Some</span><span class="p">(</span><span class="s">&quot;Only integral, floating-point, and decimal types are supported&quot;</span><span class="p">))</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">convert</span><span class="p">(</span>
+<span class="w">      </span><span class="n">expr</span><span class="p">:</span><span class="w"> </span><span class="nc">Abs</span><span class="p">,</span>
+<span class="w">      </span><span class="n">inputs</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">Attribute</span><span class="p">],</span>
+<span class="w">      </span><span class="n">binding</span><span class="p">:</span><span class="w"> </span><span class="nc">Boolean</span><span class="p">):</span><span class="w"> </span><span class="nc">Option</span><span class="p">[</span><span class="nc">ExprOuterClass</span><span class="p">.</span><span class="nc">Expr</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// ... conversion logic ...</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><strong>Example 2: Validating parameter values</strong></p>
+<p>The <code class="docutils literal notranslate"><span class="pre">TruncDate</span></code> expression only supports specific format strings:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">object</span><span class="w"> </span><span class="nc">CometTruncDate</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometExpressionSerde</span><span class="p">[</span><span class="nc">TruncDate</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">supportedFormats</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">String</span><span class="p">]</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="nc">Seq</span><span class="p">(</span><span class="s">&quot;year&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;yyyy&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;yy&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;quarter&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;mon&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;month&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;mm&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;week&quot;</span><span class="p">)</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getSupportLevel</span><span class="p">(</span><span class="n">expr</span><span class="p">:</span><span class="w"> </span><span class="nc">TruncDate</span><span class="p">):</span><span class="w"> </span><span class="nc">SupportLevel</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">expr</span><span class="p">.</span><span class="n">format</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="k">case</span><span class="w"> </span><span class="nc">Literal</span><span class="p">(</span><span class="n">fmt</span><span class="p">:</span><span class="w"> </span><span class="nc">UTF8String</span><span class="p">,</span><span class="w"> </span><span class="n">_</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">supportedFormats</span><span class="p">.</span><span class="n">contains</span><span class="p">(</span><span class="n">fmt</span><span class="p">.</span><span class="n">toString</span><span class="p">.</span><span class="n">toLowerCase</span><span class="p">(</span><span class="nc">Locale</span><span class="p">.</span><span class="nc">ROOT</span><span class="p">)))</span><span class="w"> </span><span class="p">{</span>
+<span class="w">          </span><span class="nc">Compatible</span><span class="p">()</span>
+<span class="w">        </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+<span class="w">          </span><span class="nc">Unsupported</span><span class="p">(</span><span class="nc">Some</span><span class="p">(</span><span class="s">s&quot;Format </span><span class="si">$</span><span class="n">fmt</span><span class="s"> is not supported&quot;</span><span class="p">))</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">      </span><span class="k">case</span><span class="w"> </span><span class="n">_</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">        </span><span class="nc">Incompatible</span><span class="p">(</span>
+<span class="w">          </span><span class="nc">Some</span><span class="p">(</span><span class="s">&quot;Invalid format strings will throw an exception instead of returning NULL&quot;</span><span class="p">))</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">convert</span><span class="p">(</span>
+<span class="w">      </span><span class="n">expr</span><span class="p">:</span><span class="w"> </span><span class="nc">TruncDate</span><span class="p">,</span>
+<span class="w">      </span><span class="n">inputs</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">Attribute</span><span class="p">],</span>
+<span class="w">      </span><span class="n">binding</span><span class="p">:</span><span class="w"> </span><span class="nc">Boolean</span><span class="p">):</span><span class="w"> </span><span class="nc">Option</span><span class="p">[</span><span class="nc">ExprOuterClass</span><span class="p">.</span><span class="nc">Expr</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// ... conversion logic ...</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><strong>Example 3: Marking known incompatibilities</strong></p>
+<p>The <code class="docutils literal notranslate"><span class="pre">ArrayAppend</span></code> expression has known behavioral differences from Spark:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">object</span><span class="w"> </span><span class="nc">CometArrayAppend</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometExpressionSerde</span><span class="p">[</span><span class="nc">ArrayAppend</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getSupportLevel</span><span class="p">(</span><span class="n">expr</span><span class="p">:</span><span class="w"> </span><span class="nc">ArrayAppend</span><span class="p">):</span><span class="w"> </span><span class="nc">SupportLevel</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Incompatible</span><span class="p">(</span><span class="nc">None</span><span class="p">)</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">convert</span><span class="p">(</span>
+<span class="w">      </span><span class="n">expr</span><span class="p">:</span><span class="w"> </span><span class="nc">ArrayAppend</span><span class="p">,</span>
+<span class="w">      </span><span class="n">inputs</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">Attribute</span><span class="p">],</span>
+<span class="w">      </span><span class="n">binding</span><span class="p">:</span><span class="w"> </span><span class="nc">Boolean</span><span class="p">):</span><span class="w"> </span><span class="nc">Option</span><span class="p">[</span><span class="nc">ExprOuterClass</span><span class="p">.</span><span class="nc">Expr</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// ... conversion logic ...</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>This expression will only be used when users explicitly enable incompatible expressions via configuration.</p>
+</section>
+<section id="how-getsupportlevel-affects-execution">
+<h5>How getSupportLevel Affects Execution<a class="headerlink" href="#how-getsupportlevel-affects-execution" title="Link to this heading">#</a></h5>
+<p>When the query planner encounters an expression:</p>
+<ol class="arabic simple">
+<li><p>It first checks if the expression is explicitly disabled via <code class="docutils literal notranslate"><span class="pre">spark.comet.expr.&lt;exprName&gt;.enabled=false</span></code></p></li>
+<li><p>It then calls <code class="docutils literal notranslate"><span class="pre">getSupportLevel</span></code> on the expression handler</p></li>
+<li><p>Based on the result:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">Compatible()</span></code>: Expression proceeds to conversion</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Incompatible()</span></code>: Expression is skipped unless <code class="docutils literal notranslate"><span class="pre">spark.comet.expr.allowIncompatible=true</span></code> or expression-specific allow config is set</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">Unsupported()</span></code>: Expression is skipped and a fallback to Spark occurs</p></li>
+</ul>
+</li>
+</ol>
+<p>Any notes provided will be logged to help with debugging and understanding why an expression was not used.</p>
+</section>
+</section>
 <section id="adding-spark-side-tests-for-the-new-expression">
 <h4>Adding Spark-side Tests for the New Expression<a class="headerlink" href="#adding-spark-side-tests-for-the-new-expression" title="Link to this heading">#</a></h4>
 <p>It is important to verify that the new expression is correctly recognized by the native execution engine and matches the expected spark behavior. To do this, you can add a set of test cases in the <code class="docutils literal notranslate"><span class="pre">CometExpressionSuite</span></code>, and use the <code class="docutils literal notranslate"><span class="pre">checkSparkAnswerAndOperator</span></code> method to compare the results of the new expression with the expected Spark results and that Comet’s native execution engine is able to execute the expression.</p>
@@ -521,8 +657,8 @@ under the License.
 </section>
 <section id="adding-the-expression-to-the-protobuf-definition">
 <h3>Adding the Expression To the Protobuf Definition<a class="headerlink" href="#adding-the-expression-to-the-protobuf-definition" title="Link to this heading">#</a></h3>
-<p>Once you have the expression implemented in Scala, you might need to update the protobuf definition to include the new expression. You may not need to do this if the expression is already covered by the existing protobuf definition (e.g. you’re adding a new scalar function).</p>
-<p>You can find the protobuf definition in <code class="docutils literal notranslate"><span class="pre">expr.proto</span></code>, and in particular the <code class="docutils literal notranslate"><span class="pre">Expr</span></code> or potentially the <code class="docutils literal notranslate"><span class="pre">AggExpr</span></code>. These are similar in theory to the large case statement in <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code>, but in protobuf format. So if you were to add a new expression called <code class="docutils literal notranslate"><span class="pre">Add2</span></code>, you would add a new case to the <code class="docutils literal notranslate"><span class="pre">Expr</span></code> message like so:</p>
+<p>Once you have the expression implemented in Scala, you might need to update the protobuf definition to include the new expression. You may not need to do this if the expression is already covered by the existing protobuf definition (e.g. you’re adding a new scalar function that uses the <code class="docutils literal notranslate"><span class="pre">ScalarFunc</span></code> message).</p>
+<p>You can find the protobuf definition in <code class="docutils literal notranslate"><span class="pre">native/proto/src/proto/expr.proto</span></code>, and in particular the <code class="docutils literal notranslate"><span class="pre">Expr</span></code> or potentially the <code class="docutils literal notranslate"><span class="pre">AggExpr</span></code> messages. If you were to add a new expression called <code class="docutils literal notranslate"><span class="pre">Add2</span></code>, you would add a new case to the <code class="docutils literal notranslate"><span class="pre">Expr</span></code> message like so:</p>
 <div class="highlight-proto notranslate"><div class="highlight"><pre><span></span><span class="kd">message</span><span class="w"> </span><span class="nc">Expr</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="k">oneof</span><span class="w"> </span><span class="n">expr_struct</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="o">...</span>
@@ -542,44 +678,54 @@ under the License.
 <section id="adding-the-expression-in-rust">
 <h3>Adding the Expression in Rust<a class="headerlink" href="#adding-the-expression-in-rust" title="Link to this heading">#</a></h3>
 <p>With the serialization complete, the next step is to implement the expression in Rust and ensure that the incoming plan can make use of it.</p>
-<p>How this works, is somewhat dependent on the type of expression you’re adding, so see the <code class="docutils literal notranslate"><span class="pre">core/src/execution/datafusion/expressions</span></code> directory for examples of how to implement different types of expressions.</p>
+<p>How this works is somewhat dependent on the type of expression you’re adding. Expression implementations live in the <code class="docutils literal notranslate"><span class="pre">native/spark-expr/src/</span></code> directory, organized by category (e.g., <code class="docutils literal notranslate"><span class="pre">math_funcs/</span></code>, <code class="docutils literal notranslate"><span class="pre">string_funcs/</span></code>, <code class="docutils literal notranslate"><span class="pre">array_funcs/</span></code>).</p>
 <section id="generally-adding-a-new-expression">
 <h4>Generally Adding a New Expression<a class="headerlink" href="#generally-adding-a-new-expression" title="Link to this heading">#</a></h4>
-<p>If you’re adding a new expression, you’ll need to review <code class="docutils literal notranslate"><span class="pre">create_plan</span></code> and <code class="docutils literal notranslate"><span class="pre">create_expr</span></code>. <code class="docutils literal notranslate"><span class="pre">create_plan</span></code> is responsible for translating the incoming plan into a DataFusion plan, and may delegate to <code class="docutils literal notranslate"><span class="pre">create_expr</span></code> to create the physical expressions for the plan.</p>
-<p>If you added a new message to the protobuf definition, you’ll add a new match case to the <code class="docutils literal notranslate"><span class="pre">create_expr</span></code> method to handle the new expression. For example, if you added an <code class="docutils literal notranslate"><span class="pre">Add2</span></code> expression, you would add a new case like so:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">match</span><span class="w"> </span><span class="n">spark_expr</span><span class="p">.</span><span class="n">expr_struct</span><span class="p">.</span><span class="n">as_ref</span><span class="p">().</span><span class="n">unwrap</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="o">..</span><span class="p">.</span>
-<span class="w">  </span><span class="n">ExprStruct</span><span class="p">::</span><span class="n">Add2</span><span class="p">(</span><span class="n">add2</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">create_binary_expr</span><span class="p">(</span><span class="o">..</span><span class="p">.)</span>
-<span class="p">}</span>
-</pre></div>
-</div>
-<p><code class="docutils literal notranslate"><span class="pre">self.create_binary_expr</span></code> is for a binary expression, but if something out of the box is needed, you can create a new <code class="docutils literal notranslate"><span class="pre">PhysicalExpr</span></code> implementation. For example, see <code class="docutils literal notranslate"><span class="pre">if_expr.rs</span></code> for an example of an implementation that doesn’t fit the <code class="docutils literal notranslate"><span class="pre">create_binary_expr</span></code> mold.</p>
+<p>If you’re adding a new expression that requires custom protobuf serialization, you may need to:</p>
+<ol class="arabic simple">
+<li><p>Add a new message to the protobuf definition in <code class="docutils literal notranslate"><span class="pre">native/proto/src/proto/expr.proto</span></code></p></li>
+<li><p>Update the Rust deserialization code to handle the new protobuf message type</p></li>
+</ol>
+<p>For most expressions, you can skip this step if you’re using the existing scalar function infrastructure.</p>
 </section>
 <section id="adding-a-new-scalar-function-expression">
 <h4>Adding a New Scalar Function Expression<a class="headerlink" href="#adding-a-new-scalar-function-expression" title="Link to this heading">#</a></h4>
-<p>For a new scalar function, you can reuse a lot of code by updating the <code class="docutils literal notranslate"><span class="pre">create_comet_physical_fun</span></code> method to match on the function name and make the scalar UDF to be called. For example, the diff to add the <code class="docutils literal notranslate"><span class="pre">unhex</span></code> function is:</p>
-<div class="highlight-diff notranslate"><div class="highlight"><pre><span></span>macro_rules! make_comet_scalar_udf {
-<span class="w"> </span>   ($name:expr, $func:ident, $data_type:ident) =&gt; {{
-
-<span class="gi">+       &quot;unhex&quot; =&gt; {</span>
-<span class="gi">+           let func = Arc::new(spark_unhex);</span>
-<span class="gi">+           make_comet_scalar_udf!(&quot;unhex&quot;, func, without data_type)</span>
-<span class="gi">+       }</span>
-
-<span class="w"> </span>   }}
-}
+<p>For a new scalar function, you can reuse a lot of code by updating the <code class="docutils literal notranslate"><span class="pre">create_comet_physical_fun</span></code> method in <code class="docutils literal notranslate"><span class="pre">native/spark-expr/src/comet_scalar_funcs.rs</span></code>. Add a match case for your function name:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">match</span><span class="w"> </span><span class="n">fun_name</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// ... other functions ...</span>
+<span class="w">    </span><span class="s">&quot;unhex&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">func</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">spark_unhex</span><span class="p">);</span>
+<span class="w">        </span><span class="n">make_comet_scalar_udf</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;unhex&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">func</span><span class="p">,</span><span class="w"> </span><span class="n">without</span><span class="w"> </span><span class="n">data_type</span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="c1">// ... more functions ...</span>
+<span class="p">}</span>
 </pre></div>
 </div>
-<p>With that addition, you can now implement the spark function in Rust. This function will look very similar to DataFusion code. For examples, see the <code class="docutils literal notranslate"><span class="pre">core/src/execution/datafusion/expressions/scalar_funcs</span></code> directory.</p>
-<p>Without getting into the internals, the function signature will look like:</p>
-<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="p">(</span><span class="k">super</span><span class="p">)</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">spark_unhex</span><span class="p">(</span><span class="n">args</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="p">[</span><span class="n">ColumnarValue</span><span class="p">])</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">ColumnarValue</span><span class="p">,</span><span class="w"> </span><span class="n">DataFusionError</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<p>The <code class="docutils literal notranslate"><span class="pre">make_comet_scalar_udf!</span></code> macro has several variants depending on whether your function needs:</p>
+<ul class="simple">
+<li><p>A data type parameter: <code class="docutils literal notranslate"><span class="pre">make_comet_scalar_udf!(&quot;ceil&quot;,</span> <span class="pre">spark_ceil,</span> <span class="pre">data_type)</span></code></p></li>
+<li><p>No data type parameter: <code class="docutils literal notranslate"><span class="pre">make_comet_scalar_udf!(&quot;unhex&quot;,</span> <span class="pre">func,</span> <span class="pre">without</span> <span class="pre">data_type)</span></code></p></li>
+<li><p>An eval mode: <code class="docutils literal notranslate"><span class="pre">make_comet_scalar_udf!(&quot;decimal_div&quot;,</span> <span class="pre">spark_decimal_div,</span> <span class="pre">data_type,</span> <span class="pre">eval_mode)</span></code></p></li>
+<li><p>A fail_on_error flag: <code class="docutils literal notranslate"><span class="pre">make_comet_scalar_udf!(&quot;spark_modulo&quot;,</span> <span class="pre">func,</span> <span class="pre">without</span> <span class="pre">data_type,</span> <span class="pre">fail_on_error)</span></code></p></li>
+</ul>
+</section>
+<section id="implementing-the-function">
+<h4>Implementing the Function<a class="headerlink" href="#implementing-the-function" title="Link to this heading">#</a></h4>
+<p>Then implement your function in an appropriate module under <code class="docutils literal notranslate"><span class="pre">native/spark-expr/src/</span></code>. The function signature will look like:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">spark_unhex</span><span class="p">(</span><span class="n">args</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="p">[</span><span class="n">ColumnarValue</span><span class="p">])</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">ColumnarValue</span><span class="p">,</span><span class="w"> </span><span class="n">DataFusionError</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="c1">// Do the work here</span>
 <span class="p">}</span>
 </pre></div>
 </div>
-<blockquote>
-<div><p><strong><em>NOTE:</em></strong>  If you call the <code class="docutils literal notranslate"><span class="pre">make_comet_scalar_udf</span></code> macro with the data type, the function signature will look include the data type as a second argument.</p>
-</div></blockquote>
+<p>If your function uses the data type or eval mode, the signature will include those as additional parameters:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">spark_ceil</span><span class="p">(</span>
+<span class="w">    </span><span class="n">args</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="p">[</span><span class="n">ColumnarValue</span><span class="p">],</span>
+<span class="w">    </span><span class="n">data_type</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">DataType</span>
+<span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">ColumnarValue</span><span class="p">,</span><span class="w"> </span><span class="n">DataFusionError</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// Implementation</span>
+<span class="p">}</span>
+</pre></div>
+</div>
 </section>
 </section>
 <section id="api-differences-between-spark-versions">
@@ -593,29 +739,29 @@ under the License.
 </section>
 <section id="shimming-to-support-different-spark-versions">
 <h2>Shimming to Support Different Spark Versions<a class="headerlink" href="#shimming-to-support-different-spark-versions" title="Link to this heading">#</a></h2>
-<p>By adding shims for each Spark version, you can provide a consistent interface for the expression across different Spark versions. For example, <code class="docutils literal notranslate"><span class="pre">unhex</span></code> added a new optional parameter is Spark 3.4, for if it should <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> or not. So for version 3.3, the shim is:</p>
+<p>If the expression you’re adding has different behavior across different Spark versions, you can use the shim system located in <code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-$SPARK_VERSION/org/apache/comet/shims/CometExprShim.scala</span></code> for each Spark version.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">CometExprShim</span></code> trait provides several mechanisms for handling version differences:</p>
+<ol class="arabic simple">
+<li><p><strong>Version-specific methods</strong> - Override methods in the trait to provide version-specific behavior</p></li>
+<li><p><strong>Version-specific expression handling</strong> - Use <code class="docutils literal notranslate"><span class="pre">versionSpecificExprToProtoInternal</span></code> to handle expressions that only exist in certain Spark versions</p></li>
+</ol>
+<p>For example, the <code class="docutils literal notranslate"><span class="pre">StringDecode</span></code> expression only exists in certain Spark versions. The shim handles this:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">trait</span><span class="w"> </span><span class="nc">CometExprShim</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="cm">/**</span>
-<span class="cm">      * Returns a tuple of expressions for the `unhex` function.</span>
-<span class="cm">      */</span>
-<span class="w">    </span><span class="k">def</span><span class="w"> </span><span class="nf">unhexSerde</span><span class="p">(</span><span class="n">unhex</span><span class="p">:</span><span class="w"> </span><span class="nc">Unhex</span><span class="p">):</span><span class="w"> </span><span class="p">(</span><span class="nc">Expression</span><span class="p">,</span><span class="w"> </span><span class="nc">Expression</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="p">(</span><span class="n">unhex</span><span class="p">.</span><span class="n">child</span><span class="p">,</span><span class="w"> </span><span class="nc">Literal</span><span class="p">(</span><span class="kc">false</span><span class="p">))</span>
+<span class="w">  </span><span class="k">def</span><span class="w"> </span><span class="nf">versionSpecificExprToProtoInternal</span><span class="p">(</span>
+<span class="w">      </span><span class="n">expr</span><span class="p">:</span><span class="w"> </span><span class="nc">Expression</span><span class="p">,</span>
+<span class="w">      </span><span class="n">inputs</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">Attribute</span><span class="p">],</span>
+<span class="w">      </span><span class="n">binding</span><span class="p">:</span><span class="w"> </span><span class="nc">Boolean</span><span class="p">):</span><span class="w"> </span><span class="nc">Option</span><span class="p">[</span><span class="nc">Expr</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">expr</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="k">case</span><span class="w"> </span><span class="n">s</span><span class="p">:</span><span class="w"> </span><span class="nc">StringDecode</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">        </span><span class="n">stringDecode</span><span class="p">(</span><span class="n">expr</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">charset</span><span class="p">,</span><span class="w"> </span><span class="n">s</span><span class="p">.</span><span class="n">bin</span><span class="p">,</span><span class="w"> </span><span class="n">inputs</span><span class="p">,</span><span class="w"> </span><span class="n">binding</span><span class="p">)</span>
+<span class="w">      </span><span class="k">case</span><span class="w"> </span><span class="n">_</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="nc">None</span>
 <span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
 </div>
-<p>And for version 3.4, the shim is:</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">trait</span><span class="w"> </span><span class="nc">CometExprShim</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="cm">/**</span>
-<span class="cm">      * Returns a tuple of expressions for the `unhex` function.</span>
-<span class="cm">      */</span>
-<span class="w">    </span><span class="k">def</span><span class="w"> </span><span class="nf">unhexSerde</span><span class="p">(</span><span class="n">unhex</span><span class="p">:</span><span class="w"> </span><span class="nc">Unhex</span><span class="p">):</span><span class="w"> </span><span class="p">(</span><span class="nc">Expression</span><span class="p">,</span><span class="w"> </span><span class="nc">Expression</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="p">(</span><span class="n">unhex</span><span class="p">.</span><span class="n">child</span><span class="p">,</span><span class="w"> </span><span class="n">unhex</span><span class="p">.</span><span class="n">failOnError</span><span class="p">)</span>
-<span class="w">    </span><span class="p">}</span>
-<span class="p">}</span>
-</pre></div>
-</div>
-<p>Then when <code class="docutils literal notranslate"><span class="pre">unhexSerde</span></code> is called in the <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code> object, it will use the correct shim for the Spark version.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde.exprToProtoInternal</span></code> method calls <code class="docutils literal notranslate"><span class="pre">versionSpecificExprToProtoInternal</span></code> first, allowing shims to intercept and handle version-specific expressions before falling back to the standard expression maps.</p>
+<p>Your <code class="docutils literal notranslate"><span class="pre">CometExpressionSerde</span></code> implementation can also access shim methods by mixing in the <code class="docutils literal notranslate"><span class="pre">CometExprShim</span></code> trait, though in most cases you can directly access the expression properties if they’re available across all supported Spark versions.</p>
 </section>
 <section id="resources">
 <h2>Resources<a class="headerlink" href="#resources" title="Link to this heading">#</a></h2>
