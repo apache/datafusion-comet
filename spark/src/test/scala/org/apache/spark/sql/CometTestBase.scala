@@ -309,8 +309,8 @@ abstract class CometTestBase
 
     (expected, actual) match {
       case (Success(_), Success(_)) =>
-        // TODO compare results and confirm that they match
-        // https://github.com/apache/datafusion-comet/issues/2657
+        // compare results and confirm that they match
+        checkSparkAnswer(df)
         (None, None)
       case _ =>
         (expected.failed.toOption, actual.failed.toOption)
