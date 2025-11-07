@@ -27,7 +27,7 @@ use datafusion::common::{DataFusionError, Result as DFResult, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::Volatility::Immutable;
 use datafusion::logical_expr::{
-    Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature,
+    Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF, Signature,
 };
 use std::{any::Any, sync::Arc};
 
@@ -92,6 +92,10 @@ impl AggregateUDFImpl for SumInteger {
         _args: AccumulatorArgs,
     ) -> DFResult<Box<dyn GroupsAccumulator>> {
         Ok(Box::new(SumIntGroupsAccumulator::new(self.eval_mode)))
+    }
+
+    fn reverse_expr(&self) -> ReversedUDAF {
+        ReversedUDAF::Identical
     }
 }
 

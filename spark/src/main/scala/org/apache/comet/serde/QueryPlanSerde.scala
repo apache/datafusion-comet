@@ -55,6 +55,8 @@ import org.apache.comet.shims.CometExprShim
  */
 object QueryPlanSerde extends Logging with CometExprShim {
 
+  val integerTypes = Seq(ByteType, ShortType, IntegerType, LongType)
+
   /**
    * Mapping of Spark operator class to Comet operator handler.
    */
@@ -419,7 +421,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
               }
             case s: Sum =>
               if (AggSerde.sumDataTypeSupported(s.dataType) && !s.dataType
-                  .isInstanceOf[DecimalType]) {
+                  .isInstanceOf[DecimalType] && !integerTypes.contains(s.dataType)) {
                 Some(agg)
               } else {
                 withInfo(windowExpr, s"datatype ${s.dataType} is not supported", expr)
