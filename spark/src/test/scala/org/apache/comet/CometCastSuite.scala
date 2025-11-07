@@ -1035,7 +1035,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast between decimals with negative precision") {
     // cast to negative scale
-    checkSparkMaybeThrows(
+    checkSparkAnswerMaybeThrows(
       spark.sql("select a, cast(a as DECIMAL(10,-4)) from t order by a")) match {
       case (expected, actual) =>
         assert(expected.contains("PARSE_SYNTAX_ERROR") === actual.contains("PARSE_SYNTAX_ERROR"))
@@ -1272,7 +1272,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
           // cast() should throw exception on invalid inputs when ansi mode is enabled
           val df = data.withColumn("converted", col("a").cast(toType))
-          checkSparkMaybeThrows(df) match {
+          checkSparkAnswerMaybeThrows(df) match {
             case (None, None) =>
             // neither system threw an exception
             case (None, Some(e)) =>
