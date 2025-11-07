@@ -33,6 +33,7 @@ import org.apache.spark.memory.SparkOutOfMemoryError;
 import org.apache.spark.shuffle.ShuffleWriteMetricsReporter;
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
 import org.apache.spark.shuffle.sort.RowPartition;
+import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.unsafe.memory.MemoryBlock;
 
@@ -196,7 +197,8 @@ public abstract class SpillWriter {
             currentChecksum,
             compressionCodec,
             compressionLevel,
-            tracingEnabled);
+            tracingEnabled,
+            SQLConf.get().sessionLocalTimeZone());
 
     long written = results[0];
     checksum = results[1];

@@ -646,13 +646,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     compression_codec: JString,
     compression_level: jint,
     tracing_enabled: jboolean,
+    session_timezone: JString,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |mut env| unsafe {
         with_trace(
             "writeSortedFileNative",
             tracing_enabled != JNI_FALSE,
             || {
-                let data_types = convert_datatype_arrays(&mut env, serialized_datatypes, "UTC")?;
+                let session_time_zone_id: String =
+                    env.get_string(&session_timezone).unwrap().into();
+                let data_types =
+                    convert_datatype_arrays(&mut env, serialized_datatypes, &session_time_zone_id)?;
 
                 let row_num = env.get_array_length(&row_addresses)? as usize;
                 let row_addresses =

@@ -148,7 +148,8 @@ class Native extends NativeBase {
       currentChecksum: Long,
       compressionCodec: String,
       compressionLevel: Int,
-      tracingEnabled: Boolean): Array[Long]
+      tracingEnabled: Boolean,
+      timeZoneId: String): Array[Long]
   // scalastyle:on
 
   /**
