@@ -635,15 +635,17 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         plan
       }
     } else {
-      val normalizedPlan = if (CometConf.COMET_REPLACE_SMJ.get()) {
-        normalizePlan(plan).transformUp { case p =>
+      val normalizedPlan = normalizePlan(plan)
+
+      val planWithJoinRewritten = if (CometConf.COMET_REPLACE_SMJ.get()) {
+        normalizedPlan.transformUp { case p =>
           RewriteJoin.rewrite(p)
         }
       } else {
-        normalizePlan(plan)
+        normalizedPlan
       }
 
-      var newPlan = transform(normalizedPlan)
+      var newPlan = transform(planWithJoinRewritten)
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
@@ -885,7 +887,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         var supported = true
         for (o <- orderings) {
           if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
-            withInfo(s, s"unsupported range partitioning sort order: $o")
+            withInfo(s, s"unsupported range partitioning sort order: $o", o)
             supported = false
             // We don't short-circuit in case there is more than one unsupported expression
             // to provide info for.

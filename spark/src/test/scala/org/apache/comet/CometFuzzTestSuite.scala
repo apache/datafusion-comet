@@ -29,6 +29,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.testing.FuzzDataGenerator.{doubleNaNLiteral, floatNaNLiteral}
 
 class CometFuzzTestSuite extends CometFuzzTestBase {
 
@@ -71,8 +72,20 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         // Construct the string for the default value based on the column type.
         val defaultValueString = defaultValueType match {
           // These explicit type definitions for TINYINT, SMALLINT, FLOAT, DOUBLE, and DATE are only needed for 3.4.
-          case "TINYINT" | "SMALLINT" | "FLOAT" | "DOUBLE" =>
+          case "TINYINT" | "SMALLINT" =>
             s"$defaultValueType(${defaultValueRow.get(0)})"
+          case "FLOAT" =>
+            if (Float.NaN.equals(defaultValueRow.get(0))) {
+              floatNaNLiteral
+            } else {
+              s"$defaultValueType(${defaultValueRow.get(0)})"
+            }
+          case "DOUBLE" =>
+            if (Double.NaN.equals(defaultValueRow.get(0))) {
+              doubleNaNLiteral
+            } else {
+              s"$defaultValueType(${defaultValueRow.get(0)})"
+            }
           case "DATE" => s"$defaultValueType('${defaultValueRow.get(0)}')"
           case "STRING" => s"'${defaultValueRow.get(0)}'"
           case "TIMESTAMP" | "TIMESTAMP_NTZ" => s"TIMESTAMP '${defaultValueRow.get(0)}'"
@@ -101,7 +114,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
                 .asInstanceOf[Array[Byte]]
                 .sameElements(spark.sql(sql).collect()(0).get(0).asInstanceOf[Array[Byte]]))
           } else {
-            assert(defaultValueRow.get(0) == spark.sql(sql).collect()(0).get(0))
+            assert(defaultValueRow.get(0).equals(spark.sql(sql).collect()(0).get(0)))
           }
         }
       }

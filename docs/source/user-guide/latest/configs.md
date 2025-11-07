@@ -164,6 +164,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 <!--BEGIN:CONFIG_TABLE[enable_expr]-->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
+| `spark.comet.expression.Abs.enabled` | Enable Comet acceleration for `Abs` | true |
 | `spark.comet.expression.Acos.enabled` | Enable Comet acceleration for `Acos` | true |
 | `spark.comet.expression.Add.enabled` | Enable Comet acceleration for `Add` | true |
 | `spark.comet.expression.Alias.enabled` | Enable Comet acceleration for `Alias` | true |

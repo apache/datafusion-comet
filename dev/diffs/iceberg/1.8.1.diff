@@ -17,7 +17,7 @@ index 7327b38905d..7967109f039 100644
        exclude group: 'org.apache.avro', module: 'avro'
        // already shaded by Parquet
 diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
-index 04ffa8f4edc..a909cd552c1 100644
+index 04ffa8f4edc..3a57af3156a 100644
 --- a/gradle/libs.versions.toml
 +++ b/gradle/libs.versions.toml
 @@ -34,6 +34,7 @@ azuresdk-bom = "1.2.31"
@@ -1202,7 +1202,7 @@ index 019f3919dc5..656e0600ac0 100644
 +  }
  }
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
-index 404ba728460..19d0cd5c827 100644
+index 404ba728460..26d6f9b613f 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/SparkDistributedDataScanTestBase.java
 @@ -90,6 +90,16 @@ public abstract class SparkDistributedDataScanTestBase
@@ -1211,8 +1211,8 @@ index 404ba728460..19d0cd5c827 100644
          .config(SQLConf.SHUFFLE_PARTITIONS().key(), "4")
 +        .config("spark.plugins", "org.apache.spark.CometPlugin")
 +        .config(
-+                "spark.shuffle.manager",
-+                "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
++            "spark.shuffle.manager",
++            "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 +        .config("spark.comet.explainFallback.enabled", "true")
 +        .config("spark.sql.iceberg.parquet.reader-type", "COMET")
 +        .config("spark.memory.offHeap.enabled", "true")
