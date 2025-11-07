@@ -641,16 +641,16 @@ under the License.
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.format</span></code></p></td>
+<td><p>Choose extended explain output. The default format of ‘verbose’ will provide the full query plan annotated with fallback reasons as well as a summary of how much of the plan was accelerated by Comet. The format ‘fallback’ provides a list of fallback reasons instead.</p></td>
+<td><p>verbose</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled</span></code></p></td>
 <td><p>When this setting is enabled, Comet will provide a tree representation of the native query plan before execution and again after execution, with metrics.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.rules</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.rules</span></code></p></td>
 <td><p>When this setting is enabled, Comet will log all plan transformations performed in physical optimizer rules. Default: false</p></td>
-<td><p>false</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.verbose.enabled</span></code></p></td>
-<td><p>When this setting is enabled, Comet’s extended explain output will provide the full query plan annotated with fallback reasons as well as a summary of how much of the plan was accelerated by Comet. When this setting is disabled, a list of fallback reasons will be provided instead.</p></td>
 <td><p>false</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explainFallback.enabled</span></code></p></td>
