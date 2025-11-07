@@ -74,15 +74,22 @@ object GenerateDocs {
                 // convert links to Markdown
                 val doc =
                   urlPattern.replaceAllIn(conf.doc.trim, m => s"[Comet ${m.group(1)} Guide](")
+                // append env var info if present
+                val docWithEnvVar = conf.envVar match {
+                  case Some(envVarName) =>
+                    s"$doc Can be overridden by environment variable `$envVarName`."
+                  case None => doc
+                }
                 if (conf.defaultValue.isEmpty) {
-                  w.write(s"| `${conf.key}` | $doc | |\n".getBytes)
+                  w.write(s"| `${conf.key}` | $docWithEnvVar | |\n".getBytes)
                 } else {
                   val isBytesConf = conf.key == COMET_ONHEAP_MEMORY_OVERHEAD.key
                   if (isBytesConf) {
                     val bytes = conf.defaultValue.get.asInstanceOf[Long]
-                    w.write(s"| `${conf.key}` | $doc | $bytes MiB |\n".getBytes)
+                    w.write(s"| `${conf.key}` | $docWithEnvVar | $bytes MiB |\n".getBytes)
                   } else {
-                    w.write(s"| `${conf.key}` | $doc | ${conf.defaultValueString} |\n".getBytes)
+                    val defaultVal = conf.defaultValueString
+                    w.write(s"| `${conf.key}` | $docWithEnvVar | $defaultVal |\n".getBytes)
                   }
                 }
               }
