@@ -1,9 +1,9 @@
 == Physical Plan ==
-* CometColumnarToRow (30)
-+- CometTakeOrderedAndProject (29)
-   +- CometProject (28)
-      +- CometFilter (27)
-         +- CometWindowExec (26)
+TakeOrderedAndProject (30)
++- * Project (29)
+   +- * Filter (28)
+      +- Window (27)
+         +- * CometColumnarToRow (26)
             +- CometSort (25)
                +- CometColumnarExchange (24)
                   +- * HashAggregate (23)
@@ -150,24 +150,24 @@ Arguments: hashpartitioning(i_manufact_id#5, 5), ENSURE_REQUIREMENTS, CometColum
 Input [3]: [i_manufact_id#5, sum_sales#21, _w0#22]
 Arguments: [i_manufact_id#5, sum_sales#21, _w0#22], [i_manufact_id#5 ASC NULLS FIRST]
 
-(26) CometWindowExec
+(26) CometColumnarToRow [codegen id : 2]
 Input [3]: [i_manufact_id#5, sum_sales#21, _w0#22]
-Arguments: [i_manufact_id#5, sum_sales#21, _w0#22, avg_quarterly_sales#23], [avg(_w0#22) windowspecdefinition(i_manufact_id#5, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS avg_quarterly_sales#23], [i_manufact_id#5]
 
-(27) CometFilter
+(27) Window
+Input [3]: [i_manufact_id#5, sum_sales#21, _w0#22]
+Arguments: [avg(_w0#22) windowspecdefinition(i_manufact_id#5, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS avg_quarterly_sales#23], [i_manufact_id#5]
+
+(28) Filter [codegen id : 3]
 Input [4]: [i_manufact_id#5, sum_sales#21, _w0#22, avg_quarterly_sales#23]
 Condition : CASE WHEN (avg_quarterly_sales#23 > 0.000000) THEN ((abs((sum_sales#21 - avg_quarterly_sales#23)) / avg_quarterly_sales#23) > 0.1000000000000000) ELSE false END
 
-(28) CometProject
+(29) Project [codegen id : 3]
+Output [3]: [i_manufact_id#5, sum_sales#21, avg_quarterly_sales#23]
 Input [4]: [i_manufact_id#5, sum_sales#21, _w0#22, avg_quarterly_sales#23]
-Arguments: [i_manufact_id#5, sum_sales#21, avg_quarterly_sales#23], [i_manufact_id#5, sum_sales#21, avg_quarterly_sales#23]
 
-(29) CometTakeOrderedAndProject
+(30) TakeOrderedAndProject
 Input [3]: [i_manufact_id#5, sum_sales#21, avg_quarterly_sales#23]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[avg_quarterly_sales#23 ASC NULLS FIRST,sum_sales#21 ASC NULLS FIRST,i_manufact_id#5 ASC NULLS FIRST], output=[i_manufact_id#5,sum_sales#21,avg_quarterly_sales#23]), [i_manufact_id#5, sum_sales#21, avg_quarterly_sales#23], 100, 0, [avg_quarterly_sales#23 ASC NULLS FIRST, sum_sales#21 ASC NULLS FIRST, i_manufact_id#5 ASC NULLS FIRST], [i_manufact_id#5, sum_sales#21, avg_quarterly_sales#23]
-
-(30) CometColumnarToRow [codegen id : 2]
-Input [3]: [i_manufact_id#5, sum_sales#21, avg_quarterly_sales#23]
+Arguments: 100, [avg_quarterly_sales#23 ASC NULLS FIRST, sum_sales#21 ASC NULLS FIRST, i_manufact_id#5 ASC NULLS FIRST], [i_manufact_id#5, sum_sales#21, avg_quarterly_sales#23]
 
 ===== Subqueries =====
 

@@ -1,8 +1,8 @@
-CometColumnarToRow
-+- CometTakeOrderedAndProject
-   +- CometProject
-      +- CometFilter
-         +- CometWindowExec
+ TakeOrderedAndProject [COMET: ]
++- Project
+   +- Filter
+      +-  Window [COMET: Window expressions are not supported]
+         +- CometColumnarToRow
             +- CometSort
                +- CometColumnarExchange
                   +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(i_manufact_id#1, MakeDecimal(sum(UnscaledValue(ss_sales_price#2))#3,17,2) AS sum_sales#4, MakeDecimal(sum(UnscaledValue(ss_sales_price#2))#3,17,2) AS _w0#5)]
@@ -35,4 +35,4 @@ CometColumnarToRow
                                        +- CometFilter
                                           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
 
-Comet accelerated 30 out of 33 eligible operators (90%). Final plan contains 3 transitions between Spark and Comet.
+Comet accelerated 26 out of 33 eligible operators (78%). Final plan contains 3 transitions between Spark and Comet.

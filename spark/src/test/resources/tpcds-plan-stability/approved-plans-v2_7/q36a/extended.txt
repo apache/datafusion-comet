@@ -1,7 +1,7 @@
-CometColumnarToRow
-+- CometTakeOrderedAndProject
-   +- CometProject
-      +- CometWindowExec
+ TakeOrderedAndProject [COMET: ]
++- Project
+   +-  Window [COMET: Window expressions are not supported]
+      +- CometColumnarToRow
          +- CometSort
             +- CometExchange
                +- CometHashAggregate
@@ -102,4 +102,4 @@ CometColumnarToRow
                                                          +- CometFilter
                                                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
 
-Comet accelerated 93 out of 99 eligible operators (93%). Final plan contains 4 transitions between Spark and Comet.
+Comet accelerated 90 out of 99 eligible operators (90%). Final plan contains 4 transitions between Spark and Comet.

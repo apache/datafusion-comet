@@ -1,48 +1,54 @@
 == Physical Plan ==
-* CometColumnarToRow (44)
-+- CometTakeOrderedAndProject (43)
-   +- CometProject (42)
-      +- CometBroadcastHashJoin (41)
-         :- CometProject (39)
-         :  +- CometBroadcastHashJoin (38)
-         :     :- CometProject (29)
-         :     :  +- CometFilter (28)
-         :     :     +- CometWindowExec (27)
-         :     :        +- CometFilter (26)
-         :     :           +- CometWindowExec (25)
-         :     :              +- CometSort (24)
-         :     :                 +- CometColumnarExchange (23)
-         :     :                    +- * HashAggregate (22)
-         :     :                       +- * CometColumnarToRow (21)
-         :     :                          +- CometExchange (20)
-         :     :                             +- CometHashAggregate (19)
-         :     :                                +- CometProject (18)
-         :     :                                   +- CometBroadcastHashJoin (17)
-         :     :                                      :- CometProject (13)
-         :     :                                      :  +- CometBroadcastHashJoin (12)
-         :     :                                      :     :- CometProject (8)
-         :     :                                      :     :  +- CometBroadcastHashJoin (7)
-         :     :                                      :     :     :- CometProject (3)
-         :     :                                      :     :     :  +- CometFilter (2)
-         :     :                                      :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item (1)
-         :     :                                      :     :     +- CometBroadcastExchange (6)
-         :     :                                      :     :        +- CometFilter (5)
-         :     :                                      :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales (4)
-         :     :                                      :     +- CometBroadcastExchange (11)
-         :     :                                      :        +- CometFilter (10)
-         :     :                                      :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (9)
-         :     :                                      +- CometBroadcastExchange (16)
-         :     :                                         +- CometFilter (15)
-         :     :                                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.call_center (14)
-         :     +- CometBroadcastExchange (37)
-         :        +- CometProject (36)
-         :           +- CometWindowExec (35)
-         :              +- CometSort (34)
-         :                 +- CometColumnarExchange (33)
-         :                    +- * HashAggregate (32)
-         :                       +- * CometColumnarToRow (31)
-         :                          +- ReusedExchange (30)
-         +- ReusedExchange (40)
+TakeOrderedAndProject (50)
++- * Project (49)
+   +- * BroadcastHashJoin Inner BuildRight (48)
+      :- * Project (41)
+      :  +- * BroadcastHashJoin Inner BuildRight (40)
+      :     :- * Project (30)
+      :     :  +- * Filter (29)
+      :     :     +- Window (28)
+      :     :        +- * Filter (27)
+      :     :           +- Window (26)
+      :     :              +- * CometColumnarToRow (25)
+      :     :                 +- CometSort (24)
+      :     :                    +- CometColumnarExchange (23)
+      :     :                       +- * HashAggregate (22)
+      :     :                          +- * CometColumnarToRow (21)
+      :     :                             +- CometExchange (20)
+      :     :                                +- CometHashAggregate (19)
+      :     :                                   +- CometProject (18)
+      :     :                                      +- CometBroadcastHashJoin (17)
+      :     :                                         :- CometProject (13)
+      :     :                                         :  +- CometBroadcastHashJoin (12)
+      :     :                                         :     :- CometProject (8)
+      :     :                                         :     :  +- CometBroadcastHashJoin (7)
+      :     :                                         :     :     :- CometProject (3)
+      :     :                                         :     :     :  +- CometFilter (2)
+      :     :                                         :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item (1)
+      :     :                                         :     :     +- CometBroadcastExchange (6)
+      :     :                                         :     :        +- CometFilter (5)
+      :     :                                         :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales (4)
+      :     :                                         :     +- CometBroadcastExchange (11)
+      :     :                                         :        +- CometFilter (10)
+      :     :                                         :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (9)
+      :     :                                         +- CometBroadcastExchange (16)
+      :     :                                            +- CometFilter (15)
+      :     :                                               +- CometScan [native_iceberg_compat] parquet spark_catalog.default.call_center (14)
+      :     +- BroadcastExchange (39)
+      :        +- * Project (38)
+      :           +- Window (37)
+      :              +- * CometColumnarToRow (36)
+      :                 +- CometSort (35)
+      :                    +- CometColumnarExchange (34)
+      :                       +- * HashAggregate (33)
+      :                          +- * CometColumnarToRow (32)
+      :                             +- ReusedExchange (31)
+      +- BroadcastExchange (47)
+         +- * Project (46)
+            +- Window (45)
+               +- * CometColumnarToRow (44)
+                  +- CometSort (43)
+                     +- ReusedExchange (42)
 
 
 (1) CometScan [native_iceberg_compat] parquet spark_catalog.default.item
@@ -160,112 +166,136 @@ Arguments: hashpartitioning(i_category#5, i_brand#4, cc_name#15, 5), ENSURE_REQU
 Input [7]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, _w0#19]
 Arguments: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, _w0#19], [i_category#5 ASC NULLS FIRST, i_brand#4 ASC NULLS FIRST, cc_name#15 ASC NULLS FIRST, d_year#12 ASC NULLS FIRST, d_moy#13 ASC NULLS FIRST]
 
-(25) CometWindowExec
+(25) CometColumnarToRow [codegen id : 2]
 Input [7]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, _w0#19]
-Arguments: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, _w0#19, rn#20], [rank(d_year#12, d_moy#13) windowspecdefinition(i_category#5, i_brand#4, cc_name#15, d_year#12 ASC NULLS FIRST, d_moy#13 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rn#20], [i_category#5, i_brand#4, cc_name#15], [d_year#12 ASC NULLS FIRST, d_moy#13 ASC NULLS FIRST]
 
-(26) CometFilter
+(26) Window
+Input [7]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, _w0#19]
+Arguments: [rank(d_year#12, d_moy#13) windowspecdefinition(i_category#5, i_brand#4, cc_name#15, d_year#12 ASC NULLS FIRST, d_moy#13 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rn#20], [i_category#5, i_brand#4, cc_name#15], [d_year#12 ASC NULLS FIRST, d_moy#13 ASC NULLS FIRST]
+
+(27) Filter [codegen id : 3]
 Input [8]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, _w0#19, rn#20]
 Condition : (isnotnull(d_year#12) AND (d_year#12 = 1999))
 
-(27) CometWindowExec
+(28) Window
 Input [8]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, _w0#19, rn#20]
-Arguments: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, _w0#19, rn#20, avg_monthly_sales#21], [avg(_w0#19) windowspecdefinition(i_category#5, i_brand#4, cc_name#15, d_year#12, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS avg_monthly_sales#21], [i_category#5, i_brand#4, cc_name#15, d_year#12]
+Arguments: [avg(_w0#19) windowspecdefinition(i_category#5, i_brand#4, cc_name#15, d_year#12, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS avg_monthly_sales#21], [i_category#5, i_brand#4, cc_name#15, d_year#12]
 
-(28) CometFilter
+(29) Filter [codegen id : 10]
 Input [9]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, _w0#19, rn#20, avg_monthly_sales#21]
 Condition : ((isnotnull(avg_monthly_sales#21) AND (avg_monthly_sales#21 > 0.000000)) AND CASE WHEN (avg_monthly_sales#21 > 0.000000) THEN ((abs((sum_sales#18 - avg_monthly_sales#21)) / avg_monthly_sales#21) > 0.1000000000000000) END)
 
-(29) CometProject
+(30) Project [codegen id : 10]
+Output [8]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, avg_monthly_sales#21, rn#20]
 Input [9]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, _w0#19, rn#20, avg_monthly_sales#21]
-Arguments: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, avg_monthly_sales#21, rn#20], [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, avg_monthly_sales#21, rn#20]
 
-(30) ReusedExchange [Reuses operator id: 20]
+(31) ReusedExchange [Reuses operator id: 20]
 Output [6]: [i_category#22, i_brand#23, cc_name#24, d_year#25, d_moy#26, sum#27]
 
-(31) CometColumnarToRow [codegen id : 2]
+(32) CometColumnarToRow [codegen id : 4]
 Input [6]: [i_category#22, i_brand#23, cc_name#24, d_year#25, d_moy#26, sum#27]
 
-(32) HashAggregate [codegen id : 2]
+(33) HashAggregate [codegen id : 4]
 Input [6]: [i_category#22, i_brand#23, cc_name#24, d_year#25, d_moy#26, sum#27]
 Keys [5]: [i_category#22, i_brand#23, cc_name#24, d_year#25, d_moy#26]
 Functions [1]: [sum(UnscaledValue(cs_sales_price#28))]
 Aggregate Attributes [1]: [sum(UnscaledValue(cs_sales_price#28))#17]
 Results [6]: [i_category#22, i_brand#23, cc_name#24, d_year#25, d_moy#26, MakeDecimal(sum(UnscaledValue(cs_sales_price#28))#17,17,2) AS sum_sales#29]
 
-(33) CometColumnarExchange
+(34) CometColumnarExchange
 Input [6]: [i_category#22, i_brand#23, cc_name#24, d_year#25, d_moy#26, sum_sales#29]
 Arguments: hashpartitioning(i_category#22, i_brand#23, cc_name#24, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
-(34) CometSort
+(35) CometSort
 Input [6]: [i_category#22, i_brand#23, cc_name#24, d_year#25, d_moy#26, sum_sales#29]
 Arguments: [i_category#22, i_brand#23, cc_name#24, d_year#25, d_moy#26, sum_sales#29], [i_category#22 ASC NULLS FIRST, i_brand#23 ASC NULLS FIRST, cc_name#24 ASC NULLS FIRST, d_year#25 ASC NULLS FIRST, d_moy#26 ASC NULLS FIRST]
 
-(35) CometWindowExec
+(36) CometColumnarToRow [codegen id : 5]
 Input [6]: [i_category#22, i_brand#23, cc_name#24, d_year#25, d_moy#26, sum_sales#29]
-Arguments: [i_category#22, i_brand#23, cc_name#24, d_year#25, d_moy#26, sum_sales#29, rn#30], [rank(d_year#25, d_moy#26) windowspecdefinition(i_category#22, i_brand#23, cc_name#24, d_year#25 ASC NULLS FIRST, d_moy#26 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rn#30], [i_category#22, i_brand#23, cc_name#24], [d_year#25 ASC NULLS FIRST, d_moy#26 ASC NULLS FIRST]
 
-(36) CometProject
+(37) Window
+Input [6]: [i_category#22, i_brand#23, cc_name#24, d_year#25, d_moy#26, sum_sales#29]
+Arguments: [rank(d_year#25, d_moy#26) windowspecdefinition(i_category#22, i_brand#23, cc_name#24, d_year#25 ASC NULLS FIRST, d_moy#26 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rn#30], [i_category#22, i_brand#23, cc_name#24], [d_year#25 ASC NULLS FIRST, d_moy#26 ASC NULLS FIRST]
+
+(38) Project [codegen id : 6]
+Output [5]: [i_category#22, i_brand#23, cc_name#24, sum_sales#29, rn#30]
 Input [7]: [i_category#22, i_brand#23, cc_name#24, d_year#25, d_moy#26, sum_sales#29, rn#30]
-Arguments: [i_category#22, i_brand#23, cc_name#24, sum_sales#29, rn#30], [i_category#22, i_brand#23, cc_name#24, sum_sales#29, rn#30]
 
-(37) CometBroadcastExchange
+(39) BroadcastExchange
 Input [5]: [i_category#22, i_brand#23, cc_name#24, sum_sales#29, rn#30]
-Arguments: [i_category#22, i_brand#23, cc_name#24, sum_sales#29, rn#30]
+Arguments: HashedRelationBroadcastMode(List(input[0, string, true], input[1, string, true], input[2, string, true], (input[4, int, false] + 1)),false), [plan_id=4]
 
-(38) CometBroadcastHashJoin
-Left output [8]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, avg_monthly_sales#21, rn#20]
-Right output [5]: [i_category#22, i_brand#23, cc_name#24, sum_sales#29, rn#30]
-Arguments: [i_category#5, i_brand#4, cc_name#15, rn#20], [i_category#22, i_brand#23, cc_name#24, (rn#30 + 1)], Inner, BuildRight
+(40) BroadcastHashJoin [codegen id : 10]
+Left keys [4]: [i_category#5, i_brand#4, cc_name#15, rn#20]
+Right keys [4]: [i_category#22, i_brand#23, cc_name#24, (rn#30 + 1)]
+Join type: Inner
+Join condition: None
 
-(39) CometProject
+(41) Project [codegen id : 10]
+Output [9]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, avg_monthly_sales#21, rn#20, sum_sales#29]
 Input [13]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, avg_monthly_sales#21, rn#20, i_category#22, i_brand#23, cc_name#24, sum_sales#29, rn#30]
-Arguments: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, avg_monthly_sales#21, rn#20, sum_sales#29], [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, avg_monthly_sales#21, rn#20, sum_sales#29]
 
-(40) ReusedExchange [Reuses operator id: 37]
-Output [5]: [i_category#31, i_brand#32, cc_name#33, sum_sales#34, rn#35]
+(42) ReusedExchange [Reuses operator id: 34]
+Output [6]: [i_category#31, i_brand#32, cc_name#33, d_year#34, d_moy#35, sum_sales#36]
 
-(41) CometBroadcastHashJoin
-Left output [9]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, avg_monthly_sales#21, rn#20, sum_sales#29]
-Right output [5]: [i_category#31, i_brand#32, cc_name#33, sum_sales#34, rn#35]
-Arguments: [i_category#5, i_brand#4, cc_name#15, rn#20], [i_category#31, i_brand#32, cc_name#33, (rn#35 - 1)], Inner, BuildRight
+(43) CometSort
+Input [6]: [i_category#31, i_brand#32, cc_name#33, d_year#34, d_moy#35, sum_sales#36]
+Arguments: [i_category#31, i_brand#32, cc_name#33, d_year#34, d_moy#35, sum_sales#36], [i_category#31 ASC NULLS FIRST, i_brand#32 ASC NULLS FIRST, cc_name#33 ASC NULLS FIRST, d_year#34 ASC NULLS FIRST, d_moy#35 ASC NULLS FIRST]
 
-(42) CometProject
-Input [14]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, avg_monthly_sales#21, rn#20, sum_sales#29, i_category#31, i_brand#32, cc_name#33, sum_sales#34, rn#35]
-Arguments: [i_category#5, i_brand#4, d_year#12, d_moy#13, avg_monthly_sales#21, sum_sales#18, psum#36, nsum#37], [i_category#5, i_brand#4, d_year#12, d_moy#13, avg_monthly_sales#21, sum_sales#18, sum_sales#29 AS psum#36, sum_sales#34 AS nsum#37]
+(44) CometColumnarToRow [codegen id : 8]
+Input [6]: [i_category#31, i_brand#32, cc_name#33, d_year#34, d_moy#35, sum_sales#36]
 
-(43) CometTakeOrderedAndProject
-Input [8]: [i_category#5, i_brand#4, d_year#12, d_moy#13, avg_monthly_sales#21, sum_sales#18, psum#36, nsum#37]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[(sum_sales#18 - avg_monthly_sales#21) ASC NULLS FIRST,d_year#12 ASC NULLS FIRST], output=[i_category#5,i_brand#4,d_year#12,d_moy#13,avg_monthly_sales#21,sum_sales#18,psum#36,nsum#37]), [i_category#5, i_brand#4, d_year#12, d_moy#13, avg_monthly_sales#21, sum_sales#18, psum#36, nsum#37], 100, 0, [(sum_sales#18 - avg_monthly_sales#21) ASC NULLS FIRST, d_year#12 ASC NULLS FIRST], [i_category#5, i_brand#4, d_year#12, d_moy#13, avg_monthly_sales#21, sum_sales#18, psum#36, nsum#37]
+(45) Window
+Input [6]: [i_category#31, i_brand#32, cc_name#33, d_year#34, d_moy#35, sum_sales#36]
+Arguments: [rank(d_year#34, d_moy#35) windowspecdefinition(i_category#31, i_brand#32, cc_name#33, d_year#34 ASC NULLS FIRST, d_moy#35 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rn#37], [i_category#31, i_brand#32, cc_name#33], [d_year#34 ASC NULLS FIRST, d_moy#35 ASC NULLS FIRST]
 
-(44) CometColumnarToRow [codegen id : 4]
-Input [8]: [i_category#5, i_brand#4, d_year#12, d_moy#13, avg_monthly_sales#21, sum_sales#18, psum#36, nsum#37]
+(46) Project [codegen id : 9]
+Output [5]: [i_category#31, i_brand#32, cc_name#33, sum_sales#36, rn#37]
+Input [7]: [i_category#31, i_brand#32, cc_name#33, d_year#34, d_moy#35, sum_sales#36, rn#37]
+
+(47) BroadcastExchange
+Input [5]: [i_category#31, i_brand#32, cc_name#33, sum_sales#36, rn#37]
+Arguments: HashedRelationBroadcastMode(List(input[0, string, true], input[1, string, true], input[2, string, true], (input[4, int, false] - 1)),false), [plan_id=5]
+
+(48) BroadcastHashJoin [codegen id : 10]
+Left keys [4]: [i_category#5, i_brand#4, cc_name#15, rn#20]
+Right keys [4]: [i_category#31, i_brand#32, cc_name#33, (rn#37 - 1)]
+Join type: Inner
+Join condition: None
+
+(49) Project [codegen id : 10]
+Output [8]: [i_category#5, i_brand#4, d_year#12, d_moy#13, avg_monthly_sales#21, sum_sales#18, sum_sales#29 AS psum#38, sum_sales#36 AS nsum#39]
+Input [14]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#18, avg_monthly_sales#21, rn#20, sum_sales#29, i_category#31, i_brand#32, cc_name#33, sum_sales#36, rn#37]
+
+(50) TakeOrderedAndProject
+Input [8]: [i_category#5, i_brand#4, d_year#12, d_moy#13, avg_monthly_sales#21, sum_sales#18, psum#38, nsum#39]
+Arguments: 100, [(sum_sales#18 - avg_monthly_sales#21) ASC NULLS FIRST, d_year#12 ASC NULLS FIRST], [i_category#5, i_brand#4, d_year#12, d_moy#13, avg_monthly_sales#21, sum_sales#18, psum#38, nsum#39]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 4 Hosting Expression = cs_sold_date_sk#9 IN dynamicpruning#10
-BroadcastExchange (48)
-+- * CometColumnarToRow (47)
-   +- CometFilter (46)
-      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (45)
+BroadcastExchange (54)
++- * CometColumnarToRow (53)
+   +- CometFilter (52)
+      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (51)
 
 
-(45) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+(51) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#11, d_year#12, d_moy#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [Or(Or(EqualTo(d_year,1999),And(EqualTo(d_year,1998),EqualTo(d_moy,12))),And(EqualTo(d_year,2000),EqualTo(d_moy,1))), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
-(46) CometFilter
+(52) CometFilter
 Input [3]: [d_date_sk#11, d_year#12, d_moy#13]
 Condition : ((((d_year#12 = 1999) OR ((d_year#12 = 1998) AND (d_moy#13 = 12))) OR ((d_year#12 = 2000) AND (d_moy#13 = 1))) AND isnotnull(d_date_sk#11))
 
-(47) CometColumnarToRow [codegen id : 1]
+(53) CometColumnarToRow [codegen id : 1]
 Input [3]: [d_date_sk#11, d_year#12, d_moy#13]
 
-(48) BroadcastExchange
+(54) BroadcastExchange
 Input [3]: [d_date_sk#11, d_year#12, d_moy#13]
-Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=4]
+Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=6]
 
 
