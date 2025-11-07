@@ -290,7 +290,7 @@ abstract class CometTestBase
         if (actualFallbacks.isEmpty) {
           fail(
             s"Expected fallback reason '$reason' but no fallback reasons were found. Explain: ${explainInfo
-                .generateVerboseExtendedInfo(cometPlan)}")
+                .generateExtendedInfo(cometPlan)}")
         } else {
           fail(
             s"Expected fallback reason '$reason' not found in [${actualFallbacks.mkString(", ")}]")
@@ -382,7 +382,7 @@ abstract class CometTestBase
         assert(
           false,
           s"Expected only Comet native operators, but found ${op.nodeName}.\n" +
-            s"plan: ${new ExtendedExplainInfo().generateVerboseExtendedInfo(plan)}")
+            s"plan: ${new ExtendedExplainInfo().generateExtendedInfo(plan)}")
       case _ =>
     }
   }
