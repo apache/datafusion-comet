@@ -651,12 +651,12 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // config is enabled)
       if (CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get()) {
         val info = new ExtendedExplainInfo()
-        if (info.getFallbackReasons(newPlan).nonEmpty) {
+        if (info.extensionInfo(newPlan).nonEmpty) {
           logWarning(
             "Comet cannot execute some parts of this plan natively " +
               s"(set ${CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key}=false " +
               "to disable this logging):\n" +
-              s"${info.generateVerboseExtendedInfo(newPlan)}")
+              s"${info.generateExtendedInfo(newPlan)}")
         }
       }
 
