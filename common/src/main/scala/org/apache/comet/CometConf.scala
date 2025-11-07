@@ -701,7 +701,7 @@ object CometConf extends ShimCometConf {
   val COMET_STRICT_TESTING: ConfigEntry[Boolean] = conf(s"$COMET_PREFIX.testing.strict")
     .category(CATEGORY_TESTING)
     .doc("Experimental option to enable strict testing, which will fail tests that could be " +
-      "more comprehensive, such as checking for a specific fallback reason")
+      "more comprehensive, such as checking for a specific fallback reason.")
     .booleanConf
     .createWithEnvVarOrDefault("ENABLE_COMET_STRICT_TESTING", false)
 
@@ -877,8 +877,7 @@ private class TypedConfigBuilder[T](
    *   A ConfigEntry with environment variable support
    */
   def createWithEnvVarOrDefault(envVar: String, default: T): ConfigEntry[T] = {
-    val defaultValue = sys.env.get(envVar).map(converter).getOrElse(default)
-    val transformedDefault = converter(stringConverter(defaultValue))
+    val transformedDefault = converter(sys.env.getOrElse(envVar, stringConverter(default)))
     val conf = new ConfigEntryWithDefault[T](
       parent.key,
       transformedDefault,
