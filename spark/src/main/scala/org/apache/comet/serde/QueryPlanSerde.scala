@@ -754,7 +754,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
    *   converted to a native operator.
    */
   def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
-    val conf = op.conf
     val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
     childOp.foreach(builder.addChildren)
 
