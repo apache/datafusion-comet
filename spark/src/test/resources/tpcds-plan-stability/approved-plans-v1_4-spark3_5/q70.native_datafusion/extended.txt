@@ -1,0 +1,54 @@
+ TakeOrderedAndProject [COMET: ]
++- Project
+   +- Window
+      +- CometColumnarToRow
+         +- CometSort
+            +- CometColumnarExchange
+               +- HashAggregate
+                  +- CometColumnarToRow
+                     +- CometColumnarExchange
+                        +- HashAggregate
+                           +- Expand
+                              +- Project
+                                 +- BroadcastHashJoin
+                                    :- CometColumnarToRow
+                                    :  +- CometProject
+                                    :     +- CometBroadcastHashJoin
+                                    :        :- CometFilter
+                                    :        :  +- CometNativeScan parquet spark_catalog.default.store_sales
+                                    :        +- CometBroadcastExchange
+                                    :           +- CometProject
+                                    :              +- CometFilter
+                                    :                 +- CometNativeScan parquet spark_catalog.default.date_dim
+                                    +- BroadcastExchange
+                                       +- Project
+                                          +- BroadcastHashJoin
+                                             :- CometColumnarToRow
+                                             :  +- CometFilter
+                                             :     +- CometNativeScan parquet spark_catalog.default.store
+                                             +- BroadcastExchange
+                                                +- Project
+                                                   +- Filter
+                                                      +- Window
+                                                         +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+                                                            +- CometColumnarToRow
+                                                               +- CometSort
+                                                                  +- CometHashAggregate
+                                                                     +- CometExchange
+                                                                        +- CometHashAggregate
+                                                                           +- CometProject
+                                                                              +- CometBroadcastHashJoin
+                                                                                 :- CometProject
+                                                                                 :  +- CometBroadcastHashJoin
+                                                                                 :     :- CometFilter
+                                                                                 :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
+                                                                                 :     +- CometBroadcastExchange
+                                                                                 :        +- CometProject
+                                                                                 :           +- CometFilter
+                                                                                 :              +- CometNativeScan parquet spark_catalog.default.store
+                                                                                 +- CometBroadcastExchange
+                                                                                    +- CometProject
+                                                                                       +- CometFilter
+                                                                                          +- CometNativeScan parquet spark_catalog.default.date_dim
+
+Comet accelerated 31 out of 47 eligible operators (65%). Final plan contains 5 transitions between Spark and Comet.

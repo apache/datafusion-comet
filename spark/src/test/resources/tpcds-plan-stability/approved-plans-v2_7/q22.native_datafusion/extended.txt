@@ -1,0 +1,28 @@
+ TakeOrderedAndProject [COMET: ]
++- HashAggregate
+   +- CometColumnarToRow
+      +- CometColumnarExchange
+         +- HashAggregate
+            +- Expand
+               +- Project
+                  +- BroadcastNestedLoopJoin
+                     :- CometColumnarToRow
+                     :  +- CometProject
+                     :     +- CometBroadcastHashJoin
+                     :        :- CometProject
+                     :        :  +- CometBroadcastHashJoin
+                     :        :     :- CometFilter
+                     :        :     :  +- CometNativeScan parquet spark_catalog.default.inventory
+                     :        :     +- CometBroadcastExchange
+                     :        :        +- CometProject
+                     :        :           +- CometFilter
+                     :        :              +- CometNativeScan parquet spark_catalog.default.date_dim
+                     :        +- CometBroadcastExchange
+                     :           +- CometProject
+                     :              +- CometFilter
+                     :                 +- CometNativeScan parquet spark_catalog.default.item
+                     +- BroadcastExchange
+                        +- CometColumnarToRow
+                           +- CometNativeScan parquet spark_catalog.default.warehouse
+
+Comet accelerated 16 out of 23 eligible operators (69%). Final plan contains 3 transitions between Spark and Comet.

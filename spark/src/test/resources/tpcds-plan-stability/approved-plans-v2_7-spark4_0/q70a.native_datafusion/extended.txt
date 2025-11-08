@@ -1,0 +1,155 @@
+ TakeOrderedAndProject [COMET: ]
++- Project
+   +- Window
+      +- CometColumnarToRow
+         +- CometSort
+            +- CometExchange
+               +- CometHashAggregate
+                  +- CometColumnarExchange
+                     +- HashAggregate
+                        +- Union
+                           :- HashAggregate
+                           :  +- CometColumnarToRow
+                           :     +- CometColumnarExchange
+                           :        +- HashAggregate
+                           :           +- Project
+                           :              +- BroadcastHashJoin
+                           :                 :- CometColumnarToRow
+                           :                 :  +- CometProject
+                           :                 :     +- CometBroadcastHashJoin
+                           :                 :        :- CometFilter
+                           :                 :        :  +- CometNativeScan parquet spark_catalog.default.store_sales
+                           :                 :        +- CometBroadcastExchange
+                           :                 :           +- CometProject
+                           :                 :              +- CometFilter
+                           :                 :                 +- CometNativeScan parquet spark_catalog.default.date_dim
+                           :                 +- BroadcastExchange
+                           :                    +- Project
+                           :                       +- BroadcastHashJoin
+                           :                          :- CometColumnarToRow
+                           :                          :  +- CometFilter
+                           :                          :     +- CometNativeScan parquet spark_catalog.default.store
+                           :                          +- BroadcastExchange
+                           :                             +- Project
+                           :                                +- Filter
+                           :                                   +- Window
+                           :                                      +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+                           :                                         +- Sort
+                           :                                            +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(s_state#1, MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#3,17,2) AS _w0#4, s_state#1)]
+                           :                                               +- CometColumnarToRow
+                           :                                                  +- CometExchange
+                           :                                                     +- CometHashAggregate
+                           :                                                        +- CometProject
+                           :                                                           +- CometBroadcastHashJoin
+                           :                                                              :- CometProject
+                           :                                                              :  +- CometBroadcastHashJoin
+                           :                                                              :     :- CometFilter
+                           :                                                              :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
+                           :                                                              :     +- CometBroadcastExchange
+                           :                                                              :        +- CometProject
+                           :                                                              :           +- CometFilter
+                           :                                                              :              +- CometNativeScan parquet spark_catalog.default.store
+                           :                                                              +- CometBroadcastExchange
+                           :                                                                 +- CometProject
+                           :                                                                    +- CometFilter
+                           :                                                                       +- CometNativeScan parquet spark_catalog.default.date_dim
+                           :- HashAggregate
+                           :  +- CometColumnarToRow
+                           :     +- CometColumnarExchange
+                           :        +- HashAggregate
+                           :           +- HashAggregate
+                           :              +- CometColumnarToRow
+                           :                 +- CometColumnarExchange
+                           :                    +- HashAggregate
+                           :                       +- Project
+                           :                          +- BroadcastHashJoin
+                           :                             :- CometColumnarToRow
+                           :                             :  +- CometProject
+                           :                             :     +- CometBroadcastHashJoin
+                           :                             :        :- CometFilter
+                           :                             :        :  +- CometNativeScan parquet spark_catalog.default.store_sales
+                           :                             :        +- CometBroadcastExchange
+                           :                             :           +- CometProject
+                           :                             :              +- CometFilter
+                           :                             :                 +- CometNativeScan parquet spark_catalog.default.date_dim
+                           :                             +- BroadcastExchange
+                           :                                +- Project
+                           :                                   +- BroadcastHashJoin
+                           :                                      :- CometColumnarToRow
+                           :                                      :  +- CometFilter
+                           :                                      :     +- CometNativeScan parquet spark_catalog.default.store
+                           :                                      +- BroadcastExchange
+                           :                                         +- Project
+                           :                                            +- Filter
+                           :                                               +- Window
+                           :                                                  +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+                           :                                                     +- Sort
+                           :                                                        +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(s_state#1, MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#3,17,2) AS _w0#4, s_state#1)]
+                           :                                                           +- CometColumnarToRow
+                           :                                                              +- CometExchange
+                           :                                                                 +- CometHashAggregate
+                           :                                                                    +- CometProject
+                           :                                                                       +- CometBroadcastHashJoin
+                           :                                                                          :- CometProject
+                           :                                                                          :  +- CometBroadcastHashJoin
+                           :                                                                          :     :- CometFilter
+                           :                                                                          :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
+                           :                                                                          :     +- CometBroadcastExchange
+                           :                                                                          :        +- CometProject
+                           :                                                                          :           +- CometFilter
+                           :                                                                          :              +- CometNativeScan parquet spark_catalog.default.store
+                           :                                                                          +- CometBroadcastExchange
+                           :                                                                             +- CometProject
+                           :                                                                                +- CometFilter
+                           :                                                                                   +- CometNativeScan parquet spark_catalog.default.date_dim
+                           +- HashAggregate
+                              +- CometColumnarToRow
+                                 +- CometColumnarExchange
+                                    +- HashAggregate
+                                       +- HashAggregate
+                                          +- CometColumnarToRow
+                                             +- CometColumnarExchange
+                                                +- HashAggregate
+                                                   +- Project
+                                                      +- BroadcastHashJoin
+                                                         :- CometColumnarToRow
+                                                         :  +- CometProject
+                                                         :     +- CometBroadcastHashJoin
+                                                         :        :- CometFilter
+                                                         :        :  +- CometNativeScan parquet spark_catalog.default.store_sales
+                                                         :        +- CometBroadcastExchange
+                                                         :           +- CometProject
+                                                         :              +- CometFilter
+                                                         :                 +- CometNativeScan parquet spark_catalog.default.date_dim
+                                                         +- BroadcastExchange
+                                                            +- Project
+                                                               +- BroadcastHashJoin
+                                                                  :- CometColumnarToRow
+                                                                  :  +- CometFilter
+                                                                  :     +- CometNativeScan parquet spark_catalog.default.store
+                                                                  +- BroadcastExchange
+                                                                     +- Project
+                                                                        +- Filter
+                                                                           +- Window
+                                                                              +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+                                                                                 +- Sort
+                                                                                    +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(s_state#1, MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#3,17,2) AS _w0#4, s_state#1)]
+                                                                                       +- CometColumnarToRow
+                                                                                          +- CometExchange
+                                                                                             +- CometHashAggregate
+                                                                                                +- CometProject
+                                                                                                   +- CometBroadcastHashJoin
+                                                                                                      :- CometProject
+                                                                                                      :  +- CometBroadcastHashJoin
+                                                                                                      :     :- CometFilter
+                                                                                                      :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
+                                                                                                      :     +- CometBroadcastExchange
+                                                                                                      :        +- CometProject
+                                                                                                      :           +- CometFilter
+                                                                                                      :              +- CometNativeScan parquet spark_catalog.default.store
+                                                                                                      +- CometBroadcastExchange
+                                                                                                         +- CometProject
+                                                                                                            +- CometFilter
+                                                                                                               +- CometNativeScan parquet spark_catalog.default.date_dim
+
+Comet accelerated 87 out of 138 eligible operators (63%). Final plan contains 15 transitions between Spark and Comet.
