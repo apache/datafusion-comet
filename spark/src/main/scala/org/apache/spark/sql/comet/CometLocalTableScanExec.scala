@@ -90,7 +90,9 @@ case class CometLocalTableScanExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometLocalTableScanExec =>
-        this.originalPlan == other.originalPlan && this.schema == other.schema && this.output == other.output
+        this.originalPlan == other.originalPlan &&
+        this.schema == other.schema &&
+        this.output == other.output
       case _ =>
         false
     }
