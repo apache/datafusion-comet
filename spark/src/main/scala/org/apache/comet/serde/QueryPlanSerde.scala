@@ -67,10 +67,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoin,
       classOf[ShuffledHashJoinExec] -> CometShuffleHashJoin,
       classOf[SortMergeJoinExec] -> CometSortMergeJoin,
-      // Window support is disabled due to correctness issues and
-      // cannot be disabled via config due to bug
-      // https://github.com/apache/datafusion-comet/issues/2737
-      // classOf[WindowExec] -> CometWindow,
+      classOf[WindowExec] -> CometWindow,
       classOf[SortExec] -> CometSort)
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
@@ -790,12 +787,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         CometNativeScan.convert(scan, builder, childOp: _*)
-
-      // this is kept for backwards compatibility with current golden files
-      // and also as a workaround for https://github.com/apache/datafusion-comet/issues/2737
-      case _: WindowExec if CometConf.COMET_EXEC_WINDOW_ENABLED.get(conf) =>
-        withInfo(op, "Window expressions are not supported")
-        None
 
       case op if CometSink.isCometSink(op) =>
         CometSink.convert(op, builder, childOp: _*)

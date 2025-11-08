@@ -26,7 +26,6 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.{CoalesceExec, CollectLimitExec, SparkPlan, TakeOrderedAndProjectExec, UnionExec}
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.window.WindowExec
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
@@ -114,7 +113,8 @@ object CometSink extends CometOperatorSerde[SparkPlan] {
       case _: CollectLimitExec => true
       case _: UnionExec => true
       case _: TakeOrderedAndProjectExec => true
-      case _: WindowExec => true
+      // https://github.com/apache/datafusion-comet/issues/2737
+      // case _: WindowExec => true
       case _ => false
     }
   }

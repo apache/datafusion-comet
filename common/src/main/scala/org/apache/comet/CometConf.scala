@@ -248,7 +248,7 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_EXPAND_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("expand", defaultValue = true)
   val COMET_EXEC_WINDOW_ENABLED: ConfigEntry[Boolean] =
-    createExecEnabledConfig("window", defaultValue = true)
+    createExecEnabledConfig("window", defaultValue = false)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
 
