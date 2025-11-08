@@ -30,7 +30,7 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, windowExprToProto}
 
-object CometWindowExec extends CometOperatorSerde[WindowExec] {
+object CometWindow extends CometOperatorSerde[WindowExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_WINDOW_ENABLED)
