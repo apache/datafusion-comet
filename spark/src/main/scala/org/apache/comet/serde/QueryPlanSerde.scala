@@ -939,8 +939,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case expand: ExpandExec if CometConf.COMET_EXEC_EXPAND_ENABLED.get(conf) =>
         CometExpand.convert(expand, builder, childOp: _*)
 
-      case _: WindowExec
-          if CometConf.COMET_EXEC_WINDOW_ENABLED.get(conf) =>
+      case _: WindowExec if CometConf.COMET_EXEC_WINDOW_ENABLED.get(conf) =>
         withInfo(op, "Window expressions are not supported")
         None
 
