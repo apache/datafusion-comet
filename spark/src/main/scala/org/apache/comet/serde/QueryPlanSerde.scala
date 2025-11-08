@@ -758,7 +758,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     childOp.foreach(builder.addChildren)
 
     // look for registered handler first
-    opSerdeMap.get(op.getClass) match {
+    val serde = opSerdeMap.get(op.getClass)
+    serde match {
       case Some(handler) =>
         val enabled = handler.enabledConfig.forall(_.get(op.conf))
         if (enabled) {
@@ -795,7 +796,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
         //  1. it is not Spark shuffle operator, which is handled separately
         //  2. it is not a Comet operator
         if (!op.nodeName.contains("Comet") && !op.isInstanceOf[ShuffleExchangeExec]) {
-          withInfo(op, s"unsupported Spark operator: ${op.nodeName}")
+          // skip unsupported operator tag if operator is supported but disabled
+          if (serde.isEmpty) {
+            withInfo(op, s"unsupported Spark operator: ${op.nodeName}")
+          }
         }
         None
     }
