@@ -934,7 +934,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     // look for registered handler first
     opSerdeMap.get(op.getClass) match {
       case Some(handler) =>
-        val enabled = handler.enabledConfig.map(_.get(op.conf)).getOrElse(true)
+        val enabled = handler.enabledConfig.forall(_.get(op.conf))
         if (enabled) {
           val maybeConverted = handler
             .asInstanceOf[CometOperatorSerde[SparkPlan]]
@@ -961,6 +961,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         CometNativeScan.convert(scan, builder, childOp: _*)
 
+      // this is kept for backwards compatibility with current golden files
       case _: WindowExec if CometConf.COMET_EXEC_WINDOW_ENABLED.get(conf) =>
         withInfo(op, "Window expressions are not supported")
         None
@@ -1039,25 +1040,3 @@ object QueryPlanSerde extends Logging with CometExprShim {
   }
 
 }
-
-sealed trait SupportLevel
-
-/**
- * Comet either supports this feature with full compatibility with Spark, or may have known
- * differences in some specific edge cases that are unlikely to be an issue for most users.
- *
- * Any compatibility differences are noted in the
- * [[https://datafusion.apache.org/comet/user-guide/compatibility.html Comet Compatibility Guide]].
- */
-case class Compatible(notes: Option[String] = None) extends SupportLevel
-
-/**
- * Comet supports this feature but results can be different from Spark.
- *
- * Any compatibility differences are noted in the
- * [[https://datafusion.apache.org/comet/user-guide/compatibility.html Comet Compatibility Guide]].
- */
-case class Incompatible(notes: Option[String] = None) extends SupportLevel
-
-/** Comet does not support this feature */
-case class Unsupported(notes: Option[String] = None) extends SupportLevel
