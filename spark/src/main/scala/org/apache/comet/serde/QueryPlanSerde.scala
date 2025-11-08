@@ -770,10 +770,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
               withInfo(op, notes.getOrElse(""))
             case Incompatible(notes) =>
               val allowIncompat = CometConf.isOperatorAllowIncompat(opName)
+              val incompatConf = CometConf.getOperatorAllowIncompatConfigKey(opName)
               if (allowIncompat) {
                 if (notes.isDefined) {
                   logWarning(
-                    s"Comet supports $op when ${CometConf.getOperatorAllowIncompatConfigKey(opName)}=true " +
+                    s"Comet supports $opName when $incompatConf=true " +
                       s"but has notes: ${notes.get}")
                 }
                 return opSerde.convert(op, builder, childOp: _*)
@@ -781,13 +782,13 @@ object QueryPlanSerde extends Logging with CometExprShim {
                 val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
                 withInfo(
                   op,
-                  s"$op is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
-                    s"set ${CometConf.getOperatorAllowIncompatConfigKey(opName)}=true. " +
+                  s"$opName is not fully compatible with Spark$optionalNotes. " +
+                    s"To enable it anyway, set $incompatConf=true. " +
                     s"${CometConf.COMPAT_GUIDE}.")
               }
             case Compatible(notes) =>
               if (notes.isDefined) {
-                logWarning(s"Comet supports $op but has notes: ${notes.get}")
+                logWarning(s"Comet supports $opName but has notes: ${notes.get}")
               }
               return opSerde.convert(op, builder, childOp: _*)
           }

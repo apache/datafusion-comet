@@ -155,7 +155,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.exec.sortMergeJoinWithJoinFilter.enabled` | Experimental support for Sort Merge Join with filter | false |
 | `spark.comet.exec.takeOrderedAndProject.enabled` | Whether to enable takeOrderedAndProject by default. | true |
 | `spark.comet.exec.union.enabled` | Whether to enable union by default. | true |
-| `spark.comet.exec.window.enabled` | Whether to enable window by default. | false |
+| `spark.comet.exec.window.enabled` | Whether to enable window by default. | true |
 <!--END:CONFIG_TABLE-->
 
 ## Enabling or Disabling Individual Scalar Expressions
