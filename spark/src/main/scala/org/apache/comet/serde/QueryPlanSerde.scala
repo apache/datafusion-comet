@@ -28,19 +28,17 @@ import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 import org.apache.spark.sql.comet._
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -965,59 +963,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case op if isCometSink(op) =>
-        val supportedTypes =
-          op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
-
-        if (!supportedTypes) {
-          withInfo(op, "Unsupported data type")
-          return None
-        }
-
-        // These operators are source of Comet native execution chain
-        val scanBuilder = OperatorOuterClass.Scan.newBuilder()
-        val source = op.simpleStringWithNodeId()
-        if (source.isEmpty) {
-          scanBuilder.setSource(op.getClass.getSimpleName)
-        } else {
-          scanBuilder.setSource(source)
-        }
-
-        val ffiSafe = op match {
-          case _ if isExchangeSink(op) =>
-            // Source of broadcast exchange batches is ArrowStreamReader
-            // Source of shuffle exchange batches is NativeBatchDecoderIterator
-            true
-          case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_COMET =>
-            // native_comet scan reuses mutable buffers
-            false
-          case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
-            // native_iceberg_compat scan reuses mutable buffers for constant columns
-            // https://github.com/apache/datafusion-comet/issues/2152
-            false
-          case _ =>
-            false
-        }
-        scanBuilder.setArrowFfiSafe(ffiSafe)
-
-        val scanTypes = op.output.flatten { attr =>
-          serializeDataType(attr.dataType)
-        }
-
-        if (scanTypes.length == op.output.length) {
-          scanBuilder.addAllFields(scanTypes.asJava)
-
-          // Sink operators don't have children
-          builder.clearChildren()
-
-          Some(builder.setScan(scanBuilder).build())
-        } else {
-          // There are unsupported scan type
-          withInfo(
-            op,
-            s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above")
-          None
-        }
+      case op if CometSink.isCometSink(op) =>
+        CometSink.convert(op, builder, childOp: _*)
 
       case op =>
         opSerdeMap.get(op.getClass) match {
@@ -1041,42 +988,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             }
             None
         }
-    }
-  }
-
-  /**
-   * Whether the input Spark operator `op` can be considered as a Comet sink, i.e., the start of
-   * native execution. If it is true, we'll wrap `op` with `CometScanWrapper` or
-   * `CometSinkPlaceHolder` later in `CometSparkSessionExtensions` after `operator2proto` is
-   * called.
-   */
-  private def isCometSink(op: SparkPlan): Boolean = {
-    if (isExchangeSink(op)) {
-      return true
-    }
-    op match {
-      case s if isCometScan(s) => true
-      case _: CometSparkToColumnarExec => true
-      case _: CometSinkPlaceHolder => true
-      case _: CoalesceExec => true
-      case _: CollectLimitExec => true
-      case _: UnionExec => true
-      case _: TakeOrderedAndProjectExec => true
-      case _: WindowExec => true
-      case _ => false
-    }
-  }
-
-  private def isExchangeSink(op: SparkPlan): Boolean = {
-    op match {
-      case _: ShuffleExchangeExec => true
-      case ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) => true
-      case ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) => true
-      case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
-      case BroadcastQueryStageExec(_, ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) =>
-        true
-      case _: BroadcastExchangeExec => true
-      case _ => false
     }
   }
 
