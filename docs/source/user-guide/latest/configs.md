@@ -139,23 +139,23 @@ These settings can be used to determine which parts of the plan are accelerated 
 <!--BEGIN:CONFIG_TABLE[enable_exec]-->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
-| `spark.comet.exec.aggregate.enabled` | Whether to enable aggregate by default. | true |
-| `spark.comet.exec.broadcastExchange.enabled` | Whether to enable broadcastExchange by default. | true |
-| `spark.comet.exec.broadcastHashJoin.enabled` | Whether to enable broadcastHashJoin by default. | true |
-| `spark.comet.exec.coalesce.enabled` | Whether to enable coalesce by default. | true |
-| `spark.comet.exec.collectLimit.enabled` | Whether to enable collectLimit by default. | true |
-| `spark.comet.exec.expand.enabled` | Whether to enable expand by default. | true |
-| `spark.comet.exec.filter.enabled` | Whether to enable filter by default. | true |
-| `spark.comet.exec.globalLimit.enabled` | Whether to enable globalLimit by default. | true |
-| `spark.comet.exec.hashJoin.enabled` | Whether to enable hashJoin by default. | true |
-| `spark.comet.exec.localLimit.enabled` | Whether to enable localLimit by default. | true |
-| `spark.comet.exec.project.enabled` | Whether to enable project by default. | true |
-| `spark.comet.exec.sort.enabled` | Whether to enable sort by default. | true |
-| `spark.comet.exec.sortMergeJoin.enabled` | Whether to enable sortMergeJoin by default. | true |
-| `spark.comet.exec.sortMergeJoinWithJoinFilter.enabled` | Experimental support for Sort Merge Join with filter | false |
-| `spark.comet.exec.takeOrderedAndProject.enabled` | Whether to enable takeOrderedAndProject by default. | true |
-| `spark.comet.exec.union.enabled` | Whether to enable union by default. | true |
-| `spark.comet.exec.window.enabled` | Whether to enable window by default. | false |
+| `spark.comet.exec.aggregate.enabled` | Whether to enable aggregate by default. | true          |
+| `spark.comet.exec.broadcastExchange.enabled` | Whether to enable broadcastExchange by default. | true          |
+| `spark.comet.exec.broadcastHashJoin.enabled` | Whether to enable broadcastHashJoin by default. | true          |
+| `spark.comet.exec.coalesce.enabled` | Whether to enable coalesce by default. | true          |
+| `spark.comet.exec.collectLimit.enabled` | Whether to enable collectLimit by default. | true          |
+| `spark.comet.exec.expand.enabled` | Whether to enable expand by default. | true          |
+| `spark.comet.exec.filter.enabled` | Whether to enable filter by default. | true          |
+| `spark.comet.exec.globalLimit.enabled` | Whether to enable globalLimit by default. | true          |
+| `spark.comet.exec.hashJoin.enabled` | Whether to enable hashJoin by default. | true          |
+| `spark.comet.exec.localLimit.enabled` | Whether to enable localLimit by default. | true          |
+| `spark.comet.exec.project.enabled` | Whether to enable project by default. | true          |
+| `spark.comet.exec.sort.enabled` | Whether to enable sort by default. | true          |
+| `spark.comet.exec.sortMergeJoin.enabled` | Whether to enable sortMergeJoin by default. | true          |
+| `spark.comet.exec.sortMergeJoinWithJoinFilter.enabled` | Experimental support for Sort Merge Join with filter | false         |
+| `spark.comet.exec.takeOrderedAndProject.enabled` | Whether to enable takeOrderedAndProject by default. | true          |
+| `spark.comet.exec.union.enabled` | Whether to enable union by default. | true          |
+| `spark.comet.exec.window.enabled` | Whether to enable window by default. | true             |
 <!--END:CONFIG_TABLE-->
 
 ## Enabling or Disabling Individual Scalar Expressions
