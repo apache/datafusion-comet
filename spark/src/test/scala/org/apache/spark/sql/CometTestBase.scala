@@ -716,7 +716,7 @@ abstract class CometTestBase
       record.add(0, i % 2 == 0)
       record.add(1, i.toByte)
       record.add(2, i.toShort)
-      record.add(3, i)
+      record.add(3, i.toInt)
       record.add(4, i)
       record.add(5, java.lang.Float.intBitsToFloat(i.toInt))
       record.add(6, java.lang.Double.longBitsToDouble(i))
