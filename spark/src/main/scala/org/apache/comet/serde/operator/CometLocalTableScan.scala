@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde.operator
 
-import scala.jdk.CollectionConverters.asJavaIterableConverter
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.execution.LocalTableScanExec
 
