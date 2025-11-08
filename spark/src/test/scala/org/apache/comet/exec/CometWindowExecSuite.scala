@@ -284,7 +284,9 @@ class CometWindowExecSuite extends CometTestBase {
               s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1")
 
             queries.foreach { query =>
-              checkSparkAnswerAndFallbackReason(query, "Window expressions are not supported")
+              checkSparkAnswerAndFallbackReason(
+                query,
+                "Native WindowExec has known correctness issues")
             }
           }
         }
@@ -303,7 +305,7 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("SELECT a, b, c, COUNT(*) OVER () as cnt FROM window_test")
-      checkSparkAnswerAndFallbackReason(df, "Window expressions are not supported")
+      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
     }
   }
 
@@ -319,11 +321,11 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("SELECT a, b, c, SUM(c) OVER (PARTITION BY a) as sum_c FROM window_test")
-      checkSparkAnswerAndFallbackReason(df, "Window expressions are not supported")
+      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
     }
   }
 
-  // TODO: AVG with PARTITION BY and ORDER BY not supported
+  // TODO: AVG with PARTITION BY and ORDER BY not supportedu
   // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
   ignore("window: AVG with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
@@ -359,7 +361,7 @@ class CometWindowExecSuite extends CometTestBase {
           MAX(c) OVER (ORDER BY b) as max_c
         FROM window_test
       """)
-      checkSparkAnswerAndFallbackReason(df, "Window expressions are not supported")
+      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
     }
   }
 
