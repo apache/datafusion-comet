@@ -206,7 +206,7 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  ignore("aggregate window function for all types") {
+  test("aggregate window function for all types") {
     val numValues = 2048
 
     Seq(1, 100, numValues).foreach { numGroups =>

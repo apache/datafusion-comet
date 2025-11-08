@@ -760,53 +760,11 @@ object QueryPlanSerde extends Logging with CometExprShim {
     // look for registered handler first
     val serde = opSerdeMap.get(op.getClass)
     serde match {
-      case Some(handler) =>
-        val enabled = handler.enabledConfig.forall(_.get(op.conf))
-        val opName = op.getClass.getSimpleName
-        if (enabled) {
-          val opSerde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
-          opSerde.getSupportLevel(op) match {
-            case Unsupported(notes) =>
-              println("Unsupported")
-              withInfo(op, notes.getOrElse(""))
-            case Incompatible(notes) =>
-              println(s"Incompatible ${notes}")
-              val allowIncompat = CometConf.isOperatorAllowIncompat(opName)
-              val incompatConf = CometConf.getOperatorAllowIncompatConfigKey(opName)
-              if (allowIncompat) {
-                println("allowIncompat")
-                if (notes.isDefined) {
-                  logWarning(
-                    s"Comet supports $opName when $incompatConf=true " +
-                      s"but has notes: ${notes.get}")
-                }
-                return opSerde.convert(op, builder, childOp: _*)
-              } else {
-                val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
-                withInfo(
-                  op,
-                  s"$opName is not fully compatible with Spark$optionalNotes. " +
-                    s"To enable it anyway, set $incompatConf=true. " +
-                    s"${CometConf.COMPAT_GUIDE}.")
-              }
-            case Compatible(notes) =>
-              println(s"Compatible ${notes}")
-              if (notes.isDefined) {
-                logWarning(s"Comet supports $opName but has notes: ${notes.get}")
-              }
-              return opSerde.convert(op, builder, childOp: _*)
-          }
-          val maybeConverted = handler
-            .asInstanceOf[CometOperatorSerde[SparkPlan]]
-            .convert(op, builder, childOp: _*)
-          if (maybeConverted.isDefined) {
-            return maybeConverted
-          }
-        } else {
-          withInfo(
-            op,
-            s"Native support for operator $opName is disabled. " +
-              s"Set ${handler.enabledConfig.get.key}=true to enable it.")
+      case Some(handler) if isOperatorEnabled(handler, op) =>
+        val opSerde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
+        val maybeConverted = opSerde.convert(op, builder, childOp: _*)
+        if (maybeConverted.isDefined) {
+          return maybeConverted
         }
       case _ =>
     }
@@ -834,6 +792,54 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
         None
     }
+  }
+
+  def isOperatorEnabled(handler: CometOperatorSerde[_], op: SparkPlan): Boolean = {
+    val enabled = handler.enabledConfig.forall(_.get(op.conf))
+    val opName = op.getClass.getSimpleName
+    if (enabled) {
+      val opSerde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
+      opSerde.getSupportLevel(op) match {
+        case Unsupported(notes) =>
+          println("Unsupported")
+          withInfo(op, notes.getOrElse(""))
+          false
+        case Incompatible(notes) =>
+          println(s"Incompatible ${notes}")
+          val allowIncompat = CometConf.isOperatorAllowIncompat(opName)
+          val incompatConf = CometConf.getOperatorAllowIncompatConfigKey(opName)
+          if (allowIncompat) {
+            println("allowIncompat")
+            if (notes.isDefined) {
+              logWarning(
+                s"Comet supports $opName when $incompatConf=true " +
+                  s"but has notes: ${notes.get}")
+            }
+            true
+          } else {
+            val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
+            withInfo(
+              op,
+              s"$opName is not fully compatible with Spark$optionalNotes. " +
+                s"To enable it anyway, set $incompatConf=true. " +
+                s"${CometConf.COMPAT_GUIDE}.")
+            false
+          }
+        case Compatible(notes) =>
+          println(s"Compatible ${notes}")
+          if (notes.isDefined) {
+            logWarning(s"Comet supports $opName but has notes: ${notes.get}")
+          }
+          true
+      }
+    } else {
+      withInfo(
+        op,
+        s"Native support for operator $opName is disabled. " +
+          s"Set ${handler.enabledConfig.get.key}=true to enable it.")
+      false
+    }
+
   }
 
   // Utility method. Adds explain info if the result of calling exprToProto is None
