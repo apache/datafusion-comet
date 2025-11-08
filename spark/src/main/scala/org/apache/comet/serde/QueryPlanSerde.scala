@@ -26,7 +26,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
-import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
+import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
@@ -39,7 +39,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{HashJoin, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -50,7 +50,7 @@ import org.apache.comet.expressions._
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
-import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, BuildSide, JoinType, Operator}
+import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, JoinType, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
@@ -71,6 +71,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       classOf[FilterExec] -> CometFilter,
       classOf[LocalLimitExec] -> CometLocalLimit,
       classOf[GlobalLimitExec] -> CometGlobalLimit,
+      classOf[HashJoin] -> CometHashJoin,
       classOf[SortExec] -> CometSort)
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
@@ -1257,66 +1258,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
             withInfo(op, allChildren: _*)
             None
           }
-        }
-
-      case join: HashJoin =>
-        // `HashJoin` has only two implementations in Spark, but we check the type of the join to
-        // make sure we are handling the correct join type.
-        if (!(CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) &&
-            join.isInstanceOf[ShuffledHashJoinExec]) &&
-          !(CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) &&
-            join.isInstanceOf[BroadcastHashJoinExec])) {
-          withInfo(join, s"Invalid hash join type ${join.nodeName}")
-          return None
-        }
-
-        if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
-          // https://github.com/apache/datafusion-comet/issues/457
-          withInfo(join, "BuildRight with LeftAnti is not supported")
-          return None
-        }
-
-        val condition = join.condition.map { cond =>
-          val condProto = exprToProto(cond, join.left.output ++ join.right.output)
-          if (condProto.isEmpty) {
-            withInfo(join, cond)
-            return None
-          }
-          condProto.get
-        }
-
-        val joinType = join.joinType match {
-          case Inner => JoinType.Inner
-          case LeftOuter => JoinType.LeftOuter
-          case RightOuter => JoinType.RightOuter
-          case FullOuter => JoinType.FullOuter
-          case LeftSemi => JoinType.LeftSemi
-          case LeftAnti => JoinType.LeftAnti
-          case _ =>
-            // Spark doesn't support other join types
-            withInfo(join, s"Unsupported join type ${join.joinType}")
-            return None
-        }
-
-        val leftKeys = join.leftKeys.map(exprToProto(_, join.left.output))
-        val rightKeys = join.rightKeys.map(exprToProto(_, join.right.output))
-
-        if (leftKeys.forall(_.isDefined) &&
-          rightKeys.forall(_.isDefined) &&
-          childOp.nonEmpty) {
-          val joinBuilder = OperatorOuterClass.HashJoin
-            .newBuilder()
-            .setJoinType(joinType)
-            .addAllLeftJoinKeys(leftKeys.map(_.get).asJava)
-            .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
-            .setBuildSide(
-              if (join.buildSide == BuildLeft) BuildSide.BuildLeft else BuildSide.BuildRight)
-          condition.foreach(joinBuilder.setCondition)
-          Some(builder.setHashJoin(joinBuilder).build())
-        } else {
-          val allExprs: Seq[Expression] = join.leftKeys ++ join.rightKeys
-          withInfo(join, allExprs: _*)
-          None
         }
 
       case join: SortMergeJoinExec if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) =>
