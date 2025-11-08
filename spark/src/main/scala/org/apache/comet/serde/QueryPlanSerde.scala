@@ -66,6 +66,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       classOf[GlobalLimitExec] -> CometGlobalLimit,
       classOf[HashJoin] -> CometHashJoin,
       classOf[SortMergeJoinExec] -> CometSortMergeJoin,
+      classOf[WindowExec] -> CometWindowExec,
       classOf[SortExec] -> CometSort)
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
@@ -952,54 +953,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
           None
         }
 
-      case WindowExec(windowExpression, partitionSpec, orderSpec, child)
-        if CometConf.COMET_EXEC_WINDOW_ENABLED.get(conf) =>
-        val output = child.output
-
-        val winExprs: Array[WindowExpression] = windowExpression.flatMap { expr =>
-          expr match {
-            case alias: Alias =>
-              alias.child match {
-                case winExpr: WindowExpression =>
-                  Some(winExpr)
-                case _ =>
-                  None
-              }
-            case _ =>
-              None
-          }
-        }.toArray
-
-        if (winExprs.length != windowExpression.length) {
-          withInfo(op, "Unsupported window expression(s)")
-          return None
-        }
-
-        if (partitionSpec.nonEmpty && orderSpec.nonEmpty &&
-          !validatePartitionAndSortSpecsForWindowFunc(partitionSpec, orderSpec, op)) {
-          return None
-        }
-
-        val windowExprProto = winExprs.map(windowExprToProto(_, output, op.conf))
-        val partitionExprs = partitionSpec.map(exprToProto(_, child.output))
-
-        val sortOrders = orderSpec.map(exprToProto(_, child.output))
-
-        if (windowExprProto.forall(_.isDefined) && partitionExprs.forall(_.isDefined)
-          && sortOrders.forall(_.isDefined)) {
-          val windowBuilder = OperatorOuterClass.Window.newBuilder()
-          windowBuilder.addAllWindowExpr(windowExprProto.map(_.get).toIterable.asJava)
-          windowBuilder.addAllPartitionByList(partitionExprs.map(_.get).asJava)
-          windowBuilder.addAllOrderByList(sortOrders.map(_.get).asJava)
-          Some(builder.setWindow(windowBuilder).build())
-        } else {
-          None
-        }
-
       case aggregate: BaseAggregateExec
-        if (aggregate.isInstanceOf[HashAggregateExec] ||
-          aggregate.isInstanceOf[ObjectHashAggregateExec]) &&
-          CometConf.COMET_EXEC_AGGREGATE_ENABLED.get(conf) =>
+          if (aggregate.isInstanceOf[HashAggregateExec] ||
+            aggregate.isInstanceOf[ObjectHashAggregateExec]) &&
+            CometConf.COMET_EXEC_AGGREGATE_ENABLED.get(conf) =>
         val groupingExpressions = aggregate.groupingExpressions
         val aggregateExpressions = aggregate.aggregateExpressions
         val aggregateAttributes = aggregate.aggregateAttributes
@@ -1018,10 +975,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
         }
 
         if (groupingExpressions.exists(expr =>
-          expr.dataType match {
-            case _: MapType => true
-            case _ => false
-          })) {
+            expr.dataType match {
+              case _: MapType => true
+              case _ => false
+            })) {
           withInfo(op, "Grouping on map types is not supported")
           return None
         }
@@ -1133,7 +1090,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
                   s"Native support for operator ${op.getClass.getSimpleName} is disabled. " +
                     s"Set ${enabledConfig.key}=true to enable it.")
                 if (isCometSink(op)) {
-                  return cometSink(op)
+                  return cometSink(op, builder)
                 } else {
                   return None
                 }
@@ -1142,7 +1099,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
             handler.asInstanceOf[CometOperatorSerde[SparkPlan]].convert(op, builder, childOp: _*)
           case _ =>
             if (isCometSink(op)) {
-              cometSink(op)
+              cometSink(op, builder)
             } else {
               // Emit warning if:
               //  1. it is not Spark shuffle operator, which is handled separately
@@ -1156,61 +1113,61 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
   }
 
-    def cometSink(op: SparkPlan): Option[Operator] = {
-      val supportedTypes =
-        op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
+  def cometSink(op: SparkPlan, builder: Operator.Builder): Option[Operator] = {
+    val supportedTypes =
+      op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
 
-      if (!supportedTypes) {
-        withInfo(op, "Unsupported data type")
-        return None
-      }
-
-      // These operators are source of Comet native execution chain
-      val scanBuilder = OperatorOuterClass.Scan.newBuilder()
-      val source = op.simpleStringWithNodeId()
-      if (source.isEmpty) {
-        scanBuilder.setSource(op.getClass.getSimpleName)
-      } else {
-        scanBuilder.setSource(source)
-      }
-
-      val ffiSafe = op match {
-        case _ if isExchangeSink(op) =>
-          // Source of broadcast exchange batches is ArrowStreamReader
-          // Source of shuffle exchange batches is NativeBatchDecoderIterator
-          true
-        case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_COMET =>
-          // native_comet scan reuses mutable buffers
-          false
-        case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
-          // native_iceberg_compat scan reuses mutable buffers for constant columns
-          // https://github.com/apache/datafusion-comet/issues/2152
-          false
-        case _ =>
-          false
-      }
-      scanBuilder.setArrowFfiSafe(ffiSafe)
-
-      val scanTypes = op.output.flatten { attr =>
-        serializeDataType(attr.dataType)
-      }
-
-      if (scanTypes.length == op.output.length) {
-        scanBuilder.addAllFields(scanTypes.asJava)
-
-        // Sink operators don't have children
-        builder.clearChildren()
-
-        Some(builder.setScan(scanBuilder).build())
-      } else {
-        // There are unsupported scan type
-        withInfo(
-          op,
-          s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above")
-        None
-      }
-
+    if (!supportedTypes) {
+      withInfo(op, "Unsupported data type")
+      return None
     }
+
+    // These operators are source of Comet native execution chain
+    val scanBuilder = OperatorOuterClass.Scan.newBuilder()
+    val source = op.simpleStringWithNodeId()
+    if (source.isEmpty) {
+      scanBuilder.setSource(op.getClass.getSimpleName)
+    } else {
+      scanBuilder.setSource(source)
+    }
+
+    val ffiSafe = op match {
+      case _ if isExchangeSink(op) =>
+        // Source of broadcast exchange batches is ArrowStreamReader
+        // Source of shuffle exchange batches is NativeBatchDecoderIterator
+        true
+      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_COMET =>
+        // native_comet scan reuses mutable buffers
+        false
+      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
+        // native_iceberg_compat scan reuses mutable buffers for constant columns
+        // https://github.com/apache/datafusion-comet/issues/2152
+        false
+      case _ =>
+        false
+    }
+    scanBuilder.setArrowFfiSafe(ffiSafe)
+
+    val scanTypes = op.output.flatten { attr =>
+      serializeDataType(attr.dataType)
+    }
+
+    if (scanTypes.length == op.output.length) {
+      scanBuilder.addAllFields(scanTypes.asJava)
+
+      // Sink operators don't have children
+      builder.clearChildren()
+
+      Some(builder.setScan(scanBuilder).build())
+    } else {
+      // There are unsupported scan type
+      withInfo(
+        op,
+        s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above")
+      None
+    }
+
+  }
 
   /**
    * Whether the input Spark operator `op` can be considered as a Comet sink, i.e., the start of
@@ -1306,40 +1263,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     } else {
       true
     }
-  }
-
-  private def validatePartitionAndSortSpecsForWindowFunc(
-      partitionSpec: Seq[Expression],
-      orderSpec: Seq[SortOrder],
-      op: SparkPlan): Boolean = {
-    if (partitionSpec.length != orderSpec.length) {
-      return false
-    }
-
-    val partitionColumnNames = partitionSpec.collect {
-      case a: AttributeReference => a.name
-      case other =>
-        withInfo(op, s"Unsupported partition expression: ${other.getClass.getSimpleName}")
-        return false
-    }
-
-    val orderColumnNames = orderSpec.collect { case s: SortOrder =>
-      s.child match {
-        case a: AttributeReference => a.name
-        case other =>
-          withInfo(op, s"Unsupported sort expression: ${other.getClass.getSimpleName}")
-          return false
-      }
-    }
-
-    if (partitionColumnNames.zip(orderColumnNames).exists { case (partCol, orderCol) =>
-        partCol != orderCol
-      }) {
-      withInfo(op, "Partitioning and sorting specifications must be the same.")
-      return false
-    }
-
-    true
   }
 
 }

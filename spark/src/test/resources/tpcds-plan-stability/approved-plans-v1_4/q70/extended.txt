@@ -1,6 +1,6 @@
  TakeOrderedAndProject [COMET: ]
 +- Project
-   +- Window
+   +-  Window [COMET: Window expressions are not supported]
       +- CometColumnarToRow
          +- CometSort
             +- CometColumnarExchange
@@ -35,7 +35,7 @@
                                              +- BroadcastExchange
                                                 +- Project
                                                    +- Filter
-                                                      +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                                                      +-  Window [COMET: Window expressions are not supported]
                                                          +- CometColumnarToRow
                                                             +- CometSort
                                                                +- CometHashAggregate
