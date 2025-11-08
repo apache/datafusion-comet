@@ -1178,6 +1178,7 @@ abstract class CometTestBase
     df.showString(_numRows, truncate, vertical)
   }
 
+  @nowarn("cat=w-flag-numeric-widen")
   def makeParquetFile(
       path: Path,
       total: Int,
@@ -1231,8 +1232,8 @@ abstract class CometTestBase
       val record = new SimpleGroup(schema)
       opt match {
         case Some(i) =>
-          record.add(0, i.toByte.toInt)
-          record.add(1, i.toShort.toInt)
+          record.add(0, i.toByte)
+          record.add(1, i.toShort)
           record.add(2, i)
           record.add(3, i.toLong)
           record.add(4, rand.nextFloat())
