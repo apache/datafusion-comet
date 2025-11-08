@@ -1125,6 +1125,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
       case WindowExec(windowExpression, partitionSpec, orderSpec, child)
           if CometConf.COMET_EXEC_WINDOW_ENABLED.get(conf) =>
+        withInfo(op, "Window expressions are not supported")
+        None
+      /*
         val output = child.output
 
         val winExprs: Array[WindowExpression] = windowExpression.flatMap { expr =>
@@ -1165,7 +1168,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           Some(builder.setWindow(windowBuilder).build())
         } else {
           None
-        }
+        } */
 
       case aggregate: BaseAggregateExec
           if (aggregate.isInstanceOf[HashAggregateExec] ||

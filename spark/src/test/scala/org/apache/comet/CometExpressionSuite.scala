@@ -30,10 +30,9 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Literal, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec, CometWindowExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec}
 import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
@@ -3095,27 +3094,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .withColumn("randn2", randn(seed2))
       checkSparkAnswerAndOperatorWithTol(complexRandDf)
     }
-  }
-
-  test("window query with rangeBetween") {
-
-    // values are int
-    val df = Seq(1, 2, 4, 3, 2, 1).toDF("value")
-    val window = Window.orderBy($"value".desc)
-
-    // ranges are long
-    val df2 = df.select(
-      $"value",
-      sum($"value").over(window.rangeBetween(Window.unboundedPreceding, 1L)),
-      sum($"value").over(window.rangeBetween(1L, Window.unboundedFollowing)))
-
-    // Comet does not support RANGE BETWEEN
-    // https://github.com/apache/datafusion-comet/issues/1246
-    val (_, cometPlan) = checkSparkAnswer(df2)
-    val cometWindowExecs = collect(cometPlan) { case w: CometWindowExec =>
-      w
-    }
-    assert(cometWindowExecs.isEmpty)
   }
 
   test("vectorized reader: missing all struct fields") {
