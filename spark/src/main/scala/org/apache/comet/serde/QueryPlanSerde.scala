@@ -1174,6 +1174,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
           if (aggregate.isInstanceOf[HashAggregateExec] ||
             aggregate.isInstanceOf[ObjectHashAggregateExec]) &&
             CometConf.COMET_EXEC_AGGREGATE_ENABLED.get(conf) =>
+        println("COMET_EXEC_AGGREGATE_ENABLED0")
         val groupingExpressions = aggregate.groupingExpressions
         val aggregateExpressions = aggregate.aggregateExpressions
         val aggregateAttributes = aggregate.aggregateAttributes
@@ -1181,12 +1182,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
         val child = aggregate.child
 
         if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
+          println("COMET_EXEC_AGGREGATE_ENABLED1")
           withInfo(op, "No group by or aggregation")
           return None
         }
 
         // Aggregate expressions with filter are not supported yet.
         if (aggregateExpressions.exists(_.filter.isDefined)) {
+          println("COMET_EXEC_AGGREGATE_ENABLED2")
           withInfo(op, "Aggregate expression with filter is not supported")
           return None
         }

@@ -227,7 +227,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         if (multiMode || sparkFinalMode) {
           op
         } else {
-          newPlanWithProto(
+          val plan1 = newPlanWithProto(
             op,
             nativeOp => {
               // The aggExprs could be empty. For example, if the aggregate functions only have
@@ -247,6 +247,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
                 op.child,
                 SerializedPlan(None))
             })
+          println(plan1)
+          plan1
         }
 
       case op: ShuffledHashJoinExec
@@ -512,10 +514,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           s
         }
 
-      case op: LocalTableScanExec =>
-        newPlanWithProto(
-          op,
-          CometLocalTableScanExec(_, op, op.rows, op.output, SerializedPlan(None)))
+      case op: LocalTableScanExec if CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.get(conf) =>
+        val nativeOp = QueryPlanSerde.operator2Proto(op)
+        val cometOp = CometLocalTableScanExec(op, op.rows, op.output)
+        CometScanWrapper(nativeOp.get, cometOp)
 
       case op =>
         op match {

@@ -42,7 +42,7 @@ object CometLocalTableScan extends CometOperatorSerde[LocalTableScanExec] {
       .newBuilder()
       .setSource(op.getClass.getSimpleName)
       .addAllFields(scanTypes.asJava)
-      .setArrowFfiSafe(true)
+      .setArrowFfiSafe(false)
     Some(builder.setScan(scanBuilder).build())
   }
 }

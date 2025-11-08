@@ -23,23 +23,22 @@ import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, UnsafeProjection}
+import org.apache.spark.sql.comet.CometLocalTableScanExec.createMetricsIterator
 import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
-import org.apache.spark.sql.execution.{InputRDDCodegen, LocalTableScanExec}
+import org.apache.spark.sql.execution.{LeafExecNode, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import com.google.common.base.Objects
 
 import org.apache.comet.CometConf
-import org.apache.comet.serde.OperatorOuterClass.Operator
 
 case class CometLocalTableScanExec(
-    override val nativeOp: Operator,
     originalPlan: LocalTableScanExec,
     @transient rows: Seq[InternalRow],
-    override val output: Seq[Attribute],
-    override val serializedPlanOpt: SerializedPlan)
-    extends CometLeafExec {
+    override val output: Seq[Attribute])
+    extends CometExec
+    with LeafExecNode {
 
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
@@ -63,16 +62,26 @@ case class CometLocalTableScanExec(
   }
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    val numInputRows = longMetric("numOutputRows")
     val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
     val timeZoneId = conf.sessionLocalTimeZone
     rdd.mapPartitionsInternal { sparkBatches =>
       val context = TaskContext.get()
-      CometArrowConverters.rowToArrowBatchIter(
+      val batches = CometArrowConverters.rowToArrowBatchIter(
         sparkBatches,
         originalPlan.schema,
         maxRecordsPerBatch,
         timeZoneId,
         context)
+      createMetricsIterator(batches, numInputRows)
+    }
+  }
+
+  override protected def stringArgs: Iterator[Any] = {
+    if (rows.isEmpty) {
+      Iterator("<empty>", output)
+    } else {
+      Iterator(output)
     }
   }
 
@@ -81,12 +90,28 @@ case class CometLocalTableScanExec(
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: CometLocalTableScanExec =>
-        this.originalPlan == other.originalPlan &&
-        this.serializedPlanOpt == other.serializedPlanOpt
+        this.originalPlan == other.originalPlan && this.schema == other.schema && this.output == other.output
       case _ =>
         false
     }
   }
 
-  override def hashCode(): Int = Objects.hashCode(originalPlan, serializedPlanOpt)
+  override def hashCode(): Int = Objects.hashCode(originalPlan, originalPlan.schema, output)
+}
+
+object CometLocalTableScanExec {
+
+  private def createMetricsIterator(
+      it: Iterator[ColumnarBatch],
+      numInputRows: SQLMetric): Iterator[ColumnarBatch] = {
+    new Iterator[ColumnarBatch] {
+      override def hasNext: Boolean = it.hasNext
+
+      override def next(): ColumnarBatch = {
+        val batch = it.next()
+        numInputRows.add(batch.numRows())
+        batch
+      }
+    }
+  }
 }
