@@ -392,17 +392,26 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         withInfo(s, Seq(info1, info2).flatten.mkString(","))
 
       case w: WindowExec =>
-        newPlanWithProto(
-          w,
-          CometWindowExec(
-            _,
-            w,
-            w.output,
-            w.windowExpression,
-            w.partitionSpec,
-            w.orderSpec,
-            w.child,
-            SerializedPlan(None)))
+        if (CometConf.COMET_EXEC_WINDOW_ENABLED.get(conf)) {
+          // TODO this duplicates logic in QueryPlanSerde
+          if (CometConf.isOperatorAllowIncompat("WindowExec")) {
+            newPlanWithProto(
+              w,
+              CometWindowExec(
+                _,
+                w,
+                w.output,
+                w.windowExpression,
+                w.partitionSpec,
+                w.orderSpec,
+                w.child,
+                SerializedPlan(None)))
+          } else {
+            withInfo(w, "Native WindowExec has known correctness issues")
+          }
+        } else {
+          withInfo(w, "WindowExec is not enabled")
+        }
 
       case u: UnionExec
           if CometConf.COMET_EXEC_UNION_ENABLED.get(conf) &&

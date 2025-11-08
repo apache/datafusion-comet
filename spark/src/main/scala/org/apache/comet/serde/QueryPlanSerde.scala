@@ -767,11 +767,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
           val opSerde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
           opSerde.getSupportLevel(op) match {
             case Unsupported(notes) =>
+              println("Unsupported")
               withInfo(op, notes.getOrElse(""))
             case Incompatible(notes) =>
+              println(s"Incompatible ${notes}")
               val allowIncompat = CometConf.isOperatorAllowIncompat(opName)
               val incompatConf = CometConf.getOperatorAllowIncompatConfigKey(opName)
               if (allowIncompat) {
+                println("allowIncompat")
                 if (notes.isDefined) {
                   logWarning(
                     s"Comet supports $opName when $incompatConf=true " +
@@ -787,6 +790,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
                     s"${CometConf.COMPAT_GUIDE}.")
               }
             case Compatible(notes) =>
+              println(s"Compatible ${notes}")
               if (notes.isDefined) {
                 logWarning(s"Comet supports $opName but has notes: ${notes.get}")
               }
