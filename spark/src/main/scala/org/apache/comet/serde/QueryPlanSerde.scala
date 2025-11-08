@@ -66,7 +66,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * Mapping of Spark operator class to Comet operator handler.
    */
   private val opSerdeMap: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
-    Map(classOf[ProjectExec] -> CometProject, classOf[SortExec] -> CometSort)
+    Map(
+      classOf[ProjectExec] -> CometProject,
+      classOf[FilterExec] -> CometFilter,
+      classOf[SortExec] -> CometSort)
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
@@ -1062,19 +1065,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(
             op,
             s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above")
-          None
-        }
-
-      case FilterExec(condition, child) if CometConf.COMET_EXEC_FILTER_ENABLED.get(conf) =>
-        val cond = exprToProto(condition, child.output)
-
-        if (cond.isDefined && childOp.nonEmpty) {
-          val filterBuilder = OperatorOuterClass.Filter
-            .newBuilder()
-            .setPredicate(cond.get)
-          Some(builder.setFilter(filterBuilder).build())
-        } else {
-          withInfo(op, condition, child)
           None
         }
 
