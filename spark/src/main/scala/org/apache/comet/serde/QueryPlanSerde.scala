@@ -918,6 +918,26 @@ object QueryPlanSerde extends Logging with CometExprShim {
     val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
     childOp.foreach(builder.addChildren)
 
+    // look for registered handler first
+    opSerdeMap.get(op.getClass) match {
+      case Some(handler) =>
+        val enabled = handler.enabledConfig.map(_.get(op.conf)).getOrElse(true)
+        if (enabled) {
+          return handler
+            .asInstanceOf[CometOperatorSerde[SparkPlan]]
+            .convert(op, builder, childOp: _*)
+        }
+        // if the config was explicitly disabled, tag the operator
+        if (handler.enabledConfig.isDefined) {
+          withInfo(
+            op,
+            s"Native support for operator ${op.getClass.getSimpleName} is disabled. " +
+              s"Set ${handler.enabledConfig.get.key}=true to enable it.")
+        }
+      case _ =>
+    }
+
+    // now handle special cases that cannot be handled as a simple mapping from class name
     op match {
 
       // Fully native scan for V1
@@ -966,28 +986,14 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case op if CometSink.isCometSink(op) =>
         CometSink.convert(op, builder, childOp: _*)
 
-      case op =>
-        opSerdeMap.get(op.getClass) match {
-          case Some(handler) =>
-            handler.enabledConfig.foreach { enabledConfig =>
-              if (!enabledConfig.get(op.conf)) {
-                withInfo(
-                  op,
-                  s"Native support for operator ${op.getClass.getSimpleName} is disabled. " +
-                    s"Set ${enabledConfig.key}=true to enable it.")
-                return None
-              }
-            }
-            handler.asInstanceOf[CometOperatorSerde[SparkPlan]].convert(op, builder, childOp: _*)
-          case _ =>
-            // Emit warning if:
-            //  1. it is not Spark shuffle operator, which is handled separately
-            //  2. it is not a Comet operator
-            if (!op.nodeName.contains("Comet") && !op.isInstanceOf[ShuffleExchangeExec]) {
-              withInfo(op, s"unsupported Spark operator: ${op.nodeName}")
-            }
-            None
+      case _ =>
+        // Emit warning if:
+        //  1. it is not Spark shuffle operator, which is handled separately
+        //  2. it is not a Comet operator
+        if (!op.nodeName.contains("Comet") && !op.isInstanceOf[ShuffleExchangeExec]) {
+          withInfo(op, s"unsupported Spark operator: ${op.nodeName}")
         }
+        None
     }
   }
 
