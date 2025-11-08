@@ -20,7 +20,6 @@
 package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
-
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
@@ -34,11 +33,10 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{HashJoin, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
-
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
@@ -65,7 +63,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
       classOf[GlobalLimitExec] -> CometGlobalLimit,
       classOf[HashAggregateExec] -> CometHashAggregate,
       classOf[ObjectHashAggregateExec] -> CometObjectHashAggregate,
-      classOf[HashJoin] -> CometHashJoin,
+      classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoin,
+      classOf[ShuffledHashJoinExec] -> CometShuffleHashJoin,
       classOf[SortMergeJoinExec] -> CometSortMergeJoin,
       classOf[ExpandExec] -> CometExpand,
       classOf[WindowExec] -> CometWindow,

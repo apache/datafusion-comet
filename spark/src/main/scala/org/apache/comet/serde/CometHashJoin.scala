@@ -31,19 +31,16 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.OperatorOuterClass.{BuildSide, JoinType, Operator}
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
 
-object CometHashJoin extends CometOperatorSerde[HashJoin] {
+trait CometHashJoin {
 
-  override def enabledConfig: Option[ConfigEntry[Boolean]] =
-    Some(CometConf.COMET_EXEC_HASH_JOIN_ENABLED)
-
-  override def convert(
-      join: HashJoin,
-      builder: Operator.Builder,
-      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+  def doConvert(
+               join: HashJoin,
+               builder: Operator.Builder,
+               childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
     // `HashJoin` has only two implementations in Spark, but we check the type of the join to
     // make sure we are handling the correct join type.
     if (!(CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(join.conf) &&
-        join.isInstanceOf[ShuffledHashJoinExec]) &&
+      join.isInstanceOf[ShuffledHashJoinExec]) &&
       !(CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(join.conf) &&
         join.isInstanceOf[BroadcastHashJoinExec])) {
       withInfo(join, s"Invalid hash join type ${join.nodeName}")
@@ -99,4 +96,22 @@ object CometHashJoin extends CometOperatorSerde[HashJoin] {
       None
     }
   }
+}
+
+object CometBroadcastHashJoin extends CometOperatorSerde[HashJoin] with CometHashJoin {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] =
+    Some(CometConf.COMET_EXEC_HASH_JOIN_ENABLED)
+
+  override def convert(join: HashJoin, builder: Operator.Builder, childOp: Operator*): Option[Operator] =
+    doConvert(join, builder, childOp: _*)
+}
+
+object CometShuffleHashJoin extends CometOperatorSerde[HashJoin] with CometHashJoin {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] =
+    Some(CometConf.COMET_EXEC_HASH_JOIN_ENABLED)
+
+  override def convert(join: HashJoin, builder: Operator.Builder, childOp: Operator*): Option[Operator] =
+    doConvert(join, builder, childOp: _*)
 }
