@@ -39,12 +39,11 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.literals.CometLiteral
@@ -1079,7 +1078,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
   }
 
   // scalastyle:off
-
   /**
    * Align w/ Arrow's
    * [[https://github.com/apache/arrow-rs/blob/55.2.0/arrow-ord/src/rank.rs#L30-L40 can_rank]] and
@@ -1087,7 +1085,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
    *
    * TODO: Include SparkSQL's [[YearMonthIntervalType]] and [[DayTimeIntervalType]]
    */
-  // scalastyle:off
+  // scalastyle:on
   def supportedSortType(op: SparkPlan, sortOrder: Seq[SortOrder]): Boolean = {
     def canRank(dt: DataType): Boolean = {
       dt match {
@@ -1147,131 +1145,3 @@ case class Incompatible(notes: Option[String] = None) extends SupportLevel
 
 /** Comet does not support this feature */
 case class Unsupported(notes: Option[String] = None) extends SupportLevel
-
-/**
- * Trait for providing serialization logic for operators.
- */
-trait CometOperatorSerde[T <: SparkPlan] {
-
-  /**
-   * Convert a Spark operator into a protocol buffer representation that can be passed into native
-   * code.
-   *
-   * @param op
-   *   The Spark operator.
-   * @param builder
-   *   The protobuf builder for the operator.
-   * @param childOp
-   *   Child operators that have already been converted to Comet.
-   * @return
-   *   Protocol buffer representation, or None if the operator could not be converted. In this
-   *   case it is expected that the input operator will have been tagged with reasons why it could
-   *   not be converted.
-   */
-  def convert(
-      op: T,
-      builder: Operator.Builder,
-      childOp: Operator*): Option[OperatorOuterClass.Operator]
-
-  /**
-   * Get the optional Comet configuration entry that is used to enable or disable native support
-   * for this operator.
-   */
-  def enabledConfig: Option[ConfigEntry[Boolean]]
-}
-
-/**
- * Trait for providing serialization logic for expressions.
- */
-trait CometExpressionSerde[T <: Expression] {
-
-  /**
-   * Get a short name for the expression that can be used as part of a config key related to the
-   * expression, such as enabling or disabling that expression.
-   *
-   * @param expr
-   *   The Spark expression.
-   * @return
-   *   Short name for the expression, defaulting to the Spark class name
-   */
-  def getExprConfigName(expr: T): String = expr.getClass.getSimpleName
-
-  /**
-   * Determine the support level of the expression based on its attributes.
-   *
-   * @param expr
-   *   The Spark expression.
-   * @return
-   *   Support level (Compatible, Incompatible, or Unsupported).
-   */
-  def getSupportLevel(expr: T): SupportLevel = Compatible(None)
-
-  /**
-   * Convert a Spark expression into a protocol buffer representation that can be passed into
-   * native code.
-   *
-   * @param expr
-   *   The Spark expression.
-   * @param inputs
-   *   The input attributes.
-   * @param binding
-   *   Whether the attributes are bound (this is only relevant in aggregate expressions).
-   * @return
-   *   Protocol buffer representation, or None if the expression could not be converted. In this
-   *   case it is expected that the input expression will have been tagged with reasons why it
-   *   could not be converted.
-   */
-  def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.Expr]
-}
-
-/**
- * Trait for providing serialization logic for aggregate expressions.
- */
-trait CometAggregateExpressionSerde[T <: AggregateFunction] {
-
-  /**
-   * Get a short name for the expression that can be used as part of a config key related to the
-   * expression, such as enabling or disabling that expression.
-   *
-   * @param expr
-   *   The Spark expression.
-   * @return
-   *   Short name for the expression, defaulting to the Spark class name
-   */
-  def getExprConfigName(expr: T): String = expr.getClass.getSimpleName
-
-  /**
-   * Convert a Spark expression into a protocol buffer representation that can be passed into
-   * native code.
-   *
-   * @param aggExpr
-   *   The aggregate expression.
-   * @param expr
-   *   The aggregate function.
-   * @param inputs
-   *   The input attributes.
-   * @param binding
-   *   Whether the attributes are bound (this is only relevant in aggregate expressions).
-   * @param conf
-   *   SQLConf
-   * @return
-   *   Protocol buffer representation, or None if the expression could not be converted. In this
-   *   case it is expected that the input expression will have been tagged with reasons why it
-   *   could not be converted.
-   */
-  def convert(
-      aggExpr: AggregateExpression,
-      expr: T,
-      inputs: Seq[Attribute],
-      binding: Boolean,
-      conf: SQLConf): Option[ExprOuterClass.AggExpr]
-}
-
-/** Serde for scalar function. */
-case class CometScalarFunction[T <: Expression](name: String) extends CometExpressionSerde[T] {
-  override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
-    val optExpr = scalarFunctionExprToProto(name, childExpr: _*)
-    optExprWithInfo(optExpr, expr, expr.children: _*)
-  }
-}
