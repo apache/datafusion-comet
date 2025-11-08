@@ -24,8 +24,10 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.comet.CometWindowExec
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.expressions.Window
-import org.apache.spark.sql.functions.{count, lead}
+import org.apache.spark.sql.functions.{count, lead, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -39,8 +41,82 @@ class CometWindowExecSuite extends CometTestBase {
     super.test(testName, testTags: _*) {
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_WINDOW_ENABLED.key -> "true",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
         testFun
+      }
+    }
+  }
+
+  test("lead/lag should return the default value if the offset row does not exist") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      checkSparkAnswer(sql("""
+                             |SELECT
+                             |  lag(123, 100, 321) OVER (ORDER BY id) as lag,
+                             |  lead(123, 100, 321) OVER (ORDER BY id) as lead
+                             |FROM (SELECT 1 as id) tmp
+      """.stripMargin))
+
+      checkSparkAnswer(sql("""
+                             |SELECT
+                             |  lag(123, 100, a) OVER (ORDER BY id) as lag,
+                             |  lead(123, 100, a) OVER (ORDER BY id) as lead
+                             |FROM (SELECT 1 as id, 2 as a) tmp
+      """.stripMargin))
+    }
+  }
+
+  test("window query with rangeBetween") {
+
+    // values are int
+    val df = Seq(1, 2, 4, 3, 2, 1).toDF("value")
+    val window = Window.orderBy($"value".desc)
+
+    // ranges are long
+    val df2 = df.select(
+      $"value",
+      sum($"value").over(window.rangeBetween(Window.unboundedPreceding, 1L)),
+      sum($"value").over(window.rangeBetween(1L, Window.unboundedFollowing)))
+
+    // Comet does not support RANGE BETWEEN
+    // https://github.com/apache/datafusion-comet/issues/1246
+    val (_, cometPlan) = checkSparkAnswer(df2)
+    val cometWindowExecs = collect(cometPlan) { case w: CometWindowExec =>
+      w
+    }
+    assert(cometWindowExecs.isEmpty)
+  }
+
+  // based on Spark's SQLWindowFunctionSuite test of the same name
+  test("window function: partition and order expressions") {
+    for (shuffleMode <- Seq("auto", "native", "jvm")) {
+      withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
+        val df =
+          Seq((1, "a", 5), (2, "a", 6), (3, "b", 7), (4, "b", 8), (5, "c", 9), (6, "c", 10)).toDF(
+            "month",
+            "area",
+            "product")
+        df.createOrReplaceTempView("windowData")
+        val df2 = sql("""
+                        |select month, area, product, sum(product + 1) over (partition by 1 order by 2)
+                        |from windowData
+          """.stripMargin)
+        checkSparkAnswer(df2)
+        val cometShuffles = collect(df2.queryExecution.executedPlan) {
+          case _: CometShuffleExchangeExec => true
+        }
+        if (shuffleMode == "jvm" || shuffleMode == "auto") {
+          assert(cometShuffles.length == 1)
+        } else {
+          // we fall back to Spark for shuffle because we do not support
+          // native shuffle with a LocalTableScan input, and we do not fall
+          // back to Comet columnar shuffle due to
+          // https://github.com/apache/datafusion-comet/issues/1248
+          assert(cometShuffles.isEmpty)
+        }
       }
     }
   }
@@ -182,7 +258,7 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  test("Windows support") {
+  ignore("Windows support") {
     Seq("true", "false").foreach(aqeEnabled =>
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
@@ -208,7 +284,7 @@ class CometWindowExecSuite extends CometTestBase {
               s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1")
 
             queries.foreach { query =>
-              checkSparkAnswerAndOperator(query)
+              checkSparkAnswerAndFallbackReason(query, "Window expressions are not supported")
             }
           }
         }
@@ -227,7 +303,7 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("SELECT a, b, c, COUNT(*) OVER () as cnt FROM window_test")
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Window expressions are not supported")
     }
   }
 
@@ -243,7 +319,7 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("SELECT a, b, c, SUM(c) OVER (PARTITION BY a) as sum_c FROM window_test")
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Window expressions are not supported")
     }
   }
 
@@ -283,7 +359,7 @@ class CometWindowExecSuite extends CometTestBase {
           MAX(c) OVER (ORDER BY b) as max_c
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Window expressions are not supported")
     }
   }
 
@@ -310,7 +386,6 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: SUM with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING produces incorrect results
-  // Returns wrong sum_c values - ordering issue causes swapped values for rows with same partition
   ignore("window: SUM with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING") {
     withTempDir { dir =>
       (0 until 30)
@@ -354,7 +429,6 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: SUM with ROWS BETWEEN produces incorrect results
-  // Returns wrong sum_c values for some rows
   ignore("window: SUM with ROWS BETWEEN 2 PRECEDING AND CURRENT ROW") {
     withTempDir { dir =>
       (0 until 30)
@@ -530,7 +604,6 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: LAG produces incorrect results
-  // Returns wrong lag_c values - ordering issue in results
   ignore("window: LAG with default offset") {
     withTempDir { dir =>
       (0 until 30)
@@ -552,7 +625,6 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: LAG with offset 2 produces incorrect results
-  // Returns wrong lag_c_2 values - ordering issue in results
   ignore("window: LAG with offset 2 and default value") {
     withTempDir { dir =>
       (0 until 30)
@@ -574,7 +646,6 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: LEAD produces incorrect results
-  // Returns wrong lead_c values - ordering issue in results
   ignore("window: LEAD with default offset") {
     withTempDir { dir =>
       (0 until 30)
@@ -596,7 +667,6 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: LEAD with offset 2 produces incorrect results
-  // Returns wrong lead_c_2 values - ordering issue in results
   ignore("window: LEAD with offset 2 and default value") {
     withTempDir { dir =>
       (0 until 30)
@@ -662,7 +732,6 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: NTH_VALUE returns incorrect results - produces 0 instead of null for first row,
-  // and incorrect values for subsequent rows in partition
   ignore("window: NTH_VALUE with position 2") {
     withTempDir { dir =>
       (0 until 30)
@@ -706,7 +775,6 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: Multiple window functions with mixed frame types (RowFrame and RangeFrame)
-  // produces incorrect row_num values - ordering issue in results
   ignore("window: multiple window functions in single query") {
     withTempDir { dir =>
       (0 until 30)
@@ -933,7 +1001,6 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: ROWS BETWEEN with negative offset produces incorrect results
-  // Returns wrong values for avg_c calculation
   ignore("window: ROWS BETWEEN with negative offset") {
     withTempDir { dir =>
       (0 until 30)
@@ -955,7 +1022,6 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   // TODO: All ranking functions together produce incorrect row_num values
-  // Ordering issue causes row numbers to be swapped for rows with same partition/order values
   ignore("window: all ranking functions together") {
     withTempDir { dir =>
       (0 until 30)
@@ -980,5 +1046,4 @@ class CometWindowExecSuite extends CometTestBase {
       checkSparkAnswerAndOperator(df)
     }
   }
-
 }

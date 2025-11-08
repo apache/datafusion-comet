@@ -4,7 +4,7 @@
       +- HashAggregate
          +- Project
             +- BroadcastHashJoin
-               :-  Window [COMET: Partitioning and sorting specifications must be the same.]
+               :-  Window [COMET: Window expressions are not supported]
                :  +- CometColumnarToRow
                :     +- CometSort
                :        +- CometExchange
@@ -20,7 +20,7 @@
                :                    :                 +- Project
                :                    :                    +- BroadcastHashJoin
                :                    :                       :- Project
-               :                    :                       :  +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+               :                    :                       :  +-  Window [COMET: Window expressions are not supported]
                :                    :                       :     +- CometColumnarToRow
                :                    :                       :        +- CometSort
                :                    :                       :           +- CometExchange
@@ -43,7 +43,7 @@
                :                    :                       :                                      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                :                    :                       +- BroadcastExchange
                :                    :                          +- Project
-               :                    :                             +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+               :                    :                             +-  Window [COMET: Window expressions are not supported]
                :                    :                                +- CometColumnarToRow
                :                    :                                   +- CometSort
                :                    :                                      +- CometExchange
@@ -73,7 +73,7 @@
                :                                      +- Project
                :                                         +- BroadcastHashJoin
                :                                            :- Project
-               :                                            :  +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+               :                                            :  +-  Window [COMET: Window expressions are not supported]
                :                                            :     +- CometColumnarToRow
                :                                            :        +- CometSort
                :                                            :           +- CometExchange
@@ -91,7 +91,7 @@
                :                                            :                                      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                :                                            +- BroadcastExchange
                :                                               +- Project
-               :                                                  +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+               :                                                  +-  Window [COMET: Window expressions are not supported]
                :                                                     +- CometColumnarToRow
                :                                                        +- CometSort
                :                                                           +- CometExchange
@@ -109,7 +109,7 @@
                :                                                                                      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                +- BroadcastExchange
                   +- Project
-                     +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                     +-  Window [COMET: Window expressions are not supported]
                         +- CometColumnarToRow
                            +- CometSort
                               +- CometExchange
@@ -125,7 +125,7 @@
                                           :                 +- Project
                                           :                    +- BroadcastHashJoin
                                           :                       :- Project
-                                          :                       :  +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                                          :                       :  +-  Window [COMET: Window expressions are not supported]
                                           :                       :     +- CometColumnarToRow
                                           :                       :        +- CometSort
                                           :                       :           +- CometExchange
@@ -148,7 +148,7 @@
                                           :                       :                                      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                                           :                       +- BroadcastExchange
                                           :                          +- Project
-                                          :                             +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                                          :                             +-  Window [COMET: Window expressions are not supported]
                                           :                                +- CometColumnarToRow
                                           :                                   +- CometSort
                                           :                                      +- CometExchange
@@ -178,7 +178,7 @@
                                                             +- Project
                                                                +- BroadcastHashJoin
                                                                   :- Project
-                                                                  :  +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                                                                  :  +-  Window [COMET: Window expressions are not supported]
                                                                   :     +- CometColumnarToRow
                                                                   :        +- CometSort
                                                                   :           +- CometExchange
@@ -196,7 +196,7 @@
                                                                   :                                      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                                                                   +- BroadcastExchange
                                                                      +- Project
-                                                                        +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                                                                        +-  Window [COMET: Window expressions are not supported]
                                                                            +- CometColumnarToRow
                                                                               +- CometSort
                                                                                  +- CometExchange
