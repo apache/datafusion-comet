@@ -33,7 +33,6 @@ import org.apache.spark.memory.SparkOutOfMemoryError;
 import org.apache.spark.shuffle.ShuffleWriteMetricsReporter;
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
 import org.apache.spark.shuffle.sort.RowPartition;
-import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.unsafe.memory.MemoryBlock;
 
@@ -199,7 +198,7 @@ public abstract class SpillWriter {
             compressionLevel,
             tracingEnabled,
             // TODO using session time zone causes regressions in Parquet scan
-            //SQLConf.get().sessionLocalTimeZone()
+            // SQLConf.get().sessionLocalTimeZone()
             "UTC");
 
     long written = results[0];
