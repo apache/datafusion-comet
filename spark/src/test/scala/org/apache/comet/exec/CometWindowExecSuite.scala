@@ -325,7 +325,7 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: AVG with PARTITION BY and ORDER BY not supportedu
+  // TODO: AVG with PARTITION BY and ORDER BY not supported
   // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
   ignore("window: AVG with PARTITION BY and ORDER BY") {
     withTempDir { dir =>

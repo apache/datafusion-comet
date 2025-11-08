@@ -44,7 +44,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometConf.COMET_EXEC_SHUFFLE_ENABLED
 import org.apache.comet.CometSparkSessionExtensions._
-import org.apache.comet.serde.{CometWindow, QueryPlanSerde}
+import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
@@ -391,18 +391,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           "TakeOrderedAndProject requires shuffle to be enabled")
         withInfo(s, Seq(info1, info2).flatten.mkString(","))
 
-      case w: WindowExec if QueryPlanSerde.isOperatorEnabled(CometWindow, w) =>
-        newPlanWithProto(
-          w,
-          CometWindowExec(
-            _,
+      case w: WindowExec =>
+        if (w.children.forall(isCometNative)) {
+          newPlanWithProto(
             w,
-            w.output,
-            w.windowExpression,
-            w.partitionSpec,
-            w.orderSpec,
-            w.child,
-            SerializedPlan(None)))
+            CometWindowExec(
+              _,
+              w,
+              w.output,
+              w.windowExpression,
+              w.partitionSpec,
+              w.orderSpec,
+              w.child,
+              SerializedPlan(None)))
+        } else {
+          op
+        }
 
       case u: UnionExec
           if CometConf.COMET_EXEC_UNION_ENABLED.get(conf) &&

@@ -794,7 +794,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
   }
 
-  def isOperatorEnabled(handler: CometOperatorSerde[_], op: SparkPlan): Boolean = {
+  private def isOperatorEnabled(handler: CometOperatorSerde[_], op: SparkPlan): Boolean = {
     val enabled = handler.enabledConfig.forall(_.get(op.conf))
     val opName = op.getClass.getSimpleName
     if (enabled) {
@@ -835,7 +835,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           s"Set ${handler.enabledConfig.get.key}=true to enable it.")
       false
     }
-
   }
 
   // Utility method. Adds explain info if the result of calling exprToProto is None
