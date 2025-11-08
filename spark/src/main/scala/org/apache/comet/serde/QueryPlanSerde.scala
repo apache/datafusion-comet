@@ -56,7 +56,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * Mapping of Spark operator class to Comet operator handler.
    */
   private val opSerdeMap: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
-    Map(classOf[ProjectExec] -> CometProject, classOf[SortExec] -> CometSort)
+    Map(
+      classOf[ProjectExec] -> CometProject,
+      classOf[FilterExec] -> CometFilter,
+      classOf[LocalLimitExec] -> CometLocalLimit,
+      classOf[GlobalLimitExec] -> CometGlobalLimit,
+      classOf[ExpandExec] -> CometExpand,
+      classOf[HashAggregateExec] -> CometHashAggregate,
+      classOf[ObjectHashAggregateExec] -> CometObjectHashAggregate,
+      classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoin,
+      classOf[ShuffledHashJoinExec] -> CometShuffleHashJoin,
+      classOf[SortMergeJoinExec] -> CometSortMergeJoin,
+      // Window support is disabled due to correctness issues
+      // classOf[WindowExec] -> CometWindow,
+      classOf[SortExec] -> CometSort)
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
@@ -948,44 +961,9 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         CometNativeScan.convert(scan, builder, childOp: _*)
 
-      case filter: FilterExec if CometConf.COMET_EXEC_FILTER_ENABLED.get(conf) =>
-        CometFilter.convert(filter, builder, childOp: _*)
-
-      case limit: LocalLimitExec if CometConf.COMET_EXEC_LOCAL_LIMIT_ENABLED.get(conf) =>
-        CometLocalLimit.convert(limit, builder, childOp: _*)
-
-      case globalLimitExec: GlobalLimitExec
-          if CometConf.COMET_EXEC_GLOBAL_LIMIT_ENABLED.get(conf) =>
-        CometGlobalLimit.convert(globalLimitExec, builder, childOp: _*)
-
-      case expand: ExpandExec if CometConf.COMET_EXEC_EXPAND_ENABLED.get(conf) =>
-        CometExpand.convert(expand, builder, childOp: _*)
-
       case _: WindowExec if CometConf.COMET_EXEC_WINDOW_ENABLED.get(conf) =>
         withInfo(op, "Window expressions are not supported")
         None
-
-      case aggregate: HashAggregateExec if CometConf.COMET_EXEC_AGGREGATE_ENABLED.get(conf) =>
-        CometHashAggregate.convert(aggregate, builder, childOp: _*)
-
-      case aggregate: ObjectHashAggregateExec
-          if CometConf.COMET_EXEC_AGGREGATE_ENABLED.get(conf) =>
-        CometObjectHashAggregate.convert(aggregate, builder, childOp: _*)
-
-      case join: BroadcastHashJoinExec
-          if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) =>
-        CometBroadcastHashJoin.convert(join, builder, childOp: _*)
-
-      case join: ShuffledHashJoinExec if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) =>
-        CometShuffleHashJoin.convert(join, builder, childOp: _*)
-
-      case join: SortMergeJoinExec =>
-        if (CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf)) {
-          CometSortMergeJoin.convert(join, builder, childOp: _*)
-        } else {
-          withInfo(join, "SortMergeJoin is not enabled")
-          None
-        }
 
       case op if CometSink.isCometSink(op) =>
         CometSink.convert(op, builder, childOp: _*)
