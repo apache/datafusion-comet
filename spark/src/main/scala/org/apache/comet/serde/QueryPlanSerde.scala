@@ -32,7 +32,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{HashJoin, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
@@ -64,6 +64,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
       classOf[FilterExec] -> CometFilter,
       classOf[LocalLimitExec] -> CometLocalLimit,
       classOf[GlobalLimitExec] -> CometGlobalLimit,
+      classOf[HashAggregateExec] -> CometHashAggregate,
+      classOf[ObjectHashAggregateExec] -> CometObjectHashAggregate,
       classOf[HashJoin] -> CometHashJoin,
       classOf[SortMergeJoinExec] -> CometSortMergeJoin,
       classOf[ExpandExec] -> CometExpand,
@@ -926,52 +928,47 @@ object QueryPlanSerde extends Logging with CometExprShim {
    *   converted to a native operator.
    */
   def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
-    val conf = op.conf
     val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
     childOp.foreach(builder.addChildren)
 
-    op match {
+    def getOperatorSerde: Option[CometOperatorSerde[_]] = {
+      op match {
+        case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
+          Some(CometNativeScan)
+        case _ =>
+          opSerdeMap.get(op.getClass)
+      }
+    }
 
-      // Fully native scan for V1
-      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
-        CometNativeScan.convert(scan, builder, childOp: _*)
-
-      case aggregate: BaseAggregateExec
-          if (aggregate.isInstanceOf[HashAggregateExec] ||
-            aggregate.isInstanceOf[ObjectHashAggregateExec]) &&
-            CometConf.COMET_EXEC_AGGREGATE_ENABLED.get(conf) =>
-        CometAggregate.convert(aggregate, builder, childOp: _*)
-
-      case op =>
-        opSerdeMap.get(op.getClass) match {
-          case Some(handler) =>
-            handler.enabledConfig.foreach { enabledConfig =>
-              if (!enabledConfig.get(op.conf)) {
-                withInfo(
-                  op,
-                  s"Native support for operator ${op.getClass.getSimpleName} is disabled. " +
-                    s"Set ${enabledConfig.key}=true to enable it.")
-                if (isCometSink(op)) {
-                  return cometSink(op, builder)
-                } else {
-                  return None
-                }
-              }
-            }
-            handler.asInstanceOf[CometOperatorSerde[SparkPlan]].convert(op, builder, childOp: _*)
-          case _ =>
+    getOperatorSerde match {
+      case Some(handler) =>
+        handler.enabledConfig.foreach { enabledConfig =>
+          if (!enabledConfig.get(op.conf)) {
+            withInfo(
+              op,
+              s"Native support for operator ${op.getClass.getSimpleName} is disabled. " +
+                s"Set ${enabledConfig.key}=true to enable it.")
             if (isCometSink(op)) {
-              cometSink(op, builder)
+              return cometSink(op, builder)
             } else {
-              // Emit warning if:
-              //  1. it is not Spark shuffle operator, which is handled separately
-              //  2. it is not a Comet operator
-              if (!op.nodeName.contains("Comet") && !op.isInstanceOf[ShuffleExchangeExec]) {
-                withInfo(op, s"unsupported Spark operator: ${op.nodeName}")
-              }
-              None
+              return None
             }
+          }
         }
+        handler.asInstanceOf[CometOperatorSerde[SparkPlan]].convert(op, builder, childOp: _*)
+      case _ =>
+        if (isCometSink(op)) {
+          cometSink(op, builder)
+        } else {
+          // Emit warning if:
+          //  1. it is not Spark shuffle operator, which is handled separately
+          //  2. it is not a Comet operator
+          if (!op.nodeName.contains("Comet") && !op.isInstanceOf[ShuffleExchangeExec]) {
+            withInfo(op, s"unsupported Spark operator: ${op.nodeName}")
+          }
+          None
+        }
+
     }
   }
 

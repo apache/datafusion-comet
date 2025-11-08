@@ -23,7 +23,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
-import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.types.MapType
 
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -31,12 +31,9 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto}
 
-object CometAggregate extends CometOperatorSerde[BaseAggregateExec] {
+trait CometBaseAggregate {
 
-  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
-    CometConf.COMET_EXEC_AGGREGATE_ENABLED)
-
-  override def convert(
+  def doConvert(
       aggregate: BaseAggregateExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
@@ -165,4 +162,32 @@ object CometAggregate extends CometOperatorSerde[BaseAggregateExec] {
 
   }
 
+}
+
+object CometHashAggregate extends CometOperatorSerde[HashAggregateExec] with CometBaseAggregate {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_AGGREGATE_ENABLED)
+
+  override def convert(
+      aggregate: HashAggregateExec,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    doConvert(aggregate, builder, childOp: _*)
+  }
+}
+
+object CometObjectHashAggregate
+    extends CometOperatorSerde[ObjectHashAggregateExec]
+    with CometBaseAggregate {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_AGGREGATE_ENABLED)
+
+  override def convert(
+      aggregate: ObjectHashAggregateExec,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    doConvert(aggregate, builder, childOp: _*)
+  }
 }
