@@ -923,9 +923,12 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case Some(handler) =>
         val enabled = handler.enabledConfig.map(_.get(op.conf)).getOrElse(true)
         if (enabled) {
-          return handler
+          val maybeConverted = handler
             .asInstanceOf[CometOperatorSerde[SparkPlan]]
             .convert(op, builder, childOp: _*)
+          if (maybeConverted.isDefined) {
+            return maybeConverted
+          }
         }
         // if the config was explicitly disabled, tag the operator
         if (handler.enabledConfig.isDefined) {
@@ -938,6 +941,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     }
 
     // now handle special cases that cannot be handled as a simple mapping from class name
+    // and see if operator can be used as a sink
     op match {
 
       // Fully native scan for V1
