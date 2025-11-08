@@ -53,6 +53,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.rules.CometScanTypeChecker
 
+@nowarn("cat=w-flag-numeric-widen")
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
 
@@ -417,15 +418,15 @@ abstract class ParquetReadSuite extends CometTestBase {
         opt match {
           case Some(i) =>
             record.add(0, i % 2 == 0)
-            record.add(1, i.toByte.toInt)
-            record.add(2, i.toShort.toInt)
+            record.add(1, i.toByte)
+            record.add(2, i.toShort)
             record.add(3, i)
             record.add(4, i.toLong)
             record.add(5, i.toFloat)
             record.add(6, i.toDouble)
             record.add(7, i.toString * 48)
-            record.add(8, (-i).toByte.toInt)
-            record.add(9, (-i).toShort.toInt)
+            record.add(8, (-i).toByte)
+            record.add(9, (-i).toShort)
             record.add(10, -i)
             record.add(11, (-i).toLong)
             record.add(12, i.toString)
@@ -640,8 +641,8 @@ abstract class ParquetReadSuite extends CometTestBase {
         opt match {
           case Some(i) =>
             record.add(0, i % 2 == 0)
-            record.add(1, i.toByte.toInt)
-            record.add(2, i.toShort.toInt)
+            record.add(1, i.toByte)
+            record.add(2, i.toShort)
             record.add(3, i)
             record.add(4, i.toLong)
             record.add(5, i.toFloat)
@@ -1580,14 +1581,14 @@ abstract class ParquetReadSuite extends CometTestBase {
           case Some(i) =>
             record.add(0, i % 2 == 0)
             record.add(1, i.toByte)
-            record.add(2, i.toShort.toInt)
+            record.add(2, i.toShort)
             record.add(3, i)
             record.add(4, i.toLong)
             record.add(5, i.toFloat)
             record.add(6, i.toDouble)
             record.add(7, i.toString * 48)
-            record.add(8, (-i).toByte.toInt)
-            record.add(9, (-i).toShort.toInt)
+            record.add(8, (-i).toByte)
+            record.add(9, (-i).toShort)
             record.add(10, -i)
             record.add(11, (-i).toLong)
             record.add(12, i.toString)
@@ -1676,7 +1677,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         val record = new SimpleGroup(schema)
         opt match {
           case Some(i) =>
-            record.add(0, i.toShort.toInt)
+            record.add(0, i.toShort)
             record.add(1, i)
             record.add(2, i.toLong)
           case _ =>

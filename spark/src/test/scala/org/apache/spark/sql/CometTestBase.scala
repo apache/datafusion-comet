@@ -560,6 +560,7 @@ abstract class CometTestBase
       dictionaryPageSize: Int = 1024,
       pageRowCountLimit: Int = ParquetProperties.DEFAULT_PAGE_ROW_COUNT_LIMIT,
       rowGroupSize: Long = 1024 * 1024L): ParquetWriter[Group] = {
+
     val hadoopConf = spark.sessionState.newHadoopConf()
     ExampleParquetWriter
       .builder(path)
@@ -648,6 +649,7 @@ abstract class CometTestBase
     }
   }
 
+  @nowarn("cat=w-flag-numeric-widen")
   def makeParquetFileAllPrimitiveTypes(
       path: Path,
       dictionaryEnabled: Boolean,
@@ -683,15 +685,15 @@ abstract class CometTestBase
       opt match {
         case Some(i) =>
           record.add(0, i % 2 == 0)
-          record.add(1, i.toByte.toInt)
-          record.add(2, i.toShort.toInt)
+          record.add(1, i.toByte)
+          record.add(2, i.toShort)
           record.add(3, i)
           record.add(4, i.toLong)
           record.add(5, i.toFloat)
           record.add(6, i.toDouble)
           record.add(7, i.toString * 48)
-          record.add(8, (-i).toByte.toInt)
-          record.add(9, (-i).toShort.toInt)
+          record.add(8, (-i).toByte)
+          record.add(9, (-i).toShort)
           record.add(10, -i)
           record.add(11, (-i).toLong)
           record.add(12, i.toString)
@@ -712,15 +714,15 @@ abstract class CometTestBase
       val i = rand.nextLong()
       val record = new SimpleGroup(schema)
       record.add(0, i % 2 == 0)
-      record.add(1, i.toByte.toInt)
-      record.add(2, i.toShort.toInt)
-      record.add(3, i.toInt)
+      record.add(1, i.toByte)
+      record.add(2, i.toShort)
+      record.add(3, i)
       record.add(4, i)
       record.add(5, java.lang.Float.intBitsToFloat(i.toInt))
       record.add(6, java.lang.Double.longBitsToDouble(i))
       record.add(7, i.toString * 24)
-      record.add(8, (-i).toByte.toInt)
-      record.add(9, (-i).toShort.toInt)
+      record.add(8, (-i).toByte)
+      record.add(9, (-i).toShort)
       record.add(10, (-i).toInt)
       record.add(11, -i)
       record.add(12, i.toString)
