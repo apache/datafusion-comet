@@ -950,18 +950,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
           if CometConf.COMET_EXEC_AGGREGATE_ENABLED.get(conf) =>
         CometObjectHashAggregate.convert(aggregate, builder, childOp: _*)
 
-      case join: BroadcastHashJoinExec =>
+      case join: BroadcastHashJoinExec
+          if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) =>
         CometBroadcastHashJoin.convert(join, builder, childOp: _*)
 
-      case join: ShuffledHashJoinExec =>
+      case join: ShuffledHashJoinExec if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) =>
         CometShuffleHashJoin.convert(join, builder, childOp: _*)
 
-      case join: SortMergeJoinExec if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) =>
-        CometSortMergeJoin.convert(join, builder, childOp: _*)
-
-      case join: SortMergeJoinExec if !CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) =>
-        withInfo(join, "SortMergeJoin is not enabled")
-        None
+      case join: SortMergeJoinExec =>
+        if (CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf)) {
+          CometSortMergeJoin.convert(join, builder, childOp: _*)
+        } else {
+          withInfo(join, "SortMergeJoin is not enabled")
+          None
+        }
 
       case op if isCometSink(op) =>
         val supportedTypes =
