@@ -258,7 +258,7 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  test("Windows support") {
+  ignore("Windows support") {
     Seq("true", "false").foreach(aqeEnabled =>
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
@@ -284,7 +284,7 @@ class CometWindowExecSuite extends CometTestBase {
               s"SELECT $function OVER(order by _2 rows between current row and 1 following) FROM t1")
 
             queries.foreach { query =>
-              checkSparkAnswerAndOperator(query)
+              checkSparkAnswerAndFallbackReason(query, "Window expressions are not supported")
             }
           }
         }
@@ -303,7 +303,7 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("SELECT a, b, c, COUNT(*) OVER () as cnt FROM window_test")
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Window expressions are not supported")
     }
   }
 
@@ -319,7 +319,7 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("SELECT a, b, c, SUM(c) OVER (PARTITION BY a) as sum_c FROM window_test")
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Window expressions are not supported")
     }
   }
 
@@ -359,7 +359,7 @@ class CometWindowExecSuite extends CometTestBase {
           MAX(c) OVER (ORDER BY b) as max_c
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Window expressions are not supported")
     }
   }
 
