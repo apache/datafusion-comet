@@ -2277,6 +2277,26 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("LocalTableScanExec spark fallback") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false") {
+      val df = Seq.range(0, 10).toDF("id")
+      checkSparkAnswerAndFallbackReason(df, "LocalTableScan is not enabled")
+    }
+  }
+
+  test("LocalTableScanExec with filter") {
+    val df = Seq.range(0, 10).toDF("id").filter(col("id") > 5)
+    checkSparkAnswerAndOperator(df)
+  }
+
+  test("LocalTableScanExec with groupBy") {
+    val df = (Seq.range(0, 10) ++ Seq.range(0, 20))
+      .toDF("id")
+      .groupBy(col("id"))
+      .agg(count("*"))
+    checkSparkAnswerAndOperator(df)
+  }
+
 }
 
 case class BucketedTableTestSpec(
