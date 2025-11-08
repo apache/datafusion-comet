@@ -69,6 +69,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     Map(
       classOf[ProjectExec] -> CometProject,
       classOf[FilterExec] -> CometFilter,
+      classOf[LocalLimitExec] -> CometLocalLimit,
+      classOf[GlobalLimitExec] -> CometGlobalLimit,
       classOf[SortExec] -> CometSort)
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
@@ -1065,33 +1067,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           withInfo(
             op,
             s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above")
-          None
-        }
-
-      case LocalLimitExec(limit, _) if CometConf.COMET_EXEC_LOCAL_LIMIT_ENABLED.get(conf) =>
-        if (childOp.nonEmpty) {
-          // LocalLimit doesn't use offset, but it shares same operator serde class.
-          // Just set it to zero.
-          val limitBuilder = OperatorOuterClass.Limit
-            .newBuilder()
-            .setLimit(limit)
-            .setOffset(0)
-          Some(builder.setLimit(limitBuilder).build())
-        } else {
-          withInfo(op, "No child operator")
-          None
-        }
-
-      case globalLimitExec: GlobalLimitExec
-          if CometConf.COMET_EXEC_GLOBAL_LIMIT_ENABLED.get(conf) =>
-        if (childOp.nonEmpty) {
-          val limitBuilder = OperatorOuterClass.Limit.newBuilder()
-
-          limitBuilder.setLimit(globalLimitExec.limit).setOffset(globalLimitExec.offset)
-
-          Some(builder.setLimit(limitBuilder).build())
-        } else {
-          withInfo(op, "No child operator")
           None
         }
 
