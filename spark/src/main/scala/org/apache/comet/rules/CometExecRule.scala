@@ -391,22 +391,18 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           "TakeOrderedAndProject requires shuffle to be enabled")
         withInfo(s, Seq(info1, info2).flatten.mkString(","))
 
-      case w: WindowExec =>
-        if (QueryPlanSerde.isOperatorEnabled(CometWindow, w)) {
-          newPlanWithProto(
+      case w: WindowExec if QueryPlanSerde.isOperatorEnabled(CometWindow, w) =>
+        newPlanWithProto(
+          w,
+          CometWindowExec(
+            _,
             w,
-            CometWindowExec(
-              _,
-              w,
-              w.output,
-              w.windowExpression,
-              w.partitionSpec,
-              w.orderSpec,
-              w.child,
-              SerializedPlan(None)))
-        } else {
-          withInfo(w, "WindowExec is not enabled")
-        }
+            w.output,
+            w.windowExpression,
+            w.partitionSpec,
+            w.orderSpec,
+            w.child,
+            SerializedPlan(None)))
 
       case u: UnionExec
           if CometConf.COMET_EXEC_UNION_ENABLED.get(conf) &&
