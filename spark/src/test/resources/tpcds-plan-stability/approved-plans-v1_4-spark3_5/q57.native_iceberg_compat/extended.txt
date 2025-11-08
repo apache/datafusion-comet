@@ -7,7 +7,7 @@
       :     :  +- Filter
       :     :     +- Window
       :     :        +- Filter
-      :     :           +-  Window [COMET: Window expressions are not supported]
+      :     :           +-  Window [COMET: Native support for operator WindowExec is disabled. Set spark.comet.exec.window.enabled=true to enable it.]
       :     :              +- CometColumnarToRow
       :     :                 +- CometSort
       :     :                    +- CometExchange
@@ -39,7 +39,7 @@
       :     :                                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.call_center
       :     +- BroadcastExchange
       :        +- Project
-      :           +-  Window [COMET: Window expressions are not supported]
+      :           +-  Window [COMET: Native support for operator WindowExec is disabled. Set spark.comet.exec.window.enabled=true to enable it.]
       :              +- CometColumnarToRow
       :                 +- CometSort
       :                    +- CometExchange
@@ -71,7 +71,7 @@
       :                                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.call_center
       +- BroadcastExchange
          +- Project
-            +-  Window [COMET: Window expressions are not supported]
+            +-  Window [COMET: Native support for operator WindowExec is disabled. Set spark.comet.exec.window.enabled=true to enable it.]
                +- CometColumnarToRow
                   +- CometSort
                      +- CometExchange

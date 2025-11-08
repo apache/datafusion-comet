@@ -1,4 +1,4 @@
- Project [COMET: ]
+ Project [COMET: Native support for operator ProjectExec is disabled. Set spark.comet.exec.project.enabled=true to enable it.]
 :  :- Subquery
 :  :  +- CometColumnarToRow
 :  :     +- CometProject

@@ -38,6 +38,10 @@ object CometWindow extends CometOperatorSerde[WindowExec] {
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_WINDOW_ENABLED)
 
+  override def getSupportLevel(op: WindowExec): SupportLevel = {
+    Incompatible(Some("Native WindowExec has known correctness issues"))
+  }
+
   override def convert(
       op: WindowExec,
       builder: Operator.Builder,

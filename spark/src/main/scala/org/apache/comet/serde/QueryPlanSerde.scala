@@ -762,19 +762,45 @@ object QueryPlanSerde extends Logging with CometExprShim {
     serde match {
       case Some(handler) =>
         val enabled = handler.enabledConfig.forall(_.get(op.conf))
+        val opName = op.getClass.getSimpleName
         if (enabled) {
+          val opSerde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
+          opSerde.getSupportLevel(op) match {
+            case Unsupported(notes) =>
+              withInfo(op, notes.getOrElse(""))
+            case Incompatible(notes) =>
+              val allowIncompat = CometConf.isOperatorAllowIncompat(opName)
+              if (allowIncompat) {
+                if (notes.isDefined) {
+                  logWarning(
+                    s"Comet supports $op when ${CometConf.getOperatorAllowIncompatConfigKey(opName)}=true " +
+                      s"but has notes: ${notes.get}")
+                }
+                return opSerde.convert(op, builder, childOp: _*)
+              } else {
+                val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
+                withInfo(
+                  op,
+                  s"$op is not fully compatible with Spark$optionalNotes. To enable it anyway, " +
+                    s"set ${CometConf.getOperatorAllowIncompatConfigKey(opName)}=true. " +
+                    s"${CometConf.COMPAT_GUIDE}.")
+              }
+            case Compatible(notes) =>
+              if (notes.isDefined) {
+                logWarning(s"Comet supports $op but has notes: ${notes.get}")
+              }
+              return opSerde.convert(op, builder, childOp: _*)
+          }
           val maybeConverted = handler
             .asInstanceOf[CometOperatorSerde[SparkPlan]]
             .convert(op, builder, childOp: _*)
           if (maybeConverted.isDefined) {
             return maybeConverted
           }
-        }
-        // if the config was explicitly disabled, tag the operator
-        if (handler.enabledConfig.isDefined) {
+        } else {
           withInfo(
             op,
-            s"Native support for operator ${op.getClass.getSimpleName} is disabled. " +
+            s"Native support for operator $opName is disabled. " +
               s"Set ${handler.enabledConfig.get.key}=true to enable it.")
         }
       case _ =>

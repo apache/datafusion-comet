@@ -1,5 +1,5 @@
  TakeOrderedAndProject [COMET: ]
-+-  Project [COMET: Comet does not support Spark's BigDecimal rounding]
++-  Project [COMET: Comet does not support Spark's BigDecimal rounding, Native support for operator ProjectExec is disabled. Set spark.comet.exec.project.enabled=true to enable it.]
    +- CometColumnarToRow
       +- CometSortMergeJoin
          :- CometProject

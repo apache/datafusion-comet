@@ -1,7 +1,7 @@
  TakeOrderedAndProject [COMET: ]
 +- Project
    +- Filter
-      +-  Window [COMET: Window expressions are not supported]
+      +-  Window [COMET: Native support for operator WindowExec is disabled. Set spark.comet.exec.window.enabled=true to enable it.]
          +- CometColumnarToRow
             +- CometSort
                +- CometExchange

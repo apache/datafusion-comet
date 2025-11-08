@@ -2,7 +2,7 @@ CometColumnarToRow
 +- CometHashAggregate
    +- CometColumnarExchange
       +- HashAggregate
-         +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge]
+         +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge, Native support for operator HashAggregateExec is disabled. Set spark.comet.exec.aggregate.enabled=true to enable it.]
             +- CometColumnarToRow
                +- CometHashAggregate
                   +- CometProject
