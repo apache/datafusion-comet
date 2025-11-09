@@ -68,6 +68,11 @@ Comet uses the Rust regexp crate for evaluating regular expressions, and this ha
 regular expression engine. Comet will fall back to Spark for patterns that are known to produce different results, but
 this can be overridden by setting `spark.comet.regexp.allowIncompatible=true`.
 
+## Window Functions
+
+Comet's support for window functions is incomplete and known to be incorrect. It is disabled by default and 
+should not be used in production. The feature will be enabled in a future release. Tracking issue: [#2721](https://github.com/apache/datafusion-comet/issues/2721).
+
 ## Cast
 
 Cast operations in Comet fall into three levels of support:

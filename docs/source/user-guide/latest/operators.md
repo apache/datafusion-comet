@@ -23,7 +23,7 @@ The following Spark operators are currently replaced with native versions. Query
 not supported by Comet will fall back to regular Spark execution.
 
 | Operator                | Spark-Compatible? | Compatibility Notes                                                                                                |
-| ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------ |
+|-------------------------|-------------------|--------------------------------------------------------------------------------------------------------------------|
 | BatchScanExec           | Yes               | Supports Parquet files and Apache Iceberg Parquet scans. See the [Comet Compatibility Guide] for more information. |
 | BroadcastExchangeExec   | Yes               |                                                                                                                    |
 | BroadcastHashJoinExec   | Yes               |                                                                                                                    |
@@ -33,6 +33,7 @@ not supported by Comet will fall back to regular Spark execution.
 | GlobalLimitExec         | Yes               |                                                                                                                    |
 | HashAggregateExec       | Yes               |                                                                                                                    |
 | LocalLimitExec          | Yes               |                                                                                                                    |
+| LocalTableScanExec      | No                | Experimental and disabled by default.                                                                              |
 | ObjectHashAggregateExec | Yes               | Supports a limited number of aggregates, such as `bloom_filter_agg`.                                               |
 | ProjectExec             | Yes               |                                                                                                                    |
 | ShuffleExchangeExec     | Yes               |                                                                                                                    |
@@ -40,6 +41,6 @@ not supported by Comet will fall back to regular Spark execution.
 | SortExec                | Yes               |                                                                                                                    |
 | SortMergeJoinExec       | Yes               |                                                                                                                    |
 | UnionExec               | Yes               |                                                                                                                    |
-| WindowExec              | Yes               |                                                                                                                    |
+| WindowExec              | No                | Disabled by default due to known correctness issues.                                                               |
 
 [Comet Compatibility Guide]: compatibility.md
