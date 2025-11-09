@@ -534,6 +534,19 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           s
         }
 
+      case op: LocalTableScanExec =>
+        if (CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.get(conf)) {
+          QueryPlanSerde
+            .operator2Proto(op)
+            .map { nativeOp =>
+              val cometOp = CometLocalTableScanExec(op, op.rows, op.output)
+              CometScanWrapper(nativeOp, cometOp)
+            }
+            .getOrElse(op)
+        } else {
+          withInfo(op, "LocalTableScan is not enabled")
+        }
+
       case op =>
         op match {
           case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
