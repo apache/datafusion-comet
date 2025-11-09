@@ -506,12 +506,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
       case op: LocalTableScanExec =>
-        newPlanWithProto(
-          op,
-          { nativeOp =>
-            val cometOp = CometLocalTableScanExec(op, op.rows, op.output)
-            CometScanWrapper(nativeOp, cometOp)
-          })
+        newPlanWithProto(op, CometScanWrapper(_, CometLocalTableScanExec(op, op.rows, op.output)))
 
       case op =>
         op match {
