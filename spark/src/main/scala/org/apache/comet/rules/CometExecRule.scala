@@ -44,7 +44,6 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometConf.COMET_EXEC_SHUFFLE_ENABLED
 import org.apache.comet.CometSparkSessionExtensions._
-import org.apache.comet.serde.CometIcebergNativeScan
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
 
@@ -167,23 +166,16 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case scan: CometBatchScanExec
           if scan.wrapped.scan.getClass.getName ==
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
-        // Extract metadata location for CometIcebergNativeScanExec
-        try {
-          val metadataLocation = CometIcebergNativeScan.extractMetadataLocation(scan.wrapped)
-
-          // Serialize CometBatchScanExec to extract FileScanTasks and get proto
-          QueryPlanSerde.operator2Proto(scan) match {
-            case Some(nativeOp) =>
-              // Create native Iceberg scan exec with the serialized proto
-              CometIcebergNativeScanExec(nativeOp, scan.wrapped, session, metadataLocation)
-            case None =>
-              // Serialization failed, fall back to CometBatchScanExec
-              scan
-          }
-        } catch {
-          case e: Exception =>
-            // If we can't extract metadata, fall back to keeping CometBatchScanExec
-            withInfo(scan, s"Failed to extract Iceberg metadata location: ${e.getMessage}")
+        // Serialize CometBatchScanExec to extract FileScanTasks and get proto
+        // This also extracts metadataLocation - if that fails, operator2Proto returns None
+        QueryPlanSerde.operator2Proto(scan) match {
+          case Some(nativeOp) =>
+            // Extract metadataLocation from proto for display purposes
+            val metadataLocation = nativeOp.getIcebergScan.getMetadataLocation
+            // Create native Iceberg scan exec with the serialized proto
+            CometIcebergNativeScanExec(nativeOp, scan.wrapped, session, metadataLocation)
+          case None =>
+            // Serialization failed, fall back to CometBatchScanExec
             scan
         }
 
