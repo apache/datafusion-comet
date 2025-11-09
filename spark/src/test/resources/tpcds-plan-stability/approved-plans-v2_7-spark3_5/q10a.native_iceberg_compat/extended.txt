@@ -1,67 +1,56 @@
 CometColumnarToRow
 +- CometTakeOrderedAndProject
-   +- RowToColumnar
-      +- HashAggregate
-         +- CometColumnarToRow
-            +- CometColumnarExchange
-               +- HashAggregate
-                  +- Project
-                     +- BroadcastHashJoin
-                        :- Project
-                        :  +- BroadcastHashJoin
-                        :     :- Project
-                        :     :  +- BroadcastHashJoin
-                        :     :     :- BroadcastHashJoin
-                        :     :     :  :- CometColumnarToRow
-                        :     :     :  :  +- CometFilter
-                        :     :     :  :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
-                        :     :     :  +- BroadcastExchange
-                        :     :     :     +- Project
-                        :     :     :        +- BroadcastHashJoin
-                        :     :     :           :- CometColumnarToRow
-                        :     :     :           :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
-                        :     :     :           :        +- SubqueryBroadcast
-                        :     :     :           :           +- BroadcastExchange
-                        :     :     :           :              +- CometColumnarToRow
-                        :     :     :           :                 +- CometProject
-                        :     :     :           :                    +- CometFilter
-                        :     :     :           :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-                        :     :     :           +- BroadcastExchange
-                        :     :     :              +- CometColumnarToRow
-                        :     :     :                 +- CometProject
-                        :     :     :                    +- CometFilter
-                        :     :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-                        :     :     +- BroadcastExchange
-                        :     :        +- Union
-                        :     :           :- Project
-                        :     :           :  +- BroadcastHashJoin
-                        :     :           :     :- CometColumnarToRow
-                        :     :           :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales
-                        :     :           :     :        +- ReusedSubquery
-                        :     :           :     +- BroadcastExchange
-                        :     :           :        +- CometColumnarToRow
-                        :     :           :           +- CometProject
-                        :     :           :              +- CometFilter
-                        :     :           :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-                        :     :           +- Project
-                        :     :              +- BroadcastHashJoin
-                        :     :                 :- CometColumnarToRow
-                        :     :                 :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales
-                        :     :                 :        +- ReusedSubquery
-                        :     :                 +- BroadcastExchange
-                        :     :                    +- CometColumnarToRow
-                        :     :                       +- CometProject
-                        :     :                          +- CometFilter
-                        :     :                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-                        :     +- BroadcastExchange
-                        :        +- CometColumnarToRow
-                        :           +- CometProject
-                        :              +- CometFilter
-                        :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
-                        +- BroadcastExchange
-                           +- CometColumnarToRow
-                              +- CometProject
-                                 +- CometFilter
-                                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics
+   +- CometHashAggregate
+      +- CometExchange
+         +- CometHashAggregate
+            +- CometProject
+               +- CometBroadcastHashJoin
+                  :- CometProject
+                  :  +- CometBroadcastHashJoin
+                  :     :- CometProject
+                  :     :  +- CometBroadcastHashJoin
+                  :     :     :- CometBroadcastHashJoin
+                  :     :     :  :- CometFilter
+                  :     :     :  :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
+                  :     :     :  +- CometBroadcastExchange
+                  :     :     :     +- CometProject
+                  :     :     :        +- CometBroadcastHashJoin
+                  :     :     :           :- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                  :     :     :           :     +- SubqueryBroadcast
+                  :     :     :           :        +- BroadcastExchange
+                  :     :     :           :           +- CometColumnarToRow
+                  :     :     :           :              +- CometProject
+                  :     :     :           :                 +- CometFilter
+                  :     :     :           :                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                  :     :     :           +- CometBroadcastExchange
+                  :     :     :              +- CometProject
+                  :     :     :                 +- CometFilter
+                  :     :     :                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                  :     :     +- CometBroadcastExchange
+                  :     :        +- CometUnion
+                  :     :           :- CometProject
+                  :     :           :  +- CometBroadcastHashJoin
+                  :     :           :     :- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales
+                  :     :           :     :     +- ReusedSubquery
+                  :     :           :     +- CometBroadcastExchange
+                  :     :           :        +- CometProject
+                  :     :           :           +- CometFilter
+                  :     :           :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                  :     :           +- CometProject
+                  :     :              +- CometBroadcastHashJoin
+                  :     :                 :- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales
+                  :     :                 :     +- ReusedSubquery
+                  :     :                 +- CometBroadcastExchange
+                  :     :                    +- CometProject
+                  :     :                       +- CometFilter
+                  :     :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                  :     +- CometBroadcastExchange
+                  :        +- CometProject
+                  :           +- CometFilter
+                  :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
+                  +- CometBroadcastExchange
+                     +- CometProject
+                        +- CometFilter
+                           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics
 
-Comet accelerated 25 out of 52 eligible operators (48%). Final plan contains 13 transitions between Spark and Comet.
+Comet accelerated 48 out of 52 eligible operators (92%). Final plan contains 2 transitions between Spark and Comet.
