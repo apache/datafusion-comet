@@ -27,7 +27,7 @@ import org.apache.spark.sql.execution.window.WindowExec
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
+import org.apache.comet.serde.{CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, windowExprToProto}
 
@@ -35,6 +35,10 @@ object CometWindow extends CometOperatorSerde[WindowExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_WINDOW_ENABLED)
+
+  override def getSupportLevel(op: WindowExec): SupportLevel = {
+    Incompatible(Some("Native WindowExec has known correctness issues"))
+  }
 
   override def convert(
       op: WindowExec,
