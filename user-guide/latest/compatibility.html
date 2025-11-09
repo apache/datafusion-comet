@@ -506,6 +506,11 @@ incompatible expressions.</p>
 regular expression engine. Comet will fall back to Spark for patterns that are known to produce different results, but
 this can be overridden by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.regexp.allowIncompatible=true</span></code>.</p>
 </section>
+<section id="window-functions">
+<h2>Window Functions<a class="headerlink" href="#window-functions" title="Link to this heading">#</a></h2>
+<p>Comet’s support for window functions is incomplete and known to be incorrect. It is disabled by default and
+should not be used in production. The feature will be enabled in a future release. Tracking issue: <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2721">#2721</a>.</p>
+</section>
 <section id="cast">
 <h2>Cast<a class="headerlink" href="#cast" title="Link to this heading">#</a></h2>
 <p>Cast operations in Comet fall into three levels of support:</p>
