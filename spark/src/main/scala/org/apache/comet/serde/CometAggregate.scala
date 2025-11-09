@@ -162,7 +162,7 @@ trait CometBaseAggregate {
       } else {
         val allChildren: Seq[Expression] =
           groupingExpressions ++ aggregateAttributes
-        withInfo(aggregate, "Unsupported expression", allChildren: _*)
+        withInfo(aggregate, allChildren: _*)
         None
       }
     }
