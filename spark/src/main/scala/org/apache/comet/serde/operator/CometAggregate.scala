@@ -44,11 +44,6 @@ trait CometBaseAggregate {
     val resultExpressions = aggregate.resultExpressions
     val child = aggregate.child
 
-    if (!isCometShuffleEnabled(aggregate.conf)) {
-      withInfo(aggregate, "Aggregates are only supported when Comet shuffle is enabled")
-      return None
-    }
-
     if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
       withInfo(aggregate, "No group by or aggregation")
       return None
