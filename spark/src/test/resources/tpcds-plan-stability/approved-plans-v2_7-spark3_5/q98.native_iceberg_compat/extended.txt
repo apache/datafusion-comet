@@ -5,29 +5,33 @@ CometColumnarToRow
          +-  Window [COMET: Window expressions are not supported]
             +- CometColumnarToRow
                +- CometSort
-                  +- CometExchange
-                     +- CometHashAggregate
-                        +- CometExchange
-                           +- CometHashAggregate
-                              +- CometProject
-                                 +- CometBroadcastHashJoin
-                                    :- CometProject
-                                    :  +- CometBroadcastHashJoin
-                                    :     :- CometFilter
-                                    :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
-                                    :     :        +- SubqueryBroadcast
-                                    :     :           +- BroadcastExchange
-                                    :     :              +- CometColumnarToRow
-                                    :     :                 +- CometProject
-                                    :     :                    +- CometFilter
-                                    :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-                                    :     +- CometBroadcastExchange
-                                    :        +- CometProject
-                                    :           +- CometFilter
-                                    :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
-                                    +- CometBroadcastExchange
-                                       +- CometProject
-                                          +- CometFilter
-                                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                  +- CometColumnarExchange
+                     +- HashAggregate
+                        +- CometColumnarToRow
+                           +- CometColumnarExchange
+                              +- HashAggregate
+                                 +- Project
+                                    +- BroadcastHashJoin
+                                       :- Project
+                                       :  +- BroadcastHashJoin
+                                       :     :- CometColumnarToRow
+                                       :     :  +- CometFilter
+                                       :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                                       :     :           +- SubqueryBroadcast
+                                       :     :              +- BroadcastExchange
+                                       :     :                 +- CometColumnarToRow
+                                       :     :                    +- CometProject
+                                       :     :                       +- CometFilter
+                                       :     :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                       :     +- BroadcastExchange
+                                       :        +- CometColumnarToRow
+                                       :           +- CometProject
+                                       :              +- CometFilter
+                                       :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+                                       +- BroadcastExchange
+                                          +- CometColumnarToRow
+                                             +- CometProject
+                                                +- CometFilter
+                                                   +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 
-Comet accelerated 24 out of 28 eligible operators (85%). Final plan contains 3 transitions between Spark and Comet.
+Comet accelerated 16 out of 28 eligible operators (57%). Final plan contains 7 transitions between Spark and Comet.
