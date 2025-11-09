@@ -559,6 +559,19 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           s
         }
 
+      case op: LocalTableScanExec =>
+        if (CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.get(conf)) {
+          QueryPlanSerde
+            .operator2Proto(op)
+            .map { nativeOp =>
+              val cometOp = CometLocalTableScanExec(op, op.rows, op.output)
+              CometScanWrapper(nativeOp, cometOp)
+            }
+            .getOrElse(op)
+        } else {
+          withInfo(op, "LocalTableScan is not enabled")
+        }
+
       case op =>
         op match {
           case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
@@ -676,12 +689,12 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // config is enabled)
       if (CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get()) {
         val info = new ExtendedExplainInfo()
-        if (info.getFallbackReasons(newPlan).nonEmpty) {
+        if (info.extensionInfo(newPlan).nonEmpty) {
           logWarning(
             "Comet cannot execute some parts of this plan natively " +
               s"(set ${CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key}=false " +
               "to disable this logging):\n" +
-              s"${info.generateVerboseExtendedInfo(newPlan)}")
+              s"${info.generateExtendedInfo(newPlan)}")
         }
       }
 
@@ -912,7 +925,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         var supported = true
         for (o <- orderings) {
           if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
-            withInfo(s, s"unsupported range partitioning sort order: $o")
+            withInfo(s, s"unsupported range partitioning sort order: $o", o)
             supported = false
             // We don't short-circuit in case there is more than one unsupported expression
             // to provide info for.

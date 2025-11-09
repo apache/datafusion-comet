@@ -148,7 +148,8 @@ object QueryComparison {
   def assertSameRows(
       sparkRows: Array[Row],
       cometRows: Array[Row],
-      output: BufferedWriter): Boolean = {
+      output: BufferedWriter,
+      tolerance: Double = 0.000001): Boolean = {
     if (sparkRows.length == cometRows.length) {
       var i = 0
       while (i < sparkRows.length) {
@@ -164,7 +165,7 @@ object QueryComparison {
 
         assert(l.length == r.length)
         for (j <- 0 until l.length) {
-          if (!same(l(j), r(j))) {
+          if (!same(l(j), r(j), tolerance)) {
             output.write(s"First difference at row $i:\n")
             output.write("Spark: `" + formatRow(l) + "`\n")
             output.write("Comet: `" + formatRow(r) + "`\n")
@@ -186,7 +187,7 @@ object QueryComparison {
     true
   }
 
-  private def same(l: Any, r: Any): Boolean = {
+  private def same(l: Any, r: Any, tolerance: Double): Boolean = {
     if (l == null || r == null) {
       return l == null && r == null
     }
@@ -195,20 +196,20 @@ object QueryComparison {
       case (a: Float, b: Float) if a.isNegInfinity => b.isNegInfinity
       case (a: Float, b: Float) if a.isInfinity => b.isInfinity
       case (a: Float, b: Float) if a.isNaN => b.isNaN
-      case (a: Float, b: Float) => (a - b).abs <= 0.000001f
+      case (a: Float, b: Float) => (a - b).abs <= tolerance
       case (a: Double, b: Double) if a.isPosInfinity => b.isPosInfinity
       case (a: Double, b: Double) if a.isNegInfinity => b.isNegInfinity
       case (a: Double, b: Double) if a.isInfinity => b.isInfinity
       case (a: Double, b: Double) if a.isNaN => b.isNaN
-      case (a: Double, b: Double) => (a - b).abs <= 0.000001
+      case (a: Double, b: Double) => (a - b).abs <= tolerance
       case (a: Array[_], b: Array[_]) =>
-        a.length == b.length && a.zip(b).forall(x => same(x._1, x._2))
+        a.length == b.length && a.zip(b).forall(x => same(x._1, x._2, tolerance))
       case (a: mutable.WrappedArray[_], b: mutable.WrappedArray[_]) =>
-        a.length == b.length && a.zip(b).forall(x => same(x._1, x._2))
+        a.length == b.length && a.zip(b).forall(x => same(x._1, x._2, tolerance))
       case (a: Row, b: Row) =>
         val aa = a.toSeq
         val bb = b.toSeq
-        aa.length == bb.length && aa.zip(bb).forall(x => same(x._1, x._2))
+        aa.length == bb.length && aa.zip(bb).forall(x => same(x._1, x._2, tolerance))
       case (a, b) => a == b
     }
   }

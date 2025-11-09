@@ -8,7 +8,7 @@
       :     :     :- Sort
       :     :     :  +- Project
       :     :     :     +- Filter
-      :     :     :        +- Window
+      :     :     :        +-  Window [COMET: Window expressions are not supported]
       :     :     :           +- CometColumnarToRow
       :     :     :              +- CometSort
       :     :     :                 +- CometExchange
@@ -30,7 +30,7 @@
       :     :     +- Sort
       :     :        +- Project
       :     :           +- Filter
-      :     :              +- Window
+      :     :              +-  Window [COMET: Window expressions are not supported]
       :     :                 +- CometColumnarToRow
       :     :                    +- CometSort
       :     :                       +- CometExchange
