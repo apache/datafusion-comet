@@ -20,6 +20,7 @@
 package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
@@ -37,6 +38,7 @@ import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHash
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
 import org.apache.comet.expressions._
@@ -45,7 +47,7 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.literals.CometLiteral
-import org.apache.comet.serde.operator.{CometLocalTableScan, CometProject, CometSort, CometSortOrder}
+import org.apache.comet.serde.operator._
 import org.apache.comet.shims.CometExprShim
 
 /**
@@ -1173,25 +1175,3 @@ object QueryPlanSerde extends Logging with CometExprShim {
   }
 
 }
-
-sealed trait SupportLevel
-
-/**
- * Comet either supports this feature with full compatibility with Spark, or may have known
- * differences in some specific edge cases that are unlikely to be an issue for most users.
- *
- * Any compatibility differences are noted in the
- * [[https://datafusion.apache.org/comet/user-guide/compatibility.html Comet Compatibility Guide]].
- */
-case class Compatible(notes: Option[String] = None) extends SupportLevel
-
-/**
- * Comet supports this feature but results can be different from Spark.
- *
- * Any compatibility differences are noted in the
- * [[https://datafusion.apache.org/comet/user-guide/compatibility.html Comet Compatibility Guide]].
- */
-case class Incompatible(notes: Option[String] = None) extends SupportLevel
-
-/** Comet does not support this feature */
-case class Unsupported(notes: Option[String] = None) extends SupportLevel
