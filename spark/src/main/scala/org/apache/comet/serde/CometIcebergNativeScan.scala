@@ -26,15 +26,15 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometIcebergNativeScanExec}
 import org.apache.spark.sql.types._
 
+import org.apache.comet.ConfigEntry
 import org.apache.comet.iceberg.IcebergReflection
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
-/**
- * Serialization logic for Iceberg scan operators.
- */
-object IcebergScanSerde extends Logging {
+object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] with Logging {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
   /**
    * Constants specific to Iceberg expression conversion (not in shared IcebergReflection).
@@ -539,9 +539,10 @@ object IcebergScanSerde extends Logging {
    * This handles extraction of metadata location, catalog properties, file scan tasks, schemas,
    * partition data, delete files, and residual expressions from Iceberg scans.
    */
-  def serializeIcebergScan(
+  override def convert(
       scan: CometBatchScanExec,
-      builder: Operator.Builder): Option[OperatorOuterClass.Operator] = {
+      builder: Operator.Builder,
+      childOp: Operator*): Option[OperatorOuterClass.Operator] = {
     val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
 
     // Extract metadata location for native execution

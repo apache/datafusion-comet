@@ -935,7 +935,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case scan: CometBatchScanExec
           if scan.wrapped.scan.getClass.getName ==
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
-        IcebergScanSerde.serializeIcebergScan(scan, builder)
+        CometIcebergNativeScan.convert(scan, builder, childOp: _*)
 
       case filter: FilterExec if CometConf.COMET_EXEC_FILTER_ENABLED.get(conf) =>
         CometFilter.convert(filter, builder, childOp: _*)
