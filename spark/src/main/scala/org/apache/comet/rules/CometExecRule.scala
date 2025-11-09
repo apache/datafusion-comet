@@ -155,6 +155,41 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       operator2Proto(op).map(fun).getOrElse(op)
     }
 
+    /** Common code for HashAggregateExec and ObjectHashAggregateExec */
+    def convertAggregate(op: BaseAggregateExec): SparkPlan = {
+      val modes = op.aggregateExpressions.map(_.mode).distinct
+      // In distinct aggregates there can be a combination of modes
+      val multiMode = modes.size > 1
+      // For a final mode HashAggregate, we only need to transform the HashAggregate
+      // if there is Comet partial aggregation.
+      val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(op.child).isEmpty
+
+      if (multiMode || sparkFinalMode) {
+        op
+      } else {
+        newPlanWithProto(
+          op,
+          nativeOp => {
+            // The aggExprs could be empty. For example, if the aggregate functions only have
+            // distinct aggregate functions or only have group by, the aggExprs is empty and
+            // modes is empty too. If aggExprs is not empty, we need to verify all the
+            // aggregates have the same mode.
+            assert(modes.length == 1 || modes.isEmpty)
+            CometHashAggregateExec(
+              nativeOp,
+              op,
+              op.output,
+              op.groupingExpressions,
+              op.aggregateExpressions,
+              op.resultExpressions,
+              op.child.output,
+              modes.headOption,
+              op.child,
+              SerializedPlan(None))
+          })
+      }
+    }
+
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
@@ -235,41 +270,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // When Comet shuffle is disabled, we don't want to transform the HashAggregate
       // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
       // and final Spark aggregation.
-      case op: BaseAggregateExec
-          if op.isInstanceOf[HashAggregateExec] ||
-            op.isInstanceOf[ObjectHashAggregateExec] &&
-            isCometShuffleEnabled(conf) =>
-        val modes = op.aggregateExpressions.map(_.mode).distinct
-        // In distinct aggregates there can be a combination of modes
-        val multiMode = modes.size > 1
-        // For a final mode HashAggregate, we only need to transform the HashAggregate
-        // if there is Comet partial aggregation.
-        val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(op.child).isEmpty
+      case op: HashAggregateExec =>
+        convertAggregate(op)
 
-        if (multiMode || sparkFinalMode) {
-          op
-        } else {
-          newPlanWithProto(
-            op,
-            nativeOp => {
-              // The aggExprs could be empty. For example, if the aggregate functions only have
-              // distinct aggregate functions or only have group by, the aggExprs is empty and
-              // modes is empty too. If aggExprs is not empty, we need to verify all the
-              // aggregates have the same mode.
-              assert(modes.length == 1 || modes.isEmpty)
-              CometHashAggregateExec(
-                nativeOp,
-                op,
-                op.output,
-                op.groupingExpressions,
-                op.aggregateExpressions,
-                op.resultExpressions,
-                op.child.output,
-                modes.headOption,
-                op.child,
-                SerializedPlan(None))
-            })
-        }
+      case op: ObjectHashAggregateExec =>
+        convertAggregate(op)
 
       case op: ShuffledHashJoinExec =>
         newPlanWithProto(
@@ -390,11 +395,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             _) =>
         newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
 
-      // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
-      // exchange. It is only used for Comet native execution. We only transform Spark broadcast
-      // exchange to Comet broadcast exchange if its downstream is a Comet native plan or if the
-      // broadcast exchange is forced to be enabled by Comet config.
       case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
+        // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
+        // exchange. It is only used for Comet native execution. We only transform Spark broadcast
+        // exchange to Comet broadcast exchange if its downstream is a Comet native plan or if the
+        // broadcast exchange is forced to be enabled by Comet config.
         val newChildren = plan.children.map {
           case b: BroadcastExchangeExec
               if isCometNative(b.child) &&
@@ -407,7 +412,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             }
           case other => other
         }
-        if (!newChildren.exists(_.isInstanceOf[BroadcastExchangeExec])) {
+        val newPlan = if (!newChildren.exists(_.isInstanceOf[BroadcastExchangeExec])) {
           val newPlan = convertNode(plan.withNewChildren(newChildren))
           if (isCometNative(newPlan) || isCometBroadCastForceEnabled(conf)) {
             newPlan
@@ -423,15 +428,20 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           plan
         }
 
-      // this case should be checked only after the previous case checking for a
-      // child BroadcastExchange has been applied, otherwise that transform
-      // never gets applied
-      case op: BroadcastHashJoinExec if !op.children.forall(isCometNative) =>
-        op
-
-      case op: BroadcastHashJoinExec
-          if !CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) =>
-        withInfo(op, "BroadcastHashJoin is not enabled")
+        // this case should be checked only after the previous case checking for a
+        // child BroadcastExchange has been applied, otherwise that transform
+        // never gets applied
+        if (newPlan.children.forall(isCometNative)) {
+          // it seems odd to check this last, but that is how the original code was
+          // implemented
+          if (CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf)) {
+            newPlan
+          } else {
+            withInfo(op, "BroadcastHashJoin is not enabled")
+          }
+        } else {
+          op
+        }
 
       // For AQE shuffle stage on a Comet shuffle exchange
       case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
@@ -496,13 +506,12 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
       case op: LocalTableScanExec =>
-        QueryPlanSerde
-          .operator2Proto(op)
-          .map { nativeOp =>
+        newPlanWithProto(
+          op,
+          { nativeOp =>
             val cometOp = CometLocalTableScanExec(op, op.rows, op.output)
             CometScanWrapper(nativeOp, cometOp)
-          }
-          .getOrElse(op)
+          })
 
       case op =>
         op match {

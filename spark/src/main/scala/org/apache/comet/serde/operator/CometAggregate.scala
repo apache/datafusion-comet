@@ -27,7 +27,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.types.MapType
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto}
@@ -43,6 +43,11 @@ trait CometBaseAggregate {
     val aggregateAttributes = aggregate.aggregateAttributes
     val resultExpressions = aggregate.resultExpressions
     val child = aggregate.child
+
+    if (!isCometShuffleEnabled(aggregate.conf)) {
+      withInfo(aggregate, "Aggregates are only supported when Comet shuffle is enabled")
+      return None
+    }
 
     if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
       withInfo(aggregate, "No group by or aggregation")
