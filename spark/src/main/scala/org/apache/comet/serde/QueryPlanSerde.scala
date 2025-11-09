@@ -62,7 +62,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     Map(
       classOf[ProjectExec] -> CometProject,
       classOf[FilterExec] -> CometFilter,
-      classOf[LocalTableScanExec] -> CometLocalTableScan,
       classOf[LocalLimitExec] -> CometLocalLimit,
       classOf[GlobalLimitExec] -> CometGlobalLimit,
       classOf[ExpandExec] -> CometExpand,
@@ -71,7 +70,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
       classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoin,
       classOf[ShuffledHashJoinExec] -> CometShuffleHashJoin,
       classOf[SortMergeJoinExec] -> CometSortMergeJoin,
-      classOf[SortExec] -> CometSort)
+      classOf[SortExec] -> CometSort,
+      classOf[LocalTableScanExec] -> CometLocalTableScan)
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
