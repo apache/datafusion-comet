@@ -51,7 +51,7 @@ So Comet will add additional normalization expression of NaN and zero for compar
 
 Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
 Spark if the data contains both zero and negative zero. This is likely an edge case that is not of concern for many users
-and sorting on floating-point data can be enabled by setting `spark.comet.expression.SortOrder.allowIncompatible=true`.
+and sorting on floating-point data can be enabled by setting `spark.comet.exec.strictFloatingPoint=false`.
 
 ## Incompatible Expressions
 

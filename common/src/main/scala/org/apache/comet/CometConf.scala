@@ -678,7 +678,7 @@ object CometConf extends ShimCometConf {
       .doc("When enabled, fall back to Spark for floating-point operations that differ from " +
         s"Spark, such as when comparing or sorting -0.0 and 0.0. $COMPAT_GUIDE.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_REGEXP_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
     conf("spark.comet.regexp.allowIncompatible")
