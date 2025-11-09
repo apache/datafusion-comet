@@ -133,8 +133,15 @@ trait CometBaseAggregate {
 
       val aggExprs =
         aggregateExpressions.map(aggExprToProto(_, output, binding, aggregate.conf))
-      if (childOp.nonEmpty && groupingExprs.forall(_.isDefined) &&
-        aggExprs.forall(_.isDefined)) {
+      if (aggExprs.exists(_.isEmpty)) {
+        withInfo(
+          aggregate,
+          "Unsupported aggregate expression",
+          aggregateExpressions ++ aggregateExpressions.map(_.aggregateFunction): _*)
+        return None
+      }
+
+      if (childOp.nonEmpty && groupingExprs.forall(_.isDefined)) {
         val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
         hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
         hashAggBuilder.addAllAggExprs(aggExprs.map(_.get).asJava)
@@ -154,8 +161,8 @@ trait CometBaseAggregate {
         Some(builder.setHashAgg(hashAggBuilder).build())
       } else {
         val allChildren: Seq[Expression] =
-          groupingExpressions ++ aggregateExpressions ++ aggregateAttributes
-        withInfo(aggregate, allChildren: _*)
+          groupingExpressions ++ aggregateAttributes
+        withInfo(aggregate, "Unsupported expression", allChildren: _*)
         None
       }
     }

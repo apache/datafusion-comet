@@ -24,9 +24,10 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.catalyst.expressions.{Attribute, EvalMode}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ByteType, DecimalType, IntegerType, LongType, ShortType, StringType}
+import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType}
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
@@ -42,6 +43,16 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
       withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
       return None
     }
+
+    if (expr.dataType == DataTypes.FloatType || expr.dataType == DataTypes.DoubleType) {
+      if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get()) {
+        withInfo(
+          aggExpr,
+          s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true")
+        return None
+      }
+    }
+
     val child = expr.children.head
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(expr.dataType)
@@ -78,6 +89,16 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
       withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
       return None
     }
+
+    if (expr.dataType == DataTypes.FloatType || expr.dataType == DataTypes.DoubleType) {
+      if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get()) {
+        withInfo(
+          aggExpr,
+          s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true")
+        return None
+      }
+    }
+
     val child = expr.children.head
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(expr.dataType)
