@@ -47,6 +47,7 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.literals.CometLiteral
+import org.apache.comet.serde.operator.{CometLocalTableScan, CometProject, CometSort, CometSortOrder}
 import org.apache.comet.shims.CometExprShim
 
 /**
@@ -58,7 +59,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * Mapping of Spark operator class to Comet operator handler.
    */
   private val opSerdeMap: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
-    Map(classOf[ProjectExec] -> CometProject, classOf[SortExec] -> CometSort)
+    Map(
+      classOf[ProjectExec] -> CometProject,
+      classOf[SortExec] -> CometSort,
+      classOf[LocalTableScanExec] -> CometLocalTableScan)
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
