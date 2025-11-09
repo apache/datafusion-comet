@@ -19,33 +19,31 @@
 
 package org.apache.comet.serde
 
-import scala.jdk.CollectionConverters._
-
-import org.apache.spark.sql.execution.ProjectExec
+import org.apache.spark.sql.execution.LocalLimitExec
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.exprToProto
 
-object CometProject extends CometOperatorSerde[ProjectExec] {
+object CometLocalLimit extends CometOperatorSerde[LocalLimitExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
-    Some(CometConf.COMET_EXEC_PROJECT_ENABLED)
+    Some(CometConf.COMET_EXEC_LOCAL_LIMIT_ENABLED)
 
   override def convert(
-      op: ProjectExec,
+      op: LocalLimitExec,
       builder: Operator.Builder,
-      childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    val exprs = op.projectList.map(exprToProto(_, op.child.output))
-
-    if (exprs.forall(_.isDefined) && childOp.nonEmpty) {
-      val projectBuilder = OperatorOuterClass.Projection
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    if (childOp.nonEmpty) {
+      // LocalLimit doesn't use offset, but it shares same operator serde class.
+      // Just set it to zero.
+      val limitBuilder = OperatorOuterClass.Limit
         .newBuilder()
-        .addAllProjectList(exprs.map(_.get).asJava)
-      Some(builder.setProjection(projectBuilder).build())
+        .setLimit(op.limit)
+        .setOffset(0)
+      Some(builder.setLimit(limitBuilder).build())
     } else {
-      withInfo(op, op.projectList: _*)
+      withInfo(op, "No child operator")
       None
     }
   }

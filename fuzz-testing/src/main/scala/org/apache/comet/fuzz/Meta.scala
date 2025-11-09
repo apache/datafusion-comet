@@ -44,7 +44,7 @@ case class SparkMapType(keyType: SparkType, valueType: SparkType) extends SparkT
 case class SparkStructType(fields: Seq[SparkType]) extends SparkType
 case object SparkAnyType extends SparkType
 
-case class FunctionSignature(inputTypes: Seq[SparkType])
+case class FunctionSignature(inputTypes: Seq[SparkType], varArgs: Boolean = false)
 
 case class Function(name: String, signatures: Seq[FunctionSignature])
 
@@ -65,11 +65,20 @@ object Meta {
     (DataTypes.StringType, 0.2),
     (DataTypes.BinaryType, 0.1))
 
-  private def createFunctionWithInputTypes(name: String, inputs: Seq[SparkType]): Function = {
-    Function(name, Seq(FunctionSignature(inputs)))
+  private def createFunctionWithInputTypes(
+      name: String,
+      inputs: Seq[SparkType],
+      varArgs: Boolean = false): Function = {
+    Function(name, Seq(FunctionSignature(inputs, varArgs)))
+    createFunctions(name, Seq(FunctionSignature(inputs, varArgs)))
   }
 
   private def createFunctions(name: String, signatures: Seq[FunctionSignature]): Function = {
+    signatures.foreach { s =>
+      assert(
+        !s.varArgs || s.inputTypes.length == 1,
+        s"Variadic function $s must have exactly one input type")
+    }
     Function(name, signatures)
   }
 
@@ -126,13 +135,11 @@ object Meta {
         SparkTypeOneOf(
           Seq(
             SparkStringType,
-            SparkArrayType(
-              SparkTypeOneOf(Seq(SparkStringType, SparkNumericType, SparkBinaryType))))),
-        SparkTypeOneOf(
-          Seq(
-            SparkStringType,
-            SparkArrayType(
-              SparkTypeOneOf(Seq(SparkStringType, SparkNumericType, SparkBinaryType))))))),
+            SparkBinaryType,
+            SparkArrayType(SparkStringType),
+            SparkArrayType(SparkNumericType),
+            SparkArrayType(SparkBinaryType)))),
+      varArgs = true),
     createFunctionWithInputTypes("concat_ws", Seq(SparkStringType, SparkStringType)),
     createFunctionWithInputTypes("contains", Seq(SparkStringType, SparkStringType)),
     createFunctionWithInputTypes("ends_with", Seq(SparkStringType, SparkStringType)),

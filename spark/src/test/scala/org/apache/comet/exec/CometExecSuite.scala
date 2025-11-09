@@ -118,10 +118,7 @@ class CometExecSuite extends CometTestBase {
           val infos = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
           assert(infos.contains("Dynamic Partition Pruning is not supported"))
 
-          withSQLConf(CometConf.COMET_EXPLAIN_VERBOSE_ENABLED.key -> "true") {
-            val extendedExplain = new ExtendedExplainInfo().generateExtendedInfo(cometPlan)
-            assert(extendedExplain.contains("Comet accelerated"))
-          }
+          assert(infos.contains("Comet accelerated"))
         }
       }
     }
@@ -1697,7 +1694,9 @@ class CometExecSuite extends CometTestBase {
 
   test("TakeOrderedAndProjectExec") {
     Seq("true", "false").foreach(aqeEnabled =>
-      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled,
+        CometConf.COMET_EXEC_WINDOW_ENABLED.key -> "true") {
         withTable("t1") {
           val numRows = 10
           spark
@@ -2103,6 +2102,30 @@ class CometExecSuite extends CometTestBase {
         assert(nodeNames.length == 1)
         assert(nodeNames.head == "CometSparkColumnarToColumnar")
       }
+    }
+  }
+
+  test("LocalTableScanExec spark fallback") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false") {
+      val df = Seq.range(0, 10).toDF("id")
+      checkSparkAnswerAndFallbackReason(df, "LocalTableScan is not enabled")
+    }
+  }
+
+  test("LocalTableScanExec with filter") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val df = Seq.range(0, 10).toDF("id").filter(col("id") > 5)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("LocalTableScanExec with groupBy") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val df = (Seq.range(0, 10) ++ Seq.range(0, 20))
+        .toDF("id")
+        .groupBy(col("id"))
+        .agg(count("*"))
+      checkSparkAnswerAndOperator(df)
     }
   }
 

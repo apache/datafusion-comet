@@ -34,16 +34,26 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
 
   override def title: String = "Comet"
 
-  override def generateExtendedInfo(plan: SparkPlan): String = {
-    if (CometConf.COMET_EXPLAIN_VERBOSE_ENABLED.get()) {
-      generateVerboseExtendedInfo(plan)
-    } else {
-      val info = getFallbackReasons(plan)
-      info.toSeq.sorted.mkString("\n").trim
+  def generateExtendedInfo(plan: SparkPlan): String = {
+    CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.get() match {
+      case CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE =>
+        // Generates the extended info in a verbose manner, printing each node along with the
+        // extended information in a tree display.
+        val planStats = new CometCoverageStats()
+        val outString = new StringBuilder()
+        generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
+        s"${outString.toString()}\n$planStats"
+      case CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK =>
+        // Generates the extended info as a list of fallback reasons
+        getFallbackReasons(plan).mkString("\n").trim
     }
   }
 
-  def getFallbackReasons(node: TreeNode[_]): Set[String] = {
+  def getFallbackReasons(plan: SparkPlan): Seq[String] = {
+    extensionInfo(plan).toSeq.sorted
+  }
+
+  private[comet] def extensionInfo(node: TreeNode[_]): Set[String] = {
     var info = mutable.Seq[String]()
     val sorted = sortup(node)
     sorted.foreach { p =>
@@ -78,23 +88,6 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       }
     }
     ordered.reverse
-  }
-
-  // generates the extended info in a verbose manner, printing each node along with the
-  // extended information in a tree display
-  def generateVerboseExtendedInfo(plan: SparkPlan): String = {
-    val planStats = new CometCoverageStats()
-    val outString = new StringBuilder()
-    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
-    s"${outString.toString()}\n$planStats"
-  }
-
-  /** Get the coverage statistics without the full plan */
-  def generateCoverageInfo(plan: SparkPlan): String = {
-    val planStats = new CometCoverageStats()
-    val outString = new StringBuilder()
-    generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
-    planStats.toString()
   }
 
   // Simplified generateTreeString from Spark TreeNode. Appends explain info to the node if any
