@@ -84,10 +84,9 @@ object CometConf extends ShimCometConf {
     .doc(
       "Whether to enable Comet extension for Spark. When this is turned on, Spark will use " +
         "Comet to read Parquet data source. Note that to enable native vectorized execution, " +
-        "both this config and `spark.comet.exec.enabled` need to be enabled. By default, this " +
-        "config is the value of the env var `ENABLE_COMET` if set, or true otherwise.")
+        "both this config and `spark.comet.exec.enabled` need to be enabled.")
     .booleanConf
-    .createWithDefault(sys.env.getOrElse("ENABLE_COMET", "true").toBoolean)
+    .createWithEnvVarOrDefault("ENABLE_COMET", true)
 
   val COMET_NATIVE_SCAN_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
     .category(CATEGORY_SCAN)
@@ -119,9 +118,7 @@ object CometConf extends ShimCometConf {
     .transform(_.toLowerCase(Locale.ROOT))
     .checkValues(
       Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT, SCAN_AUTO))
-    .createWithDefault(sys.env
-      .getOrElse("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
-      .toLowerCase(Locale.ROOT))
+    .createWithEnvVarOrDefault("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
 
   val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.respectFilterPushdown")
@@ -459,16 +456,21 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_EXPLAIN_VERBOSE_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.explain.verbose.enabled")
+  val COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE = "verbose"
+  val COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK = "fallback"
+
+  val COMET_EXTENDED_EXPLAIN_FORMAT: ConfigEntry[String] =
+    conf("spark.comet.explain.format")
       .category(CATEGORY_EXEC_EXPLAIN)
-      .doc(
-        "When this setting is enabled, Comet's extended explain output will provide the full " +
-          "query plan annotated with fallback reasons as well as a summary of how much of " +
-          "the plan was accelerated by Comet. When this setting is disabled, a list of fallback " +
-          "reasons will be provided instead.")
-      .booleanConf
-      .createWithDefault(false)
+      .doc("Choose extended explain output. The default format of " +
+        s"'$COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE' will provide the full query plan annotated " +
+        "with fallback reasons as well as a summary of how much of the plan was accelerated " +
+        s"by Comet. The format '$COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK' provides a list of " +
+        "fallback reasons instead.")
+      .stringConf
+      .checkValues(
+        Set(COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE, COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK))
+      .createWithDefault(COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE)
 
   val COMET_EXPLAIN_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explain.native.enabled")
@@ -493,8 +495,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC_EXPLAIN)
       .doc("When this setting is enabled, Comet will log warnings for all fallback reasons.")
       .booleanConf
-      .createWithDefault(
-        sys.env.getOrElse("ENABLE_COMET_LOG_FALLBACK_REASONS", "false").toBoolean)
+      .createWithEnvVarOrDefault("ENABLE_COMET_LOG_FALLBACK_REASONS", false)
 
   val COMET_EXPLAIN_FALLBACK_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.explainFallback.enabled")
@@ -524,7 +525,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TESTING)
       .doc("Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests.")
       .booleanConf
-      .createWithDefault(sys.env.getOrElse("ENABLE_COMET_ONHEAP", "false").toBoolean)
+      .createWithEnvVarOrDefault("ENABLE_COMET_ONHEAP", false)
 
   val COMET_OFFHEAP_MEMORY_POOL_TYPE: ConfigEntry[String] =
     conf("spark.comet.exec.memoryPool")
@@ -705,9 +706,9 @@ object CometConf extends ShimCometConf {
   val COMET_STRICT_TESTING: ConfigEntry[Boolean] = conf(s"$COMET_PREFIX.testing.strict")
     .category(CATEGORY_TESTING)
     .doc("Experimental option to enable strict testing, which will fail tests that could be " +
-      "more comprehensive, such as checking for a specific fallback reason")
+      "more comprehensive, such as checking for a specific fallback reason.")
     .booleanConf
-    .createWithDefault(sys.env.getOrElse("ENABLE_COMET_STRICT_TESTING", "false").toBoolean)
+    .createWithEnvVarOrDefault("ENABLE_COMET_STRICT_TESTING", false)
 
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
@@ -865,6 +866,36 @@ private class TypedConfigBuilder[T](
     CometConf.register(conf)
     conf
   }
+
+  /**
+   * Creates a [[ConfigEntry]] that has a default value, with support for environment variable
+   * override.
+   *
+   * The value is resolved in the following priority order:
+   *   1. Spark config value (if set) 2. Environment variable value (if set) 3. Default value
+   *
+   * @param envVar
+   *   The environment variable name to check for override value
+   * @param default
+   *   The default value to use if neither config nor env var is set
+   * @return
+   *   A ConfigEntry with environment variable support
+   */
+  def createWithEnvVarOrDefault(envVar: String, default: T): ConfigEntry[T] = {
+    val transformedDefault = converter(sys.env.getOrElse(envVar, stringConverter(default)))
+    val conf = new ConfigEntryWithDefault[T](
+      parent.key,
+      transformedDefault,
+      converter,
+      stringConverter,
+      parent._doc,
+      parent._category,
+      parent._public,
+      parent._version,
+      Some(envVar))
+    CometConf.register(conf)
+    conf
+  }
 }
 
 private[comet] abstract class ConfigEntry[T](
@@ -892,6 +923,11 @@ private[comet] abstract class ConfigEntry[T](
 
   def defaultValueString: String
 
+  /**
+   * The environment variable name that can override this config's default value, if applicable.
+   */
+  def envVar: Option[String] = None
+
   override def toString: String = {
     s"ConfigEntry(key=$key, defaultValue=$defaultValueString, doc=$doc, " +
       s"public=$isPublic, version=$version)"
@@ -906,11 +942,14 @@ private[comet] class ConfigEntryWithDefault[T](
     doc: String,
     category: String,
     isPublic: Boolean,
-    version: String)
+    version: String,
+    _envVar: Option[String] = None)
     extends ConfigEntry(key, valueConverter, stringConverter, doc, category, isPublic, version) {
   override def defaultValue: Option[T] = Some(_defaultValue)
 
   override def defaultValueString: String = stringConverter(_defaultValue)
+
+  override def envVar: Option[String] = _envVar
 
   def get(conf: SQLConf): T = {
     val tmp = conf.getConfString(key, null)

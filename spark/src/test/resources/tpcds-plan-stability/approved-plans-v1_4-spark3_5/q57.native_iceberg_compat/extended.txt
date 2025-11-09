@@ -7,7 +7,7 @@
       :     :  +- Filter
       :     :     +- Window
       :     :        +- Filter
-      :     :           +- Window
+      :     :           +-  Window [COMET: Window expressions are not supported]
       :     :              +- CometColumnarToRow
       :     :                 +- CometSort
       :     :                    +- CometExchange
@@ -39,7 +39,7 @@
       :     :                                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.call_center
       :     +- BroadcastExchange
       :        +- Project
-      :           +- Window
+      :           +-  Window [COMET: Window expressions are not supported]
       :              +- CometColumnarToRow
       :                 +- CometSort
       :                    +- CometExchange
@@ -71,7 +71,7 @@
       :                                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.call_center
       +- BroadcastExchange
          +- Project
-            +- Window
+            +-  Window [COMET: Window expressions are not supported]
                +- CometColumnarToRow
                   +- CometSort
                      +- CometExchange

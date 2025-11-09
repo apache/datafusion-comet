@@ -36,18 +36,16 @@ import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde}
  */
 object GenerateDocs {
 
-  private def userGuideLocation = "docs/source/user-guide/latest/"
-
-  val publicConfigs: Set[ConfigEntry[_]] = CometConf.allConfs.filter(_.isPublic).toSet
+  private val publicConfigs: Set[ConfigEntry[_]] = CometConf.allConfs.filter(_.isPublic).toSet
 
   def main(args: Array[String]): Unit = {
-    generateConfigReference()
-    generateCompatibilityGuide()
+    val userGuideLocation = args(0)
+    generateConfigReference(s"$userGuideLocation/configs.md")
+    generateCompatibilityGuide(s"$userGuideLocation/compatibility.md")
   }
 
-  private def generateConfigReference(): Unit = {
+  private def generateConfigReference(filename: String): Unit = {
     val pattern = "<!--BEGIN:CONFIG_TABLE\\[(.*)]-->".r
-    val filename = s"$userGuideLocation/configs.md"
     val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))
     for (line <- lines) {
@@ -76,15 +74,22 @@ object GenerateDocs {
                 // convert links to Markdown
                 val doc =
                   urlPattern.replaceAllIn(conf.doc.trim, m => s"[Comet ${m.group(1)} Guide](")
+                // append env var info if present
+                val docWithEnvVar = conf.envVar match {
+                  case Some(envVarName) =>
+                    s"$doc Can be overridden by environment variable `$envVarName`."
+                  case None => doc
+                }
                 if (conf.defaultValue.isEmpty) {
-                  w.write(s"| `${conf.key}` | $doc | |\n".getBytes)
+                  w.write(s"| `${conf.key}` | $docWithEnvVar | |\n".getBytes)
                 } else {
                   val isBytesConf = conf.key == COMET_ONHEAP_MEMORY_OVERHEAD.key
                   if (isBytesConf) {
                     val bytes = conf.defaultValue.get.asInstanceOf[Long]
-                    w.write(s"| `${conf.key}` | $doc | $bytes MiB |\n".getBytes)
+                    w.write(s"| `${conf.key}` | $docWithEnvVar | $bytes MiB |\n".getBytes)
                   } else {
-                    w.write(s"| `${conf.key}` | $doc | ${conf.defaultValueString} |\n".getBytes)
+                    val defaultVal = conf.defaultValueString
+                    w.write(s"| `${conf.key}` | $docWithEnvVar | $defaultVal |\n".getBytes)
                   }
                 }
               }
@@ -95,8 +100,7 @@ object GenerateDocs {
     w.close()
   }
 
-  private def generateCompatibilityGuide(): Unit = {
-    val filename = s"$userGuideLocation/compatibility.md"
+  private def generateCompatibilityGuide(filename: String): Unit = {
     val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))
     for (line <- lines) {

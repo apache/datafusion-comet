@@ -3,7 +3,7 @@ CometColumnarToRow
    +- CometSort
       +- CometColumnarExchange
          +- Project
-            +- Window
+            +-  Window [COMET: Window expressions are not supported]
                +- CometColumnarToRow
                   +- CometSort
                      +- CometColumnarExchange

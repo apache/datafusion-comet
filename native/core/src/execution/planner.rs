@@ -674,19 +674,6 @@ impl PhysicalPlanner {
                 let op = DataFusionOperator::BitwiseShiftLeft;
                 Ok(Arc::new(BinaryExpr::new(left, op, right)))
             }
-            // https://github.com/apache/datafusion-comet/issues/666
-            // ExprStruct::Abs(expr) => {
-            //     let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-            //     let return_type = child.data_type(&input_schema)?;
-            //     let args = vec![child];
-            //     let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-            //     let comet_abs = Arc::new(ScalarUDF::new_from_impl(Abs::new(
-            //         eval_mode,
-            //         return_type.to_string(),
-            //     )?));
-            //     let expr = ScalarFunctionExpr::new("abs", comet_abs, args, return_type);
-            //     Ok(Arc::new(expr))
-            // }
             ExprStruct::CaseWhen(case_when) => {
                 let when_then_pairs = case_when
                     .when

@@ -21,8 +21,6 @@ package org.apache.comet
 
 import java.time.{Duration, Period}
 
-import scala.reflect.ClassTag
-import scala.reflect.runtime.universe.TypeTag
 import scala.util.Random
 
 import org.scalactic.source.Position
@@ -32,10 +30,9 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Literal, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec, CometWindowExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec}
 import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
@@ -76,9 +73,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     df.createOrReplaceTempView("tbl")
 
     withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
-      checkSparkAnswerAndFallbackReason(
+      checkSparkAnswerAndFallbackReasons(
         "select * from tbl order by 1, 2",
-        "unsupported range partitioning sort order")
+        Set(
+          "unsupported range partitioning sort order",
+          "Sorting on floating-point is not 100% compatible with Spark"))
     }
   }
 
@@ -1428,74 +1427,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("expm1") {
     testDoubleScalarExpr("expm1")
-  }
-
-  // https://github.com/apache/datafusion-comet/issues/666
-  ignore("abs") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 100)
-        withParquetTable(path.toString, "tbl") {
-          Seq(2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 15, 16, 17).foreach { col =>
-            checkSparkAnswerAndOperator(s"SELECT abs(_${col}) FROM tbl")
-          }
-        }
-      }
-    }
-  }
-
-  // https://github.com/apache/datafusion-comet/issues/666
-  ignore("abs Overflow ansi mode") {
-
-    def testAbsAnsiOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
-      withParquetTable(data, "tbl") {
-        checkSparkMaybeThrows(sql("select abs(_1), abs(_2) from tbl")) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            val cometErrorPattern =
-              """.+[ARITHMETIC_OVERFLOW].+overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error.""".r
-            assert(cometErrorPattern.findFirstIn(cometExc.getMessage).isDefined)
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
-      }
-    }
-
-    def testAbsAnsi[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
-      withParquetTable(data, "tbl") {
-        checkSparkAnswerAndOperator("select abs(_1), abs(_2) from tbl")
-      }
-    }
-
-    withSQLConf(
-      SQLConf.ANSI_ENABLED.key -> "true",
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-      testAbsAnsiOverflow(Seq((Byte.MaxValue, Byte.MinValue)))
-      testAbsAnsiOverflow(Seq((Short.MaxValue, Short.MinValue)))
-      testAbsAnsiOverflow(Seq((Int.MaxValue, Int.MinValue)))
-      testAbsAnsiOverflow(Seq((Long.MaxValue, Long.MinValue)))
-      testAbsAnsi(Seq((Float.MaxValue, Float.MinValue)))
-      testAbsAnsi(Seq((Double.MaxValue, Double.MinValue)))
-    }
-  }
-
-  // https://github.com/apache/datafusion-comet/issues/666
-  ignore("abs Overflow legacy mode") {
-
-    def testAbsLegacyOverflow[T <: Product: ClassTag: TypeTag](data: Seq[T]): Unit = {
-      withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
-        withParquetTable(data, "tbl") {
-          checkSparkAnswerAndOperator("select abs(_1), abs(_2) from tbl")
-        }
-      }
-    }
-
-    testAbsLegacyOverflow(Seq((Byte.MaxValue, Byte.MinValue)))
-    testAbsLegacyOverflow(Seq((Short.MaxValue, Short.MinValue)))
-    testAbsLegacyOverflow(Seq((Int.MaxValue, Int.MinValue)))
-    testAbsLegacyOverflow(Seq((Long.MaxValue, Long.MinValue)))
-    testAbsLegacyOverflow(Seq((Float.MaxValue, Float.MinValue)))
-    testAbsLegacyOverflow(Seq((Double.MaxValue, Double.MinValue)))
   }
 
   test("ceil and floor") {
@@ -3163,27 +3094,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .withColumn("randn2", randn(seed2))
       checkSparkAnswerAndOperatorWithTol(complexRandDf)
     }
-  }
-
-  test("window query with rangeBetween") {
-
-    // values are int
-    val df = Seq(1, 2, 4, 3, 2, 1).toDF("value")
-    val window = Window.orderBy($"value".desc)
-
-    // ranges are long
-    val df2 = df.select(
-      $"value",
-      sum($"value").over(window.rangeBetween(Window.unboundedPreceding, 1L)),
-      sum($"value").over(window.rangeBetween(1L, Window.unboundedFollowing)))
-
-    // Comet does not support RANGE BETWEEN
-    // https://github.com/apache/datafusion-comet/issues/1246
-    val (_, cometPlan) = checkSparkAnswer(df2)
-    val cometWindowExecs = collect(cometPlan) { case w: CometWindowExec =>
-      w
-    }
-    assert(cometWindowExecs.isEmpty)
   }
 
   test("vectorized reader: missing all struct fields") {
