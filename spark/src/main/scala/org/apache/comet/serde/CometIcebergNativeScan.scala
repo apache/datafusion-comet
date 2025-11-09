@@ -23,7 +23,8 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometIcebergNativeScanExec}
+import org.apache.spark.sql.comet.CometBatchScanExec
+import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.types._
 
 import org.apache.comet.ConfigEntry
@@ -35,6 +36,55 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] with Logging {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
+
+  /**
+   * Extracts metadata location from Iceberg table.
+   *
+   * @param scanExec
+   *   The Spark BatchScanExec containing an Iceberg scan
+   * @return
+   *   Path to the table metadata file
+   */
+  def extractMetadataLocation(scanExec: BatchScanExec): String = {
+    val scan = scanExec.scan
+
+    IcebergReflection
+      .getTable(scan)
+      .flatMap(IcebergReflection.getMetadataLocation)
+      .getOrElse(
+        throw new RuntimeException("Failed to extract metadata location from Iceberg table"))
+  }
+
+  /**
+   * Extracts name mapping from Iceberg table metadata properties.
+   *
+   * Name mapping is stored in table properties as "schema.name-mapping.default" and provides a
+   * fallback mapping from field names to field IDs for Parquet files that lack field IDs or have
+   * field ID conflicts (e.g., Hive tables migrated via add_files).
+   *
+   * Per Iceberg spec rule #2: "Use schema.name-mapping.default metadata to map field id to
+   * columns without field id as described below and use the column if it is present."
+   *
+   * @param scanExec
+   *   The Spark BatchScanExec containing an Iceberg scan
+   * @return
+   *   Optional JSON string of the name mapping, or None if not present in table properties
+   */
+  def extractNameMapping(scanExec: BatchScanExec): Option[String] = {
+    val scan = scanExec.scan
+    val nameMappingKey = "schema.name-mapping.default"
+
+    IcebergReflection
+      .getTable(scan)
+      .flatMap(IcebergReflection.getTableProperties)
+      .flatMap { properties =>
+        if (properties.containsKey(nameMappingKey)) {
+          Some(properties.get(nameMappingKey))
+        } else {
+          None
+        }
+      }
+  }
 
   /**
    * Constants specific to Iceberg expression conversion (not in shared IcebergReflection).
@@ -548,7 +598,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Extract metadata location for native execution
     val metadataLocation =
       try {
-        CometIcebergNativeScanExec.extractMetadataLocation(scan.wrapped)
+        extractMetadataLocation(scan.wrapped)
       } catch {
         case e: Exception =>
           logWarning(s"Failed to extract metadata location from Iceberg scan: ${e.getMessage}")
@@ -581,7 +631,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Extract name mapping from table metadata (once per scan, shared by all tasks)
     val nameMappingJson =
       try {
-        CometIcebergNativeScanExec.extractNameMapping(scan.wrapped)
+        extractNameMapping(scan.wrapped)
       } catch {
         case e: Exception =>
           logWarning(s"Failed to extract name mapping from Iceberg table: ${e.getMessage}", e)

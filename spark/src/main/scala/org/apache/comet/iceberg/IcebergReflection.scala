@@ -128,21 +128,18 @@ object IcebergReflection extends Logging {
   /**
    * Gets the Iceberg Table from a SparkScan.
    *
-   * The table() method is protected in SparkScan, requiring reflection to access. This traverses
-   * two levels of superclass (SparkScan -> SparkBatchQueryScan).
+   * The table() method is protected in SparkScan, requiring reflection to access.
    */
   def getTable(scan: Any): Option[Any] = {
-    try {
-      // table() is a protected method in SparkScan (two superclasses up)
-      val tableMethod = scan.getClass.getSuperclass.getSuperclass
-        .getDeclaredMethod("table")
-      tableMethod.setAccessible(true)
-      Some(tableMethod.invoke(scan))
-    } catch {
-      case e: Exception =>
-        logError(
-          s"Iceberg reflection failure: Failed to get table from SparkScan: ${e.getMessage}")
-        None
+    findMethodInHierarchy(scan.getClass, "table").flatMap { tableMethod =>
+      try {
+        Some(tableMethod.invoke(scan))
+      } catch {
+        case e: Exception =>
+          logError(
+            s"Iceberg reflection failure: Failed to get table from SparkScan: ${e.getMessage}")
+          None
+      }
     }
   }
 
@@ -270,6 +267,71 @@ object IcebergReflection extends Logging {
         logError(
           s"Iceberg reflection failure: Failed to get partition spec from table: ${e.getMessage}")
         None
+    }
+  }
+
+  /**
+   * Gets the table metadata from an Iceberg table.
+   *
+   * @param table
+   *   The Iceberg table instance
+   * @return
+   *   The TableMetadata object from table.operations().current()
+   */
+  def getTableMetadata(table: Any): Option[Any] = {
+    try {
+      val operationsMethod = table.getClass.getMethod("operations")
+      val operations = operationsMethod.invoke(table)
+
+      val currentMethod = operations.getClass.getMethod("current")
+      Some(currentMethod.invoke(operations))
+    } catch {
+      case e: Exception =>
+        logError(s"Iceberg reflection failure: Failed to get table metadata: ${e.getMessage}")
+        None
+    }
+  }
+
+  /**
+   * Gets the metadata file location from an Iceberg table.
+   *
+   * @param table
+   *   The Iceberg table instance
+   * @return
+   *   Path to the table metadata file
+   */
+  def getMetadataLocation(table: Any): Option[String] = {
+    getTableMetadata(table).flatMap { metadata =>
+      try {
+        val metadataFileLocationMethod = metadata.getClass.getMethod("metadataFileLocation")
+        Some(metadataFileLocationMethod.invoke(metadata).asInstanceOf[String])
+      } catch {
+        case e: Exception =>
+          logError(
+            s"Iceberg reflection failure: Failed to get metadata location: ${e.getMessage}")
+          None
+      }
+    }
+  }
+
+  /**
+   * Gets the properties map from an Iceberg table's metadata.
+   *
+   * @param table
+   *   The Iceberg table instance
+   * @return
+   *   Map of table properties
+   */
+  def getTableProperties(table: Any): Option[java.util.Map[String, String]] = {
+    getTableMetadata(table).flatMap { metadata =>
+      try {
+        val propertiesMethod = metadata.getClass.getMethod("properties")
+        Some(propertiesMethod.invoke(metadata).asInstanceOf[java.util.Map[String, String]])
+      } catch {
+        case e: Exception =>
+          logError(s"Iceberg reflection failure: Failed to get table properties: ${e.getMessage}")
+          None
+      }
     }
   }
 }

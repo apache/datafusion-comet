@@ -193,106 +193,6 @@ case class CometIcebergNativeScanExec(
 object CometIcebergNativeScanExec {
 
   /**
-   * Extracts metadata location from Iceberg table.
-   *
-   * @param scanExec
-   *   The Spark BatchScanExec containing an Iceberg scan
-   * @return
-   *   Path to the table metadata file
-   */
-  def extractMetadataLocation(scanExec: BatchScanExec): String = {
-    val scan = scanExec.scan
-
-    // Get table via reflection (table() is protected in SparkScan, need to search up hierarchy)
-    var clazz: Class[_] = scan.getClass
-    var tableMethod: java.lang.reflect.Method = null
-    while (clazz != null && tableMethod == null) {
-      try {
-        tableMethod = clazz.getDeclaredMethod("table")
-        tableMethod.setAccessible(true)
-      } catch {
-        case _: NoSuchMethodException => clazz = clazz.getSuperclass
-      }
-    }
-    if (tableMethod == null) {
-      throw new NoSuchMethodException("Could not find table() method in class hierarchy")
-    }
-
-    val table = tableMethod.invoke(scan)
-
-    val operationsMethod = table.getClass.getMethod("operations")
-    val operations = operationsMethod.invoke(table)
-
-    val currentMethod = operations.getClass.getMethod("current")
-    val metadata = currentMethod.invoke(operations)
-
-    val metadataFileLocationMethod = metadata.getClass.getMethod("metadataFileLocation")
-    metadataFileLocationMethod.invoke(metadata).asInstanceOf[String]
-  }
-
-  /**
-   * Extracts name mapping from Iceberg table metadata properties.
-   *
-   * Name mapping is stored in table properties as "schema.name-mapping.default" and provides a
-   * fallback mapping from field names to field IDs for Parquet files that lack field IDs or have
-   * field ID conflicts (e.g., Hive tables migrated via add_files).
-   *
-   * Per Iceberg spec rule #2: "Use schema.name-mapping.default metadata to map field id to
-   * columns without field id as described below and use the column if it is present."
-   *
-   * @param scanExec
-   *   The Spark BatchScanExec containing an Iceberg scan
-   * @return
-   *   Optional JSON string of the name mapping, or None if not present in table properties
-   */
-  def extractNameMapping(scanExec: BatchScanExec): Option[String] = {
-    try {
-      val scan = scanExec.scan
-
-      // Get table via reflection (same as extractMetadataLocation)
-      var clazz: Class[_] = scan.getClass
-      var tableMethod: java.lang.reflect.Method = null
-      while (clazz != null && tableMethod == null) {
-        try {
-          tableMethod = clazz.getDeclaredMethod("table")
-          tableMethod.setAccessible(true)
-        } catch {
-          case _: NoSuchMethodException => clazz = clazz.getSuperclass
-        }
-      }
-      if (tableMethod == null) {
-        return None
-      }
-
-      val table = tableMethod.invoke(scan)
-
-      // Get table metadata: table.operations().current()
-      val operationsMethod = table.getClass.getMethod("operations")
-      val operations = operationsMethod.invoke(table)
-
-      val currentMethod = operations.getClass.getMethod("current")
-      val metadata = currentMethod.invoke(operations)
-
-      // Get properties map from metadata
-      val propertiesMethod = metadata.getClass.getMethod("properties")
-      val properties = propertiesMethod
-        .invoke(metadata)
-        .asInstanceOf[java.util.Map[String, String]]
-
-      // Extract name mapping property
-      val nameMappingKey = "schema.name-mapping.default"
-      if (properties.containsKey(nameMappingKey)) {
-        Some(properties.get(nameMappingKey))
-      } else {
-        None
-      }
-    } catch {
-      case _: Exception =>
-        None
-    }
-  }
-
-  /**
    * Creates a CometIcebergNativeScanExec from a Spark BatchScanExec.
    *
    * Determines the number of partitions from Iceberg's output partitioning:
@@ -306,7 +206,7 @@ object CometIcebergNativeScanExec {
    * @param session
    *   The SparkSession
    * @param metadataLocation
-   *   Path to table metadata file from extractMetadataLocation
+   *   Path to table metadata file
    * @return
    *   A new CometIcebergNativeScanExec
    */

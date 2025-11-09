@@ -44,6 +44,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometConf.COMET_EXEC_SHUFFLE_ENABLED
 import org.apache.comet.CometSparkSessionExtensions._
+import org.apache.comet.serde.CometIcebergNativeScan
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde
 
@@ -168,7 +169,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
         // Extract metadata location for CometIcebergNativeScanExec
         try {
-          val metadataLocation = CometIcebergNativeScanExec.extractMetadataLocation(scan.wrapped)
+          val metadataLocation = CometIcebergNativeScan.extractMetadataLocation(scan.wrapped)
 
           // Serialize CometBatchScanExec to extract FileScanTasks and get proto
           QueryPlanSerde.operator2Proto(scan) match {
