@@ -62,7 +62,12 @@ runs:
     - name: Run Maven compile
       shell: bash
       run: |
-        ./mvnw -B compile test-compile scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ inputs.maven_opts }}
+        ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ inputs.maven_opts }}
+
+    - name: Check for any local git changes (such as generated docs)
+      shell: bash
+      run: |
+        ./dev/ci/check-working-tree-clean.sh
 
     - name: Run all tests
       shell: bash
