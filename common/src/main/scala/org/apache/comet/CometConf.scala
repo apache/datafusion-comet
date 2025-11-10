@@ -79,6 +79,8 @@ object CometConf extends ShimCometConf {
 
   val COMET_EXPR_CONFIG_PREFIX: String = s"$COMET_PREFIX.expression";
 
+  val COMET_OPERATOR_CONFIG_PREFIX: String = s"$COMET_PREFIX.operator";
+
   val COMET_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.enabled")
     .category(CATEGORY_EXEC)
     .doc(
@@ -755,6 +757,18 @@ object CometConf extends ShimCometConf {
 
   def getExprAllowIncompatConfigKey(exprClass: Class[_]): String = {
     s"${CometConf.COMET_EXPR_CONFIG_PREFIX}.${exprClass.getSimpleName}.allowIncompatible"
+  }
+
+  def isOperatorAllowIncompat(name: String, conf: SQLConf = SQLConf.get): Boolean = {
+    getBooleanConf(getOperatorAllowIncompatConfigKey(name), defaultValue = false, conf)
+  }
+
+  def getOperatorAllowIncompatConfigKey(name: String): String = {
+    s"${CometConf.COMET_OPERATOR_CONFIG_PREFIX}.$name.allowIncompatible"
+  }
+
+  def getOperatorAllowIncompatConfigKey(exprClass: Class[_]): String = {
+    s"${CometConf.COMET_OPERATOR_CONFIG_PREFIX}.${exprClass.getSimpleName}.allowIncompatible"
   }
 
   def getBooleanConf(name: String, defaultValue: Boolean, conf: SQLConf): Boolean = {
