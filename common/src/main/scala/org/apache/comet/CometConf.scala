@@ -79,6 +79,8 @@ object CometConf extends ShimCometConf {
 
   val COMET_EXPR_CONFIG_PREFIX: String = s"$COMET_PREFIX.expression";
 
+  val COMET_OPERATOR_CONFIG_PREFIX: String = s"$COMET_PREFIX.operator";
+
   val COMET_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.enabled")
     .category(CATEGORY_EXEC)
     .doc(
@@ -179,31 +181,31 @@ object CometConf extends ShimCometConf {
 
   val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.parquet.enabled")
-      .category(CATEGORY_SCAN)
+      .category(CATEGORY_TESTING)
       .doc(
         "When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to " +
-          "Arrow format. Note that to enable native vectorized execution, both this config and " +
-          "`spark.comet.exec.enabled` need to be enabled.")
+          "Arrow format.  This is an experimental feature and has known issues with " +
+          "non-UTC timezones.")
       .booleanConf
       .createWithDefault(false)
 
   val COMET_CONVERT_FROM_JSON_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.json.enabled")
-      .category(CATEGORY_SCAN)
+      .category(CATEGORY_TESTING)
       .doc(
         "When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to " +
-          "Arrow format. Note that to enable native vectorized execution, both this config and " +
-          "`spark.comet.exec.enabled` need to be enabled.")
+          "Arrow format. This is an experimental feature and has known issues with " +
+          "non-UTC timezones.")
       .booleanConf
       .createWithDefault(false)
 
   val COMET_CONVERT_FROM_CSV_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.csv.enabled")
-      .category(CATEGORY_SCAN)
+      .category(CATEGORY_TESTING)
       .doc(
         "When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to " +
-          "Arrow format. Note that to enable native vectorized execution, both this config and " +
-          "`spark.comet.exec.enabled` need to be enabled.")
+          "Arrow format. This is an experimental feature and has known issues with " +
+          "non-UTC timezones.")
       .booleanConf
       .createWithDefault(false)
 
@@ -631,19 +633,19 @@ object CometConf extends ShimCometConf {
 
   val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")
-      .category(CATEGORY_SCAN)
+      .category(CATEGORY_TESTING)
       .doc("Whether to enable Spark to Arrow columnar conversion. When this is turned on, " +
         "Comet will convert operators in " +
         "`spark.comet.sparkToColumnar.supportedOperatorList` into Arrow columnar format before " +
-        "processing.")
+        "processing. This is an experimental feature and has known issues with non-UTC timezones.")
       .booleanConf
       .createWithDefault(false)
 
   val COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST: ConfigEntry[Seq[String]] =
     conf("spark.comet.sparkToColumnar.supportedOperatorList")
-      .category(CATEGORY_SCAN)
+      .category(CATEGORY_TESTING)
       .doc("A comma-separated list of operators that will be converted to Arrow columnar " +
-        "format when `spark.comet.sparkToColumnar.enabled` is true")
+        s"format when `${COMET_SPARK_TO_ARROW_ENABLED.key}` is true.")
       .stringConf
       .toSequence
       .createWithDefault(Seq("Range,InMemoryTableScan,RDDScan"))
@@ -745,6 +747,18 @@ object CometConf extends ShimCometConf {
 
   def getExprAllowIncompatConfigKey(exprClass: Class[_]): String = {
     s"${CometConf.COMET_EXPR_CONFIG_PREFIX}.${exprClass.getSimpleName}.allowIncompatible"
+  }
+
+  def isOperatorAllowIncompat(name: String, conf: SQLConf = SQLConf.get): Boolean = {
+    getBooleanConf(getOperatorAllowIncompatConfigKey(name), defaultValue = false, conf)
+  }
+
+  def getOperatorAllowIncompatConfigKey(name: String): String = {
+    s"${CometConf.COMET_OPERATOR_CONFIG_PREFIX}.$name.allowIncompatible"
+  }
+
+  def getOperatorAllowIncompatConfigKey(exprClass: Class[_]): String = {
+    s"${CometConf.COMET_OPERATOR_CONFIG_PREFIX}.${exprClass.getSimpleName}.allowIncompatible"
   }
 
   def getBooleanConf(name: String, defaultValue: Boolean, conf: SQLConf): Boolean = {
