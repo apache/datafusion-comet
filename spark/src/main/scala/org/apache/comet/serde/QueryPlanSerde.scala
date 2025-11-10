@@ -1015,7 +1015,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
         // Emit warning if:
         //  1. it is not Spark shuffle operator, which is handled separately
         //  2. it is not a Comet operator
-        if (!op.nodeName.contains("Comet") && !op.isInstanceOf[ShuffleExchangeExec]) {
+        if (serde.isEmpty && !op.nodeName.contains("Comet") &&
+          !op.isInstanceOf[ShuffleExchangeExec]) {
           withInfo(op, s"unsupported Spark operator: ${op.nodeName}")
         }
         None
