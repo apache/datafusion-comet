@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.comet.serde
+package org.apache.comet.serde.operator
 
 import scala.jdk.CollectionConverters._
 
@@ -30,6 +30,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.ConfigEntry
 import org.apache.comet.iceberg.IcebergReflection
 import org.apache.comet.objectstore.NativeConfig
+import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
