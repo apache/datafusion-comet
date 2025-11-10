@@ -70,7 +70,7 @@ this can be overridden by setting `spark.comet.regexp.allowIncompatible=true`.
 
 ## Window Functions
 
-Comet's support for window functions is incomplete and known to be incorrect. It is disabled by default and 
+Comet's support for window functions is incomplete and known to be incorrect. It is disabled by default and
 should not be used in production. The feature will be enabled in a future release. Tracking issue: [#2721](https://github.com/apache/datafusion-comet/issues/2721).
 
 ## Cast
