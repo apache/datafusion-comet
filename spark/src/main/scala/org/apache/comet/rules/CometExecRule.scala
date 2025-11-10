@@ -354,35 +354,32 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case op: HashAggregateExec =>
         convertAggregate(op)
 
-      case s: TakeOrderedAndProjectExec
-          if isCometNative(s.child) && CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED
-            .get(conf)
-            && isCometShuffleEnabled(conf) &&
-            CometTakeOrderedAndProjectExec.isSupported(s) =>
+      case op: TakeOrderedAndProjectExec if isCometNative(op.child) =>
+        if (!CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED.get(conf)) {
+          return withInfo(op, "TakeOrderedAndProject is not enabled")
+        }
+        if (!isCometShuffleEnabled(conf)) {
+          return withInfo(op, "TakeOrderedAndProject requires shuffle to be enabled")
+        }
+        if (!CometTakeOrderedAndProjectExec.isSupported(op)) {
+          // fallback reasons are added in call to isSupported
+          return op
+        }
         QueryPlanSerde
-          .operator2Proto(s)
+          .operator2Proto(op)
           .map { nativeOp =>
             val cometOp =
               CometTakeOrderedAndProjectExec(
-                s,
-                s.output,
-                s.limit,
-                s.offset,
-                s.sortOrder,
-                s.projectList,
-                s.child)
-            CometSinkPlaceHolder(nativeOp, s, cometOp)
+                op,
+                op.output,
+                op.limit,
+                op.offset,
+                op.sortOrder,
+                op.projectList,
+                op.child)
+            CometSinkPlaceHolder(nativeOp, op, cometOp)
           }
-          .getOrElse(s)
-
-      case s: TakeOrderedAndProjectExec =>
-        val info1 = createMessage(
-          !CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED.get(conf),
-          "TakeOrderedAndProject is not enabled")
-        val info2 = createMessage(
-          !isCometShuffleEnabled(conf),
-          "TakeOrderedAndProject requires shuffle to be enabled")
-        withInfo(s, Seq(info1, info2).flatten.mkString(","))
+          .getOrElse(op)
 
       case u: UnionExec =>
         if (u.children.forall(isCometNative)) {
@@ -523,6 +520,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             op
           case _: ExecutedCommandExec | _: V2CommandExec =>
             // Some execs that comet will not accelerate, such as command execs.
+            op
+          case op if !op.children.forall(isCometNative) =>
+            // no need to log a message if Comet already fell back
             op
           case _ =>
             if (!hasExplainInfo(op)) {
