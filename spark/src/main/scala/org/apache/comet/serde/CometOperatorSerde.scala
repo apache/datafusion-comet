@@ -30,6 +30,22 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 trait CometOperatorSerde[T <: SparkPlan] {
 
   /**
+   * Get the optional Comet configuration entry that is used to enable or disable native support
+   * for this operator.
+   */
+  def enabledConfig: Option[ConfigEntry[Boolean]]
+
+  /**
+   * Determine the support level of the operator based on its attributes.
+   *
+   * @param operator
+   *   The Spark operator.
+   * @return
+   *   Support level (Compatible, Incompatible, or Unsupported).
+   */
+  def getSupportLevel(operator: T): SupportLevel = Compatible(None)
+
+  /**
    * Convert a Spark operator into a protocol buffer representation that can be passed into native
    * code.
    *
@@ -49,9 +65,4 @@ trait CometOperatorSerde[T <: SparkPlan] {
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator]
 
-  /**
-   * Get the optional Comet configuration entry that is used to enable or disable native support
-   * for this operator.
-   */
-  def enabledConfig: Option[ConfigEntry[Boolean]]
 }
