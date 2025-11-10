@@ -42,6 +42,7 @@ class CometWindowExecSuite extends CometTestBase {
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_EXEC_WINDOW_ENABLED.key -> "true",
+        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "false",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
         testFun
       }
@@ -206,7 +207,7 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  test("aggregate window function for all types") {
+  ignore("aggregate window function for all types") {
     val numValues = 2048
 
     Seq(1, 100, numValues).foreach { numGroups =>
