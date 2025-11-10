@@ -1,4 +1,4 @@
- TakeOrderedAndProject [COMET: ]
+TakeOrderedAndProject
 +- Filter
    +- Window
       +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]

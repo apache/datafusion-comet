@@ -1,4 +1,4 @@
- TakeOrderedAndProject [COMET: ]
+TakeOrderedAndProject
 +- Project
    +-  Window [COMET: Window expressions are not supported]
       +- CometColumnarToRow
@@ -36,7 +36,7 @@
                                                 +- Project
                                                    +- Filter
                                                       +- Window
-                                                         +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+                                                         +- WindowGroupLimit
                                                             +- Sort
                                                                +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(s_state#1, MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#3,17,2) AS _w0#4, s_state#1)]
                                                                   +- CometColumnarToRow

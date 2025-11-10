@@ -1,4 +1,4 @@
- TakeOrderedAndProject [COMET: ]
+TakeOrderedAndProject
 +- Project
    +-  Window [COMET: Window expressions are not supported]
       +- CometColumnarToRow
