@@ -317,6 +317,20 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           op,
           CometSinkPlaceHolder(_, op, CometCoalesceExec(op, op.output, numPartitions, child)))
 
+      // When Comet shuffle is disabled, we don't want to transform the HashAggregate
+      // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
+      // and final Spark aggregation.
+      // https://github.com/apache/datafusion-comet/issues/1389
+      case op: ObjectHashAggregateExec if isCometShuffleEnabled(conf) =>
+        convertAggregate(op)
+
+      // When Comet shuffle is disabled, we don't want to transform the HashAggregate
+      // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
+      // and final Spark aggregation.
+      // https://github.com/apache/datafusion-comet/issues/1389
+      case op: HashAggregateExec if isCometShuffleEnabled(conf) =>
+        convertAggregate(op)
+
       case op: CollectLimitExec =>
         val fallbackReasons = new ListBuffer[String]()
         if (!CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.get(conf)) {
@@ -342,17 +356,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
               .getOrElse(op)
           }
         }
-
-      // When Comet shuffle is disabled, we don't want to transform the HashAggregate
-      // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
-      // and final Spark aggregation.
-      case op: ObjectHashAggregateExec if isCometShuffleEnabled(conf) =>
-        convertAggregate(op)
-
-      // TODO it seems like there should be a check here as well for
-      // isCometShuffleEnabled, but the original code did not have that
-      case op: HashAggregateExec =>
-        convertAggregate(op)
 
       case op: TakeOrderedAndProjectExec if isCometNative(op.child) =>
         if (!CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED.get(conf)) {
