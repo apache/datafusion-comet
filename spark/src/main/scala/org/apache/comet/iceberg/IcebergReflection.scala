@@ -176,7 +176,7 @@ object IcebergReflection extends Logging {
     } catch {
       case e: Exception =>
         logError(
-          s"Iceberg reflection failure: Failed to get filter expressions from SparkScan: " +
+          "Iceberg reflection failure: Failed to get filter expressions from SparkScan: " +
             s"${e.getMessage}")
         None
     }
