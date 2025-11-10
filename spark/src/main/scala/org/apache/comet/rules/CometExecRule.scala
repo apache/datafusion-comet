@@ -157,6 +157,40 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       operator2Proto(op).map(fun).getOrElse(op)
     }
 
+    def convertAggregate(op: BaseAggregateExec) = {
+      val modes = op.aggregateExpressions.map(_.mode).distinct
+      // In distinct aggregates there can be a combination of modes
+      val multiMode = modes.size > 1
+      // For a final mode HashAggregate, we only need to transform the HashAggregate
+      // if there is Comet partial aggregation.
+      val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(op.child).isEmpty
+
+      if (multiMode || sparkFinalMode) {
+        op
+      } else {
+        newPlanWithProto(
+          op,
+          nativeOp => {
+            // The aggExprs could be empty. For example, if the aggregate functions only have
+            // distinct aggregate functions or only have group by, the aggExprs is empty and
+            // modes is empty too. If aggExprs is not empty, we need to verify all the
+            // aggregates have the same mode.
+            assert(modes.length == 1 || modes.isEmpty)
+            CometHashAggregateExec(
+              nativeOp,
+              op,
+              op.output,
+              op.groupingExpressions,
+              op.aggregateExpressions,
+              op.resultExpressions,
+              op.child.output,
+              modes.headOption,
+              op.child,
+              SerializedPlan(None))
+          })
+      }
+    }
+
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
@@ -273,6 +307,16 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             w.child,
             SerializedPlan(None)))
 
+      case op: ExpandExec =>
+        newPlanWithProto(
+          op,
+          CometExpandExec(_, op, op.output, op.projections, op.child, SerializedPlan(None)))
+
+      case CoalesceExec(numPartitions, child) =>
+        newPlanWithProto(
+          op,
+          CometSinkPlaceHolder(_, op, CometCoalesceExec(op, op.output, numPartitions, child)))
+
       case op: CollectLimitExec =>
         val fallbackReasons = new ListBuffer[String]()
         if (!CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.get(conf)) {
@@ -299,67 +343,16 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           }
         }
 
-      case op: ExpandExec =>
-        newPlanWithProto(
-          op,
-          CometExpandExec(_, op, op.output, op.projections, op.child, SerializedPlan(None)))
-
       // When Comet shuffle is disabled, we don't want to transform the HashAggregate
       // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
       // and final Spark aggregation.
-      case op: BaseAggregateExec
-          if op.isInstanceOf[HashAggregateExec] ||
-            op.isInstanceOf[ObjectHashAggregateExec] &&
-            isCometShuffleEnabled(conf) =>
-        val modes = op.aggregateExpressions.map(_.mode).distinct
-        // In distinct aggregates there can be a combination of modes
-        val multiMode = modes.size > 1
-        // For a final mode HashAggregate, we only need to transform the HashAggregate
-        // if there is Comet partial aggregation.
-        val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(op.child).isEmpty
+      case op: ObjectHashAggregateExec if isCometShuffleEnabled(conf) =>
+        convertAggregate(op)
 
-        if (multiMode || sparkFinalMode) {
-          op
-        } else {
-          newPlanWithProto(
-            op,
-            nativeOp => {
-              // The aggExprs could be empty. For example, if the aggregate functions only have
-              // distinct aggregate functions or only have group by, the aggExprs is empty and
-              // modes is empty too. If aggExprs is not empty, we need to verify all the
-              // aggregates have the same mode.
-              assert(modes.length == 1 || modes.isEmpty)
-              CometHashAggregateExec(
-                nativeOp,
-                op,
-                op.output,
-                op.groupingExpressions,
-                op.aggregateExpressions,
-                op.resultExpressions,
-                op.child.output,
-                modes.headOption,
-                op.child,
-                SerializedPlan(None))
-            })
-        }
-
-      case c @ CoalesceExec(numPartitions, child) =>
-        if (CometConf.COMET_EXEC_COALESCE_ENABLED.get(conf)) {
-          if (isCometNative(child)) {
-            QueryPlanSerde
-              .operator2Proto(c)
-              .map { nativeOp =>
-                val cometOp = CometCoalesceExec(c, c.output, numPartitions, child)
-                CometSinkPlaceHolder(nativeOp, c, cometOp)
-              }
-              .getOrElse(c)
-
-          } else {
-            op
-          }
-        } else {
-          withInfo(c, "Coalesce is not enabled")
-        }
+      // TODO it seems like there should be a check here as well for
+      // isCometShuffleEnabled, but the original code did not have that
+      case op: HashAggregateExec =>
+        convertAggregate(op)
 
       case s: TakeOrderedAndProjectExec
           if isCometNative(s.child) && CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED
