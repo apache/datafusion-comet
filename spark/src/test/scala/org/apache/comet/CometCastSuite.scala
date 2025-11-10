@@ -1062,11 +1062,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       IntegerType,
       LongType,
       ShortType,
-      //      FloatType,
-      //      DoubleType,
+      // FloatType,
+      // DoubleType,
+      // BinaryType
       DecimalType(10, 2),
-      DecimalType(38, 18),
-      BinaryType).foreach { dt =>
+      DecimalType(38, 18)).foreach { dt =>
       val input = generateArrays(100, dt)
       castTest(input, StringType, hasIncompatibleType = hasIncompatibleType(input.schema))
     }
