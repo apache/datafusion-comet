@@ -774,6 +774,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/2612
   test("array_reverse - fallback for binary array") {
     withTable("t1") {
       sql(
