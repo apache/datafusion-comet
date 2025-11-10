@@ -778,7 +778,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   test("array_reverse - fallback for binary array") {
     withTable("t1") {
       sql("""create table t1 using parquet as
-          "select cast(null as array<binary>) c1, cast(array() as array<binary>) c2
+          select cast(null as array<binary>) c1, cast(array() as array<binary>) c2
           from range(10)
         """)
 
