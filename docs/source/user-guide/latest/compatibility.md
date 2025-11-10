@@ -191,3 +191,57 @@ The following cast operations are not compatible with Spark for all inputs and a
 
 Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the
 [tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.
+
+### Complex Type Casting
+
+Comet provides support for casting involving complex types (arrays, structs, and maps) with the following rules:
+
+#### Array Type Casting
+
+- **Array to String**: Arrays can be cast to string. The cast is compatible if the element type can be cast to string.
+  - Recursively checks that the array element type supports casting to string
+  - Example: `CAST(array(1, 2, 3) AS STRING)` → `"[1, 2, 3]"`
+
+- **Array to Array**: Arrays can be cast to other array types if the element types are compatible.
+  - Recursively validates that the source element type can be cast to the target element type
+  - Example: `CAST(array(1, 2, 3) AS ARRAY<BIGINT>)` → `array(1L, 2L, 3L)`
+  - The compatibility level (Compatible/Incompatible/Unsupported) is determined by the element type cast
+
+- **Special case**: Arrays with `NullType` elements (empty arrays) can be cast to any array type
+
+#### Struct Type Casting
+
+- **Struct to Struct**: Structs can be cast to other struct types if all field types are compatible.
+  - Requires the same number of fields in source and target structs
+  - Each field is validated recursively: `source_field[i]` must be castable to `target_field[i]`
+  - Field names do not need to match; casting is done by position
+  - Example: `CAST(struct(1, 'a') AS STRUCT<x: BIGINT, y: STRING>)` → `struct(1L, 'a')`
+  - If any field cast is Incompatible or Unsupported, the entire struct cast inherits that level
+
+- **Struct to String**: Structs can be cast to string if all field types can be cast to string.
+  - Recursively validates each field type can be cast to string
+  - Example: `CAST(struct(1, 'a') AS STRING)` → `"{1, a}"`
+
+#### Map Type Casting
+
+Currently, Comet does not support casting to or from map types. Map-related casts will fall back to Spark.
+
+#### Nested Complex Types
+
+Comet supports nested complex types with recursive casting validation:
+- **Array of Structs**: `ARRAY<STRUCT<...>>` casting is supported if both the array and struct casting rules are satisfied
+- **Struct of Arrays**: `STRUCT<..., ARRAY<...>, ...>` casting is supported if all fields (including array fields) satisfy casting rules
+- **Deeply nested types**: Any level of nesting is supported as long as each level satisfies the casting requirements
+
+Examples:
+```sql
+-- Array of structs to array of structs
+CAST(array(struct(1, 'a'), struct(2, 'b')) AS ARRAY<STRUCT<x: BIGINT, y: STRING>>)
+
+-- Struct containing arrays
+CAST(struct(1, array(1, 2)) AS STRUCT<id: BIGINT, values: ARRAY<BIGINT>>)
+```
+
+**Note**: The compatibility level of a complex type cast is determined by the "worst" compatibility level among all
+its constituent element/field casts. For example, if any field in a struct cast is Incompatible, the entire struct
+cast is Incompatible.
