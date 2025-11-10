@@ -206,7 +206,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           op,
           CometGlobalLimitExec(_, op, op.limit, op.offset, op.child, SerializedPlan(None)))
 
-      case op: ShuffledHashJoinExec =>
+      case op: ShuffledHashJoinExec
+          if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) &&
+            op.children.forall(isCometNative) =>
         newPlanWithProto(
           op,
           CometHashJoinExec(
@@ -223,7 +225,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             op.right,
             SerializedPlan(None)))
 
-      case op: BroadcastHashJoinExec =>
+      case op: BroadcastHashJoinExec
+          if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) &&
+            op.children.forall(isCometNative) =>
         newPlanWithProto(
           op,
           CometBroadcastHashJoinExec(
