@@ -239,37 +239,20 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           if op.isInstanceOf[HashAggregateExec] ||
             op.isInstanceOf[ObjectHashAggregateExec] &&
             isCometShuffleEnabled(conf) =>
-        val modes = op.aggregateExpressions.map(_.mode).distinct
-        // In distinct aggregates there can be a combination of modes
-        val multiMode = modes.size > 1
-        // For a final mode HashAggregate, we only need to transform the HashAggregate
-        // if there is Comet partial aggregation.
-        val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(op.child).isEmpty
-
-        if (multiMode || sparkFinalMode) {
-          op
-        } else {
-          newPlanWithProto(
-            op,
-            nativeOp => {
-              // The aggExprs could be empty. For example, if the aggregate functions only have
-              // distinct aggregate functions or only have group by, the aggExprs is empty and
-              // modes is empty too. If aggExprs is not empty, we need to verify all the
-              // aggregates have the same mode.
-              assert(modes.length == 1 || modes.isEmpty)
-              CometHashAggregateExec(
-                nativeOp,
-                op,
-                op.output,
-                op.groupingExpressions,
-                op.aggregateExpressions,
-                op.resultExpressions,
-                op.child.output,
-                modes.headOption,
-                op.child,
-                SerializedPlan(None))
-            })
-        }
+        newPlanWithProto(
+          op,
+          nativeOp => {
+            CometHashAggregateExec(
+              nativeOp,
+              op,
+              op.output,
+              op.groupingExpressions,
+              op.aggregateExpressions,
+              op.resultExpressions,
+              op.child.output,
+              op.child,
+              SerializedPlan(None))
+          })
 
       case op: ShuffledHashJoinExec
           if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) &&
@@ -738,21 +721,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
   }
 
-  /**
-   * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate with
-   * partial mode, it will return None.
-   */
-  private def findCometPartialAgg(plan: SparkPlan): Option[CometHashAggregateExec] = {
-    plan.collectFirst {
-      case agg: CometHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
-        Some(agg)
-      case agg: HashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) => None
-      case agg: ObjectHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
-        None
-      case a: AQEShuffleReadExec => findCometPartialAgg(a.child)
-      case s: ShuffleQueryStageExec => findCometPartialAgg(s.plan)
-    }.flatten
-  }
 
   /**
    * Returns true if a given spark plan is Comet shuffle operator.
