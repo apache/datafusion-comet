@@ -71,7 +71,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
       classOf[ShuffledHashJoinExec] -> CometShuffleHashJoin,
       classOf[SortMergeJoinExec] -> CometSortMergeJoin,
       classOf[SortExec] -> CometSort,
-      classOf[LocalTableScanExec] -> CometLocalTableScan)
+      classOf[LocalTableScanExec] -> CometLocalTableScan,
+      classOf[WindowExec] -> CometWindow)
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
@@ -929,7 +930,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
    *   converted to a native operator.
    */
   def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
-    val conf = op.conf
     val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
     childOp.foreach(builder.addChildren)
 
@@ -952,10 +952,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         CometNativeScan.convert(scan, builder, childOp: _*)
-
-      case _: WindowExec if CometConf.COMET_EXEC_WINDOW_ENABLED.get(conf) =>
-        withInfo(op, "Window expressions are not supported")
-        None
 
       case op if isCometSink(op) =>
         val supportedTypes =
@@ -1084,7 +1080,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
       case _: CollectLimitExec => true
       case _: UnionExec => true
       case _: TakeOrderedAndProjectExec => true
-      case _: WindowExec => true
       case _ => false
     }
   }
