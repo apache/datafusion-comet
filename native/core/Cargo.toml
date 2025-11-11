@@ -93,7 +93,7 @@ lazy_static = "1.4"
 assertables = "9"
 hex = "0.4.3"
 datafusion = { workspace = true, features = ["sql"] }
-datafusion-functions-nested = { git = "https://github.com/apache/datafusion.git", rev = "f32984b2dbf9e5a193c20643ce624167295fbd61", default-features = false }
+datafusion-functions-nested = { git = "https://github.com/apache/datafusion.git", branch = "branch-51", default-features = false }
 
 [features]
 backtrace = ["datafusion/backtrace"]
