@@ -76,7 +76,7 @@ class CometBitwiseExpressionSuite extends CometTestBase with AdaptiveSparkPlanHe
 
   test("bitwise_get - throws exceptions") {
     def checkSparkAndCometEqualThrows(query: String): Unit = {
-      checkSparkMaybeThrows(sql(query)) match {
+      checkSparkAnswerMaybeThrows(sql(query)) match {
         case (Some(sparkExc), Some(cometExc)) =>
           assert(sparkExc.getMessage == cometExc.getMessage)
         case _ => fail("Exception should be thrown")

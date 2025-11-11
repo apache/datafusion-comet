@@ -306,7 +306,7 @@ abstract class CometTestBase
    * This method does not check that Comet replaced any operators or that the results match in the
    * case where the query is successful against both Spark and Comet.
    */
-  protected def checkSparkMaybeThrows(
+  protected def checkSparkAnswerMaybeThrows(
       df: => DataFrame): (Option[Throwable], Option[Throwable]) = {
     var expected: Try[Array[Row]] = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -316,8 +316,8 @@ abstract class CometTestBase
 
     (expected, actual) match {
       case (Success(_), Success(_)) =>
-        // TODO compare results and confirm that they match
-        // https://github.com/apache/datafusion-comet/issues/2657
+        // compare results and confirm that they match
+        checkSparkAnswer(df)
         (None, None)
       case _ =>
         (expected.failed.toOption, actual.failed.toOption)
