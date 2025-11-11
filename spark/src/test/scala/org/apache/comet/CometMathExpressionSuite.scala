@@ -56,7 +56,7 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       for (field <- df.schema.fields) {
         val col = field.name
-        checkSparkMaybeThrows(sql(s"SELECT $col, abs($col) FROM tbl ORDER BY $col")) match {
+        checkSparkAnswerMaybeThrows(sql(s"SELECT $col, abs($col) FROM tbl ORDER BY $col")) match {
           case (Some(sparkExc), Some(cometExc)) =>
             val cometErrorPattern =
               """.+[ARITHMETIC_OVERFLOW].+overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error.""".r
