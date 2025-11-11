@@ -312,7 +312,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           val (sparkErr, cometErr) =
-            checkSparkMaybeThrows(sql(s"SELECT _20 + ${Int.MaxValue} FROM tbl"))
+            checkSparkAnswerMaybeThrows(sql(s"SELECT _20 + ${Int.MaxValue} FROM tbl"))
           if (isSpark40Plus) {
             assert(sparkErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
           } else {
@@ -359,7 +359,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
         withParquetTable(path.toString, "tbl") {
           val (sparkErr, cometErr) =
-            checkSparkMaybeThrows(sql(s"SELECT _20 - ${Int.MaxValue} FROM tbl"))
+            checkSparkAnswerMaybeThrows(sql(s"SELECT _20 - ${Int.MaxValue} FROM tbl"))
           if (isSpark40Plus) {
             assert(sparkErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
             assert(cometErr.get.getMessage.contains("EXPRESSION_DECODING_FAILED"))
@@ -2022,7 +2022,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val expectedDivideByZeroError =
         "[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead."
 
-      checkSparkMaybeThrows(sql(query)) match {
+      checkSparkAnswerMaybeThrows(sql(query)) match {
         case (Some(sparkException), Some(cometException)) =>
           assert(sparkException.getMessage.contains(expectedDivideByZeroError))
           assert(cometException.getMessage.contains(expectedDivideByZeroError))
@@ -2174,7 +2174,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
 
     def checkOverflow(query: String, dtype: String): Unit = {
-      checkSparkMaybeThrows(sql(query)) match {
+      checkSparkAnswerMaybeThrows(sql(query)) match {
         case (Some(sparkException), Some(cometException)) =>
           assert(sparkException.getMessage.contains(dtype + " overflow"))
           assert(cometException.getMessage.contains(dtype + " overflow"))
@@ -2700,7 +2700,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("ListExtract") {
     def assertBothThrow(df: DataFrame): Unit = {
-      checkSparkMaybeThrows(df) match {
+      checkSparkAnswerMaybeThrows(df) match {
         case (Some(_), Some(_)) => ()
         case (spark, comet) =>
           fail(
@@ -2850,7 +2850,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkMaybeThrows(res) match {
+        checkSparkAnswerMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("overflow"))
@@ -2869,7 +2869,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  _1 - _2
                               |  from tbl
                               |  """.stripMargin)
-        checkSparkMaybeThrows(res) match {
+        checkSparkAnswerMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("overflow"))
@@ -2889,7 +2889,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkMaybeThrows(res) match {
+        checkSparkAnswerMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("overflow"))
@@ -2909,7 +2909,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkMaybeThrows(res) match {
+        checkSparkAnswerMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("Division by zero"))
@@ -2929,7 +2929,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkMaybeThrows(res) match {
+        checkSparkAnswerMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
             assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
             assert(sparkExc.getMessage.contains("Division by zero"))
@@ -2950,7 +2950,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 |  from tbl
                 |  """.stripMargin)
 
-          checkSparkMaybeThrows(res) match {
+          checkSparkAnswerMaybeThrows(res) match {
             case (Some(sparkException), Some(cometException)) =>
               assert(sparkException.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
               assert(cometException.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
@@ -2985,7 +2985,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           Seq(true, false).foreach { ansi =>
             withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
               val res = spark.sql(s"SELECT round(_1, $scale) from tbl")
-              checkSparkMaybeThrows(res) match {
+              checkSparkAnswerMaybeThrows(res) match {
                 case (Some(sparkException), Some(cometException)) =>
                   assert(sparkException.getMessage.contains("ARITHMETIC_OVERFLOW"))
                   assert(cometException.getMessage.contains("ARITHMETIC_OVERFLOW"))
