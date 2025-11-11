@@ -777,7 +777,8 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   // https://github.com/apache/datafusion-comet/issues/2612
   test("array_reverse - fallback for binary array") {
     val fallbackReason =
-      if (CometConf.COMET_NATIVE_SCAN_IMPL.key == CometConf.SCAN_NATIVE_COMET) {
+      if (CometConf.COMET_NATIVE_SCAN_IMPL.key == CometConf.SCAN_NATIVE_COMET || sys.env
+          .getOrElse("COMET_PARQUET_SCAN_IMPL", "") == CometConf.SCAN_NATIVE_COMET) {
         "Unsupported schema"
       } else {
         CometArrayReverse.unsupportedReason
