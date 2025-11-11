@@ -110,7 +110,7 @@ impl SumIntegerAccumulator {
     fn new(eval_mode: EvalMode) -> Self {
         if eval_mode == EvalMode::Try {
             Self {
-                // Try mode starts with 0 (because if this is init to None we cant say if it is none due to all nulls or due to an overflow
+                // Try mode starts with 0 (because if this is init to None we cant say if it is none due to all nulls or due to an overflow)
                 sum: Some(0),
                 has_all_nulls: true,
                 eval_mode,
@@ -152,7 +152,7 @@ impl Accumulator for SumIntegerAccumulator {
                                             "integer",
                                         )))
                                     } else {
-                                        return Ok(None);
+                                        Ok(None)
                                     };
                                 }
                             };

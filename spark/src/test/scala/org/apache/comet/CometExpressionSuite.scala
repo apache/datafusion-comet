@@ -3061,7 +3061,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             (null.asInstanceOf[java.lang.Long], "b"),
             (null.asInstanceOf[java.lang.Long], "b")),
           "tbl") {
-          val res = sql("SELECT _2, sum(_1) FROM tbl group by 1")
+          val res = sql("SELECT _2, try_sum(_1) FROM tbl group by 1")
           checkSparkAnswerAndOperator(res)
           assert(res.orderBy(col("_2")).collect() === Array(Row("a", null), Row("b", null)))
         }
@@ -3076,7 +3076,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withParquetTable(Seq((Long.MaxValue, 1L), (100L, 1L)), "tbl") {
           val res = sql("SELECT SUM(_1) FROM tbl")
           if (ansiEnabled) {
-            checkSparkMaybeThrows(res) match {
+            checkSparkAnswerMaybeThrows(res) match {
               case (Some(sparkExc), Some(cometExc)) =>
                 assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
                 assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
@@ -3090,7 +3090,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withParquetTable(Seq((Long.MinValue, 1L), (-100L, 1L)), "tbl") {
           val res = sql("SELECT SUM(_1) FROM tbl")
           if (ansiEnabled) {
-            checkSparkMaybeThrows(res) match {
+            checkSparkAnswerMaybeThrows(res) match {
               case (Some(sparkExc), Some(cometExc)) =>
                 assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
                 assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
@@ -3133,7 +3133,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "tbl") {
           val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2").repartition(2)
           if (ansiEnabled) {
-            checkSparkMaybeThrows(res) match {
+            checkSparkAnswerMaybeThrows(res) match {
               case (Some(sparkExc), Some(cometExc)) =>
                 assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
                 assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
@@ -3150,7 +3150,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "tbl") {
           val res = sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2")
           if (ansiEnabled) {
-            checkSparkMaybeThrows(res) match {
+            checkSparkAnswerMaybeThrows(res) match {
               case (Some(sparkExc), Some(cometExc)) =>
                 assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
                 assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
