@@ -776,6 +776,11 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
   // https://github.com/apache/datafusion-comet/issues/2612
   test("array_reverse - fallback for binary array") {
+    val fallbackReason = if (CometConf.COMET_NATIVE_SCAN_IMPL.key == "native_scan") {
+      "Unsupported schema"
+    } else {
+      CometArrayReverse.unsupportedReason
+    }
     withTable("t1") {
       sql("""create table t1 using parquet as
           select cast(null as array<binary>) c1, cast(array() as array<binary>) c2
@@ -784,15 +789,15 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
       checkSparkAnswerAndFallbackReason(
         "select reverse(array(c1, c2)) AS x FROM t1",
-        CometArrayReverse.unsupportedReason)
+        fallbackReason)
 
       checkSparkAnswerAndFallbackReason(
         "select reverse(array(c1, c1)) AS x FROM t1",
-        CometArrayReverse.unsupportedReason)
+        fallbackReason)
 
       checkSparkAnswerAndFallbackReason(
         "select reverse(array(array(c1), array(c2))) AS x FROM t1",
-        CometArrayReverse.unsupportedReason)
+        fallbackReason)
     }
   }
 }
