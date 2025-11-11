@@ -23,7 +23,6 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -32,7 +31,7 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.command.ExecutedCommandExec
 import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
@@ -235,10 +234,26 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // When Comet shuffle is disabled, we don't want to transform the HashAggregate
       // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
       // and final Spark aggregation.
-      case op: BaseAggregateExec
-          if op.isInstanceOf[HashAggregateExec] ||
-            op.isInstanceOf[ObjectHashAggregateExec] &&
-            isCometShuffleEnabled(conf) =>
+      case op: HashAggregateExec /* if isCometShuffleEnabled(conf) */ =>
+        newPlanWithProto(
+          op,
+          nativeOp => {
+            CometHashAggregateExec(
+              nativeOp,
+              op,
+              op.output,
+              op.groupingExpressions,
+              op.aggregateExpressions,
+              op.resultExpressions,
+              op.child.output,
+              op.child,
+              SerializedPlan(None))
+          })
+
+      // When Comet shuffle is disabled, we don't want to transform the HashAggregate
+      // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
+      // and final Spark aggregation.
+      case op: ObjectHashAggregateExec if isCometShuffleEnabled(conf) =>
         newPlanWithProto(
           op,
           nativeOp => {
@@ -720,7 +735,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       }
     }
   }
-
 
   /**
    * Returns true if a given spark plan is Comet shuffle operator.

@@ -20,18 +20,20 @@
 package org.apache.comet.serde.operator
 
 import scala.jdk.CollectionConverters._
+
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
-import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.types.MapType
-import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
-import org.apache.comet.serde.OperatorOuterClass.{Operator, AggregateMode => CometAggregateMode}
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto}
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.types.MapType
+
+import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
+import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto}
 
 trait CometBaseAggregate {
 
@@ -176,24 +178,23 @@ trait CometBaseAggregate {
 
   }
 
-    /**
-     * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate with
-     * partial mode, it will return None.
-     */
-    private def findCometPartialAgg(plan: SparkPlan): Option[CometHashAggregateExec] = {
-      plan.collectFirst {
-        case agg: CometHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
-          Some(agg)
-        case agg: HashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) => None
-        case agg: ObjectHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
-          None
-        case a: AQEShuffleReadExec => findCometPartialAgg(a.child)
-        case s: ShuffleQueryStageExec => findCometPartialAgg(s.plan)
-      }.flatten
-    }
-
-
+  /**
+   * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate with
+   * partial mode, it will return None.
+   */
+  private def findCometPartialAgg(plan: SparkPlan): Option[CometHashAggregateExec] = {
+    plan.collectFirst {
+      case agg: CometHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+        Some(agg)
+      case agg: HashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) => None
+      case agg: ObjectHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+        None
+      case a: AQEShuffleReadExec => findCometPartialAgg(a.child)
+      case s: ShuffleQueryStageExec => findCometPartialAgg(s.plan)
+    }.flatten
   }
+
+}
 
 object CometHashAggregate extends CometOperatorSerde[HashAggregateExec] with CometBaseAggregate {
 

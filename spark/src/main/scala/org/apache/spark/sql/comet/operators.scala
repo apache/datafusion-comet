@@ -29,7 +29,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, Expression, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode}
+import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -748,7 +748,7 @@ case class CometHashAggregateExec(
   // distinct aggregate functions or only have group by, the aggExprs is empty and
   // modes is empty too. If aggExprs is not empty, we need to verify all the
   // aggregates have the same mode.
-  val modes = aggregateExpressions.map(_.mode).distinct
+  val modes: Seq[AggregateMode] = aggregateExpressions.map(_.mode).distinct
   assert(modes.length == 1 || modes.isEmpty)
   val mode = modes.headOption
 
