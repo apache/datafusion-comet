@@ -956,8 +956,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
       // Iceberg scan with native execution enabled
       // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometExecRule
       case scan: CometBatchScanExec
-        if scan.wrapped.scan.getClass.getName ==
-          "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
+          if scan.wrapped.scan.getClass.getName ==
+            "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
         CometIcebergNativeScan.convert(scan, builder, childOp: _*)
 
       case op if isCometSink(op) =>
