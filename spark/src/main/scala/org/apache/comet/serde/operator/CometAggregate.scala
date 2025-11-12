@@ -30,7 +30,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.types.MapType
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto}
@@ -220,6 +220,14 @@ object CometObjectHashAggregate
       aggregate: ObjectHashAggregateExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+
+    if (!isCometShuffleEnabled(aggregate.conf)) {
+      // When Comet shuffle is disabled, we don't want to transform the HashAggregate
+      // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
+      // and final Spark aggregation.
+      return None
+    }
+
     doConvert(aggregate, builder, childOp: _*)
   }
 }
