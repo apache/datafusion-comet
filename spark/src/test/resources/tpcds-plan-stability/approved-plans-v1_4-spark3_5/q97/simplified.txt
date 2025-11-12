@@ -1,9 +1,9 @@
 WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
-      CometHashAggregate [store_only,catalog_only,store_and_catalog,sum,sum,sum,sum(CASE WHEN (isnotnull(customer_sk) AND isnull(customer_sk)) THEN 1 ELSE 0 END),sum(CASE WHEN (isnull(customer_sk) AND isnotnull(customer_sk)) THEN 1 ELSE 0 END),sum(CASE WHEN (isnotnull(customer_sk) AND isnotnull(customer_sk)) THEN 1 ELSE 0 END)]
+      CometHashAggregate [sum,sum,sum] [store_only,catalog_only,store_and_catalog,sum(CASE WHEN (isnotnull(customer_sk) AND isnull(customer_sk)) THEN 1 ELSE 0 END),sum(CASE WHEN (isnull(customer_sk) AND isnotnull(customer_sk)) THEN 1 ELSE 0 END),sum(CASE WHEN (isnotnull(customer_sk) AND isnotnull(customer_sk)) THEN 1 ELSE 0 END)]
         CometExchange #1
-          CometHashAggregate [sum,sum,sum,customer_sk,customer_sk]
+          CometHashAggregate [customer_sk,customer_sk] [sum,sum,sum]
             CometProject [customer_sk,customer_sk]
               CometSortMergeJoin [customer_sk,item_sk,customer_sk,item_sk]
                 CometSort [customer_sk,item_sk]

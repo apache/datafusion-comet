@@ -25,13 +25,12 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{avg, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 /**
  * Test suite dedicated to Comet native aggregate operator
@@ -45,7 +44,13 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val filename = path.toString
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        ParquetGenerator.makeParquetFile(random, spark, filename, 10000, DataGenOptions())
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          10000,
+          SchemaGenOptions(),
+          DataGenOptions())
       }
       val tableName = "avg_decimal"
       withTable(tableName) {
@@ -61,9 +66,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("stddev_pop should return NaN for some cases") {
-    withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_EXPR_STDDEV_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
       Seq(true, false).foreach { nullOnDivideByZero =>
         withSQLConf("spark.sql.legacy.statisticalAggregate" -> nullOnDivideByZero.toString) {
 
@@ -87,58 +90,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       val df2 = sql("SELECT count(DISTINCT 2), count(DISTINCT 3,2)")
       checkSparkAnswer(df2)
-    }
-  }
-
-  test("lead/lag should return the default value if the offset row does not exist") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
-      checkSparkAnswer(sql("""
-                             |SELECT
-                             |  lag(123, 100, 321) OVER (ORDER BY id) as lag,
-                             |  lead(123, 100, 321) OVER (ORDER BY id) as lead
-                             |FROM (SELECT 1 as id) tmp
-      """.stripMargin))
-
-      checkSparkAnswer(sql("""
-                             |SELECT
-                             |  lag(123, 100, a) OVER (ORDER BY id) as lag,
-                             |  lead(123, 100, a) OVER (ORDER BY id) as lead
-                             |FROM (SELECT 1 as id, 2 as a) tmp
-      """.stripMargin))
-    }
-  }
-
-  // based on Spark's SQLWindowFunctionSuite test of the same name
-  test("window function: partition and order expressions") {
-    for (shuffleMode <- Seq("auto", "native", "jvm")) {
-      withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
-        val df =
-          Seq((1, "a", 5), (2, "a", 6), (3, "b", 7), (4, "b", 8), (5, "c", 9), (6, "c", 10)).toDF(
-            "month",
-            "area",
-            "product")
-        df.createOrReplaceTempView("windowData")
-        val df2 = sql("""
-            |select month, area, product, sum(product + 1) over (partition by 1 order by 2)
-            |from windowData
-          """.stripMargin)
-        checkSparkAnswer(df2)
-        val cometShuffles = collect(df2.queryExecution.executedPlan) {
-          case _: CometShuffleExchangeExec => true
-        }
-        if (shuffleMode == "jvm" || shuffleMode == "auto") {
-          assert(cometShuffles.length == 1)
-        } else {
-          // we fall back to Spark for shuffle because we do not support
-          // native shuffle with a LocalTableScan input, and we do not fall
-          // back to Comet columnar shuffle due to
-          // https://github.com/apache/datafusion-comet/issues/1248
-          assert(cometShuffles.isEmpty)
-        }
-      }
     }
   }
 
@@ -1101,7 +1052,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 "SELECT _g2, AVG(_7) FROM tbl GROUP BY _g2",
                 expectedNumOfCometAggregates)
 
-              checkSparkAnswerWithTol("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")
+              checkSparkAnswerWithTolerance("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")
               assert(getNumCometHashAggregate(
                 sql("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")) == expectedNumOfCometAggregates)
 
@@ -1113,7 +1064,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 "SELECT AVG(_7) FROM tbl",
                 expectedNumOfCometAggregates)
 
-              checkSparkAnswerWithTol("SELECT AVG(_8) FROM tbl")
+              checkSparkAnswerWithTolerance("SELECT AVG(_8) FROM tbl")
               assert(getNumCometHashAggregate(
                 sql("SELECT AVG(_8) FROM tbl")) == expectedNumOfCometAggregates)
 
@@ -1446,9 +1397,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("stddev_pop and stddev_samp") {
-    withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_EXPR_STDDEV_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
       Seq("native", "jvm").foreach { cometShuffleMode =>
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
@@ -1503,7 +1452,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       numAggregates: Int,
       absTol: Double = 1e-6): Unit = {
     val df = sql(query)
-    checkSparkAnswerWithTol(df, absTol)
+    checkSparkAnswerWithTolerance(df, absTol)
     val actualNumAggregates = getNumCometHashAggregate(df)
     assert(
       actualNumAggregates == numAggregates,

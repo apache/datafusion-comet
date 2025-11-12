@@ -1,0 +1,88 @@
+Project
++- BroadcastNestedLoopJoin
+   :-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#1))#2,17,2) AS promotions#3)]
+   :  +- CometColumnarToRow
+   :     +- CometExchange
+   :        +- CometHashAggregate
+   :           +- CometProject
+   :              +- CometBroadcastHashJoin
+   :                 :- CometProject
+   :                 :  +- CometBroadcastHashJoin
+   :                 :     :- CometProject
+   :                 :     :  +- CometBroadcastHashJoin
+   :                 :     :     :- CometProject
+   :                 :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :- CometProject
+   :                 :     :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :     :- CometProject
+   :                 :     :     :     :     :  +- CometBroadcastHashJoin
+   :                 :     :     :     :     :     :- CometFilter
+   :                 :     :     :     :     :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+   :                 :     :     :     :     :     :        +- SubqueryBroadcast
+   :                 :     :     :     :     :     :           +- BroadcastExchange
+   :                 :     :     :     :     :     :              +- CometColumnarToRow
+   :                 :     :     :     :     :     :                 +- CometProject
+   :                 :     :     :     :     :     :                    +- CometFilter
+   :                 :     :     :     :     :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+   :                 :     :     :     :     :     +- CometBroadcastExchange
+   :                 :     :     :     :     :        +- CometProject
+   :                 :     :     :     :     :           +- CometFilter
+   :                 :     :     :     :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+   :                 :     :     :     :     +- CometBroadcastExchange
+   :                 :     :     :     :        +- CometProject
+   :                 :     :     :     :           +- CometFilter
+   :                 :     :     :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.promotion
+   :                 :     :     :     +- CometBroadcastExchange
+   :                 :     :     :        +- CometProject
+   :                 :     :     :           +- CometFilter
+   :                 :     :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+   :                 :     :     +- CometBroadcastExchange
+   :                 :     :        +- CometFilter
+   :                 :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
+   :                 :     +- CometBroadcastExchange
+   :                 :        +- CometProject
+   :                 :           +- CometFilter
+   :                 :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
+   :                 +- CometBroadcastExchange
+   :                    +- CometProject
+   :                       +- CometFilter
+   :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+   +- BroadcastExchange
+      +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#4))#5,17,2) AS total#6)]
+         +- CometColumnarToRow
+            +- CometExchange
+               +- CometHashAggregate
+                  +- CometProject
+                     +- CometBroadcastHashJoin
+                        :- CometProject
+                        :  +- CometBroadcastHashJoin
+                        :     :- CometProject
+                        :     :  +- CometBroadcastHashJoin
+                        :     :     :- CometProject
+                        :     :     :  +- CometBroadcastHashJoin
+                        :     :     :     :- CometProject
+                        :     :     :     :  +- CometBroadcastHashJoin
+                        :     :     :     :     :- CometFilter
+                        :     :     :     :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                        :     :     :     :     :        +- ReusedSubquery
+                        :     :     :     :     +- CometBroadcastExchange
+                        :     :     :     :        +- CometProject
+                        :     :     :     :           +- CometFilter
+                        :     :     :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+                        :     :     :     +- CometBroadcastExchange
+                        :     :     :        +- CometProject
+                        :     :     :           +- CometFilter
+                        :     :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                        :     :     +- CometBroadcastExchange
+                        :     :        +- CometFilter
+                        :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
+                        :     +- CometBroadcastExchange
+                        :        +- CometProject
+                        :           +- CometFilter
+                        :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
+                        +- CometBroadcastExchange
+                           +- CometProject
+                              +- CometFilter
+                                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+
+Comet accelerated 75 out of 83 eligible operators (90%). Final plan contains 3 transitions between Spark and Comet.

@@ -1,0 +1,109 @@
+{
+    "engine": "datafusion-comet",
+    "benchmark": "tpch",
+    "data_path": "/mnt/bigdata/tpch/sf100/",
+    "query_path": "/mnt/bigdata/tpch/queries/",
+    "spark_conf": {
+        "spark.eventLog.enabled": "true",
+        "spark.executor.extraClassPath": "/opt/comet/comet-spark-spark3.5_2.12-0.11.0.jar",
+        "spark.comet.exec.replaceSortMergeJoin": "true",
+        "spark.app.startTime": "1760653540239",
+        "spark.hadoop.fs.s3a.aws.credentials.provider": "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
+        "spark.memory.offHeap.enabled": "true",
+        "spark.executor.memory": "16g",
+        "spark.app.name": "comet benchmark derived from tpch",
+        "spark.serializer.objectStreamReset": "100",
+        "spark.submit.deployMode": "client",
+        "spark.executor.cores": "8",
+        "spark.repl.local.jars": "file:///opt/comet/comet-spark-spark3.5_2.12-0.11.0.jar",
+        "spark.driver.host": "woody.lan",
+        "spark.driver.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager",
+        "spark.app.initial.jar.urls": "spark://woody.lan:33195/jars/comet-spark-spark3.5_2.12-0.11.0.jar",
+        "spark.driver.port": "33195",
+        "spark.app.submitTime": "1760653539951",
+        "spark.executor.id": "driver",
+        "spark.master": "spark://woody:7077",
+        "spark.app.id": "app-20251016162540-0000",
+        "spark.sql.extensions": "org.apache.comet.CometSparkSessionExtensions",
+        "spark.driver.memory": "8G",
+        "spark.plugins": "org.apache.spark.CometPlugin",
+        "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
+        "spark.rdd.compress": "True",
+        "spark.executor.extraJavaOptions": "-Djava.net.preferIPv6Addresses=false -XX:+IgnoreUnrecognizedVMOptions --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED -Djdk.reflect.useDirectMethodHandle=false",
+        "spark.executor.instances": "1",
+        "spark.cores.max": "8",
+        "spark.submit.pyFiles": "",
+        "spark.driver.extraClassPath": "/opt/comet/comet-spark-spark3.5_2.12-0.11.0.jar",
+        "spark.comet.expression.allowIncompatible": "true",
+        "spark.sql.warehouse.dir": "file:/home/andy/git/apache/datafusion-comet/dev/benchmarks/spark-warehouse",
+        "spark.memory.offHeap.size": "16g",
+        "spark.jars": "file:///opt/comet/comet-spark-spark3.5_2.12-0.11.0.jar"
+    },
+    "1": [
+        11.212985038757324
+    ],
+    "2": [
+        5.673609495162964
+    ],
+    "3": [
+        9.97777271270752
+    ],
+    "4": [
+        8.529500007629395
+    ],
+    "5": [
+        19.598382234573364
+    ],
+    "6": [
+        2.3726236820220947
+    ],
+    "7": [
+        12.82810378074646
+    ],
+    "8": [
+        25.8716139793396
+    ],
+    "9": [
+        43.49171710014343
+    ],
+    "10": [
+        10.703784942626953
+    ],
+    "11": [
+        4.5317604541778564
+    ],
+    "12": [
+        6.898319244384766
+    ],
+    "13": [
+        7.379798173904419
+    ],
+    "14": [
+        3.849822998046875
+    ],
+    "15": [
+        7.56447696685791
+    ],
+    "16": [
+        4.927879810333252
+    ],
+    "17": [
+        36.640506744384766
+    ],
+    "18": [
+        22.998356342315674
+    ],
+    "19": [
+        7.378145456314087
+    ],
+    "20": [
+        7.028060674667358
+    ],
+    "21": [
+        38.39371418952942
+    ],
+    "22": [
+        4.603666543960571
+    ]
+}

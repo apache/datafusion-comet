@@ -18,7 +18,7 @@
 //! PoC of vectorization execution through JNI to Rust.
 pub mod expressions;
 pub mod jni_api;
-mod metrics;
+pub(crate) mod metrics;
 pub mod operators;
 pub(crate) mod planner;
 pub mod serde;
@@ -27,6 +27,7 @@ pub(crate) mod sort;
 pub(crate) mod spark_plan;
 pub use datafusion_comet_spark_expr::timezone;
 mod memory_pools;
+pub(crate) mod spark_config;
 pub(crate) mod tracing;
 pub(crate) mod utils;
 

@@ -104,6 +104,7 @@ message NativeScan {
   // configuration value "spark.hadoop.fs.s3a.access.key" will be stored as "fs.s3a.access.key" in
   // the map.
   map<string, string> object_store_options = 13;
+  bool encryption_enabled = 14;
 }
 
 message Projection {
@@ -112,8 +113,6 @@ message Projection {
 
 message Filter {
   spark.spark_expression.Expr predicate = 1;
-  // Some expressions don't support dictionary arrays, so may need to wrap the child in a CopyExec
-  bool wrap_child_in_copy_exec = 3;
 }
 
 message Sort {

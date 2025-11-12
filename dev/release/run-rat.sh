@@ -18,7 +18,7 @@
 # under the License.
 #
 
-RAT_VERSION=0.13
+RAT_VERSION=0.16.1
 
 # download apache rat
 if [ ! -f apache-rat-${RAT_VERSION}.jar ]; then

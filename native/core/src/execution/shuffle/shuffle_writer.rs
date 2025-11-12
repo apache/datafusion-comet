@@ -17,11 +17,9 @@
 
 //! Defines the External shuffle repartition plan.
 
-use crate::execution::shuffle::range_partitioner::RangePartitioner;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use crate::execution::tracing::{with_trace, with_trace_async};
 use arrow::compute::interleave_record_batch;
-use arrow::row::{OwnedRow, RowConverter};
 use async_trait::async_trait;
 use datafusion::common::utils::proxy::VecAllocExt;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
@@ -333,10 +331,6 @@ struct MultiPartitionShuffleRepartitioner {
     /// Reservation for repartitioning
     reservation: MemoryReservation,
     tracing_enabled: bool,
-    /// RangePartitioning-specific state
-    bounds_rows: Option<Vec<OwnedRow>>,
-    row_converter: Option<RowConverter>,
-    seed: u64,
 }
 
 #[derive(Default)]
@@ -413,10 +407,6 @@ impl MultiPartitionShuffleRepartitioner {
             batch_size,
             reservation,
             tracing_enabled,
-            bounds_rows: None,
-            row_converter: None,
-            // Spark RangePartitioner seeds off of partition number.
-            seed: partition as u64,
         })
     }
 
@@ -546,7 +536,8 @@ impl MultiPartitionShuffleRepartitioner {
             CometPartitioning::RangePartitioning(
                 lex_ordering,
                 num_output_partitions,
-                sample_size,
+                row_converter,
+                bounds,
             ) => {
                 let mut scratch = std::mem::take(&mut self.scratch);
                 let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
@@ -560,37 +551,20 @@ impl MultiPartitionShuffleRepartitioner {
 
                     let num_rows = arrays[0].len();
 
-                    // If necessary (i.e., when first batch arrives) generate the bounds (as Rows)
-                    // for range partitioning based on randomly reservoir sampling the batch.
-                    if self.row_converter.is_none() {
-                        let (bounds_rows, row_converter) = RangePartitioner::generate_bounds(
-                            &arrays,
-                            lex_ordering,
-                            *num_output_partitions,
-                            input.num_rows(),
-                            *sample_size,
-                            self.seed,
-                        )?;
-
-                        self.bounds_rows =
-                            Some(bounds_rows.iter().map(|row| row.owned()).collect_vec());
-                        self.row_converter = Some(row_converter);
-                    }
-
                     // Generate partition ids for every row, first by converting the partition
                     // arrays to Rows, and then doing binary search for each Row against the
                     // bounds Rows.
-                    let row_batch = self
-                        .row_converter
-                        .as_ref()
-                        .unwrap()
-                        .convert_columns(arrays.as_slice())?;
+                    {
+                        let row_batch = row_converter.convert_columns(arrays.as_slice())?;
+                        let partition_ids = &mut scratch.partition_ids[..num_rows];
 
-                    RangePartitioner::partition_indices_for_batch(
-                        &row_batch,
-                        self.bounds_rows.as_ref().unwrap().as_slice(),
-                        &mut scratch.partition_ids[..num_rows],
-                    );
+                        row_batch.iter().enumerate().for_each(|(row_idx, row)| {
+                            partition_ids[row_idx] = bounds
+                                .as_slice()
+                                .partition_point(|bound| bound.row() <= row)
+                                as u32
+                        });
+                    }
 
                     // We now have partition ids for every input row, map that to partition starts
                     // and partition indices to eventually right these rows to partition buffers.
@@ -1009,23 +983,24 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
         self.output_data_writer.flush(&self.metrics.write_time)?;
 
         // Write index file. It should only contain 2 entries: 0 and the total number of bytes written
-        let mut index_file = OpenOptions::new()
+        let index_file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(self.output_index_path.clone())
             .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
+        let mut index_buf_writer = BufWriter::new(index_file);
         let data_file_length = self
             .output_data_writer
             .writer
             .stream_position()
             .map_err(to_df_err)?;
         for offset in [0, data_file_length] {
-            index_file
+            index_buf_writer
                 .write_all(&(offset as i64).to_le_bytes()[..])
                 .map_err(to_df_err)?;
         }
-        index_file.flush()?;
+        index_buf_writer.flush()?;
 
         self.metrics
             .baseline
@@ -1278,6 +1253,7 @@ mod test {
     use super::*;
     use crate::execution::shuffle::read_ipc_compressed;
     use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::row::{RowConverter, SortField};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::config::SessionConfig;
@@ -1404,15 +1380,51 @@ mod test {
     ) {
         let batch = create_batch(batch_size);
 
+        let lex_ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
+            col("a", batch.schema().as_ref()).unwrap(),
+        )])
+        .unwrap();
+
+        let sort_fields: Vec<SortField> = batch
+            .columns()
+            .iter()
+            .zip(&lex_ordering)
+            .map(|(array, sort_expr)| {
+                SortField::new_with_options(array.data_type().clone(), sort_expr.options)
+            })
+            .collect();
+        let row_converter = RowConverter::new(sort_fields).unwrap();
+
+        let owned_rows = if num_partitions == 1 {
+            vec![]
+        } else {
+            // Determine range boundaries based on create_batch implementation. We just divide the
+            // domain of values in the batch equally to find partition bounds.
+            let bounds_strings = {
+                let mut boundaries = Vec::with_capacity(num_partitions - 1);
+                let step = batch_size as f64 / num_partitions as f64;
+
+                for i in 1..(num_partitions) {
+                    boundaries.push(Some((step * i as f64).round().to_string()));
+                }
+                boundaries
+            };
+            let bounds_array: Arc<dyn Array> = Arc::new(StringArray::from(bounds_strings));
+            let bounds_rows = row_converter
+                .convert_columns(vec![bounds_array].as_slice())
+                .unwrap();
+
+            let owned_rows_vec = bounds_rows.iter().map(|row| row.owned()).collect_vec();
+            owned_rows_vec
+        };
+
         for partitioning in [
             CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
             CometPartitioning::RangePartitioning(
-                LexOrdering::new(vec![PhysicalSortExpr::new_default(
-                    col("a", batch.schema().as_ref()).unwrap(),
-                )])
-                .unwrap(),
+                lex_ordering,
                 num_partitions,
-                100,
+                Arc::new(row_converter),
+                owned_rows,
             ),
         ] {
             let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();

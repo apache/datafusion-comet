@@ -1,0 +1,173 @@
+ TakeOrderedAndProject [COMET: ]
++- Project
+   +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
+      +- CometColumnarToRow
+         +- CometSort
+            +- CometExchange
+               +- CometHashAggregate
+                  +- CometColumnarExchange
+                     +- HashAggregate
+                        +- Union
+                           :- HashAggregate
+                           :  +- CometColumnarToRow
+                           :     +- CometColumnarExchange
+                           :        +- HashAggregate
+                           :           +- Project
+                           :              +- BroadcastHashJoin
+                           :                 :- CometColumnarToRow
+                           :                 :  +- CometProject
+                           :                 :     +- CometBroadcastHashJoin
+                           :                 :        :- CometFilter
+                           :                 :        :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                           :                 :        :        +- SubqueryBroadcast
+                           :                 :        :           +- BroadcastExchange
+                           :                 :        :              +- CometColumnarToRow
+                           :                 :        :                 +- CometProject
+                           :                 :        :                    +- CometFilter
+                           :                 :        :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                           :                 :        +- CometBroadcastExchange
+                           :                 :           +- CometProject
+                           :                 :              +- CometFilter
+                           :                 :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                           :                 +- BroadcastExchange
+                           :                    +- Project
+                           :                       +- BroadcastHashJoin
+                           :                          :- CometColumnarToRow
+                           :                          :  +- CometFilter
+                           :                          :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+                           :                          +- BroadcastExchange
+                           :                             +- Project
+                           :                                +- Filter
+                           :                                   +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
+                           :                                      +- CometColumnarToRow
+                           :                                         +- CometSort
+                           :                                            +- CometHashAggregate
+                           :                                               +- CometExchange
+                           :                                                  +- CometHashAggregate
+                           :                                                     +- CometProject
+                           :                                                        +- CometBroadcastHashJoin
+                           :                                                           :- CometProject
+                           :                                                           :  +- CometBroadcastHashJoin
+                           :                                                           :     :- CometFilter
+                           :                                                           :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                           :                                                           :     :        +- ReusedSubquery
+                           :                                                           :     +- CometBroadcastExchange
+                           :                                                           :        +- CometProject
+                           :                                                           :           +- CometFilter
+                           :                                                           :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+                           :                                                           +- CometBroadcastExchange
+                           :                                                              +- CometProject
+                           :                                                                 +- CometFilter
+                           :                                                                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                           :- HashAggregate
+                           :  +- CometColumnarToRow
+                           :     +- CometColumnarExchange
+                           :        +- HashAggregate
+                           :           +- HashAggregate
+                           :              +- CometColumnarToRow
+                           :                 +- CometColumnarExchange
+                           :                    +- HashAggregate
+                           :                       +- Project
+                           :                          +- BroadcastHashJoin
+                           :                             :- CometColumnarToRow
+                           :                             :  +- CometProject
+                           :                             :     +- CometBroadcastHashJoin
+                           :                             :        :- CometFilter
+                           :                             :        :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                           :                             :        :        +- SubqueryBroadcast
+                           :                             :        :           +- BroadcastExchange
+                           :                             :        :              +- CometColumnarToRow
+                           :                             :        :                 +- CometProject
+                           :                             :        :                    +- CometFilter
+                           :                             :        :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                           :                             :        +- CometBroadcastExchange
+                           :                             :           +- CometProject
+                           :                             :              +- CometFilter
+                           :                             :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                           :                             +- BroadcastExchange
+                           :                                +- Project
+                           :                                   +- BroadcastHashJoin
+                           :                                      :- CometColumnarToRow
+                           :                                      :  +- CometFilter
+                           :                                      :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+                           :                                      +- BroadcastExchange
+                           :                                         +- Project
+                           :                                            +- Filter
+                           :                                               +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
+                           :                                                  +- CometColumnarToRow
+                           :                                                     +- CometSort
+                           :                                                        +- CometHashAggregate
+                           :                                                           +- CometExchange
+                           :                                                              +- CometHashAggregate
+                           :                                                                 +- CometProject
+                           :                                                                    +- CometBroadcastHashJoin
+                           :                                                                       :- CometProject
+                           :                                                                       :  +- CometBroadcastHashJoin
+                           :                                                                       :     :- CometFilter
+                           :                                                                       :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                           :                                                                       :     :        +- ReusedSubquery
+                           :                                                                       :     +- CometBroadcastExchange
+                           :                                                                       :        +- CometProject
+                           :                                                                       :           +- CometFilter
+                           :                                                                       :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+                           :                                                                       +- CometBroadcastExchange
+                           :                                                                          +- CometProject
+                           :                                                                             +- CometFilter
+                           :                                                                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                           +- HashAggregate
+                              +- CometColumnarToRow
+                                 +- CometColumnarExchange
+                                    +- HashAggregate
+                                       +- HashAggregate
+                                          +- CometColumnarToRow
+                                             +- CometColumnarExchange
+                                                +- HashAggregate
+                                                   +- Project
+                                                      +- BroadcastHashJoin
+                                                         :- CometColumnarToRow
+                                                         :  +- CometProject
+                                                         :     +- CometBroadcastHashJoin
+                                                         :        :- CometFilter
+                                                         :        :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                                                         :        :        +- SubqueryBroadcast
+                                                         :        :           +- BroadcastExchange
+                                                         :        :              +- CometColumnarToRow
+                                                         :        :                 +- CometProject
+                                                         :        :                    +- CometFilter
+                                                         :        :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                                         :        +- CometBroadcastExchange
+                                                         :           +- CometProject
+                                                         :              +- CometFilter
+                                                         :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                                         +- BroadcastExchange
+                                                            +- Project
+                                                               +- BroadcastHashJoin
+                                                                  :- CometColumnarToRow
+                                                                  :  +- CometFilter
+                                                                  :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+                                                                  +- BroadcastExchange
+                                                                     +- Project
+                                                                        +- Filter
+                                                                           +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
+                                                                              +- CometColumnarToRow
+                                                                                 +- CometSort
+                                                                                    +- CometHashAggregate
+                                                                                       +- CometExchange
+                                                                                          +- CometHashAggregate
+                                                                                             +- CometProject
+                                                                                                +- CometBroadcastHashJoin
+                                                                                                   :- CometProject
+                                                                                                   :  +- CometBroadcastHashJoin
+                                                                                                   :     :- CometFilter
+                                                                                                   :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                                                                                                   :     :        +- ReusedSubquery
+                                                                                                   :     +- CometBroadcastExchange
+                                                                                                   :        +- CometProject
+                                                                                                   :           +- CometFilter
+                                                                                                   :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+                                                                                                   +- CometBroadcastExchange
+                                                                                                      +- CometProject
+                                                                                                         +- CometFilter
+                                                                                                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+
+Comet accelerated 102 out of 153 eligible operators (66%). Final plan contains 18 transitions between Spark and Comet.

@@ -2,9 +2,9 @@ WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
       CometTakeOrderedAndProject [brand_id,brand,i_manufact_id,i_manufact,ext_price]
-        CometHashAggregate [brand_id,brand,i_manufact_id,i_manufact,ext_price,i_brand,i_brand_id,sum,sum(UnscaledValue(ss_ext_sales_price))]
+        CometHashAggregate [sum] [brand_id,brand,i_manufact_id,i_manufact,ext_price,i_brand_id,i_brand,sum(UnscaledValue(ss_ext_sales_price))]
           CometExchange [i_brand,i_brand_id,i_manufact_id,i_manufact] #1
-            CometHashAggregate [i_brand,i_brand_id,i_manufact_id,i_manufact,sum,ss_ext_sales_price]
+            CometHashAggregate [ss_ext_sales_price] [i_brand,i_brand_id,i_manufact_id,i_manufact,sum]
               CometProject [ss_ext_sales_price,i_brand_id,i_brand,i_manufact_id,i_manufact]
                 CometBroadcastHashJoin [ss_store_sk,ss_ext_sales_price,i_brand_id,i_brand,i_manufact_id,i_manufact,ca_zip,s_store_sk,s_zip]
                   CometProject [ss_store_sk,ss_ext_sales_price,i_brand_id,i_brand,i_manufact_id,i_manufact,ca_zip]

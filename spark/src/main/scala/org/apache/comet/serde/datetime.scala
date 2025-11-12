@@ -19,13 +19,16 @@
 
 package org.apache.comet.serde
 
+import java.util.Locale
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.types.{DateType, IntegerType}
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde._
 
 private object CometGetDateField extends Enumeration {
   type CometGetDateField = Value
@@ -251,33 +254,29 @@ object CometSecond extends CometExpressionSerde[Second] {
   }
 }
 
-object CometDateAdd extends CometExpressionSerde[DateAdd] {
-  override def convert(
-      expr: DateAdd,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
-    val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
-    val optExpr =
-      scalarFunctionExprToProtoWithReturnType("date_add", DateType, leftExpr, rightExpr)
-    optExprWithInfo(optExpr, expr, expr.left, expr.right)
-  }
-}
+object CometDateAdd extends CometScalarFunction[DateAdd]("date_add")
 
-object CometDateSub extends CometExpressionSerde[DateSub] {
-  override def convert(
-      expr: DateSub,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
-    val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
-    val optExpr =
-      scalarFunctionExprToProtoWithReturnType("date_sub", DateType, leftExpr, rightExpr)
-    optExprWithInfo(optExpr, expr, expr.left, expr.right)
-  }
-}
+object CometDateSub extends CometScalarFunction[DateSub]("date_sub")
 
 object CometTruncDate extends CometExpressionSerde[TruncDate] {
+
+  val supportedFormats: Seq[String] =
+    Seq("year", "yyyy", "yy", "quarter", "mon", "month", "mm", "week")
+
+  override def getSupportLevel(expr: TruncDate): SupportLevel = {
+    expr.format match {
+      case Literal(fmt: UTF8String, _) =>
+        if (supportedFormats.contains(fmt.toString.toLowerCase(Locale.ROOT))) {
+          Compatible()
+        } else {
+          Unsupported(Some(s"Format $fmt is not supported"))
+        }
+      case _ =>
+        Incompatible(
+          Some("Invalid format strings will throw an exception instead of returning NULL"))
+    }
+  }
+
   override def convert(
       expr: TruncDate,
       inputs: Seq[Attribute],
@@ -285,12 +284,50 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] {
     val childExpr = exprToProtoInternal(expr.date, inputs, binding)
     val formatExpr = exprToProtoInternal(expr.format, inputs, binding)
     val optExpr =
-      scalarFunctionExprToProtoWithReturnType("date_trunc", DateType, childExpr, formatExpr)
+      scalarFunctionExprToProtoWithReturnType(
+        "date_trunc",
+        DateType,
+        false,
+        childExpr,
+        formatExpr)
     optExprWithInfo(optExpr, expr, expr.date, expr.format)
   }
 }
 
 object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
+
+  val supportedFormats: Seq[String] =
+    Seq(
+      "year",
+      "yyyy",
+      "yy",
+      "quarter",
+      "mon",
+      "month",
+      "mm",
+      "week",
+      "day",
+      "dd",
+      "hour",
+      "minute",
+      "second",
+      "millisecond",
+      "microsecond")
+
+  override def getSupportLevel(expr: TruncTimestamp): SupportLevel = {
+    expr.format match {
+      case Literal(fmt: UTF8String, _) =>
+        if (supportedFormats.contains(fmt.toString.toLowerCase(Locale.ROOT))) {
+          Compatible()
+        } else {
+          Unsupported(Some(s"Format $fmt is not supported"))
+        }
+      case _ =>
+        Incompatible(
+          Some("Invalid format strings will throw an exception instead of returning NULL"))
+    }
+  }
+
   override def convert(
       expr: TruncTimestamp,
       inputs: Seq[Attribute],

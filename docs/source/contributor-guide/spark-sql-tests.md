@@ -56,19 +56,25 @@ git apply ../datafusion-comet/dev/diffs/3.4.3.diff
 
 ### Use the following commands to run the Spark SQL test suite locally.
 
+Optionally, enable Comet fallback logging, so that all fallback reasons are logged at `WARN` level.
+
 ```shell
-ENABLE_COMET=true build/sbt catalyst/test
-ENABLE_COMET=true build/sbt "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"
-ENABLE_COMET=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"
-ENABLE_COMET=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"
-ENABLE_COMET=true build/sbt "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"
-ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"
-ENABLE_COMET=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"
+export ENABLE_COMET_LOG_FALLBACK_REASONS=true
+```
+
+```shell
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true build/sbt catalyst/test
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true build/sbt "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true build/sbt "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true build/sbt "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true build/sbt "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"
 ```
 ### Steps to run individual test suites through SBT
 1. Open SBT with Comet enabled
 ```shell
-ENABLE_COMET=true sbt -J-Xmx4096m -Dspark.test.includeSlowTests=true 
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true sbt -J-Xmx4096m -Dspark.test.includeSlowTests=true
 ```
 2. Run individual tests (Below code runs test named `SPARK-35568` in the `spark-sql` module)
 ```shell

@@ -23,9 +23,10 @@ Comet supports the following Spark expressions. Expressions that are marked as S
 natively in Comet and provide the same results as Spark, or will fall back to Spark for cases that would not
 be compatible.
 
-All expressions are enabled by default, but can be disabled by setting
+All expressions are enabled by default, but most can be disabled by setting
 `spark.comet.expression.EXPRNAME.enabled=false`, where `EXPRNAME` is the expression name as specified in
-the following tables, such as `Length`, or `StartsWith`.
+the following tables, such as `Length`, or `StartsWith`. See the [Comet Configuration Guide] for a full list
+of expressions that be disabled.
 
 Expressions that are not Spark-compatible will fall back to Spark by default and can be enabled by setting
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`.
@@ -65,6 +66,7 @@ incompatible expressions.
 | Ascii           | Yes               |                                                                                                            |
 | BitLength       | Yes               |                                                                                                            |
 | Chr             | Yes               |                                                                                                            |
+| Concat          | Yes               | Only string inputs are supported                                                                           |
 | ConcatWs        | Yes               |                                                                                                            |
 | Contains        | Yes               |                                                                                                            |
 | EndsWith        | Yes               |                                                                                                            |
@@ -79,6 +81,7 @@ incompatible expressions.
 | StringInstr     | Yes               |                                                                                                            |
 | StringRepeat    | Yes               | Negative argument for number of times to repeat causes exception                                           |
 | StringReplace   | Yes               |                                                                                                            |
+| StringLPad      | Yes               |                                                                                                            |
 | StringRPad      | Yes               |                                                                                                            |
 | StringSpace     | Yes               |                                                                                                            |
 | StringTranslate | Yes               |                                                                                                            |
@@ -91,58 +94,60 @@ incompatible expressions.
 
 ## Date/Time Functions
 
-| Expression     | SQL                          | Spark-Compatible? | Compatibility Notes                                                                                  |
-| -------------- |------------------------------| ----------------- |------------------------------------------------------------------------------------------------------|
-| DateAdd        | `date_add`                   | Yes               |                                                                                                      |
-| DateSub        | `date_sub`                   | Yes               |                                                                                                      |
-| DatePart       | `date_part(field, source)`   | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`doy`/`quarter`/`hour`/`minute` |
-| Extract        | `extract(field FROM source)` | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`doy`/`quarter`/`hour`/`minute` |
-| FromUnixTime   | `from_unixtime`              | No                | Does not support format, supports only -8334601211038 <= sec <= 8210266876799                        |
-| Hour           | `hour`                       | Yes               |                                                                                                      |
-| Minute         | `minute`                     | Yes               |                                                                                                      |
-| Second         | `second`                     | Yes               |                                                                                                      |
-| TruncDate      | `trunc`                      | Yes               |                                                                                                      |
-| TruncTimestamp | `trunc_date`                 | Yes               |                                                                                                      |
-| Year           | `year`                       | Yes               |                                                                                                      |
-| Month          | `month`                      | Yes               |                                                                                                      |
-| DayOfMonth     | `day`/`dayofmonth`           | Yes               |                                                                                                      |
-| DayOfWeek      | `dayofweek`                  | Yes               |                                                                                                      |
-| DayOfYear      | `dayofyear`                  | Yes               |                                                                                                      |
-| WeekOfYear     | `weekofyear`                 | Yes               |                                                                                                      |
-| Quarter        | `quarter`                    | Yes               |                                                                                                      |
+| Expression     | SQL                          | Spark-Compatible? | Compatibility Notes                                                                                                  |
+| -------------- | ---------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------- |
+| DateAdd        | `date_add`                   | Yes               |                                                                                                                      |
+| DateSub        | `date_sub`                   | Yes               |                                                                                                                      |
+| DatePart       | `date_part(field, source)`   | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
+| Extract        | `extract(field FROM source)` | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
+| FromUnixTime   | `from_unixtime`              | No                | Does not support format, supports only -8334601211038 <= sec <= 8210266876799                                        |
+| Hour           | `hour`                       | Yes               |                                                                                                                      |
+| Minute         | `minute`                     | Yes               |                                                                                                                      |
+| Second         | `second`                     | Yes               |                                                                                                                      |
+| TruncDate      | `trunc`                      | Yes               |                                                                                                                      |
+| TruncTimestamp | `trunc_date`                 | Yes               |                                                                                                                      |
+| Year           | `year`                       | Yes               |                                                                                                                      |
+| Month          | `month`                      | Yes               |                                                                                                                      |
+| DayOfMonth     | `day`/`dayofmonth`           | Yes               |                                                                                                                      |
+| DayOfWeek      | `dayofweek`                  | Yes               |                                                                                                                      |
+| WeekDay        | `weekday`                    | Yes               |                                                                                                                      |
+| DayOfYear      | `dayofyear`                  | Yes               |                                                                                                                      |
+| WeekOfYear     | `weekofyear`                 | Yes               |                                                                                                                      |
+| Quarter        | `quarter`                    | Yes               |                                                                                                                      |
 
 ## Math Expressions
 
 | Expression     | SQL       | Spark-Compatible? | Compatibility Notes               |
-| -------------- | --------- | ----------------- | --------------------------------- |
+|----------------|-----------|-------------------|-----------------------------------|
+| Abs            | `abs`     | Yes               |                                   |
 | Acos           | `acos`    | Yes               |                                   |
-| Add            | `+`       | Yes               | ANSI mode is not supported.       |
+| Add            | `+`       | Yes               |                                   |
 | Asin           | `asin`    | Yes               |                                   |
 | Atan           | `atan`    | Yes               |                                   |
 | Atan2          | `atan2`   | Yes               |                                   |
-| BRound         | `bround`  | Yes               | ANSI mode is not supported.       |
+| BRound         | `bround`  | Yes               |                                   |
 | Ceil           | `ceil`    | Yes               |                                   |
 | Cos            | `cos`     | Yes               |                                   |
-| Divide         | `/`       | Yes               | ANSI mode is not supported.       |
+| Divide         | `/`       | Yes               |                                   |
 | Exp            | `exp`     | Yes               |                                   |
 | Expm1          | `expm1`   | Yes               |                                   |
 | Floor          | `floor`   | Yes               |                                   |
 | Hex            | `hex`     | Yes               |                                   |
-| IntegralDivide | `div`     | Yes               | ANSI mode is not supported.       |
+| IntegralDivide | `div`     | Yes               |                                   |
 | IsNaN          | `isnan`   | Yes               |                                   |
 | Log            | `log`     | Yes               |                                   |
 | Log2           | `log2`    | Yes               |                                   |
 | Log10          | `log10`   | Yes               |                                   |
-| Multiply       | `*`       | Yes               | ANSI mode is not supported.       |
+| Multiply       | `*`       | Yes               |                                   |
 | Pow            | `power`   | Yes               |                                   |
 | Rand           | `rand`    | Yes               |                                   |
 | Randn          | `randn`   | Yes               |                                   |
-| Remainder      | `%`       | Yes               | ANSI mode is not supported.       |
-| Round          | `round`   | Yes               | ANSI mode is not supported.       |
+| Remainder      | `%`       | Yes               |                                   |
+| Round          | `round`   | Yes               |                                   |
 | Signum         | `signum`  | Yes               |                                   |
 | Sin            | `sin`     | Yes               |                                   |
 | Sqrt           | `sqrt`    | Yes               |                                   |
-| Subtract       | `-`       | Yes               | ANSI mode is not supported.       |
+| Subtract       | `-`       | Yes               |                                   |
 | Tan            | `tan`     | Yes               |                                   |
 | TryAdd         | `try_add` | Yes               | Only integer inputs are supported |
 | TryDivide      | `try_div` | Yes               | Only integer inputs are supported |
@@ -197,6 +202,23 @@ incompatible expressions.
 | VariancePop   |            | Yes                       |                                                                  |
 | VarianceSamp  |            | Yes                       |                                                                  |
 
+## Window Functions
+
+```{warning}
+Window support is disabled by default due to known correctness issues. Tracking issue: [#2721](https://github.com/apache/datafusion-comet/issues/2721).
+```
+
+Comet supports using the following aggregate functions within window contexts with PARTITION BY and ORDER BY clauses. 
+
+| Expression | Spark-Compatible? | Compatibility Notes                          |
+| ---------- | ----------------- | -------------------------------------------- |
+| Count      | Yes               |     |
+| Max        | Yes               |     |
+| Min        | Yes               |     |
+| Sum        | Yes               |     |
+
+**Note:** Dedicated window functions such as `rank`, `dense_rank`, `row_number`, `lag`, `lead`, `ntile`, `cume_dist`, `percent_rank`, and `nth_value` are not currently supported and will fall back to Spark.
+
 ## Array Expressions
 
 | Expression     | Spark-Compatible? | Compatibility Notes                                                                                                                                                                       |
@@ -206,6 +228,7 @@ incompatible expressions.
 | ArrayContains  | Yes               |                                                                                                                                                                                           |
 | ArrayDistinct  | No                | Behaves differently than spark. Comet first sorts then removes duplicates while Spark preserves the original order.                                                                       |
 | ArrayExcept    | No                |                                                                                                                                                                                           |
+| ArrayFilter    | Yes               | Only supports case where function is `IsNotNull`                                                                                                                                          |
 | ArrayInsert    | No                |                                                                                                                                                                                           |
 | ArrayIntersect | No                |                                                                                                                                                                                           |
 | ArrayJoin      | No                |                                                                                                                                                                                           |
@@ -245,12 +268,21 @@ incompatible expressions.
 | ---------- | ------------------------ | ------------------------------------------------------------------------------------------- |
 | Cast       | Depends on specific cast | See the [Comet Compatibility Guide] for list of supported cast expressions and known issues |
 
+## SortOrder
+
+| Expression  | Spark-Compatible? | Compatibility Notes                                                         |
+|-------------| ----------------- | --------------------------------------------------------------------------- |
+| NullsFirst  | Yes               |                                                                             |
+| NullsLast   | Yes               |                                                                             |
+| Ascending   | Yes               |                                                                             |
+| Descending  | Yes               |                                                                             |
+
 ## Other
 
 | Expression                   | Spark-Compatible? | Compatibility Notes                                                         |
-| ---------------------------- | ----------------- | --------------------------------------------------------------------------- |
+|------------------------------| ----------------- | --------------------------------------------------------------------------- |
 | Alias                        | Yes               |                                                                             |
-| AttributeRefernce            | Yes               |                                                                             |
+| AttributeReference           | Yes               |                                                                             |
 | BloomFilterMightContain      | Yes               |                                                                             |
 | Coalesce                     | Yes               |                                                                             |
 | CheckOverflow                | Yes               |                                                                             |
@@ -266,4 +298,5 @@ incompatible expressions.
 | ToPrettyString               | Yes               |                                                                             |
 | UnscaledValue                | Yes               |                                                                             |
 
+[Comet Configuration Guide]: configs.md
 [Comet Compatibility Guide]: compatibility.md

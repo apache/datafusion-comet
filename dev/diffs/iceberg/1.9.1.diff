@@ -24,7 +24,7 @@ index c50991c5fc6..f7ad00f0b78 100644
  bson-ver = "4.11.5"
  caffeine = "2.9.3"
  calcite = "1.39.0"
-+comet = "0.11.0-SNAPSHOT"
++comet = "0.12.0-SNAPSHOT"
  datasketches = "6.2.0"
  delta-standalone = "3.3.1"
  delta-spark = "3.3.1"
@@ -291,10 +291,10 @@ index 00000000000..ddf6c7de5ae
 +}
 diff --git a/parquet/src/main/java/org/apache/iceberg/parquet/CometVectorizedParquetReader.java b/parquet/src/main/java/org/apache/iceberg/parquet/CometVectorizedParquetReader.java
 new file mode 100644
-index 00000000000..88b195b76a2
+index 00000000000..a3cba401827
 --- /dev/null
 +++ b/parquet/src/main/java/org/apache/iceberg/parquet/CometVectorizedParquetReader.java
-@@ -0,0 +1,255 @@
+@@ -0,0 +1,260 @@
 +/*
 + * Licensed to the Apache Software Foundation (ASF) under one
 + * or more contributor license agreements.  See the NOTICE file
@@ -437,6 +437,7 @@ index 00000000000..88b195b76a2
 +    private long valuesRead = 0;
 +    private T last = null;
 +    private final FileReader cometReader;
++    private ReadConf conf;
 +
 +    FileIterator(
 +        ReadConf conf,
@@ -461,6 +462,7 @@ index 00000000000..88b195b76a2
 +              length,
 +              fileEncryptionKey,
 +              fileAADPrefix);
++      this.conf = conf;
 +    }
 +
 +    private FileReader newCometReader(
@@ -547,6 +549,9 @@ index 00000000000..88b195b76a2
 +    public void close() throws IOException {
 +      model.close();
 +      cometReader.close();
++      if (conf != null && conf.reader() != null) {
++        conf.reader().close();
++      }
 +    }
 +  }
 +}

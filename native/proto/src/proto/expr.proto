@@ -70,7 +70,6 @@ message Expr {
     IfExpr if = 44;
     NormalizeNaNAndZero normalize_nan_and_zero = 45;
     TruncTimestamp truncTimestamp = 47;
-    Abs abs = 49;
     Subquery subquery = 50;
     UnboundReference unbound = 51;
     BloomFilterMightContain bloom_filter_might_contain = 52;
@@ -269,9 +268,18 @@ message ToJson {
   bool ignore_null_fields = 6;
 }
 
+enum BinaryOutputStyle {
+  UTF8 = 0;
+  BASIC = 1;
+  BASE64 = 2;
+  HEX = 3;
+  HEX_DISCRETE = 4;
+}
+
 message ToPrettyString {
   Expr child = 1;
   string timezone = 2;
+  BinaryOutputStyle binaryOutputStyle = 3;
 }
 
 message Hour {
@@ -299,6 +307,7 @@ message ScalarFunc {
   string func = 1;
   repeated Expr args = 2;
   DataType return_type = 3;
+  bool fail_on_error = 4;
 }
 
 message CaseWhen {
@@ -339,11 +348,6 @@ message TruncTimestamp {
   Expr format = 1;
   Expr child = 2;
   string timezone = 3;
-}
-
-message Abs {
-  Expr child = 1;
-  EvalMode eval_mode = 2;
 }
 
 message Subquery {

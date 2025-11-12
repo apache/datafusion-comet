@@ -50,8 +50,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-24.04]
-        java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.6'}]
+        spark-version: [{short: '3.4', full: '3.4.3', java: 11}, {short: '3.5', full: '3.5.7', java: 11}, {short: '4.0', full: '4.0.1', java: 17}]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql_core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
@@ -61,7 +60,7 @@ jobs:
           - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
       fail-fast: false
-    name: spark-sql-${{ matrix.module.name }}/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.java-version }}
+    name: spark-sql-${{ matrix.module.name }}/${{ matrix.os }}/spark-${{ matrix.spark-version.full }}/java-${{ matrix.spark-version.java }}
     runs-on: ${{ matrix.os }}
     container:
       image: amd64/rust
@@ -71,7 +70,7 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java-version }}
+          jdk-version: ${{ matrix.spark-version.java }}
       - name: Setup Spark
         uses: ./.github/actions/setup-spark-builder
         with:
@@ -81,7 +80,7 @@ jobs:
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
             build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
           if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
             find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
@@ -90,9 +89,9 @@ jobs:
           LC_ALL: "C.UTF-8"
       - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: fallback-log-spark-sql-${{ matrix.module.name }}-${{ matrix.os }}-spark-${{ matrix.spark-version.full }}-java-${{ matrix.java-version }}
+          name: fallback-log-spark-sql-${{ matrix.module.name }}-${{ matrix.os }}-spark-${{ matrix.spark-version.full }}-java-${{ matrix.spark-version.java }}
           path: "**/fallback.log"
 
   spark-sql-native-native-comet:
@@ -100,7 +99,7 @@ jobs:
       matrix:
         os: [ ubuntu-24.04 ]
         java-version: [ 11 ]
-        spark-version: [ { short: '3.4', full: '3.4.3' }, { short: '3.5', full: '3.5.6' } ]
+        spark-version: [ { short: '3.4', full: '3.4.3' }, { short: '3.5', full: '3.5.7' } ]
         module:
           - { name: "catalyst", args1: "catalyst/test", args2: "" }
           - { name: "sql_core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest }
@@ -130,7 +129,7 @@ jobs:
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true COMET_PARQUET_SCAN_IMPL=native_comet ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=native_comet ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
             build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
           if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
             find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
@@ -139,7 +138,7 @@ jobs:
           LC_ALL: "C.UTF-8"
       - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: fallback-log-spark-sql-native-comet-${{ matrix.module.name }}-${{ matrix.os }}-spark-${{ matrix.spark-version.full }}-java-${{ matrix.java-version }}
           path: "**/fallback.log"
@@ -149,7 +148,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04]
         java-version: [11]
-        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.6'}]
+        spark-version: [{short: '3.4', full: '3.4.3'}, {short: '3.5', full: '3.5.7'}]
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           - {name: "sql_core-1", args1: "", args2: sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest}
@@ -179,7 +178,7 @@ jobs:
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true COMET_PARQUET_SCAN_IMPL=native_iceberg_compat ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_PARQUET_SCAN_IMPL=native_iceberg_compat ENABLE_COMET_LOG_FALLBACK_REASONS=${{ github.event.inputs.collect-fallback-logs || 'false' }} \
             build/sbt -Dsbt.log.noformat=true ${{ matrix.module.args1 }} "${{ matrix.module.args2 }}"
           if [ "${{ github.event.inputs.collect-fallback-logs }}" = "true" ]; then
             find . -type f -name "unit-tests.log" -print0 | xargs -0 grep -h "Comet cannot accelerate" | sed 's/.*Comet cannot accelerate/Comet cannot accelerate/' | sort -u > fallback.log
@@ -188,7 +187,7 @@ jobs:
           LC_ALL: "C.UTF-8"
       - name: Upload fallback log
         if: ${{ github.event.inputs.collect-fallback-logs == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: fallback-log-spark-sql-iceberg-compat-${{ matrix.module.name }}-${{ matrix.os }}-spark-${{ matrix.spark-version.full }}-java-${{ matrix.java-version }}
           path: "**/fallback.log"
@@ -200,14 +199,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Download fallback log artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           path: fallback-logs/
       - name: Merge fallback logs
         run: |
           find ./fallback-logs/ -type f -name "fallback.log" -print0 | xargs -0 cat | sort -u > all_fallback.log
       - name: Upload merged fallback log
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: all-fallback-log
           path: all_fallback.log

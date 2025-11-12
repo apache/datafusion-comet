@@ -16,11 +16,12 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
 package org.apache.comet.shims
 
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
 import org.apache.spark.sql.types.DataType
 
 trait CometTypeShim {
-    def isStringCollationType(dt: DataType): Boolean = dt.isInstanceOf[StringTypeWithCollation]
+  def isStringCollationType(dt: DataType): Boolean = dt.isInstanceOf[StringTypeWithCollation]
 }

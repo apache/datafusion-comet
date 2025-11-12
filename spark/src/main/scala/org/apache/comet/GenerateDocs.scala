@@ -25,8 +25,9 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.catalyst.expressions.Cast
 
+import org.apache.comet.CometConf.COMET_ONHEAP_MEMORY_OVERHEAD
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{Compatible, Incompatible}
+import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -35,38 +36,71 @@ import org.apache.comet.serde.{Compatible, Incompatible}
  */
 object GenerateDocs {
 
-  private def userGuideLocation = "docs/source/user-guide/latest/"
+  private val publicConfigs: Set[ConfigEntry[_]] = CometConf.allConfs.filter(_.isPublic).toSet
 
   def main(args: Array[String]): Unit = {
-    generateConfigReference()
-    generateCompatibilityGuide()
+    val userGuideLocation = args(0)
+    generateConfigReference(s"$userGuideLocation/configs.md")
+    generateCompatibilityGuide(s"$userGuideLocation/compatibility.md")
   }
 
-  private def generateConfigReference(): Unit = {
-    val filename = s"$userGuideLocation/configs.md"
+  private def generateConfigReference(filename: String): Unit = {
+    val pattern = "<!--BEGIN:CONFIG_TABLE\\[(.*)]-->".r
     val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))
     for (line <- lines) {
       w.write(s"${line.stripTrailing()}\n".getBytes)
-      if (line.trim == "<!--BEGIN:CONFIG_TABLE-->") {
-        val publicConfigs = CometConf.allConfs.filter(_.isPublic)
-        val confs = publicConfigs.sortBy(_.key)
-        w.write("| Config | Description | Default Value |\n".getBytes)
-        w.write("|--------|-------------|---------------|\n".getBytes)
-        for (conf <- confs) {
-          if (conf.defaultValue.isEmpty) {
-            w.write(s"| ${conf.key} | ${conf.doc.trim} | |\n".getBytes)
-          } else {
-            w.write(s"| ${conf.key} | ${conf.doc.trim} | ${conf.defaultValueString} |\n".getBytes)
+      line match {
+        case pattern(category) =>
+          w.write("| Config | Description | Default Value |\n".getBytes)
+          w.write("|--------|-------------|---------------|\n".getBytes)
+          category match {
+            case "enable_expr" =>
+              for (expr <- QueryPlanSerde.exprSerdeMap.keys.map(_.getSimpleName).toList.sorted) {
+                val config = s"spark.comet.expression.$expr.enabled"
+                w.write(
+                  s"| `$config` | Enable Comet acceleration for `$expr` | true |\n".getBytes)
+              }
+            case "enable_agg_expr" =>
+              for (expr <- QueryPlanSerde.aggrSerdeMap.keys.map(_.getSimpleName).toList.sorted) {
+                val config = s"spark.comet.expression.$expr.enabled"
+                w.write(
+                  s"| `$config` | Enable Comet acceleration for `$expr` | true |\n".getBytes)
+              }
+            case _ =>
+              val urlPattern = """Comet\s+(Compatibility|Tuning|Tracing)\s+Guide\s+\(""".r
+              val confs = publicConfigs.filter(_.category == category).toList.sortBy(_.key)
+              for (conf <- confs) {
+                // convert links to Markdown
+                val doc =
+                  urlPattern.replaceAllIn(conf.doc.trim, m => s"[Comet ${m.group(1)} Guide](")
+                // append env var info if present
+                val docWithEnvVar = conf.envVar match {
+                  case Some(envVarName) =>
+                    s"$doc Can be overridden by environment variable `$envVarName`."
+                  case None => doc
+                }
+                if (conf.defaultValue.isEmpty) {
+                  w.write(s"| `${conf.key}` | $docWithEnvVar | |\n".getBytes)
+                } else {
+                  val isBytesConf = conf.key == COMET_ONHEAP_MEMORY_OVERHEAD.key
+                  if (isBytesConf) {
+                    val bytes = conf.defaultValue.get.asInstanceOf[Long]
+                    w.write(s"| `${conf.key}` | $docWithEnvVar | $bytes MiB |\n".getBytes)
+                  } else {
+                    val defaultVal = conf.defaultValueString
+                    w.write(s"| `${conf.key}` | $docWithEnvVar | $defaultVal |\n".getBytes)
+                  }
+                }
+              }
           }
-        }
+        case _ =>
       }
     }
     w.close()
   }
 
-  private def generateCompatibilityGuide(): Unit = {
-    val filename = s"$userGuideLocation/compatibility.md"
+  private def generateCompatibilityGuide(filename: String): Unit = {
     val lines = readFile(filename)
     val w = new BufferedOutputStream(new FileOutputStream(filename))
     for (line <- lines) {

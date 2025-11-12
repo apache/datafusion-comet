@@ -28,10 +28,11 @@ cp -rf source/* temp/
 rm -rf comet-0.8
 rm -rf comet-0.9
 rm -rf comet-0.10
+rm -rf comet-0.11
 python3 generate-versions.py
 
 # Remove overview pages (this used to be part of the user guide but is now a top level page)
-rm temp/user-guide/0.9/overview.md
-rm temp/user-guide/0.8/overview.md
+rm temp/user-guide/0.9/overview.md 2> /dev/null
+rm temp/user-guide/0.8/overview.md 2> /dev/null
 
 make SOURCEDIR=`pwd`/temp html

@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use arrow::array::{ListArray, MapArray};
+use arrow::array::{FixedSizeBinaryArray, ListArray, MapArray, StringArray};
 use arrow::buffer::NullBuffer;
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{FieldRef, Fields};
@@ -200,6 +200,28 @@ fn parquet_convert_array(
         (Map(_, ordered_from), Map(_, ordered_to)) if ordered_from == ordered_to =>
             parquet_convert_map_to_map(array.as_map(), to_type, parquet_options, *ordered_to)
             ,
+        // Iceberg stores UUIDs as 16-byte fixed binary but Spark expects string representation.
+        // Arrow doesn't support casting FixedSizeBinary to Utf8, so we handle it manually.
+        (FixedSizeBinary(16), Utf8) => {
+            let binary_array = array
+                .as_any()
+                .downcast_ref::<FixedSizeBinaryArray>()
+                .expect("Expected a FixedSizeBinaryArray");
+
+            let string_array: StringArray = binary_array
+                .iter()
+                .map(|opt_bytes| {
+                    opt_bytes.map(|bytes| {
+                        let uuid = uuid::Uuid::from_bytes(
+                            bytes.try_into().expect("Expected 16 bytes")
+                        );
+                        uuid.to_string()
+                    })
+                })
+                .collect();
+
+            Ok(Arc::new(string_array))
+        }
         // If Arrow cast supports the cast, delegate the cast to Arrow
         _ if can_cast_types(from_type, to_type) => {
             Ok(cast_with_options(&array, to_type, &PARQUET_OPTIONS)?)

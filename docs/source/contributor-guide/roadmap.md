@@ -33,9 +33,9 @@ releases. Once this integration is complete, we plan on switching from the `nati
 [#2060]: https://github.com/apache/datafusion-comet/issues/2060
 [#2189]: https://github.com/apache/datafusion-comet/issues/2189
 
-### Spark 4.0.0 Support
+### Spark 4.0 Support
 
-Comet has experimental support for Spark 4.0.0, but there is more work to do ([#1637]), such as enabling 
+Comet has experimental support for Spark 4.0, but there is more work to do ([#1637]), such as enabling 
 more Spark SQL tests and fully implementing ANSI support ([#313]) for all supported expressions.
 
 [#313]: https://github.com/apache/datafusion-comet/issues/313

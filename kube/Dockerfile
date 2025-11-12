@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 
-FROM apache/spark:3.5.6 AS builder
+FROM apache/spark:3.5.7 AS builder
 
 USER root
 
@@ -70,7 +70,7 @@ RUN mkdir -p /root/.m2 && \
 RUN cd /comet \
     && JAVA_HOME=$(readlink -f $(which javac) | sed "s/\/bin\/javac//") make release-nogit PROFILES="-Pspark-$SPARK_VERSION -Pscala-$SCALA_VERSION"
 
-FROM apache/spark:3.5.6
+FROM apache/spark:3.5.7
 ENV SPARK_VERSION=3.5
 ENV SCALA_VERSION=2.12
 USER root

@@ -92,7 +92,7 @@ impl PhysicalExpr for NormalizeNaNAndZero {
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        self.child.children()
+        vec![&self.child]
     }
 
     fn with_new_children(

@@ -68,6 +68,7 @@ jobs:
             value: |
               org.apache.comet.CometFuzzTestSuite
               org.apache.comet.CometFuzzAggregateSuite
+              org.apache.comet.CometFuzzMathSuite
               org.apache.comet.DataGeneratorSuite
           - name: "shuffle"
             value: |
@@ -93,11 +94,13 @@ jobs:
               org.apache.comet.exec.CometAggregateSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
               org.apache.comet.CometArrayExpressionSuite
               org.apache.comet.CometCastSuite
               org.apache.comet.CometExpressionSuite
               org.apache.comet.CometExpressionCoverageSuite
+              org.apache.comet.CometMathExpressionSuite
               org.apache.comet.CometNativeSuite
               org.apache.comet.CometSparkSessionExtensionsSuite
               org.apache.comet.CometStringExpressionSuite
@@ -105,6 +108,7 @@ jobs:
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsNonOverrideSuite
               org.apache.spark.CometPluginsUnifiedModeOverrideSuite
+              org.apache.comet.CometTemporalExpressionSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
               org.apache.spark.sql.CometTPCHQuerySuite
@@ -114,6 +118,9 @@ jobs:
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
               org.apache.comet.objectstore.NativeConfigSuite
+          - name: "sql"
+            value: |
+              org.apache.spark.sql.CometToPrettyStringSuite
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
@@ -130,5 +137,5 @@ jobs:
         uses: ./.github/actions/java-test
         with:
           artifact_name: ${{ matrix.os }}-${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
-          suites: ${{ matrix.suite.value }}
+          suites: ${{ matrix.suite.name == 'sql' && matrix.profile.name == 'Spark 3.4, JDK 11, Scala 2.12' && '' || matrix.suite.value }}
           maven_opts: ${{ matrix.profile.maven_opts }}

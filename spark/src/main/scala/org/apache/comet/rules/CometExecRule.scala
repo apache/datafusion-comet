@@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.rules.Rule
+import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.execution._
@@ -154,7 +155,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       operator2Proto(op).map(fun).getOrElse(op)
     }
 
-    plan.transformUp {
+    def convertNode(op: SparkPlan): SparkPlan = op match {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         val nativeOp = QueryPlanSerde.operator2Proto(scan).get
@@ -446,7 +447,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           case other => other
         }
         if (!newChildren.exists(_.isInstanceOf[BroadcastExchangeExec])) {
-          val newPlan = apply(plan.withNewChildren(newChildren))
+          val newPlan = convertNode(plan.withNewChildren(newChildren))
           if (isCometNative(newPlan) || isCometBroadCastForceEnabled(conf)) {
             newPlan
           } else {
@@ -533,10 +534,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           s
         }
 
+      case op: LocalTableScanExec =>
+        if (CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.get(conf)) {
+          QueryPlanSerde
+            .operator2Proto(op)
+            .map { nativeOp =>
+              val cometOp = CometLocalTableScanExec(op, op.rows, op.output)
+              CometScanWrapper(nativeOp, cometOp)
+            }
+            .getOrElse(op)
+        } else {
+          withInfo(op, "LocalTableScan is not enabled")
+        }
+
       case op =>
         op match {
-          case _: CometExec | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
-              _: CometBroadcastExchangeExec | _: CometShuffleExchangeExec |
+          case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
               _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec =>
             // Some execs should never be replaced. We include
             // these cases specially here so we do not add a misleading 'info' message
@@ -553,6 +566,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
               op
             }
         }
+    }
+
+    plan.transformUp { case op =>
+      convertNode(op)
     }
   }
 
@@ -610,8 +627,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
-    if (showTransformations) {
-      logInfo(s"\nINPUT: $plan\nOUTPUT: $newPlan")
+    if (showTransformations && !newPlan.fastEquals(plan)) {
+      logInfo(s"""
+           |=== Applying Rule $ruleName ===
+           |${sideBySide(plan.treeString, newPlan.treeString).mkString("\n")}
+           |""".stripMargin)
     }
     newPlan
   }
@@ -628,15 +648,17 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         plan
       }
     } else {
-      val normalizedPlan = if (CometConf.COMET_REPLACE_SMJ.get()) {
-        normalizePlan(plan).transformUp { case p =>
+      val normalizedPlan = normalizePlan(plan)
+
+      val planWithJoinRewritten = if (CometConf.COMET_REPLACE_SMJ.get()) {
+        normalizedPlan.transformUp { case p =>
           RewriteJoin.rewrite(p)
         }
       } else {
-        normalizePlan(plan)
+        normalizedPlan
       }
 
-      var newPlan = transform(normalizedPlan)
+      var newPlan = transform(planWithJoinRewritten)
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
@@ -647,7 +669,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             "Comet cannot execute some parts of this plan natively " +
               s"(set ${CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key}=false " +
               "to disable this logging):\n" +
-              s"${info.generateVerboseExtendedInfo(newPlan)}")
+              s"${info.generateExtendedInfo(newPlan)}")
         }
       }
 
@@ -766,11 +788,27 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     /**
      * Determine which data types are supported as partition columns in native shuffle.
      *
-     * For Hash Partition this defines the key that determines how data should be collocated for
-     * operations like `groupByKey`, `reduceByKey` or `join`. Native code does not support hashing
-     * complex types, see hash_funcs/utils.rs
+     * For HashPartitioning this defines the key that determines how data should be collocated for
+     * operations like `groupByKey`, `reduceByKey`, or `join`. Native code does not support
+     * hashing complex types, see hash_funcs/utils.rs
      */
-    def supportedPartitioningDataType(dt: DataType): Boolean = dt match {
+    def supportedHashPartitioningDataType(dt: DataType): Boolean = dt match {
+      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
+          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
+          _: TimestampNTZType | _: DecimalType | _: DateType =>
+        true
+      case _ =>
+        false
+    }
+
+    /**
+     * Determine which data types are supported as partition columns in native shuffle.
+     *
+     * For RangePartitioning this defines the key that determines how data should be collocated
+     * for operations like `orderBy`, `repartitionByRange`. Native code does not support sorting
+     * complex types.
+     */
+    def supportedRangePartitioningDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DecimalType | _: DateType =>
@@ -843,7 +881,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           }
         }
         for (dt <- expressions.map(_.dataType).distinct) {
-          if (!supportedPartitioningDataType(dt)) {
+          if (!supportedHashPartitioningDataType(dt)) {
             withInfo(s, s"unsupported hash partitioning data type for native shuffle: $dt")
             supported = false
           }
@@ -854,22 +892,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         true
       case RangePartitioning(orderings, _) =>
         if (!CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)) {
-          // do not encourage the users to enable the config because we know that
-          // the experimental implementation is not correct yet
-          withInfo(s, "Range partitioning is not supported by native shuffle")
+          withInfo(
+            s,
+            s"${CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key} is disabled")
           return false
         }
         var supported = true
         for (o <- orderings) {
           if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
-            withInfo(s, s"unsupported range partitioning sort order: $o")
+            withInfo(s, s"unsupported range partitioning sort order: $o", o)
             supported = false
             // We don't short-circuit in case there is more than one unsupported expression
             // to provide info for.
           }
         }
         for (dt <- orderings.map(_.dataType).distinct) {
-          if (!supportedPartitioningDataType(dt)) {
+          if (!supportedRangePartitioningDataType(dt)) {
             withInfo(s, s"unsupported range partitioning data type for native shuffle: $dt")
             supported = false
           }
@@ -901,22 +939,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           _: TimestampNTZType | _: DecimalType | _: DateType =>
         true
       case StructType(fields) =>
-        fields.forall(f => supportedSerializableDataType(f.dataType)) &&
+        fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
         // Java Arrow stream reader cannot work on duplicate field name
         fields.map(f => f.name).distinct.length == fields.length &&
         fields.nonEmpty
-
-      // TODO add support for nested complex types
-      // https://github.com/apache/datafusion-comet/issues/2199
-      case ArrayType(ArrayType(_, _), _) => false
-      case ArrayType(MapType(_, _, _), _) => false
-      case MapType(MapType(_, _, _), _, _) => false
-      case MapType(_, MapType(_, _, _), _) => false
-      case MapType(StructType(_), _, _) => false
-      case MapType(_, StructType(_), _) => false
-      case MapType(ArrayType(_, _), _, _) => false
-      case MapType(_, ArrayType(_, _), _) => false
-
       case ArrayType(elementType, _) =>
         supportedSerializableDataType(elementType)
       case MapType(keyType, valueType, _) =>

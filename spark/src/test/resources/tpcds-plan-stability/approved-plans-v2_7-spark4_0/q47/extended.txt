@@ -1,0 +1,108 @@
+ TakeOrderedAndProject [COMET: ]
++- Project
+   +- BroadcastHashJoin
+      :- Project
+      :  +- BroadcastHashJoin
+      :     :- Project
+      :     :  +- Filter
+      :     :     +- Window
+      :     :        +- Filter
+      :     :           +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
+      :     :              +- CometColumnarToRow
+      :     :                 +- CometSort
+      :     :                    +- CometColumnarExchange
+      :     :                       +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(i_category#1, i_brand#2, s_store_name#3, s_company_name#4, d_year#5, d_moy#6, MakeDecimal(sum(UnscaledValue(ss_sales_price#7))#8,17,2) AS sum_sales#9, MakeDecimal(sum(UnscaledValue(ss_sales_price#7))#8,17,2) AS _w0#10)]
+      :     :                          +- CometColumnarToRow
+      :     :                             +- CometExchange
+      :     :                                +- CometHashAggregate
+      :     :                                   +- CometProject
+      :     :                                      +- CometBroadcastHashJoin
+      :     :                                         :- CometProject
+      :     :                                         :  +- CometBroadcastHashJoin
+      :     :                                         :     :- CometProject
+      :     :                                         :     :  +- CometBroadcastHashJoin
+      :     :                                         :     :     :- CometProject
+      :     :                                         :     :     :  +- CometFilter
+      :     :                                         :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+      :     :                                         :     :     +- CometBroadcastExchange
+      :     :                                         :     :        +- CometFilter
+      :     :                                         :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+      :     :                                         :     :                 +- SubqueryBroadcast
+      :     :                                         :     :                    +- BroadcastExchange
+      :     :                                         :     :                       +- CometColumnarToRow
+      :     :                                         :     :                          +- CometFilter
+      :     :                                         :     :                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+      :     :                                         :     +- CometBroadcastExchange
+      :     :                                         :        +- CometFilter
+      :     :                                         :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+      :     :                                         +- CometBroadcastExchange
+      :     :                                            +- CometFilter
+      :     :                                               +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+      :     +- BroadcastExchange
+      :        +- Project
+      :           +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
+      :              +- CometColumnarToRow
+      :                 +- CometSort
+      :                    +- CometColumnarExchange
+      :                       +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(i_category#11, i_brand#12, s_store_name#13, s_company_name#14, d_year#15, d_moy#16, MakeDecimal(sum(UnscaledValue(ss_sales_price#17))#8,17,2) AS sum_sales#18)]
+      :                          +- CometColumnarToRow
+      :                             +- CometExchange
+      :                                +- CometHashAggregate
+      :                                   +- CometProject
+      :                                      +- CometBroadcastHashJoin
+      :                                         :- CometProject
+      :                                         :  +- CometBroadcastHashJoin
+      :                                         :     :- CometProject
+      :                                         :     :  +- CometBroadcastHashJoin
+      :                                         :     :     :- CometProject
+      :                                         :     :     :  +- CometFilter
+      :                                         :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+      :                                         :     :     +- CometBroadcastExchange
+      :                                         :     :        +- CometFilter
+      :                                         :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+      :                                         :     :                 +- SubqueryBroadcast
+      :                                         :     :                    +- BroadcastExchange
+      :                                         :     :                       +- CometColumnarToRow
+      :                                         :     :                          +- CometFilter
+      :                                         :     :                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+      :                                         :     +- CometBroadcastExchange
+      :                                         :        +- CometFilter
+      :                                         :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+      :                                         +- CometBroadcastExchange
+      :                                            +- CometFilter
+      :                                               +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+      +- BroadcastExchange
+         +- Project
+            +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
+               +- CometColumnarToRow
+                  +- CometSort
+                     +- CometColumnarExchange
+                        +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(i_category#11, i_brand#12, s_store_name#13, s_company_name#14, d_year#15, d_moy#16, MakeDecimal(sum(UnscaledValue(ss_sales_price#17))#8,17,2) AS sum_sales#18)]
+                           +- CometColumnarToRow
+                              +- CometExchange
+                                 +- CometHashAggregate
+                                    +- CometProject
+                                       +- CometBroadcastHashJoin
+                                          :- CometProject
+                                          :  +- CometBroadcastHashJoin
+                                          :     :- CometProject
+                                          :     :  +- CometBroadcastHashJoin
+                                          :     :     :- CometProject
+                                          :     :     :  +- CometFilter
+                                          :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+                                          :     :     +- CometBroadcastExchange
+                                          :     :        +- CometFilter
+                                          :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                                          :     :                 +- SubqueryBroadcast
+                                          :     :                    +- BroadcastExchange
+                                          :     :                       +- CometColumnarToRow
+                                          :     :                          +- CometFilter
+                                          :     :                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                          :     +- CometBroadcastExchange
+                                          :        +- CometFilter
+                                          :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                          +- CometBroadcastExchange
+                                             +- CometFilter
+                                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+
+Comet accelerated 72 out of 97 eligible operators (74%). Final plan contains 9 transitions between Spark and Comet.
