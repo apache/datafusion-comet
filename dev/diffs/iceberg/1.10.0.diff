@@ -1623,7 +1623,7 @@ index 596d05d30..dc8563314 100644
      ImmutableMap<String, String> config =
          ImmutableMap.of(
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
-index 42699f466..7e6800eb5 100644
+index 42699f466..c5e077d7a 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
 +++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderDeletes.java
 @@ -138,6 +138,16 @@ public class TestSparkReaderDeletes extends DeleteReadTests {
@@ -1643,6 +1643,20 @@ index 42699f466..7e6800eb5 100644
              .enableHiveSupport()
              .getOrCreate();
  
+@@ -205,9 +215,10 @@ public class TestSparkReaderDeletes extends DeleteReadTests {
+     catalog.dropTable(TableIdentifier.of("default", name));
+   }
+ 
+-  protected boolean countDeletes() {
+-    return true;
+-  }
++protected boolean countDeletes() {
++    // TODO: Enable once iceberg-rust exposes delete count metrics to Comet
++             return false;
++}
+ 
+   @Override
+   protected long deleteCount() {
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
 index baf7fa8f8..150cc8969 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/source/TestSparkReaderWithBloomFilter.java
