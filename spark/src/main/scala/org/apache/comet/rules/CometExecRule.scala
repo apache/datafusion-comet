@@ -234,7 +234,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // When Comet shuffle is disabled, we don't want to transform the HashAggregate
       // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
       // and final Spark aggregation.
-      case op: HashAggregateExec /* if isCometShuffleEnabled(conf) */ =>
+      case op: HashAggregateExec
+          /* if isCometShuffleEnabled(conf) */ =>
         newPlanWithProto(
           op,
           nativeOp => {
