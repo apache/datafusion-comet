@@ -579,9 +579,56 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             false
           }
 
+        // Check for unsupported binary/struct types in delete files
+        val deleteFileTypesSupported = (tableOpt, tasksOpt) match {
+          case (Some(table), Some(tasks)) =>
+            var hasUnsupportedDeletes = false
+
+            IcebergReflection.getSchema(table).foreach { schema =>
+              try {
+                val deleteFiles = IcebergReflection.getDeleteFiles(tasks)
+
+                if (!deleteFiles.isEmpty) {
+                  deleteFiles.asScala.foreach { deleteFile =>
+                    val equalityFieldIds = IcebergReflection.getEqualityFieldIds(deleteFile)
+
+                    if (!equalityFieldIds.isEmpty) {
+                      // Look up field types
+                      equalityFieldIds.asScala.foreach { fieldId =>
+                        IcebergReflection.getFieldInfo(schema, fieldId.asInstanceOf[Int]) match {
+                          case Some((fieldName, fieldType)) =>
+                            if (fieldType.contains("binary") || fieldType.contains("struct")) {
+                              hasUnsupportedDeletes = true
+                              fallbackReasons +=
+                                s"Equality delete on unsupported column type '$fieldName' " +
+                                  s"($fieldType) is not yet supported by iceberg-rust. " +
+                                  "Binary and struct types in equality deletes " +
+                                  "require datum conversion support that is not yet implemented."
+                            }
+                          case None =>
+                        }
+                      }
+                    }
+                  }
+                }
+              } catch {
+                case e: Exception =>
+                  // Reflection failure means we cannot verify safety - must fall back
+                  hasUnsupportedDeletes = true
+                  fallbackReasons += "Iceberg reflection failure: Could not verify delete file " +
+                    s"types for safety: ${e.getMessage}"
+              }
+            }
+
+            !hasUnsupportedDeletes
+          case _ =>
+            true
+        }
+
         if (schemaSupported && fileIOCompatible && formatVersionSupported && allParquetFiles &&
           allSupportedFilesystems && partitionTypesSupported &&
-          complexTypePredicatesSupported && transformFunctionsSupported) {
+          complexTypePredicatesSupported && transformFunctionsSupported &&
+          deleteFileTypesSupported) {
           // Iceberg tables require type promotion for schema evolution (add/drop columns)
           SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
           CometBatchScanExec(

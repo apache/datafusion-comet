@@ -184,10 +184,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val deleteFileClass = Class.forName(IcebergReflection.ClassNames.DELETE_FILE)
       // scalastyle:on classforname
 
-      val deletesMethod = fileScanTaskClass.getMethod("deletes")
-      val deletes = deletesMethod
-        .invoke(task)
-        .asInstanceOf[java.util.List[_]]
+      val deletes = IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
 
       deletes.asScala.foreach { deleteFile =>
         try {
@@ -839,10 +836,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
                       val taskSchema = taskSchemaMethod.invoke(task)
 
-                      val deletesMethod = fileScanTaskClass.getMethod("deletes")
-                      val deletes = deletesMethod
-                        .invoke(task)
-                        .asInstanceOf[java.util.List[_]]
+                      val deletes =
+                        IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
                       val hasDeletes = !deletes.isEmpty
 
                       val schema: AnyRef =

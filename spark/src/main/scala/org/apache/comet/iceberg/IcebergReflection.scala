@@ -334,4 +334,129 @@ object IcebergReflection extends Logging {
       }
     }
   }
+
+  /**
+   * Gets delete files from scan tasks.
+   *
+   * @param tasks
+   *   List of Iceberg FileScanTask objects
+   * @return
+   *   List of all delete files across all tasks
+   * @throws Exception
+   *   if reflection fails (callers must handle appropriately based on context)
+   */
+  def getDeleteFiles(tasks: java.util.List[_]): java.util.List[_] = {
+    import scala.jdk.CollectionConverters._
+    val allDeletes = new java.util.ArrayList[Any]()
+
+    // scalastyle:off classforname
+    val fileScanTaskClass = Class.forName(ClassNames.FILE_SCAN_TASK)
+    // scalastyle:on classforname
+
+    tasks.asScala.foreach { task =>
+      val deletes = getDeleteFilesFromTask(task, fileScanTaskClass)
+      allDeletes.addAll(deletes)
+    }
+
+    allDeletes
+  }
+
+  /**
+   * Gets delete files from a single FileScanTask.
+   *
+   * @param task
+   *   An Iceberg FileScanTask object
+   * @param fileScanTaskClass
+   *   The FileScanTask class (can be obtained via classforname or passed in if already loaded)
+   * @return
+   *   List of delete files for this task
+   * @throws Exception
+   *   if reflection fails (callers must handle appropriately based on context)
+   */
+  def getDeleteFilesFromTask(task: Any, fileScanTaskClass: Class[_]): java.util.List[_] = {
+    val deletesMethod = fileScanTaskClass.getMethod("deletes")
+    val deletes = deletesMethod.invoke(task).asInstanceOf[java.util.List[_]]
+    if (deletes == null) new java.util.ArrayList[Any]() else deletes
+  }
+
+  /**
+   * Gets equality field IDs from a delete file.
+   *
+   * @param deleteFile
+   *   An Iceberg DeleteFile object
+   * @return
+   *   List of field IDs used in equality deletes, or empty list for position deletes
+   */
+  def getEqualityFieldIds(deleteFile: Any): java.util.List[_] = {
+    try {
+      // scalastyle:off classforname
+      val deleteFileClass = Class.forName(ClassNames.DELETE_FILE)
+      // scalastyle:on classforname
+      val equalityFieldIdsMethod = deleteFileClass.getMethod("equalityFieldIds")
+      val ids = equalityFieldIdsMethod.invoke(deleteFile).asInstanceOf[java.util.List[_]]
+      if (ids == null) new java.util.ArrayList[Any]() else ids
+    } catch {
+      case e: Exception =>
+        // Position delete files return null/empty for equalityFieldIds
+        new java.util.ArrayList[Any]()
+    }
+  }
+
+  /**
+   * Gets the content type of a delete file (POSITION_DELETES or EQUALITY_DELETES).
+   *
+   * @param deleteFile
+   *   An Iceberg DeleteFile object
+   * @return
+   *   Content type string
+   */
+  def getDeleteFileContentType(deleteFile: Any): Option[String] = {
+    try {
+      // scalastyle:off classforname
+      val deleteFileClass = Class.forName(ClassNames.DELETE_FILE)
+      // scalastyle:on classforname
+      val contentMethod = deleteFileClass.getMethod("content")
+      val content = contentMethod.invoke(deleteFile)
+      if (content == null) {
+        None
+      } else {
+        Some(content.toString)
+      }
+    } catch {
+      case e: Exception =>
+        None
+    }
+  }
+
+  /**
+   * Gets field name and type from schema by field ID.
+   *
+   * @param schema
+   *   Iceberg Schema object
+   * @param fieldId
+   *   Field ID to look up
+   * @return
+   *   Tuple of (field name, field type string)
+   */
+  def getFieldInfo(schema: Any, fieldId: Int): Option[(String, String)] = {
+    try {
+      val findFieldMethod = schema.getClass.getMethod("findField", classOf[Int])
+      val field = findFieldMethod.invoke(schema, fieldId.asInstanceOf[AnyRef])
+      if (field != null) {
+        val nameMethod = field.getClass.getMethod("name")
+        val typeMethod = field.getClass.getMethod("type")
+        val fieldName = nameMethod.invoke(field).toString
+        val fieldType = typeMethod.invoke(field).toString
+        Some((fieldName, fieldType))
+      } else {
+        None
+      }
+    } catch {
+      case e: Exception =>
+        logError(
+          "Iceberg reflection failure: Failed to get field info for ID " +
+            s"$fieldId: ${e.getMessage}")
+        None
+    }
+  }
 }
