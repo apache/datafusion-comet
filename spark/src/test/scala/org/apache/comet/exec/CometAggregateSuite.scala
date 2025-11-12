@@ -1017,8 +1017,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("Decimal Avg with DF") {
     Seq(true, false).foreach { dictionaryEnabled =>
-      withSQLConf(
-        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test")
           makeParquetFile(path, 1000, 20, dictionaryEnabled)
@@ -1030,8 +1029,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               expectedNumOfCometAggregates)
 
             checkSparkAnswerWithTolerance("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")
-            assert(getNumCometHashAggregate(
-              sql("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")) == expectedNumOfCometAggregates)
+            assert(
+              getNumCometHashAggregate(
+                sql("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")) == expectedNumOfCometAggregates)
 
             checkSparkAnswerAndNumOfAggregates(
               "SELECT _g4, AVG(_9) FROM tbl GROUP BY _g4",
@@ -1042,8 +1042,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               expectedNumOfCometAggregates)
 
             checkSparkAnswerWithTolerance("SELECT AVG(_8) FROM tbl")
-            assert(getNumCometHashAggregate(
-              sql("SELECT AVG(_8) FROM tbl")) == expectedNumOfCometAggregates)
+            assert(
+              getNumCometHashAggregate(
+                sql("SELECT AVG(_8) FROM tbl")) == expectedNumOfCometAggregates)
 
             checkSparkAnswerAndNumOfAggregates(
               "SELECT AVG(_9) FROM tbl",
