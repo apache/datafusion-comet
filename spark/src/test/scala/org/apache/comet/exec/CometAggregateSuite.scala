@@ -990,9 +990,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         (0 until 5).map(i => (i.toDouble, i.toDouble % 2)),
         "tbl",
         dictionaryEnabled) {
-        withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
-          checkSparkAnswerAndNumOfAggregates("SELECT _2 , AVG(_1) FROM tbl GROUP BY _2", 1)
-        }
+        checkSparkAnswerAndNumOfAggregates("SELECT _2 , AVG(_1) FROM tbl GROUP BY _2", 2)
       }
     }
   }
@@ -1019,41 +1017,37 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("Decimal Avg with DF") {
     Seq(true, false).foreach { dictionaryEnabled =>
-      Seq(true, false).foreach { nativeShuffleEnabled =>
-        withSQLConf(
-          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
-          CometConf.COMET_SHUFFLE_MODE.key -> "native",
-          CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-          withTempDir { dir =>
-            val path = new Path(dir.toURI.toString, "test")
-            makeParquetFile(path, 1000, 20, dictionaryEnabled)
-            withParquetTable(path.toUri.toString, "tbl") {
-              val expectedNumOfCometAggregates = if (nativeShuffleEnabled) 2 else 1
+      withSQLConf(
+        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test")
+          makeParquetFile(path, 1000, 20, dictionaryEnabled)
+          withParquetTable(path.toUri.toString, "tbl") {
+            val expectedNumOfCometAggregates = 2
 
-              checkSparkAnswerAndNumOfAggregates(
-                "SELECT _g2, AVG(_7) FROM tbl GROUP BY _g2",
-                expectedNumOfCometAggregates)
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT _g2, AVG(_7) FROM tbl GROUP BY _g2",
+              expectedNumOfCometAggregates)
 
-              checkSparkAnswerWithTolerance("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")
-              assert(getNumCometHashAggregate(
-                sql("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")) == expectedNumOfCometAggregates)
+            checkSparkAnswerWithTolerance("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")
+            assert(getNumCometHashAggregate(
+              sql("SELECT _g3, AVG(_8) FROM tbl GROUP BY _g3")) == expectedNumOfCometAggregates)
 
-              checkSparkAnswerAndNumOfAggregates(
-                "SELECT _g4, AVG(_9) FROM tbl GROUP BY _g4",
-                expectedNumOfCometAggregates)
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT _g4, AVG(_9) FROM tbl GROUP BY _g4",
+              expectedNumOfCometAggregates)
 
-              checkSparkAnswerAndNumOfAggregates(
-                "SELECT AVG(_7) FROM tbl",
-                expectedNumOfCometAggregates)
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT AVG(_7) FROM tbl",
+              expectedNumOfCometAggregates)
 
-              checkSparkAnswerWithTolerance("SELECT AVG(_8) FROM tbl")
-              assert(getNumCometHashAggregate(
-                sql("SELECT AVG(_8) FROM tbl")) == expectedNumOfCometAggregates)
+            checkSparkAnswerWithTolerance("SELECT AVG(_8) FROM tbl")
+            assert(getNumCometHashAggregate(
+              sql("SELECT AVG(_8) FROM tbl")) == expectedNumOfCometAggregates)
 
-              checkSparkAnswerAndNumOfAggregates(
-                "SELECT AVG(_9) FROM tbl",
-                expectedNumOfCometAggregates)
-            }
+            checkSparkAnswerAndNumOfAggregates(
+              "SELECT AVG(_9) FROM tbl",
+              expectedNumOfCometAggregates)
           }
         }
       }
