@@ -579,7 +579,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             false
           }
 
-        // Check for unsupported binary/struct types in delete files
+        // Check for unsupported struct types in delete files
         val deleteFileTypesSupported = (tableOpt, tasksOpt) match {
           case (Some(table), Some(tasks)) =>
             var hasUnsupportedDeletes = false
@@ -597,12 +597,12 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
                       equalityFieldIds.asScala.foreach { fieldId =>
                         IcebergReflection.getFieldInfo(schema, fieldId.asInstanceOf[Int]) match {
                           case Some((fieldName, fieldType)) =>
-                            if (fieldType.contains("binary") || fieldType.contains("struct")) {
+                            if (fieldType.contains("struct")) {
                               hasUnsupportedDeletes = true
                               fallbackReasons +=
                                 s"Equality delete on unsupported column type '$fieldName' " +
                                   s"($fieldType) is not yet supported by iceberg-rust. " +
-                                  "Binary and struct types in equality deletes " +
+                                  "Struct types in equality deletes " +
                                   "require datum conversion support that is not yet implemented."
                             }
                           case None =>
