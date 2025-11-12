@@ -34,6 +34,9 @@ RUN dnf -y update \
     glibc-locale-source glibc-langpack-en \
     && dnf clean all
 
+# Make Python 3.9 the default
+RUN update-alternatives --set python3 /usr/bin/python3.9
+
 # Install rustup
 RUN cd /tmp && curl https://sh.rustup.rs -sSf | bash -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
