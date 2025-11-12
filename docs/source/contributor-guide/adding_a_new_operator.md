@@ -207,6 +207,8 @@ val COMET_EXEC_YOUR_OPERATOR_ENABLED: ConfigEntry[Boolean] =
     .createWithDefault(true)
 ```
 
+Run `make` to update the user guide. The new configuration option will be added to `configs.md`.
+
 ### Step 5: Implement the Native Operator in Rust
 
 #### Update the Planner
