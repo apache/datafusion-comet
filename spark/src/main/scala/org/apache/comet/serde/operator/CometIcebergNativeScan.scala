@@ -406,7 +406,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     case n: Number => JDecimal(BigDecimal(n.toString))
                     case b: java.lang.Boolean =>
                       JBool(b.booleanValue())
-                      ww
                     case other => JString(other.toString)
                   }
                 }
