@@ -44,7 +44,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometConf.COMET_EXEC_SHUFFLE_ENABLED
 import org.apache.comet.CometSparkSessionExtensions._
-import org.apache.comet.rules.CometExecRule.opSerdeMap
+import org.apache.comet.rules.CometExecRule.cometNativeExecHandlers
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, QueryPlanSerde, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
@@ -55,7 +55,7 @@ object CometExecRule {
   /**
    * Mapping of Spark operator class to Comet operator handler.
    */
-  val opSerdeMap: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
+  val cometNativeExecHandlers: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
     Map(
       classOf[ProjectExec] -> CometProject,
       classOf[FilterExec] -> CometFilter,
@@ -180,7 +180,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     def convertNode(op: SparkPlan): SparkPlan = {
-      opSerdeMap.get(op.getClass) match {
+      cometNativeExecHandlers.get(op.getClass) match {
         case Some(x) =>
           val handler = x.asInstanceOf[CometOperatorSerde[SparkPlan]]
           operator2ProtoIfAllChildrenAreNative(op) match {
@@ -882,7 +882,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     childOp.foreach(builder.addChildren)
 
     // look for registered handler first
-    val serde = opSerdeMap.get(op.getClass)
+    val serde = cometNativeExecHandlers.get(op.getClass)
     serde match {
       case Some(handler) if isOperatorEnabled(handler, op) =>
         val opSerde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
