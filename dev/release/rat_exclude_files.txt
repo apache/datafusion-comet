@@ -11,6 +11,7 @@ dev/copyright/scala-header.txt
 dev/diffs/iceberg/*.diff
 dev/release/requirements.txt
 dev/release/rat_exclude_files.txt
+docs/comet-*
 docs/spark_builtin_expr_coverage.txt
 docs/source/_static/images/*.svg
 docs/source/_static/images/comet-dataflow.excalidraw
