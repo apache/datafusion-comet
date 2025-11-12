@@ -467,14 +467,17 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
         }
     }
 
-    fn state(&mut self, _emit_to: EmitTo) -> DFResult<Vec<ArrayRef>> {
+    fn state(&mut self, emit_to: EmitTo) -> DFResult<Vec<ArrayRef>> {
+        let sums = emit_to.take_needed(&mut self.sums);
+
         if self.eval_mode == EvalMode::Try {
+            let has_all_nulls = emit_to.take_needed(&mut self.has_all_nulls);
             Ok(vec![
-                Arc::new(Int64Array::from(self.sums.clone())),
-                Arc::new(BooleanArray::from(self.has_all_nulls.clone())),
+                Arc::new(Int64Array::from(sums)),
+                Arc::new(BooleanArray::from(has_all_nulls)),
             ])
         } else {
-            Ok(vec![Arc::new(Int64Array::from(self.sums.clone()))])
+            Ok(vec![Arc::new(Int64Array::from(sums))])
         }
     }
 
