@@ -19,6 +19,7 @@
 
 package org.apache.comet.serde.operator
 
+import org.apache.spark.sql.comet.{CometGlobalLimitExec, CometNativeExec, SerializedPlan}
 import org.apache.spark.sql.execution.GlobalLimitExec
 
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -45,6 +46,9 @@ object CometGlobalLimit extends CometOperatorSerde[GlobalLimitExec] {
       withInfo(op, "No child operator")
       None
     }
+  }
 
+  override def createExec(nativeOp: Operator, op: GlobalLimitExec): CometNativeExec = {
+    CometGlobalLimitExec(nativeOp, op, op.limit, op.offset, op.child, SerializedPlan(None))
   }
 }

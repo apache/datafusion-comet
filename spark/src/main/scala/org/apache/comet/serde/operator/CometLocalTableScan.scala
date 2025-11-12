@@ -21,6 +21,7 @@ package org.apache.comet.serde.operator
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.sql.comet.{CometLocalTableScanExec, CometNativeExec, CometScanWrapper}
 import org.apache.spark.sql.execution.LocalTableScanExec
 
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -44,5 +45,9 @@ object CometLocalTableScan extends CometOperatorSerde[LocalTableScanExec] {
       .addAllFields(scanTypes.asJava)
       .setArrowFfiSafe(false)
     Some(builder.setScan(scanBuilder).build())
+  }
+
+  override def createExec(nativeOp: Operator, op: LocalTableScanExec): CometNativeExec = {
+    CometScanWrapper(nativeOp, CometLocalTableScanExec(op, op.rows, op.output))
   }
 }

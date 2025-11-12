@@ -179,7 +179,23 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       operator2ProtoIfAllChildrenAreNative(op).map(fun).getOrElse(op)
     }
 
-    def convertNode(op: SparkPlan): SparkPlan = op match {
+    def convertNode(op: SparkPlan): SparkPlan = {
+      opSerdeMap.get(op.getClass) match {
+        case Some(x) =>
+          val handler = x.asInstanceOf[CometOperatorSerde[SparkPlan]]
+          operator2ProtoIfAllChildrenAreNative(op) match {
+            case Some(nativeOp) =>
+              return handler.createExec(nativeOp, op)
+            case _ =>
+          }
+        case _ =>
+      }
+
+      // must be a sink or scan
+      convertNodeSinkOrScan(op)
+    }
+
+    def convertNodeSinkOrScan(op: SparkPlan): SparkPlan = op match {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         val nativeOp = operator2Proto(scan).get
@@ -194,36 +210,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         val cometOp = CometSparkToColumnarExec(op)
         val nativeOp = operator2Proto(cometOp)
         CometScanWrapper(nativeOp.get, cometOp)
-
-      case op: ProjectExec =>
-        newPlanWithProto(
-          op,
-          CometProjectExec(_, op, op.output, op.projectList, op.child, SerializedPlan(None)))
-
-      case op: FilterExec =>
-        newPlanWithProto(
-          op,
-          CometFilterExec(_, op, op.output, op.condition, op.child, SerializedPlan(None)))
-
-      case op: SortExec =>
-        newPlanWithProto(
-          op,
-          CometSortExec(
-            _,
-            op,
-            op.output,
-            op.outputOrdering,
-            op.sortOrder,
-            op.child,
-            SerializedPlan(None)))
-
-      case op: LocalLimitExec =>
-        newPlanWithProto(op, CometLocalLimitExec(_, op, op.limit, op.child, SerializedPlan(None)))
-
-      case op: GlobalLimitExec =>
-        newPlanWithProto(
-          op,
-          CometGlobalLimitExec(_, op, op.limit, op.offset, op.child, SerializedPlan(None)))
 
       case op: CollectLimitExec =>
         val fallbackReasons = new ListBuffer[String]()
@@ -249,116 +235,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
               .getOrElse(op)
           }
         }
-
-      case op: ExpandExec =>
-        newPlanWithProto(
-          op,
-          CometExpandExec(_, op, op.output, op.projections, op.child, SerializedPlan(None)))
-
-      case op: HashAggregateExec =>
-        newPlanWithProto(
-          op,
-          nativeOp => {
-            CometHashAggregateExec(
-              nativeOp,
-              op,
-              op.output,
-              op.groupingExpressions,
-              op.aggregateExpressions,
-              op.resultExpressions,
-              op.child.output,
-              op.child,
-              SerializedPlan(None))
-          })
-
-      case op: ObjectHashAggregateExec =>
-        newPlanWithProto(
-          op,
-          nativeOp => {
-            CometHashAggregateExec(
-              nativeOp,
-              op,
-              op.output,
-              op.groupingExpressions,
-              op.aggregateExpressions,
-              op.resultExpressions,
-              op.child.output,
-              op.child,
-              SerializedPlan(None))
-          })
-
-      case op: ShuffledHashJoinExec
-          if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) &&
-            op.children.forall(isCometNative) =>
-        newPlanWithProto(
-          op,
-          CometHashJoinExec(
-            _,
-            op,
-            op.output,
-            op.outputOrdering,
-            op.leftKeys,
-            op.rightKeys,
-            op.joinType,
-            op.condition,
-            op.buildSide,
-            op.left,
-            op.right,
-            SerializedPlan(None)))
-
-      case op: ShuffledHashJoinExec if !CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) =>
-        withInfo(op, "ShuffleHashJoin is not enabled")
-
-      case op: ShuffledHashJoinExec if !op.children.forall(isCometNative) =>
-        op
-
-      case op: BroadcastHashJoinExec
-          if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) &&
-            op.children.forall(isCometNative) =>
-        newPlanWithProto(
-          op,
-          CometBroadcastHashJoinExec(
-            _,
-            op,
-            op.output,
-            op.outputOrdering,
-            op.leftKeys,
-            op.rightKeys,
-            op.joinType,
-            op.condition,
-            op.buildSide,
-            op.left,
-            op.right,
-            SerializedPlan(None)))
-
-      case op: SortMergeJoinExec
-          if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
-            op.children.forall(isCometNative) =>
-        newPlanWithProto(
-          op,
-          CometSortMergeJoinExec(
-            _,
-            op,
-            op.output,
-            op.outputOrdering,
-            op.leftKeys,
-            op.rightKeys,
-            op.joinType,
-            op.condition,
-            op.left,
-            op.right,
-            SerializedPlan(None)))
-
-      case op: SortMergeJoinExec
-          if CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) &&
-            !op.children.forall(isCometNative) =>
-        op
-
-      case op: SortMergeJoinExec if !CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf) =>
-        withInfo(op, "SortMergeJoin is not enabled")
-
-      case op: SortMergeJoinExec if !op.children.forall(isCometNative) =>
-        op
 
       case c @ CoalesceExec(numPartitions, child)
           if CometConf.COMET_EXEC_COALESCE_ENABLED.get(conf)
@@ -404,19 +280,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           !isCometShuffleEnabled(conf),
           "TakeOrderedAndProject requires shuffle to be enabled")
         withInfo(s, Seq(info1, info2).flatten.mkString(","))
-
-      case w: WindowExec =>
-        newPlanWithProto(
-          w,
-          CometWindowExec(
-            _,
-            w,
-            w.output,
-            w.windowExpression,
-            w.partitionSpec,
-            w.orderSpec,
-            w.child,
-            SerializedPlan(None)))
 
       case u: UnionExec
           if CometConf.COMET_EXEC_UNION_ENABLED.get(conf) &&
@@ -546,18 +409,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           nativeOrColumnarShuffle.get
         } else {
           s
-        }
-
-      case op: LocalTableScanExec =>
-        if (CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.get(conf)) {
-          operator2Proto(op)
-            .map { nativeOp =>
-              val cometOp = CometLocalTableScanExec(op, op.rows, op.output)
-              CometScanWrapper(nativeOp, cometOp)
-            }
-            .getOrElse(op)
-        } else {
-          withInfo(op, "LocalTableScan is not enabled")
         }
 
       case op =>
