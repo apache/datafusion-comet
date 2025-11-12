@@ -1100,6 +1100,8 @@ builds:
       dockerfile:
         - dockerfilePath: dev/Dockerfile-ubi8
           perApplication: false
+          extraTags:
+            - ${RIO_BUILD_NUMBER}
           publish:
             - repo: docker.apple.com/pie/comet-builder-ubi8
 
