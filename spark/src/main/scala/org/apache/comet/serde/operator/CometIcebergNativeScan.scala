@@ -301,6 +301,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             .invoke(partitionType)
             .asInstanceOf[java.util.List[_]]
 
+          // Helper to get field type string (shared by both type and data serialization)
+          def getFieldType(field: Any): String = {
+            val typeMethod = field.getClass.getMethod("type")
+            typeMethod.invoke(field).toString
+          }
+
           // Only serialize partition type if there are actual partition fields
           if (!fields.isEmpty) {
             try {
@@ -312,34 +318,47 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               import org.json4s.JsonDSL._
               import org.json4s.jackson.JsonMethods._
 
-              val fieldsJson = fields.asScala.map { field =>
-                val fieldIdMethod = field.getClass.getMethod("fieldId")
-                val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
+              // Filter out fields with unknown types (dropped partition fields).
+              // Unknown type fields represent partition columns that have been dropped
+              // from the schema. Per the Iceberg spec, unknown type fields are not
+              // stored in data files and iceberg-rust doesn't support deserializing
+              // them. Since these columns are dropped, we don't need to expose their
+              // partition values when reading.
+              val fieldsJson = fields.asScala.flatMap { field =>
+                val fieldTypeStr = getFieldType(field)
 
-                val nameMethod = field.getClass.getMethod("name")
-                val fieldName = nameMethod.invoke(field).asInstanceOf[String]
+                // Skip fields with unknown type (dropped partition columns)
+                if (fieldTypeStr == IcebergReflection.TypeNames.UNKNOWN) {
+                  None
+                } else {
+                  val fieldIdMethod = field.getClass.getMethod("fieldId")
+                  val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
 
-                val isOptionalMethod = field.getClass.getMethod("isOptional")
-                val isOptional =
-                  isOptionalMethod.invoke(field).asInstanceOf[Boolean]
-                val required = !isOptional
+                  val nameMethod = field.getClass.getMethod("name")
+                  val fieldName = nameMethod.invoke(field).asInstanceOf[String]
 
-                val typeMethod = field.getClass.getMethod("type")
-                val fieldType = typeMethod.invoke(field)
-                val fieldTypeStr = fieldType.toString
+                  val isOptionalMethod = field.getClass.getMethod("isOptional")
+                  val isOptional =
+                    isOptionalMethod.invoke(field).asInstanceOf[Boolean]
+                  val required = !isOptional
 
-                ("id" -> fieldId) ~
-                  ("name" -> fieldName) ~
-                  ("required" -> required) ~
-                  ("type" -> fieldTypeStr)
+                  Some(
+                    ("id" -> fieldId) ~
+                      ("name" -> fieldName) ~
+                      ("required" -> required) ~
+                      ("type" -> fieldTypeStr))
+                }
               }.toList
 
-              val partitionTypeJson = compact(
-                render(
-                  ("type" -> "struct") ~
-                    ("fields" -> fieldsJson)))
+              // Only serialize if we have non-unknown fields
+              if (fieldsJson.nonEmpty) {
+                val partitionTypeJson = compact(
+                  render(
+                    ("type" -> "struct") ~
+                      ("fields" -> fieldsJson)))
 
-              taskBuilder.setPartitionTypeJson(partitionTypeJson)
+                taskBuilder.setPartitionTypeJson(partitionTypeJson)
+              }
             } catch {
               case e: Exception =>
                 logWarning(s"Failed to serialize partition type to JSON: ${e.getMessage}")
@@ -355,39 +374,52 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           import org.json4s._
           import org.json4s.jackson.JsonMethods._
 
+          // Filter out fields with unknown type (same as partition type filtering)
           val partitionDataMap: Map[String, JValue] =
-            fields.asScala.zipWithIndex.map { case (field, idx) =>
-              val fieldIdMethod = field.getClass.getMethod("fieldId")
-              val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
+            fields.asScala.zipWithIndex.flatMap { case (field, idx) =>
+              val fieldTypeStr = getFieldType(field)
 
-              val getMethod =
-                partitionData.getClass.getMethod("get", classOf[Int], classOf[Class[_]])
-              val value = getMethod.invoke(partitionData, Integer.valueOf(idx), classOf[Object])
-
-              val jsonValue: JValue = if (value == null) {
-                JNull
+              // Skip fields with unknown type (dropped partition columns)
+              if (fieldTypeStr == IcebergReflection.TypeNames.UNKNOWN) {
+                None
               } else {
-                value match {
-                  case s: String => JString(s)
-                  // NaN/Infinity are not valid JSON number literals per the
-                  // JSON spec. Serialize as strings (e.g., "NaN", "Infinity")
-                  // which are valid JSON and can be parsed by Rust's
-                  // f32/f64::from_str().
-                  case f: java.lang.Float if f.isNaN || f.isInfinite =>
-                    JString(f.toString)
-                  case d: java.lang.Double if d.isNaN || d.isInfinite =>
-                    JString(d.toString)
-                  case n: Number => JDecimal(BigDecimal(n.toString))
-                  case b: java.lang.Boolean => JBool(b.booleanValue())
-                  case other => JString(other.toString)
-                }
-              }
+                val fieldIdMethod = field.getClass.getMethod("fieldId")
+                val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
 
-              fieldId.toString -> jsonValue
+                val getMethod =
+                  partitionData.getClass.getMethod("get", classOf[Int], classOf[Class[_]])
+                val value = getMethod.invoke(partitionData, Integer.valueOf(idx), classOf[Object])
+
+                val jsonValue: JValue = if (value == null) {
+                  JNull
+                } else {
+                  value match {
+                    case s: String => JString(s)
+                    // NaN/Infinity are not valid JSON number literals per the
+                    // JSON spec. Serialize as strings (e.g., "NaN", "Infinity")
+                    // which are valid JSON and can be parsed by Rust's
+                    // f32/f64::from_str().
+                    case f: java.lang.Float if f.isNaN || f.isInfinite =>
+                      JString(f.toString)
+                    case d: java.lang.Double if d.isNaN || d.isInfinite =>
+                      JString(d.toString)
+                    case n: Number => JDecimal(BigDecimal(n.toString))
+                    case b: java.lang.Boolean =>
+                      JBool(b.booleanValue())
+                      ww
+                    case other => JString(other.toString)
+                  }
+                }
+
+                Some(fieldId.toString -> jsonValue)
+              }
             }.toMap
 
-          val partitionJson = compact(render(JObject(partitionDataMap.toList)))
-          taskBuilder.setPartitionDataJson(partitionJson)
+          // Only serialize partition data if we have non-unknown fields
+          if (partitionDataMap.nonEmpty) {
+            val partitionJson = compact(render(JObject(partitionDataMap.toList)))
+            taskBuilder.setPartitionDataJson(partitionJson)
+          }
         }
       }
     } catch {

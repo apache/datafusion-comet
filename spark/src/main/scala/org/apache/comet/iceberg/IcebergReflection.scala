@@ -70,6 +70,13 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * Iceberg type names.
+   */
+  object TypeNames {
+    val UNKNOWN = "unknown"
+  }
+
+  /**
    * Searches through class hierarchy to find a method (including protected methods).
    */
   def findMethodInHierarchy(
