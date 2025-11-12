@@ -23,11 +23,14 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
+import org.apache.spark.sql.comet.CometHashAggregateExec
+import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.types.MapType
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto}
@@ -38,6 +41,18 @@ trait CometBaseAggregate {
       aggregate: BaseAggregateExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+
+    val modes = aggregate.aggregateExpressions.map(_.mode).distinct
+    // In distinct aggregates there can be a combination of modes
+    val multiMode = modes.size > 1
+    // For a final mode HashAggregate, we only need to transform the HashAggregate
+    // if there is Comet partial aggregation.
+    val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
+
+    if (multiMode || sparkFinalMode) {
+      return None
+    }
+
     val groupingExpressions = aggregate.groupingExpressions
     val aggregateExpressions = aggregate.aggregateExpressions
     val aggregateAttributes = aggregate.aggregateAttributes
@@ -163,6 +178,22 @@ trait CometBaseAggregate {
 
   }
 
+  /**
+   * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate with
+   * partial mode, it will return None.
+   */
+  private def findCometPartialAgg(plan: SparkPlan): Option[CometHashAggregateExec] = {
+    plan.collectFirst {
+      case agg: CometHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+        Some(agg)
+      case agg: HashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) => None
+      case agg: ObjectHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+        None
+      case a: AQEShuffleReadExec => findCometPartialAgg(a.child)
+      case s: ShuffleQueryStageExec => findCometPartialAgg(s.plan)
+    }.flatten
+  }
+
 }
 
 object CometHashAggregate extends CometOperatorSerde[HashAggregateExec] with CometBaseAggregate {
@@ -189,6 +220,14 @@ object CometObjectHashAggregate
       aggregate: ObjectHashAggregateExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+
+    if (!isCometShuffleEnabled(aggregate.conf)) {
+      // When Comet shuffle is disabled, we don't want to transform the HashAggregate
+      // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
+      // and final Spark aggregation.
+      return None
+    }
+
     doConvert(aggregate, builder, childOp: _*)
   }
 }
