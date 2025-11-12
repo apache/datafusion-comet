@@ -348,7 +348,7 @@ if (childOp.isEmpty) {
 
 ## Debugging Tips
 
-1. **Enable verbose logging**: Set `spark.comet.explain.verbose=true` to see detailed plan transformations
+1. **Enable verbose logging**: Set `spark.comet.explain.format=verbose` to see detailed plan transformations
 2. **Check fallback reasons**: Set `spark.comet.logFallbackReasons=true` to log why operators fall back to Spark
 3. **Verify protobuf**: Add debug prints in Rust to inspect deserialized operators
 4. **Use EXPLAIN**: Run `EXPLAIN EXTENDED` on queries to see the physical plan
