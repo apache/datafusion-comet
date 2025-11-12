@@ -285,10 +285,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        // Iceberg transform functions not yet supported by iceberg-rust
-        // These functions may be pushed down in filters but return incorrect results
-        val unsupportedTransforms = Set("truncate")
-
         val typeChecker = CometScanTypeChecker(SCAN_NATIVE_DATAFUSION)
         val schemaSupported =
           typeChecker.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
@@ -367,10 +363,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
             tasks.asScala.foreach { task =>
               val dataFile = fileMethod.invoke(task)
-              val fileFormat = formatMethod.invoke(dataFile)
+              val fileFormat = formatMethod.invoke(dataFile).toString
 
               // Check file format
-              if (fileFormat.toString != IcebergReflection.FileFormats.PARQUET) {
+              if (fileFormat != IcebergReflection.FileFormats.PARQUET) {
                 allParquet = false
               } else {
                 // Only check filesystem schemes for Parquet files we'll actually process
@@ -548,37 +544,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             false
           }
 
-        // Check for unsupported Iceberg transform functions in filter expressions
-        val transformFunctionsSupported = filterExpressionsOpt
-          .map { filters =>
-            val hasUnsupportedTransform = filters.asScala.exists { expr =>
-              val exprStr = expr.toString
-              unsupportedTransforms.exists { transform =>
-                // Match patterns like: truncate[4](ref(name="data"))
-                exprStr.contains(s"$transform[")
-              }
-            }
-
-            if (hasUnsupportedTransform) {
-              val foundTransforms = unsupportedTransforms.filter { transform =>
-                filters.asScala.exists(expr => expr.toString.contains(s"$transform["))
-              }
-              fallbackReasons += "Iceberg transform function(s) in filter not yet supported " +
-                s"by iceberg-rust: ${foundTransforms.mkString(", ")}"
-              false
-            } else {
-              true
-            }
-          }
-          .getOrElse {
-            // Fall back to Spark if reflection fails - cannot verify safety
-            val msg =
-              "Iceberg reflection failure: Could not check for unsupported transform functions"
-            logError(msg)
-            fallbackReasons += msg
-            false
-          }
-
         // Check for unsupported struct types in delete files
         val deleteFileTypesSupported = (tableOpt, tasksOpt) match {
           case (Some(table), Some(tasks)) =>
@@ -627,7 +592,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
         if (schemaSupported && fileIOCompatible && formatVersionSupported && allParquetFiles &&
           allSupportedFilesystems && partitionTypesSupported &&
-          complexTypePredicatesSupported && transformFunctionsSupported &&
+          complexTypePredicatesSupported &&
           deleteFileTypesSupported) {
           // Iceberg tables require type promotion for schema evolution (add/drop columns)
           SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")

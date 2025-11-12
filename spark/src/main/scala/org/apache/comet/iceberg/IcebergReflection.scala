@@ -221,20 +221,6 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * Gets the file format from a ContentFile (e.g., "PARQUET", "ORC", "AVRO").
-   */
-  def getFileFormat(contentFile: Any): Option[String] = {
-    try {
-      val formatMethod = contentFile.getClass.getMethod("format")
-      Some(formatMethod.invoke(contentFile).toString)
-    } catch {
-      case e: Exception =>
-        logError(s"Iceberg reflection failure: Failed to get file format: ${e.getMessage}")
-        None
-    }
-  }
-
-  /**
    * Gets the FileIO from an Iceberg table.
    */
   def getFileIO(table: Any): Option[Any] = {
@@ -406,32 +392,6 @@ object IcebergReflection extends Logging {
       case _: Exception =>
         // Position delete files return null/empty for equalityFieldIds
         new java.util.ArrayList[Any]()
-    }
-  }
-
-  /**
-   * Gets the content type of a delete file (POSITION_DELETES or EQUALITY_DELETES).
-   *
-   * @param deleteFile
-   *   An Iceberg DeleteFile object
-   * @return
-   *   Content type string
-   */
-  def getDeleteFileContentType(deleteFile: Any): Option[String] = {
-    try {
-      // scalastyle:off classforname
-      val deleteFileClass = Class.forName(ClassNames.DELETE_FILE)
-      // scalastyle:on classforname
-      val contentMethod = deleteFileClass.getMethod("content")
-      val content = contentMethod.invoke(deleteFile)
-      if (content == null) {
-        None
-      } else {
-        Some(content.toString)
-      }
-    } catch {
-      case _: Exception =>
-        None
     }
   }
 
