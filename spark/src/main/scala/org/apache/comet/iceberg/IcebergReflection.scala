@@ -396,7 +396,7 @@ object IcebergReflection extends Logging {
       val ids = equalityFieldIdsMethod.invoke(deleteFile).asInstanceOf[java.util.List[_]]
       if (ids == null) new java.util.ArrayList[Any]() else ids
     } catch {
-      case e: Exception =>
+      case _: Exception =>
         // Position delete files return null/empty for equalityFieldIds
         new java.util.ArrayList[Any]()
     }
@@ -423,7 +423,7 @@ object IcebergReflection extends Logging {
         Some(content.toString)
       }
     } catch {
-      case e: Exception =>
+      case _: Exception =>
         None
     }
   }
