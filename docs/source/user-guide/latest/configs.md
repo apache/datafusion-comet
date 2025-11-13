@@ -81,7 +81,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.explain.native.enabled` | When this setting is enabled, Comet will provide a tree representation of the native query plan before execution and again after execution, with metrics. | false |
 | `spark.comet.explain.rules` | When this setting is enabled, Comet will log all plan transformations performed in physical optimizer rules. Default: false | false |
 | `spark.comet.explainFallback.enabled` | When this setting is enabled, Comet will provide logging explaining the reason(s) why a query stage cannot be executed natively. Set this to false to reduce the amount of logging. | false |
-| `spark.comet.logFallbackReasons.enabled` | When this setting is enabled, Comet will log warnings for all fallback reasons. Can be overridden by environment variable `ENABLE_COMET_LOG_FALLBACK_REASONS`. | false |
+| `spark.comet.logFallbackReasons.enabled` | When this setting is enabled, Comet will log warnings for all fallback reasons. Can be overridden by environment variable `ENABLE_COMET_LOG_FALLBACK_REASONS`. | true |
 <!--END:CONFIG_TABLE-->
 
 ## Shuffle Configuration Settings
