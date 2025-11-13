@@ -24,12 +24,10 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.CometBatchScanExec
-import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.types._
 
 import org.apache.comet.ConfigEntry
 import org.apache.comet.iceberg.IcebergReflection
-import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
@@ -37,55 +35,6 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] with Logging {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
-
-  /**
-   * Extracts metadata location from Iceberg table.
-   *
-   * @param scanExec
-   *   The Spark BatchScanExec containing an Iceberg scan
-   * @return
-   *   Path to the table metadata file
-   */
-  def extractMetadataLocation(scanExec: BatchScanExec): String = {
-    val scan = scanExec.scan
-
-    IcebergReflection
-      .getTable(scan)
-      .flatMap(IcebergReflection.getMetadataLocation)
-      .getOrElse(
-        throw new RuntimeException("Failed to extract metadata location from Iceberg table"))
-  }
-
-  /**
-   * Extracts name mapping from Iceberg table metadata properties.
-   *
-   * Name mapping is stored in table properties as "schema.name-mapping.default" and provides a
-   * fallback mapping from field names to field IDs for Parquet files that lack field IDs or have
-   * field ID conflicts (e.g., Hive tables migrated via add_files).
-   *
-   * Per Iceberg spec rule #2: "Use schema.name-mapping.default metadata to map field id to
-   * columns without field id as described below and use the column if it is present."
-   *
-   * @param scanExec
-   *   The Spark BatchScanExec containing an Iceberg scan
-   * @return
-   *   Optional JSON string of the name mapping, or None if not present in table properties
-   */
-  def extractNameMapping(scanExec: BatchScanExec): Option[String] = {
-    val scan = scanExec.scan
-    val nameMappingKey = "schema.name-mapping.default"
-
-    IcebergReflection
-      .getTable(scan)
-      .flatMap(IcebergReflection.getTableProperties)
-      .flatMap { properties =>
-        if (properties.containsKey(nameMappingKey)) {
-          Some(properties.get(nameMappingKey))
-        } else {
-          None
-        }
-      }
-  }
 
   /**
    * Constants specific to Iceberg expression conversion (not in shared IcebergReflection).
@@ -130,40 +79,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       Some(builder(attribute, value))
     } catch {
       case _: Exception => None
-    }
-  }
-
-  /**
-   * Builds a field ID mapping from an Iceberg schema.
-   *
-   * Extracts the mapping of column names to Iceberg field IDs from the schema's columns. This is
-   * used for schema evolution support where we need to map between column names and their
-   * corresponding field IDs.
-   */
-  private def buildFieldIdMapping(schema: Any): Map[String, Int] = {
-    try {
-      val columnsMethod = schema.getClass.getMethod("columns")
-      val columns = columnsMethod.invoke(schema).asInstanceOf[java.util.List[_]]
-
-      columns.asScala.flatMap { column =>
-        try {
-          val nameMethod = column.getClass.getMethod("name")
-          val name = nameMethod.invoke(column).asInstanceOf[String]
-
-          val fieldIdMethod = column.getClass.getMethod("fieldId")
-          val fieldId = fieldIdMethod.invoke(column).asInstanceOf[Int]
-
-          Some(name -> fieldId)
-        } catch {
-          case e: Exception =>
-            logWarning(s"Failed to extract field ID from column: ${e.getMessage}")
-            None
-        }
-      }.toMap
-    } catch {
-      case e: Exception =>
-        logWarning(s"Failed to build field ID mapping from schema: ${e.getMessage}")
-        Map.empty[String, Int]
     }
   }
 
@@ -615,8 +530,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   /**
    * Serializes a CometBatchScanExec wrapping an Iceberg SparkBatchQueryScan to protobuf.
    *
-   * This handles extraction of metadata location, catalog properties, file scan tasks, schemas,
-   * partition data, delete files, and residual expressions from Iceberg scans.
+   * Uses pre-extracted metadata from CometScanRule to avoid redundant reflection operations. All
+   * reflection and validation was done during planning, so serialization failures here would
+   * indicate a programming error rather than an expected fallback condition.
    */
   override def convert(
       scan: CometBatchScanExec,
@@ -624,48 +540,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
     val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
 
-    // Extract metadata location for native execution
-    val metadataLocation =
-      try {
-        extractMetadataLocation(scan.wrapped)
-      } catch {
-        case e: Exception =>
-          logWarning(s"Failed to extract metadata location from Iceberg scan: ${e.getMessage}")
-          return None
-      }
-
-    icebergScanBuilder.setMetadataLocation(metadataLocation)
-
-    val catalogProperties =
-      try {
-        val session = org.apache.spark.sql.SparkSession.active
-        val hadoopConf = session.sessionState.newHadoopConf()
-
-        val metadataUri = new java.net.URI(metadataLocation)
-        val hadoopS3Options =
-          NativeConfig.extractObjectStoreOptions(hadoopConf, metadataUri)
-
-        hadoopToIcebergS3Properties(hadoopS3Options)
-      } catch {
-        case e: Exception =>
-          logWarning(
-            s"Failed to extract catalog properties from Iceberg scan: ${e.getMessage}",
-            e)
-          Map.empty[String, String]
-      }
-    catalogProperties.foreach { case (key, value) =>
-      icebergScanBuilder.putCatalogProperties(key, value)
+    // Get pre-extracted metadata from planning phase
+    // If metadata is None, this is a programming error - metadata should have been extracted
+    // in CometScanRule before creating CometBatchScanExec
+    val metadata = scan.nativeIcebergScanMetadata.getOrElse {
+      logError(
+        "Programming error: CometBatchScanExec.nativeIcebergScanMetadata is None. " +
+          "Metadata should have been extracted in CometScanRule.")
+      return None
     }
 
-    // Extract name mapping from table metadata (once per scan, shared by all tasks)
-    val nameMappingJson =
-      try {
-        extractNameMapping(scan.wrapped)
-      } catch {
-        case e: Exception =>
-          logWarning(s"Failed to extract name mapping from Iceberg table: ${e.getMessage}", e)
-          None
-      }
+    // Use pre-extracted metadata (no reflection needed)
+    icebergScanBuilder.setMetadataLocation(metadata.metadataLocation)
+
+    metadata.catalogProperties.foreach { case (key, value) =>
+      icebergScanBuilder.putCatalogProperties(key, value)
+    }
 
     // Set required_schema from output
     scan.output.foreach { attr =>
@@ -676,33 +566,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       serializeDataType(attr.dataType).foreach(field.setDataType)
       icebergScanBuilder.addRequiredSchema(field.build())
     }
-
-    // For schema evolution support: extract the scan's expected schema to use for all tasks.
-    // When reading old snapshots (VERSION AS OF) after schema changes (add/drop columns),
-    // individual FileScanTasks may have inconsistent schemas - some with the snapshot schema,
-    // others with the current table schema. By using the scan's expectedSchema() uniformly,
-    // we ensure iceberg-rust reads all files with the correct snapshot schema.
-    var scanSchemaForTasks: Option[Any] = None
-    val globalNameToFieldId: Map[String, Int] =
-      try {
-        // expectedSchema() is a protected method in SparkScan that returns the Iceberg Schema
-        // for this scan (which is the snapshot schema for VERSION AS OF queries).
-        val schemaMethod = IcebergReflection
-          .findMethodInHierarchy(scan.wrapped.scan.getClass, "expectedSchema")
-          .getOrElse(throw new NoSuchMethodException(
-            "Could not find expectedSchema() method in class hierarchy"))
-
-        val scanSchema = schemaMethod.invoke(scan.wrapped.scan)
-        scanSchemaForTasks = Some(scanSchema)
-
-        // Build a field ID mapping from the scan schema as a fallback.
-        // This is needed when scan.output includes columns that aren't in some task schemas.
-        buildFieldIdMapping(scanSchema)
-      } catch {
-        case e: Exception =>
-          logWarning(s"Failed to extract scan schema for field ID mapping: ${e.getMessage}")
-          Map.empty[String, Int]
-      }
 
     // Extract FileScanTasks from the InputPartitions in the RDD
     try {
@@ -871,11 +734,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                         IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
                       val hasDeletes = !deletes.isEmpty
 
+                      // Use pre-extracted scanSchema for schema evolution support
                       val schema: AnyRef =
                         if (hasDeletes) {
                           taskSchema
                         } else {
-                          scanSchemaForTasks.map(_.asInstanceOf[AnyRef]).getOrElse(taskSchema)
+                          metadata.scanSchema.asInstanceOf[AnyRef]
                         }
 
                       // scalastyle:off classforname
@@ -890,15 +754,15 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       taskBuilder.setSchemaJson(schemaJson)
 
                       // Build field ID mapping from the schema we're using
-                      val nameToFieldId = buildFieldIdMapping(schema)
+                      val nameToFieldId = IcebergReflection.buildFieldIdMapping(schema)
 
                       // Extract project_field_ids for scan.output columns.
                       // For schema evolution: try task schema first, then fall back to
-                      // global scan schema.
+                      // global scan schema (pre-extracted in metadata).
                       scan.output.foreach { attr =>
                         val fieldId = nameToFieldId
                           .get(attr.name)
-                          .orElse(globalNameToFieldId.get(attr.name))
+                          .orElse(metadata.globalFieldIdMapping.get(attr.name))
 
                         fieldId match {
                           case Some(id) =>
@@ -961,10 +825,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       fileScanTaskClass,
                       taskBuilder)
 
-                    // Set name mapping if available (shared by all tasks in this scan)
-                    nameMappingJson.foreach { nameMappingStr =>
-                      taskBuilder.setNameMappingJson(nameMappingStr)
-                    }
+                    // Set name mapping if available (shared by all tasks, pre-extracted)
+                    metadata.nameMapping.foreach(taskBuilder.setNameMappingJson)
 
                     partitionBuilder.addFileScanTasks(taskBuilder.build())
                   }

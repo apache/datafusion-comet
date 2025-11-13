@@ -44,7 +44,7 @@ import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.{CometParquetScan, Native}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
@@ -294,204 +294,120 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
         }
 
-        // Get Iceberg table once for multiple checks (FileIO, format version, partition types)
-        val tableOpt = IcebergReflection.getTable(scanExec.scan)
+        // Extract all Iceberg metadata once using reflection.
+        // If any required reflection fails, this returns None, and we fall back to Spark.
+        // First get metadataLocation and catalogProperties which are needed by the factory.
+        val metadataLocationOpt = IcebergReflection
+          .getTable(scanExec.scan)
+          .flatMap(IcebergReflection.getMetadataLocation)
 
-        // Check if table uses a FileIO implementation compatible with iceberg-rust
-        // InMemoryFileIO stores files in Java memory rather than on filesystem/object storage,
-        // which is incompatible with iceberg-rust's FileIO
-        val fileIOCompatible = tableOpt
-          .flatMap { table =>
-            IcebergReflection.getFileIO(table).map { fileIO =>
-              val fileIOClassName = fileIO.getClass.getName
-              if (fileIOClassName == "org.apache.iceberg.inmemory.InMemoryFileIO") {
-                fallbackReasons += "Comet does not support InMemoryFileIO table locations"
-                false
-              } else {
-                // FileIO is compatible with iceberg-rust
-                true
-              }
-            }
+        val metadataOpt = metadataLocationOpt.flatMap { metadataLocation =>
+          try {
+            val session = org.apache.spark.sql.SparkSession.active
+            val hadoopConf = session.sessionState.newHadoopConf()
+            val metadataUri = new java.net.URI(metadataLocation)
+            val hadoopS3Options = NativeConfig.extractObjectStoreOptions(hadoopConf, metadataUri)
+            val catalogProperties =
+              org.apache.comet.serde.operator.CometIcebergNativeScan
+                .hadoopToIcebergS3Properties(hadoopS3Options)
+
+            CometIcebergNativeScanMetadata
+              .extract(scanExec.scan, metadataLocation, catalogProperties)
+          } catch {
+            case e: Exception =>
+              logError(
+                s"Failed to extract catalog properties from Iceberg scan: ${e.getMessage}",
+                e)
+              None
           }
-          .getOrElse {
+        }
+
+        // If metadata extraction failed, fall back to Spark
+        val metadata = metadataOpt match {
+          case Some(m) => m
+          case None =>
+            fallbackReasons += "Failed to extract Iceberg metadata via reflection"
+            return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+        // Now perform all validation using the pre-extracted metadata
+        // Check if table uses a FileIO implementation compatible with iceberg-rust
+        val fileIOCompatible = IcebergReflection.getFileIO(metadata.table) match {
+          case Some(fileIO) =>
+            val fileIOClassName = fileIO.getClass.getName
+            if (fileIOClassName == "org.apache.iceberg.inmemory.InMemoryFileIO") {
+              fallbackReasons += "Comet does not support InMemoryFileIO table locations"
+              false
+            } else {
+              true
+            }
+          case None =>
             fallbackReasons += "Could not check FileIO compatibility"
             false
-          }
+        }
 
         // Check Iceberg table format version
-        val formatVersionSupported = tableOpt
-          .flatMap { table =>
-            IcebergReflection.getFormatVersion(table).map { formatVersion =>
-              if (formatVersion > 2) {
-                fallbackReasons += "Iceberg table format version " +
-                  s"$formatVersion is not supported. " +
-                  "Comet only supports Iceberg table format V1 and V2"
-                false
-              } else {
-                true
-              }
+        val formatVersionSupported = IcebergReflection.getFormatVersion(metadata.table) match {
+          case Some(formatVersion) =>
+            if (formatVersion > 2) {
+              fallbackReasons += "Iceberg table format version " +
+                s"$formatVersion is not supported. " +
+                "Comet only supports Iceberg table format V1 and V2"
+              false
+            } else {
+              true
             }
-          }
-          .getOrElse {
+          case None =>
             fallbackReasons += "Could not verify Iceberg table format version"
             false
-          }
-
-        // Get tasks once for file format and filesystem checks
-        val tasksOpt = IcebergReflection.getTasks(scanExec.scan)
+        }
 
         // Check if all files are Parquet format and use supported filesystem schemes
-        val (allParquetFiles, allSupportedFilesystems) = tasksOpt
-          .map { tasks =>
-            // scalastyle:off classforname
-            val contentScanTaskClass =
-              Class.forName(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
-            val contentFileClass = Class.forName(IcebergReflection.ClassNames.CONTENT_FILE)
-            // scalastyle:on classforname
+        val (allParquetFiles, unsupportedSchemes) =
+          IcebergReflection.validateFileFormatsAndSchemes(metadata.tasks)
 
-            val fileMethod = contentScanTaskClass.getMethod("file")
-            val formatMethod = contentFileClass.getMethod("format")
-            val pathMethod = contentFileClass.getMethod("path")
+        val allSupportedFilesystems = if (unsupportedSchemes.isEmpty) {
+          true
+        } else {
+          fallbackReasons += "Iceberg scan contains files with unsupported filesystem " +
+            s"schemes: ${unsupportedSchemes.mkString(", ")}. " +
+            s"Comet only supports: file, s3, s3a, gs, gcs, oss, abfss, abfs, wasbs, wasb"
+          false
+        }
 
-            // Filesystem schemes supported by iceberg-rust
-            // See: iceberg-rust/crates/iceberg/src/io/storage.rs parse_scheme()
-            val supportedSchemes =
-              Set("file", "s3", "s3a", "gs", "gcs", "oss", "abfss", "abfs", "wasbs", "wasb")
-
-            var allParquet = true
-            var allSupportedFs = true
-
-            tasks.asScala.foreach { task =>
-              val dataFile = fileMethod.invoke(task)
-              val fileFormat = formatMethod.invoke(dataFile).toString
-
-              // Check file format
-              if (fileFormat != IcebergReflection.FileFormats.PARQUET) {
-                allParquet = false
-              } else {
-                // Only check filesystem schemes for Parquet files we'll actually process
-                // Check filesystem scheme for data file
-                try {
-                  val filePath = pathMethod.invoke(dataFile).toString
-                  val uri = new URI(filePath)
-                  val scheme = uri.getScheme
-
-                  if (scheme != null && !supportedSchemes.contains(scheme)) {
-                    allSupportedFs = false
-                    fallbackReasons += "Iceberg scan contains files with unsupported filesystem " +
-                      s"scheme: $scheme. " +
-                      s"Comet only supports: ${supportedSchemes.mkString(", ")}"
-                  }
-                } catch {
-                  case _: java.net.URISyntaxException =>
-                  // Ignore URI parsing errors - file paths may contain special characters
-                  // If the path is invalid, we'll fail later during actual file access
-                }
-
-                // Check delete files if they exist
-                try {
-                  val deletesMethod = task.getClass.getMethod("deletes")
-                  val deleteFiles = deletesMethod.invoke(task).asInstanceOf[java.util.List[_]]
-
-                  deleteFiles.asScala.foreach { deleteFile =>
-                    IcebergReflection
-                      .extractFileLocation(contentFileClass, deleteFile)
-                      .foreach { deletePath =>
-                        try {
-                          val deleteUri = new URI(deletePath)
-                          val deleteScheme = deleteUri.getScheme
-
-                          if (deleteScheme != null && !supportedSchemes.contains(deleteScheme)) {
-                            allSupportedFs = false
-                          }
-                        } catch {
-                          case _: java.net.URISyntaxException =>
-                          // Ignore URI parsing errors for delete files too
-                        }
-                      }
-                  }
-                } catch {
-                  case _: Exception =>
-                  // Ignore errors accessing delete files - they may not be supported
-                }
-              }
-            }
-
-            if (!allParquet) {
-              fallbackReasons += "Iceberg scan contains non-Parquet files (ORC or Avro). " +
-                "Comet only supports Parquet files in Iceberg tables"
-            }
-
-            (allParquet, allSupportedFs)
-          }
-          .getOrElse {
-            fallbackReasons += "Could not verify file formats or filesystem schemes"
-            (false, false)
-          }
+        if (!allParquetFiles) {
+          fallbackReasons += "Iceberg scan contains non-Parquet files (ORC or Avro). " +
+            "Comet only supports Parquet files in Iceberg tables"
+        }
 
         // Partition values are deserialized via iceberg-rust's Literal::try_from_json()
         // which has incomplete type support (binary/fixed unimplemented, decimals limited)
-        val partitionTypesSupported = tableOpt
-          .flatMap { table =>
-            for {
-              partitionSpec <- IcebergReflection.getPartitionSpec(table)
-              schema <- IcebergReflection.getSchema(table)
-            } yield {
-              val fieldsMethod = partitionSpec.getClass.getMethod("fields")
-              val fields = fieldsMethod.invoke(partitionSpec).asInstanceOf[java.util.List[_]]
+        val partitionTypesSupported = (for {
+          partitionSpec <- IcebergReflection.getPartitionSpec(metadata.table)
+        } yield {
+          val unsupportedTypes =
+            IcebergReflection.validatePartitionTypes(partitionSpec, metadata.scanSchema)
 
-              // scalastyle:off classforname
-              val partitionFieldClass =
-                Class.forName(IcebergReflection.ClassNames.PARTITION_FIELD)
-              // scalastyle:on classforname
-              val sourceIdMethod = partitionFieldClass.getMethod("sourceId")
-              val findFieldMethod = schema.getClass.getMethod("findField", classOf[Int])
-
-              var allSupported = true
-              fields.asScala.foreach { field =>
-                val sourceId = sourceIdMethod.invoke(field).asInstanceOf[Int]
-                val column = findFieldMethod.invoke(schema, sourceId.asInstanceOf[Object])
-
-                if (column != null) {
-                  val typeMethod = column.getClass.getMethod("type")
-                  val icebergType = typeMethod.invoke(column)
-                  val typeStr = icebergType.toString
-
-                  // iceberg-rust/crates/iceberg/src/spec/values.rs Literal::try_from_json()
-                  if (typeStr.startsWith("decimal(")) {
-                    val precisionStr = typeStr.substring(8, typeStr.indexOf(','))
-                    val precision = precisionStr.toInt
-                    // rust_decimal crate maximum precision
-                    if (precision > 28) {
-                      allSupported = false
-                      fallbackReasons += "Partition column with high-precision decimal " +
-                        s"(precision=$precision) is not yet supported by iceberg-rust. " +
-                        "Maximum supported precision for partition columns is 28 " +
-                        "(rust_decimal limitation)"
-                    }
-                  } else if (typeStr == "binary" || typeStr.startsWith("fixed[")) {
-                    // Literal::try_from_json returns todo!() for these types
-                    allSupported = false
-                    fallbackReasons +=
-                      "Partition column with binary or fixed type is not yet " +
-                        "supported by iceberg-rust (Literal::try_from_json todo!())"
-                  }
-                }
-              }
-
-              allSupported
+          if (unsupportedTypes.nonEmpty) {
+            unsupportedTypes.foreach { case (fieldName, typeStr, reason) =>
+              fallbackReasons +=
+                s"Partition column '$fieldName' with type $typeStr is not yet supported by " +
+                  s"iceberg-rust: $reason"
             }
-          }
-          .getOrElse {
-            // Fall back to Spark if reflection fails - cannot verify safety
-            val msg =
-              "Iceberg reflection failure: Could not verify partition types compatibility"
-            logError(msg)
-            fallbackReasons += msg
             false
+          } else {
+            true
           }
+        }).getOrElse {
+          // Fall back to Spark if reflection fails - cannot verify safety
+          val msg =
+            "Iceberg reflection failure: Could not verify partition types compatibility"
+          logError(msg)
+          fallbackReasons += msg
+          false
+        }
 
-        // Get filter expressions once for complex predicates and transform function checks
+        // Get filter expressions for complex predicates check
         val filterExpressionsOpt = IcebergReflection.getFilterExpressions(scanExec.scan)
 
         // IS NULL/NOT NULL on complex types fail because iceberg-rust's accessor creation
@@ -547,88 +463,80 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         // Check for unsupported transform functions in residual expressions
         // iceberg-rust can only handle identity transforms in residuals; all other transforms
         // (truncate, bucket, year, month, day, hour) must fall back to Spark
-        val transformFunctionsSupported = tasksOpt match {
-          case Some(tasks) =>
-            try {
-              IcebergReflection.findNonIdentityTransformInResiduals(tasks) match {
-                case Some(transformType) =>
-                  // Found unsupported transform
-                  fallbackReasons +=
-                    s"Iceberg transform function '$transformType' in residual expression " +
-                      "is not yet supported by iceberg-rust. " +
-                      "Only identity transforms are supported."
-                  false
-                case None =>
-                  // No unsupported transforms found - safe to use native execution
-                  true
-              }
-            } catch {
-              case e: Exception =>
-                // Reflection failure - cannot verify safety, must fall back
-                fallbackReasons += "Iceberg reflection failure: Could not check for " +
-                  s"transform functions in residuals: ${e.getMessage}"
+        val transformFunctionsSupported =
+          try {
+            IcebergReflection.findNonIdentityTransformInResiduals(metadata.tasks) match {
+              case Some(transformType) =>
+                // Found unsupported transform
+                fallbackReasons +=
+                  s"Iceberg transform function '$transformType' in residual expression " +
+                    "is not yet supported by iceberg-rust. " +
+                    "Only identity transforms are supported."
                 false
+              case None =>
+                // No unsupported transforms found - safe to use native execution
+                true
             }
-          case None =>
-            // No tasks to check - continue
-            true
-        }
+          } catch {
+            case e: Exception =>
+              // Reflection failure - cannot verify safety, must fall back
+              fallbackReasons += "Iceberg reflection failure: Could not check for " +
+                s"transform functions in residuals: ${e.getMessage}"
+              false
+          }
 
         // Check for unsupported struct types in delete files
-        val deleteFileTypesSupported = (tableOpt, tasksOpt) match {
-          case (Some(table), Some(tasks)) =>
-            var hasUnsupportedDeletes = false
+        val deleteFileTypesSupported = {
+          var hasUnsupportedDeletes = false
 
-            IcebergReflection.getSchema(table).foreach { schema =>
-              try {
-                val deleteFiles = IcebergReflection.getDeleteFiles(tasks)
+          try {
+            val deleteFiles = IcebergReflection.getDeleteFiles(metadata.tasks)
 
-                if (!deleteFiles.isEmpty) {
-                  deleteFiles.asScala.foreach { deleteFile =>
-                    val equalityFieldIds = IcebergReflection.getEqualityFieldIds(deleteFile)
+            if (!deleteFiles.isEmpty) {
+              deleteFiles.asScala.foreach { deleteFile =>
+                val equalityFieldIds = IcebergReflection.getEqualityFieldIds(deleteFile)
 
-                    if (!equalityFieldIds.isEmpty) {
-                      // Look up field types
-                      equalityFieldIds.asScala.foreach { fieldId =>
-                        IcebergReflection.getFieldInfo(schema, fieldId.asInstanceOf[Int]) match {
-                          case Some((fieldName, fieldType)) =>
-                            if (fieldType.contains("struct")) {
-                              hasUnsupportedDeletes = true
-                              fallbackReasons +=
-                                s"Equality delete on unsupported column type '$fieldName' " +
-                                  s"($fieldType) is not yet supported by iceberg-rust. " +
-                                  "Struct types in equality deletes " +
-                                  "require datum conversion support that is not yet implemented."
-                            }
-                          case None =>
+                if (!equalityFieldIds.isEmpty) {
+                  // Look up field types
+                  equalityFieldIds.asScala.foreach { fieldId =>
+                    val fieldInfo = IcebergReflection.getFieldInfo(
+                      metadata.scanSchema,
+                      fieldId.asInstanceOf[Int])
+                    fieldInfo match {
+                      case Some((fieldName, fieldType)) =>
+                        if (fieldType.contains("struct")) {
+                          hasUnsupportedDeletes = true
+                          fallbackReasons +=
+                            s"Equality delete on unsupported column type '$fieldName' " +
+                              s"($fieldType) is not yet supported by iceberg-rust. " +
+                              "Struct types in equality deletes " +
+                              "require datum conversion support that is not yet implemented."
                         }
-                      }
+                      case None =>
                     }
                   }
                 }
-              } catch {
-                case e: Exception =>
-                  // Reflection failure means we cannot verify safety - must fall back
-                  hasUnsupportedDeletes = true
-                  fallbackReasons += "Iceberg reflection failure: Could not verify delete file " +
-                    s"types for safety: ${e.getMessage}"
               }
             }
+          } catch {
+            case e: Exception =>
+              // Reflection failure means we cannot verify safety - must fall back
+              hasUnsupportedDeletes = true
+              fallbackReasons += "Iceberg reflection failure: Could not verify delete file " +
+                s"types for safety: ${e.getMessage}"
+          }
 
-            !hasUnsupportedDeletes
-          case _ =>
-            true
+          !hasUnsupportedDeletes
         }
 
         if (schemaSupported && fileIOCompatible && formatVersionSupported && allParquetFiles &&
           allSupportedFilesystems && partitionTypesSupported &&
           complexTypePredicatesSupported && transformFunctionsSupported &&
           deleteFileTypesSupported) {
-          // Iceberg tables require type promotion for schema evolution (add/drop columns)
-          SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
-            runtimeFilters = scanExec.runtimeFilters)
+            runtimeFilters = scanExec.runtimeFilters,
+            nativeIcebergScanMetadata = Some(metadata))
         } else {
           withInfos(scanExec, fallbackReasons.toSet)
         }

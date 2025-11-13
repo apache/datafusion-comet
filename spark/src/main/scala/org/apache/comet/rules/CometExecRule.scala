@@ -166,14 +166,26 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case scan: CometBatchScanExec
           if scan.wrapped.scan.getClass.getName ==
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
+        // Metadata must be present - if not, CometScanRule should have rejected this scan
+        val metadata = scan.nativeIcebergScanMetadata.getOrElse {
+          throw new IllegalStateException(
+            "Programming error: CometBatchScanExec for Iceberg scan is missing metadata. " +
+              "This indicates CometScanRule created a CometBatchScanExec without metadata, " +
+              "which should never happen.")
+        }
+
         // Serialize CometBatchScanExec to extract FileScanTasks and get proto
-        // This also extracts metadataLocation - if that fails, operator2Proto returns None
         QueryPlanSerde.operator2Proto(scan) match {
           case Some(nativeOp) =>
             // Extract metadataLocation from proto for display purposes
             val metadataLocation = nativeOp.getIcebergScan.getMetadataLocation
-            // Create native Iceberg scan exec with the serialized proto
-            CometIcebergNativeScanExec(nativeOp, scan.wrapped, session, metadataLocation)
+            // Create native Iceberg scan exec with pre-extracted metadata
+            CometIcebergNativeScanExec(
+              nativeOp,
+              scan.wrapped,
+              session,
+              metadataLocation,
+              metadata)
           case None =>
             // Serialization failed, fall back to CometBatchScanExec
             scan

@@ -429,6 +429,218 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * Gets the expected schema from a SparkScan.
+   *
+   * The expectedSchema() method is protected in SparkScan and returns the Iceberg Schema for this
+   * scan (which is the snapshot schema for VERSION AS OF queries).
+   *
+   * @param scan
+   *   The SparkScan object
+   * @return
+   *   The expected Iceberg Schema, or None if reflection fails
+   */
+  def getExpectedSchema(scan: Any): Option[Any] = {
+    findMethodInHierarchy(scan.getClass, "expectedSchema").flatMap { schemaMethod =>
+      try {
+        Some(schemaMethod.invoke(scan))
+      } catch {
+        case e: Exception =>
+          logError(s"Failed to get expectedSchema from SparkScan: ${e.getMessage}")
+          None
+      }
+    }
+  }
+
+  /**
+   * Builds a field ID mapping from an Iceberg schema.
+   *
+   * Extracts the mapping of column names to Iceberg field IDs from the schema's columns. This is
+   * used for schema evolution support where we need to map between column names and their
+   * corresponding field IDs.
+   *
+   * @param schema
+   *   Iceberg Schema object
+   * @return
+   *   Map from column name to field ID
+   */
+  def buildFieldIdMapping(schema: Any): Map[String, Int] = {
+    import scala.jdk.CollectionConverters._
+    try {
+      val columnsMethod = schema.getClass.getMethod("columns")
+      val columns = columnsMethod.invoke(schema).asInstanceOf[java.util.List[_]]
+
+      columns.asScala.flatMap { column =>
+        try {
+          val nameMethod = column.getClass.getMethod("name")
+          val name = nameMethod.invoke(column).asInstanceOf[String]
+
+          val fieldIdMethod = column.getClass.getMethod("fieldId")
+          val fieldId = fieldIdMethod.invoke(column).asInstanceOf[Int]
+
+          Some(name -> fieldId)
+        } catch {
+          case e: Exception =>
+            logWarning(s"Failed to extract field ID from column: ${e.getMessage}")
+            None
+        }
+      }.toMap
+    } catch {
+      case e: Exception =>
+        logWarning(s"Failed to build field ID mapping from schema: ${e.getMessage}")
+        Map.empty[String, Int]
+    }
+  }
+
+  /**
+   * Validates file formats and filesystem schemes for Iceberg tasks.
+   *
+   * Checks that all data files and delete files are Parquet format and use filesystem schemes
+   * supported by iceberg-rust (file, s3, s3a, gs, gcs, oss, abfss, abfs, wasbs, wasb).
+   *
+   * @param tasks
+   *   List of Iceberg FileScanTask objects
+   * @return
+   *   (allParquet, unsupportedSchemes) where: - allParquet: true if all files are Parquet format
+   *   \- unsupportedSchemes: Set of unsupported filesystem schemes found (empty if all supported)
+   */
+  def validateFileFormatsAndSchemes(tasks: java.util.List[_]): (Boolean, Set[String]) = {
+    import scala.jdk.CollectionConverters._
+
+    // scalastyle:off classforname
+    val contentScanTaskClass = Class.forName(ClassNames.CONTENT_SCAN_TASK)
+    val contentFileClass = Class.forName(ClassNames.CONTENT_FILE)
+    // scalastyle:on classforname
+
+    val fileMethod = contentScanTaskClass.getMethod("file")
+    val formatMethod = contentFileClass.getMethod("format")
+    val pathMethod = contentFileClass.getMethod("path")
+
+    // Filesystem schemes supported by iceberg-rust
+    // See: iceberg-rust/crates/iceberg/src/io/storage.rs parse_scheme()
+    val supportedSchemes =
+      Set("file", "s3", "s3a", "gs", "gcs", "oss", "abfss", "abfs", "wasbs", "wasb")
+
+    var allParquet = true
+    val unsupportedSchemes = scala.collection.mutable.Set[String]()
+
+    tasks.asScala.foreach { task =>
+      val dataFile = fileMethod.invoke(task)
+      val fileFormat = formatMethod.invoke(dataFile).toString
+
+      // Check file format
+      if (fileFormat != FileFormats.PARQUET) {
+        allParquet = false
+      } else {
+        // Only check filesystem schemes for Parquet files we'll actually process
+        try {
+          val filePath = pathMethod.invoke(dataFile).toString
+          val uri = new java.net.URI(filePath)
+          val scheme = uri.getScheme
+
+          if (scheme != null && !supportedSchemes.contains(scheme)) {
+            unsupportedSchemes += scheme
+          }
+        } catch {
+          case _: java.net.URISyntaxException =>
+          // Ignore URI parsing errors - file paths may contain special characters
+          // If the path is invalid, we'll fail later during actual file access
+        }
+
+        // Check delete files if they exist
+        try {
+          val deletesMethod = task.getClass.getMethod("deletes")
+          val deleteFiles = deletesMethod.invoke(task).asInstanceOf[java.util.List[_]]
+
+          deleteFiles.asScala.foreach { deleteFile =>
+            extractFileLocation(contentFileClass, deleteFile).foreach { deletePath =>
+              try {
+                val deleteUri = new java.net.URI(deletePath)
+                val deleteScheme = deleteUri.getScheme
+
+                if (deleteScheme != null && !supportedSchemes.contains(deleteScheme)) {
+                  unsupportedSchemes += deleteScheme
+                }
+              } catch {
+                case _: java.net.URISyntaxException =>
+                // Ignore URI parsing errors for delete files too
+              }
+            }
+          }
+        } catch {
+          case _: Exception =>
+          // Ignore errors accessing delete files - they may not be supported
+        }
+      }
+    }
+
+    (allParquet, unsupportedSchemes.toSet)
+  }
+
+  /**
+   * Validates partition column types for compatibility with iceberg-rust.
+   *
+   * iceberg-rust's Literal::try_from_json() has incomplete type support: - Binary/fixed types:
+   * unimplemented - Decimals: limited to precision <= 28 (rust_decimal crate limitation)
+   *
+   * @param partitionSpec
+   *   The Iceberg PartitionSpec
+   * @param schema
+   *   The Iceberg Schema to look up field types
+   * @return
+   *   List of unsupported partition types (empty if all supported). Each entry is (fieldName,
+   *   typeStr, reason)
+   */
+  def validatePartitionTypes(partitionSpec: Any, schema: Any): List[(String, String, String)] = {
+    import scala.jdk.CollectionConverters._
+
+    val fieldsMethod = partitionSpec.getClass.getMethod("fields")
+    val fields = fieldsMethod.invoke(partitionSpec).asInstanceOf[java.util.List[_]]
+
+    // scalastyle:off classforname
+    val partitionFieldClass = Class.forName(ClassNames.PARTITION_FIELD)
+    // scalastyle:on classforname
+    val sourceIdMethod = partitionFieldClass.getMethod("sourceId")
+    val findFieldMethod = schema.getClass.getMethod("findField", classOf[Int])
+
+    val unsupportedTypes = scala.collection.mutable.ListBuffer[(String, String, String)]()
+
+    fields.asScala.foreach { field =>
+      val sourceId = sourceIdMethod.invoke(field).asInstanceOf[Int]
+      val column = findFieldMethod.invoke(schema, sourceId.asInstanceOf[Object])
+
+      if (column != null) {
+        val nameMethod = column.getClass.getMethod("name")
+        val fieldName = nameMethod.invoke(column).asInstanceOf[String]
+
+        val typeMethod = column.getClass.getMethod("type")
+        val icebergType = typeMethod.invoke(column)
+        val typeStr = icebergType.toString
+
+        // iceberg-rust/crates/iceberg/src/spec/values.rs Literal::try_from_json()
+        if (typeStr.startsWith("decimal(")) {
+          val precisionStr = typeStr.substring(8, typeStr.indexOf(','))
+          val precision = precisionStr.toInt
+          // rust_decimal crate maximum precision
+          if (precision > 28) {
+            unsupportedTypes += ((
+              fieldName,
+              typeStr,
+              s"High-precision decimal (precision=$precision) exceeds maximum of 28 " +
+                "(rust_decimal limitation)"))
+          }
+        } else if (typeStr == "binary" || typeStr.startsWith("fixed[")) {
+          unsupportedTypes += ((
+            fieldName,
+            typeStr,
+            "Binary/fixed types not yet supported (Literal::try_from_json todo!())"))
+        }
+      }
+    }
+
+    unsupportedTypes.toList
+  }
+
+  /**
    * Checks if tasks have non-identity transforms in their residual expressions.
    *
    * Residual expressions are filters that must be evaluated after reading data from Parquet.
@@ -488,5 +700,89 @@ object IcebergReflection extends Logging {
       }
     }
     None
+  }
+}
+
+/**
+ * Pre-extracted Iceberg metadata for native scan execution.
+ *
+ * This class holds all metadata extracted from Iceberg during the planning/validation phase in
+ * CometScanRule. By extracting all metadata once during validation (where reflection failures
+ * trigger fallback to Spark), we avoid redundant reflection during serialization (where failures
+ * would be fatal runtime errors).
+ *
+ * @param table
+ *   The Iceberg Table object
+ * @param metadataLocation
+ *   Path to the table metadata file
+ * @param nameMapping
+ *   Optional name mapping from table properties (for schema evolution)
+ * @param tasks
+ *   List of FileScanTask objects from Iceberg planning
+ * @param scanSchema
+ *   The expectedSchema from the SparkScan (for schema evolution / VERSION AS OF)
+ * @param globalFieldIdMapping
+ *   Mapping from column names to Iceberg field IDs (built from scanSchema)
+ * @param catalogProperties
+ *   Catalog properties for FileIO (S3 credentials, regions, etc.)
+ */
+case class CometIcebergNativeScanMetadata(
+    table: Any,
+    metadataLocation: String,
+    nameMapping: Option[String],
+    tasks: java.util.List[_],
+    scanSchema: Any,
+    globalFieldIdMapping: Map[String, Int],
+    catalogProperties: Map[String, String])
+
+object CometIcebergNativeScanMetadata extends Logging {
+
+  /**
+   * Extracts all Iceberg metadata needed for native scan execution.
+   *
+   * This method performs all reflection operations once during planning/validation. If any
+   * reflection operation fails, returns None to trigger fallback to Spark.
+   *
+   * @param scan
+   *   The Spark BatchScanExec.scan (SparkBatchQueryScan)
+   * @param metadataLocation
+   *   Path to the table metadata file (already extracted)
+   * @param catalogProperties
+   *   Catalog properties for FileIO (already extracted)
+   * @return
+   *   Some(metadata) if all reflection succeeds, None to trigger fallback
+   */
+  def extract(
+      scan: Any,
+      metadataLocation: String,
+      catalogProperties: Map[String, String]): Option[CometIcebergNativeScanMetadata] = {
+    import org.apache.comet.iceberg.IcebergReflection._
+
+    for {
+      table <- getTable(scan)
+      tasks <- getTasks(scan)
+      scanSchema <- getExpectedSchema(scan)
+    } yield {
+      // nameMapping is optional - if it fails we just use None
+      val nameMapping = getTableProperties(table).flatMap { properties =>
+        val nameMappingKey = "schema.name-mapping.default"
+        if (properties.containsKey(nameMappingKey)) {
+          Some(properties.get(nameMappingKey))
+        } else {
+          None
+        }
+      }
+
+      val globalFieldIdMapping = buildFieldIdMapping(scanSchema)
+
+      CometIcebergNativeScanMetadata(
+        table = table,
+        metadataLocation = metadataLocation,
+        nameMapping = nameMapping,
+        tasks = tasks,
+        scanSchema = scanSchema,
+        globalFieldIdMapping = globalFieldIdMapping,
+        catalogProperties = catalogProperties)
+    }
   }
 }

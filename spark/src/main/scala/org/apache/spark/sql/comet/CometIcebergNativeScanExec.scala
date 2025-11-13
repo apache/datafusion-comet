@@ -31,6 +31,7 @@ import org.apache.spark.util.AccumulatorV2
 
 import com.google.common.base.Objects
 
+import org.apache.comet.iceberg.CometIcebergNativeScanMetadata
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
@@ -47,7 +48,8 @@ case class CometIcebergNativeScanExec(
     @transient override val originalPlan: BatchScanExec,
     override val serializedPlanOpt: SerializedPlan,
     metadataLocation: String,
-    numPartitions: Int)
+    numPartitions: Int,
+    nativeIcebergScanMetadata: CometIcebergNativeScanMetadata)
     extends CometLeafExec {
 
   override val supportsColumnar: Boolean = true
@@ -164,7 +166,8 @@ case class CometIcebergNativeScanExec(
       originalPlan.doCanonicalize(),
       SerializedPlan(None),
       metadataLocation,
-      numPartitions)
+      numPartitions,
+      nativeIcebergScanMetadata)
   }
 
   override def stringArgs: Iterator[Any] =
@@ -176,7 +179,8 @@ case class CometIcebergNativeScanExec(
         this.metadataLocation == other.metadataLocation &&
         this.output == other.output &&
         this.serializedPlanOpt == other.serializedPlanOpt &&
-        this.numPartitions == other.numPartitions
+        this.numPartitions == other.numPartitions &&
+        this.nativeIcebergScanMetadata == other.nativeIcebergScanMetadata
       case _ =>
         false
     }
@@ -187,7 +191,8 @@ case class CometIcebergNativeScanExec(
       metadataLocation,
       output.asJava,
       serializedPlanOpt,
-      numPartitions: java.lang.Integer)
+      numPartitions: java.lang.Integer,
+      nativeIcebergScanMetadata)
 }
 
 object CometIcebergNativeScanExec {
@@ -207,6 +212,8 @@ object CometIcebergNativeScanExec {
    *   The SparkSession
    * @param metadataLocation
    *   Path to table metadata file
+   * @param nativeIcebergScanMetadata
+   *   Pre-extracted Iceberg metadata from planning phase
    * @return
    *   A new CometIcebergNativeScanExec
    */
@@ -214,7 +221,8 @@ object CometIcebergNativeScanExec {
       nativeOp: Operator,
       scanExec: BatchScanExec,
       session: SparkSession,
-      metadataLocation: String): CometIcebergNativeScanExec = {
+      metadataLocation: String,
+      nativeIcebergScanMetadata: CometIcebergNativeScanMetadata): CometIcebergNativeScanExec = {
 
     // Determine number of partitions from Iceberg's output partitioning
     val numParts = scanExec.outputPartitioning match {
@@ -230,7 +238,8 @@ object CometIcebergNativeScanExec {
       scanExec,
       SerializedPlan(None),
       metadataLocation,
-      numParts)
+      numParts,
+      nativeIcebergScanMetadata)
 
     scanExec.logicalLink.foreach(exec.setLogicalLink)
     exec
