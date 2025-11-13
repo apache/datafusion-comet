@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -38,11 +38,12 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
-import org.apache.spark.sql.execution.joins.SortMergeJoinExec
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, TimestampNTZType}
+import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -50,11 +51,11 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
-import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, supportedSortType}
+import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 
 /**
@@ -929,6 +930,231 @@ case class CometUnionExec(
   override def hashCode(): Int = Objects.hashCode(output, children)
 }
 
+trait CometBaseAggregate {
+
+  def doConvert(
+      aggregate: BaseAggregateExec,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+
+    val modes = aggregate.aggregateExpressions.map(_.mode).distinct
+    // In distinct aggregates there can be a combination of modes
+    val multiMode = modes.size > 1
+    // For a final mode HashAggregate, we only need to transform the HashAggregate
+    // if there is Comet partial aggregation.
+    val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
+
+    if (multiMode || sparkFinalMode) {
+      return None
+    }
+
+    val groupingExpressions = aggregate.groupingExpressions
+    val aggregateExpressions = aggregate.aggregateExpressions
+    val aggregateAttributes = aggregate.aggregateAttributes
+    val resultExpressions = aggregate.resultExpressions
+    val child = aggregate.child
+
+    if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
+      withInfo(aggregate, "No group by or aggregation")
+      return None
+    }
+
+    // Aggregate expressions with filter are not supported yet.
+    if (aggregateExpressions.exists(_.filter.isDefined)) {
+      withInfo(aggregate, "Aggregate expression with filter is not supported")
+      return None
+    }
+
+    if (groupingExpressions.exists(expr =>
+        expr.dataType match {
+          case _: MapType => true
+          case _ => false
+        })) {
+      withInfo(aggregate, "Grouping on map types is not supported")
+      return None
+    }
+
+    val groupingExprsWithInput =
+      groupingExpressions.map(expr => expr.name -> exprToProto(expr, child.output))
+
+    val emptyExprs = groupingExprsWithInput.collect {
+      case (expr, proto) if proto.isEmpty => expr
+    }
+
+    if (emptyExprs.nonEmpty) {
+      withInfo(aggregate, s"Unsupported group expressions: ${emptyExprs.mkString(", ")}")
+      return None
+    }
+
+    val groupingExprs = groupingExprsWithInput.map(_._2)
+
+    // In some of the cases, the aggregateExpressions could be empty.
+    // For example, if the aggregate functions only have group by or if the aggregate
+    // functions only have distinct aggregate functions:
+    //
+    // SELECT COUNT(distinct col2), col1 FROM test group by col1
+    //  +- HashAggregate (keys =[col1# 6], functions =[count (distinct col2#7)] )
+    //    +- Exchange hashpartitioning (col1#6, 10), ENSURE_REQUIREMENTS, [plan_id = 36]
+    //      +- HashAggregate (keys =[col1#6], functions =[partial_count (distinct col2#7)] )
+    //        +- HashAggregate (keys =[col1#6, col2#7], functions =[] )
+    //          +- Exchange hashpartitioning (col1#6, col2#7, 10), ENSURE_REQUIREMENTS, ...
+    //            +- HashAggregate (keys =[col1#6, col2#7], functions =[] )
+    //              +- FileScan parquet spark_catalog.default.test[col1#6, col2#7] ......
+    // If the aggregateExpressions is empty, we only want to build groupingExpressions,
+    // and skip processing of aggregateExpressions.
+    if (aggregateExpressions.isEmpty) {
+      val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
+      hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
+      val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
+      val resultExprs = resultExpressions.map(exprToProto(_, attributes))
+      if (resultExprs.exists(_.isEmpty)) {
+        withInfo(
+          aggregate,
+          s"Unsupported result expressions found in: $resultExpressions",
+          resultExpressions: _*)
+        return None
+      }
+      hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
+      Some(builder.setHashAgg(hashAggBuilder).build())
+    } else {
+      val modes = aggregateExpressions.map(_.mode).distinct
+
+      if (modes.size != 1) {
+        // This shouldn't happen as all aggregation expressions should share the same mode.
+        // Fallback to Spark nevertheless here.
+        withInfo(aggregate, "All aggregate expressions do not have the same mode")
+        return None
+      }
+
+      val mode = modes.head match {
+        case Partial => CometAggregateMode.Partial
+        case Final => CometAggregateMode.Final
+        case _ =>
+          withInfo(aggregate, s"Unsupported aggregation mode ${modes.head}")
+          return None
+      }
+
+      // In final mode, the aggregate expressions are bound to the output of the
+      // child and partial aggregate expressions buffer attributes produced by partial
+      // aggregation. This is done in Spark `HashAggregateExec` internally. In Comet,
+      // we don't have to do this because we don't use the merging expression.
+      val binding = mode != CometAggregateMode.Final
+      // `output` is only used when `binding` is true (i.e., non-Final)
+      val output = child.output
+
+      val aggExprs =
+        aggregateExpressions.map(aggExprToProto(_, output, binding, aggregate.conf))
+      if (childOp.nonEmpty && groupingExprs.forall(_.isDefined) &&
+        aggExprs.forall(_.isDefined)) {
+        val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
+        hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
+        hashAggBuilder.addAllAggExprs(aggExprs.map(_.get).asJava)
+        if (mode == CometAggregateMode.Final) {
+          val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
+          val resultExprs = resultExpressions.map(exprToProto(_, attributes))
+          if (resultExprs.exists(_.isEmpty)) {
+            withInfo(
+              aggregate,
+              s"Unsupported result expressions found in: $resultExpressions",
+              resultExpressions: _*)
+            return None
+          }
+          hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
+        }
+        hashAggBuilder.setModeValue(mode.getNumber)
+        Some(builder.setHashAgg(hashAggBuilder).build())
+      } else {
+        val allChildren: Seq[Expression] =
+          groupingExpressions ++ aggregateExpressions ++ aggregateAttributes
+        withInfo(aggregate, allChildren: _*)
+        None
+      }
+    }
+
+  }
+
+  /**
+   * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate with
+   * partial mode, it will return None.
+   */
+  private def findCometPartialAgg(plan: SparkPlan): Option[CometHashAggregateExec] = {
+    plan.collectFirst {
+      case agg: CometHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+        Some(agg)
+      case agg: HashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) => None
+      case agg: ObjectHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+        None
+      case a: AQEShuffleReadExec => findCometPartialAgg(a.child)
+      case s: ShuffleQueryStageExec => findCometPartialAgg(s.plan)
+    }.flatten
+  }
+
+}
+
+object CometHashAggregateExec
+    extends CometOperatorSerde[HashAggregateExec]
+    with CometBaseAggregate {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_AGGREGATE_ENABLED)
+
+  override def convert(
+      aggregate: HashAggregateExec,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    doConvert(aggregate, builder, childOp: _*)
+  }
+
+  override def createExec(nativeOp: Operator, op: HashAggregateExec): CometNativeExec = {
+    CometHashAggregateExec(
+      nativeOp,
+      op,
+      op.output,
+      op.groupingExpressions,
+      op.aggregateExpressions,
+      op.resultExpressions,
+      op.child.output,
+      op.child,
+      SerializedPlan(None))
+  }
+}
+
+object CometObjectHashAggregateExec
+    extends CometOperatorSerde[ObjectHashAggregateExec]
+    with CometBaseAggregate {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_AGGREGATE_ENABLED)
+
+  override def convert(
+      aggregate: ObjectHashAggregateExec,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+
+    if (!isCometShuffleEnabled(aggregate.conf)) {
+      // When Comet shuffle is disabled, we don't want to transform the HashAggregate
+      // to CometHashAggregate. Otherwise, we probably get partial Comet aggregation
+      // and final Spark aggregation.
+      return None
+    }
+
+    doConvert(aggregate, builder, childOp: _*)
+  }
+
+  override def createExec(nativeOp: Operator, op: ObjectHashAggregateExec): CometNativeExec = {
+    CometHashAggregateExec(
+      nativeOp,
+      op,
+      op.output,
+      op.groupingExpressions,
+      op.aggregateExpressions,
+      op.resultExpressions,
+      op.child.output,
+      op.child,
+      SerializedPlan(None))
+  }
+}
+
 case class CometHashAggregateExec(
     override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
@@ -986,6 +1212,132 @@ case class CometHashAggregateExec(
     Objects.hashCode(output, groupingExpressions, aggregateExpressions, input, mode, child)
 
   override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
+}
+
+trait CometHashJoin {
+
+  def doConvert(
+      join: HashJoin,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    // `HashJoin` has only two implementations in Spark, but we check the type of the join to
+    // make sure we are handling the correct join type.
+    if (!(CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(join.conf) &&
+        join.isInstanceOf[ShuffledHashJoinExec]) &&
+      !(CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(join.conf) &&
+        join.isInstanceOf[BroadcastHashJoinExec])) {
+      withInfo(join, s"Invalid hash join type ${join.nodeName}")
+      return None
+    }
+
+    if (join.buildSide == BuildRight && join.joinType == LeftAnti) {
+      // https://github.com/apache/datafusion-comet/issues/457
+      withInfo(join, "BuildRight with LeftAnti is not supported")
+      return None
+    }
+
+    val condition = join.condition.map { cond =>
+      val condProto = exprToProto(cond, join.left.output ++ join.right.output)
+      if (condProto.isEmpty) {
+        withInfo(join, cond)
+        return None
+      }
+      condProto.get
+    }
+
+    val joinType = {
+      import OperatorOuterClass.JoinType
+      join.joinType match {
+        case Inner => JoinType.Inner
+        case LeftOuter => JoinType.LeftOuter
+        case RightOuter => JoinType.RightOuter
+        case FullOuter => JoinType.FullOuter
+        case LeftSemi => JoinType.LeftSemi
+        case LeftAnti => JoinType.LeftAnti
+        case _ =>
+          // Spark doesn't support other join types
+          withInfo(join, s"Unsupported join type ${join.joinType}")
+          return None
+      }
+    }
+
+    val leftKeys = join.leftKeys.map(exprToProto(_, join.left.output))
+    val rightKeys = join.rightKeys.map(exprToProto(_, join.right.output))
+
+    if (leftKeys.forall(_.isDefined) &&
+      rightKeys.forall(_.isDefined) &&
+      childOp.nonEmpty) {
+      val joinBuilder = OperatorOuterClass.HashJoin
+        .newBuilder()
+        .setJoinType(joinType)
+        .addAllLeftJoinKeys(leftKeys.map(_.get).asJava)
+        .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
+        .setBuildSide(if (join.buildSide == BuildLeft) OperatorOuterClass.BuildSide.BuildLeft
+        else OperatorOuterClass.BuildSide.BuildRight)
+      condition.foreach(joinBuilder.setCondition)
+      Some(builder.setHashJoin(joinBuilder).build())
+    } else {
+      val allExprs: Seq[Expression] = join.leftKeys ++ join.rightKeys
+      withInfo(join, allExprs: _*)
+      None
+    }
+  }
+}
+
+object CometBroadcastHashJoinExec extends CometOperatorSerde[HashJoin] with CometHashJoin {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] =
+    Some(CometConf.COMET_EXEC_HASH_JOIN_ENABLED)
+
+  override def convert(
+      join: HashJoin,
+      builder: Operator.Builder,
+      childOp: Operator*): Option[Operator] =
+    doConvert(join, builder, childOp: _*)
+
+  override def createExec(nativeOp: Operator, op: HashJoin): CometNativeExec = {
+    CometBroadcastHashJoinExec(
+      nativeOp,
+      op,
+      op.output,
+      op.outputOrdering,
+      op.leftKeys,
+      op.rightKeys,
+      op.joinType,
+      op.condition,
+      op.buildSide,
+      op.left,
+      op.right,
+      SerializedPlan(None))
+  }
+}
+
+object CometHashJoinExec extends CometOperatorSerde[HashJoin] with CometHashJoin {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] =
+    Some(CometConf.COMET_EXEC_HASH_JOIN_ENABLED)
+
+  override def convert(
+      join: HashJoin,
+      builder: Operator.Builder,
+      childOp: Operator*): Option[Operator] =
+    doConvert(join, builder, childOp: _*)
+
+  override def createExec(nativeOp: Operator, op: HashJoin): CometNativeExec = {
+    CometHashJoinExec(
+      nativeOp,
+      op,
+      op.output,
+      op.outputOrdering,
+      op.leftKeys,
+      op.rightKeys,
+      op.joinType,
+      op.condition,
+      op.buildSide,
+      op.left,
+      op.right,
+      SerializedPlan(None))
+  }
 }
 
 case class CometHashJoinExec(
