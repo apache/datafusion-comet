@@ -387,10 +387,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       case op =>
         // check if this is a fully native operator
-        cometNativeExecHandlers.get(op.getClass) match {
-          case Some(_handler) =>
+        cometNativeExecHandlers
+          .get(op.getClass)
+          .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]]) match {
+          case Some(handler) =>
             if (op.children.forall(isCometNative)) {
-              val handler = _handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
               if (isOperatorEnabled(handler, op)) {
                 val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
                 val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
