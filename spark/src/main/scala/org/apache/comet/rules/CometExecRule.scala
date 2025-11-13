@@ -57,15 +57,15 @@ object CometExecRule {
   val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
     Map(
       classOf[ProjectExec] -> CometProject,
-      classOf[FilterExec] -> CometFilter,
+      classOf[FilterExec] -> CometFilterExec,
       classOf[LocalLimitExec] -> CometLocalLimitExec,
       classOf[GlobalLimitExec] -> CometGlobalLimitExec,
-      classOf[ExpandExec] -> CometExpand,
+      classOf[ExpandExec] -> CometExpandExec,
       classOf[HashAggregateExec] -> CometHashAggregate,
       classOf[ObjectHashAggregateExec] -> CometObjectHashAggregate,
       classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoin,
       classOf[ShuffledHashJoinExec] -> CometShuffleHashJoin,
-      classOf[SortMergeJoinExec] -> CometSortMergeJoin,
+      classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSort,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
       classOf[WindowExec] -> CometWindow)
