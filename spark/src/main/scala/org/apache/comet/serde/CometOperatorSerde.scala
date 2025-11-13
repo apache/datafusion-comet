@@ -19,6 +19,7 @@
 
 package org.apache.comet.serde
 
+import org.apache.spark.sql.comet.CometNativeExec
 import org.apache.spark.sql.execution.SparkPlan
 
 import org.apache.comet.ConfigEntry
@@ -65,4 +66,5 @@ trait CometOperatorSerde[T <: SparkPlan] {
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator]
 
+  def createExec(nativeOp: Operator, op: T): CometNativeExec
 }

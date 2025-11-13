@@ -114,6 +114,7 @@ object Meta {
     createUnaryNumericFunction("sin"),
     createUnaryNumericFunction("sqrt"),
     createUnaryNumericFunction("tan"),
+    createUnaryNumericFunction("cot"),
     createUnaryNumericFunction("ceil"),
     createUnaryNumericFunction("floor"),
     createFunctionWithInputTypes("unary_minus", Seq(SparkNumericType)))

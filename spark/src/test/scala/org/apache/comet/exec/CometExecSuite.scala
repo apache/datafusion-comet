@@ -2108,7 +2108,9 @@ class CometExecSuite extends CometTestBase {
   test("LocalTableScanExec spark fallback") {
     withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false") {
       val df = Seq.range(0, 10).toDF("id")
-      checkSparkAnswerAndFallbackReason(df, "LocalTableScan is not enabled")
+      checkSparkAnswerAndFallbackReason(
+        df,
+        "Native support for operator LocalTableScanExec is disabled")
     }
   }
 

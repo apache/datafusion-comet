@@ -19,6 +19,7 @@
 
 package org.apache.comet.serde.operator
 
+import org.apache.spark.sql.comet.{CometFilterExec, CometNativeExec, SerializedPlan}
 import org.apache.spark.sql.execution.FilterExec
 
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -49,4 +50,7 @@ object CometFilter extends CometOperatorSerde[FilterExec] {
     }
   }
 
+  override def createExec(nativeOp: Operator, op: FilterExec): CometNativeExec = {
+    CometFilterExec(nativeOp, op, op.output, op.condition, op.child, SerializedPlan(None))
+  }
 }

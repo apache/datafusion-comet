@@ -22,6 +22,7 @@ package org.apache.comet.serde.operator
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.comet.{CometExpandExec, CometNativeExec, SerializedPlan}
 import org.apache.spark.sql.execution.ExpandExec
 
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -55,7 +56,9 @@ object CometExpand extends CometOperatorSerde[ExpandExec] {
       withInfo(op, allProjExprs: _*)
       None
     }
-
   }
 
+  override def createExec(nativeOp: Operator, op: ExpandExec): CometNativeExec = {
+    CometExpandExec(nativeOp, op, op.output, op.projections, op.child, SerializedPlan(None))
+  }
 }
