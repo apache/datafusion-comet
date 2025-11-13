@@ -95,12 +95,12 @@ incompatible expressions.
 ## Date/Time Functions
 
 | Expression     | SQL                          | Spark-Compatible? | Compatibility Notes                                                                                                  |
-| -------------- | ---------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------- |
+| -------------- | ---------------------------- | ----------------- |----------------------------------------------------------------------------------------------------------------------|
 | DateAdd        | `date_add`                   | Yes               |                                                                                                                      |
 | DateSub        | `date_sub`                   | Yes               |                                                                                                                      |
 | DatePart       | `date_part(field, source)`   | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
 | Extract        | `extract(field FROM source)` | Yes               | Supported values of `field`: `year`/`month`/`week`/`day`/`dayofweek`/`dayofweek_iso`/`doy`/`quarter`/`hour`/`minute` |
-| FromUnixTime   | `from_unixtime`              | No                | Does not support format, supports only -8334601211038 <= sec <= 8210266876799                                        |
+| FromUnixTime   | `from_unixtime`              | No                | Supports only -8334601211038 <= sec <= 8210266876799                                                                 |
 | Hour           | `hour`                       | Yes               |                                                                                                                      |
 | Minute         | `minute`                     | Yes               |                                                                                                                      |
 | Second         | `second`                     | Yes               |                                                                                                                      |
