@@ -54,7 +54,7 @@ import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.exprToProto
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 
 /**
@@ -483,6 +483,33 @@ case class SerializedPlan(plan: Option[Array[Byte]]) {
   def isEmpty: Boolean = plan.isEmpty
 }
 
+object CometProjectExec extends CometOperatorSerde[ProjectExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] =
+    Some(CometConf.COMET_EXEC_PROJECT_ENABLED)
+
+  override def convert(
+      op: ProjectExec,
+      builder: Operator.Builder,
+      childOp: Operator*): Option[OperatorOuterClass.Operator] = {
+    val exprs = op.projectList.map(exprToProto(_, op.child.output))
+
+    if (exprs.forall(_.isDefined) && childOp.nonEmpty) {
+      val projectBuilder = OperatorOuterClass.Projection
+        .newBuilder()
+        .addAllProjectList(exprs.map(_.get).asJava)
+      Some(builder.setProjection(projectBuilder).build())
+    } else {
+      withInfo(op, op.projectList: _*)
+      None
+    }
+  }
+
+  override def createExec(nativeOp: Operator, op: ProjectExec): CometNativeExec = {
+    CometProjectExec(nativeOp, op, op.output, op.projectList, op.child, SerializedPlan(None))
+  }
+}
+
 case class CometProjectExec(
     override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
@@ -581,6 +608,45 @@ case class CometFilterExec(
        |${ExplainUtils.generateFieldString("Input", child.output)}
        |Condition : ${condition}
        |""".stripMargin
+  }
+}
+
+object CometSortExec extends CometOperatorSerde[SortExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] =
+    Some(CometConf.COMET_EXEC_SORT_ENABLED)
+
+  override def convert(
+      op: SortExec,
+      builder: Operator.Builder,
+      childOp: Operator*): Option[OperatorOuterClass.Operator] = {
+    if (!supportedSortType(op, op.sortOrder)) {
+      withInfo(op, "Unsupported data type in sort expressions")
+      return None
+    }
+
+    val sortOrders = op.sortOrder.map(exprToProto(_, op.child.output))
+
+    if (sortOrders.forall(_.isDefined) && childOp.nonEmpty) {
+      val sortBuilder = OperatorOuterClass.Sort
+        .newBuilder()
+        .addAllSortOrders(sortOrders.map(_.get).asJava)
+      Some(builder.setSort(sortBuilder).build())
+    } else {
+      withInfo(op, "sort order not supported", op.sortOrder: _*)
+      None
+    }
+  }
+
+  override def createExec(nativeOp: Operator, op: SortExec): CometNativeExec = {
+    CometSortExec(
+      nativeOp,
+      op,
+      op.output,
+      op.outputOrdering,
+      op.sortOrder,
+      op.child,
+      SerializedPlan(None))
   }
 }
 
