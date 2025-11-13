@@ -1967,10 +1967,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withTable(table) {
         sql(s"create table $table(c0 int, c1 int , c2 float) using parquet")
         sql(s"insert into $table values(0, 1, 100.000001)")
-        Seq(
-          (
-            s"select * from $table LIMIT 10",
-            Set("spark.comet.exec.collectLimit.enabled is false")))
+        Seq((
+          s"select * from $table LIMIT 10",
+          Set("Native support for operator CollectLimitExec is disabled. Set spark.comet.exec.collectLimit.enabled=true to enable it")))
           .foreach(test => {
             val qry = test._1
             val expected = test._2
