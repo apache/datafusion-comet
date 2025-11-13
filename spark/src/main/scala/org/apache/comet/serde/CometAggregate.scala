@@ -136,7 +136,7 @@ trait CometBaseAggregate {
       if (aggExprs.exists(_.isEmpty)) {
         withInfo(
           aggregate,
-          "Unsupported aggregate expression",
+          "Unsupported aggregate expression(s)",
           aggregateExpressions ++ aggregateExpressions.map(_.aggregateFunction): _*)
         return None
       }
