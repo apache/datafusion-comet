@@ -24,6 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.catalyst.plans._
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashJoinExec, CometNativeExec, SerializedPlan}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec}
 
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -109,6 +110,22 @@ object CometBroadcastHashJoin extends CometOperatorSerde[HashJoin] with CometHas
       builder: Operator.Builder,
       childOp: Operator*): Option[Operator] =
     doConvert(join, builder, childOp: _*)
+
+  override def createExec(nativeOp: Operator, op: HashJoin): CometNativeExec = {
+    CometBroadcastHashJoinExec(
+      nativeOp,
+      op,
+      op.output,
+      op.outputOrdering,
+      op.leftKeys,
+      op.rightKeys,
+      op.joinType,
+      op.condition,
+      op.buildSide,
+      op.left,
+      op.right,
+      SerializedPlan(None))
+  }
 }
 
 object CometShuffleHashJoin extends CometOperatorSerde[HashJoin] with CometHashJoin {
@@ -121,4 +138,20 @@ object CometShuffleHashJoin extends CometOperatorSerde[HashJoin] with CometHashJ
       builder: Operator.Builder,
       childOp: Operator*): Option[Operator] =
     doConvert(join, builder, childOp: _*)
+
+  override def createExec(nativeOp: Operator, op: HashJoin): CometNativeExec = {
+    CometHashJoinExec(
+      nativeOp,
+      op,
+      op.output,
+      op.outputOrdering,
+      op.leftKeys,
+      op.rightKeys,
+      op.joinType,
+      op.condition,
+      op.buildSide,
+      op.left,
+      op.right,
+      SerializedPlan(None))
+  }
 }

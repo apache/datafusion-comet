@@ -23,7 +23,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
-import org.apache.spark.sql.comet.CometHashAggregateExec
+import org.apache.spark.sql.comet.{CometHashAggregateExec, CometNativeExec, SerializedPlan}
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
@@ -207,6 +207,19 @@ object CometHashAggregate extends CometOperatorSerde[HashAggregateExec] with Com
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
     doConvert(aggregate, builder, childOp: _*)
   }
+
+  override def createExec(nativeOp: Operator, op: HashAggregateExec): CometNativeExec = {
+    CometHashAggregateExec(
+      nativeOp,
+      op,
+      op.output,
+      op.groupingExpressions,
+      op.aggregateExpressions,
+      op.resultExpressions,
+      op.child.output,
+      op.child,
+      SerializedPlan(None))
+  }
 }
 
 object CometObjectHashAggregate
@@ -229,5 +242,18 @@ object CometObjectHashAggregate
     }
 
     doConvert(aggregate, builder, childOp: _*)
+  }
+
+  override def createExec(nativeOp: Operator, op: ObjectHashAggregateExec): CometNativeExec = {
+    CometHashAggregateExec(
+      nativeOp,
+      op,
+      op.output,
+      op.groupingExpressions,
+      op.aggregateExpressions,
+      op.resultExpressions,
+      op.child.output,
+      op.child,
+      SerializedPlan(None))
   }
 }

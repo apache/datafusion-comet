@@ -102,7 +102,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     val approvedFile = new File(dir, s"$filename.txt")
     val actualFile = new File(tempDir, s"$name.actual.$filename.txt")
     FileUtils.writeStringToFile(actualFile, plan, StandardCharsets.UTF_8)
-    comparePlans("simplified", approvedFile, actualFile)
+    comparePlans(filename, approvedFile, actualFile)
   }
 
   private def comparePlans(planType: String, expectedFile: File, actualFile: File): Unit = {
