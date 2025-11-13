@@ -1352,7 +1352,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "log2",
           "sin",
           "sqrt",
-          "tan")) {
+          "tan",
+          "cot")) {
         val (_, cometPlan) =
           checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
         val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
