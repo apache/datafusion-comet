@@ -75,9 +75,10 @@ object CometExecRule {
    */
   val sinks: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
     Map(
-      classOf[UnionExec] -> CometUnionExec,
+      classOf[CoalesceExec] -> CometCoalesceExec,
       classOf[CollectLimitExec] -> CometCollectLimitExec,
-      classOf[TakeOrderedAndProjectExec] -> CometTakeOrderedAndProjectExec)
+      classOf[TakeOrderedAndProjectExec] -> CometTakeOrderedAndProjectExec,
+      classOf[UnionExec] -> CometUnionExec)
 
   val allExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] = nativeExecs ++ sinks
 
@@ -204,22 +205,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         val cometOp = CometSparkToColumnarExec(op)
         val nativeOp = operator2Proto(cometOp)
         CometScanWrapper(nativeOp.get, cometOp)
-
-      case c @ CoalesceExec(numPartitions, child)
-          if CometConf.COMET_EXEC_COALESCE_ENABLED.get(conf)
-            && isCometNative(child) =>
-        operator2Proto(c)
-          .map { nativeOp =>
-            val cometOp = CometCoalesceExec(c, c.output, numPartitions, child)
-            CometSinkPlaceHolder(nativeOp, c, cometOp)
-          }
-          .getOrElse(c)
-
-      case c @ CoalesceExec(_, _) if !CometConf.COMET_EXEC_COALESCE_ENABLED.get(conf) =>
-        withInfo(c, "Coalesce is not enabled")
-
-      case op: CoalesceExec if !op.children.forall(isCometNative) =>
-        op
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
@@ -945,8 +930,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case s if isCometScan(s) => true
       case _: CometSparkToColumnarExec => true
       case _: CometSinkPlaceHolder => true
-      case _: CoalesceExec => true
-      case _: TakeOrderedAndProjectExec => true
       case _ => false
     }
   }
