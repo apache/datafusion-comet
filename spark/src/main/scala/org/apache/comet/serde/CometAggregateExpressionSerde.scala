@@ -40,6 +40,16 @@ trait CometAggregateExpressionSerde[T <: AggregateFunction] {
   def getExprConfigName(expr: T): String = expr.getClass.getSimpleName
 
   /**
+   * Determine the support level of the expression based on its attributes.
+   *
+   * @param expr
+   *   The Spark expression.
+   * @return
+   *   Support level (Compatible, Incompatible, or Unsupported).
+   */
+  def getSupportLevel(expr: T): SupportLevel = Compatible(None)
+
+  /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
    * native code.
    *
