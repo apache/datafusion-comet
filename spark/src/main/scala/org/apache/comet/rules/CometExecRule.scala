@@ -180,15 +180,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     def convertNode(op: SparkPlan): SparkPlan = {
-      cometNativeExecHandlers.get(op.getClass) match {
-        case Some(x) =>
-          val handler = x.asInstanceOf[CometOperatorSerde[SparkPlan]]
-          operator2ProtoIfAllChildrenAreNative(op) match {
-            case Some(nativeOp) =>
-              return handler.createExec(nativeOp, op)
-            case _ =>
-          }
-        case _ =>
+      // check if this is a fully native operator
+      if (op.children.forall(isCometNative)) {
+        cometNativeExecHandlers.get(op.getClass) match {
+          case Some(x) =>
+            val handler = x.asInstanceOf[CometOperatorSerde[SparkPlan]]
+            if (isOperatorEnabled(handler, op)) {
+              val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
+              val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
+              childOp.foreach(builder.addChildren)
+              val maybeConverted = handler.convert(op, builder, childOp: _*)
+              if (maybeConverted.isDefined) {
+                return handler.createExec(maybeConverted.get, op)
+              }
+            }
+          case _ =>
+        }
       }
 
       // must be a sink or scan
@@ -199,7 +206,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         val nativeOp = operator2Proto(scan).get
-        CometNativeScanExec(nativeOp, scan.wrapped, scan.session)
+        CometNativeScan.createExec(nativeOp, scan)
 
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
