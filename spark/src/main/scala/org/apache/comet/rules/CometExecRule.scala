@@ -164,9 +164,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    */
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
-    def createScanProtoIfAllChildrenAreNative(op: SparkPlan): Option[Operator] = {
+    def operator2ProtoIfAllChildrenAreNative(op: SparkPlan): Option[Operator] = {
       if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
-        createScanProto(op, op.children.map(_.asInstanceOf[CometNativeExec].nativeOp): _*)
+        operator2Proto(op, op.children.map(_.asInstanceOf[CometNativeExec].nativeOp): _*)
       } else {
         None
       }
@@ -176,23 +176,23 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
      * Convert operator to proto and then apply a transformation to wrap the proto in a new plan.
      */
     def newPlanWithProto(op: SparkPlan, fun: Operator => SparkPlan): SparkPlan = {
-      createScanProtoIfAllChildrenAreNative(op).map(fun).getOrElse(op)
+      operator2ProtoIfAllChildrenAreNative(op).map(fun).getOrElse(op)
     }
 
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
-        val nativeOp = createScanProto(scan).get
+        val nativeOp = operator2Proto(scan).get
         CometNativeScan.createExec(nativeOp, scan)
 
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
-        val nativeOp = createScanProto(op)
+        val nativeOp = operator2Proto(op)
         CometScanWrapper(nativeOp.get, op)
 
       case op if shouldApplySparkToColumnar(conf, op) =>
         val cometOp = CometSparkToColumnarExec(op)
-        val nativeOp = createScanProto(cometOp)
+        val nativeOp = operator2Proto(cometOp)
         CometScanWrapper(nativeOp.get, cometOp)
 
       case op: CollectLimitExec =>
@@ -210,7 +210,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             // no reason to report reason if child is not native
             op
           } else {
-            createScanProto(op)
+            operator2Proto(op)
               .map { nativeOp =>
                 val cometOp =
                   CometCollectLimitExec(op, op.limit, op.offset, op.child)
@@ -223,7 +223,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case c @ CoalesceExec(numPartitions, child)
           if CometConf.COMET_EXEC_COALESCE_ENABLED.get(conf)
             && isCometNative(child) =>
-        createScanProto(c)
+        operator2Proto(c)
           .map { nativeOp =>
             val cometOp = CometCoalesceExec(c, c.output, numPartitions, child)
             CometSinkPlaceHolder(nativeOp, c, cometOp)
@@ -241,7 +241,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             .get(conf)
             && isCometShuffleEnabled(conf) &&
             CometTakeOrderedAndProjectExec.isSupported(s) =>
-        createScanProto(s)
+        operator2Proto(s)
           .map { nativeOp =>
             val cometOp =
               CometTakeOrderedAndProjectExec(
@@ -299,7 +299,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           case b: BroadcastExchangeExec
               if isCometNative(b.child) &&
                 CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) =>
-            createScanProto(b) match {
+            operator2Proto(b) match {
               case Some(nativeOp) =>
                 val cometOp = CometBroadcastExchangeExec(b, b.output, b.mode, b.child)
                 CometSinkPlaceHolder(nativeOp, b, cometOp)
@@ -337,7 +337,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case s: ShuffleExchangeExec =>
         val nativeShuffle: Option[SparkPlan] =
           if (nativeShuffleSupported(s)) {
-            val newOp = createScanProtoIfAllChildrenAreNative(s)
+            val newOp = operator2ProtoIfAllChildrenAreNative(s)
             newOp match {
               case Some(nativeOp) =>
                 // Switch to use Decimal128 regardless of precision, since Arrow native execution
@@ -360,7 +360,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           // If the child of ShuffleExchangeExec is also a ShuffleExchangeExec, we should not
           // convert it to CometColumnarShuffle,
           if (columnarShuffleSupported(s)) {
-            val newOp = createScanProto(s)
+            val newOp = operator2Proto(s)
             newOp match {
               case Some(nativeOp) =>
                 s.child match {
@@ -871,7 +871,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    *   The converted Comet native operator for the input `op`, or `None` if the `op` cannot be
    *   converted to a native operator.
    */
-  private def createScanProto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
+  private def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
     val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
     childOp.foreach(builder.addChildren)
 
