@@ -17,16 +17,18 @@
  * under the License.
  */
 
-package org.apache.comet.serde
+package org.apache.comet.serde.operator
 
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Expression, SortOrder, WindowExpression}
+import org.apache.spark.sql.comet.{CometNativeExec, CometWindowExec, SerializedPlan}
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.window.WindowExec
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.{CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, windowExprToProto}
 
@@ -34,6 +36,10 @@ object CometWindow extends CometOperatorSerde[WindowExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_WINDOW_ENABLED)
+
+  override def getSupportLevel(op: WindowExec): SupportLevel = {
+    Incompatible(Some("Native WindowExec has known correctness issues"))
+  }
 
   override def convert(
       op: WindowExec,
@@ -81,6 +87,18 @@ object CometWindow extends CometOperatorSerde[WindowExec] {
       None
     }
 
+  }
+
+  override def createExec(nativeOp: Operator, op: WindowExec): CometNativeExec = {
+    CometWindowExec(
+      nativeOp,
+      op,
+      op.output,
+      op.windowExpression,
+      op.partitionSpec,
+      op.orderSpec,
+      op.child,
+      SerializedPlan(None))
   }
 
   private def validatePartitionAndSortSpecsForWindowFunc(

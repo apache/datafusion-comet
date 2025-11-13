@@ -128,6 +128,7 @@ incompatible expressions.
 | BRound         | `bround`  | Yes               |                                   |
 | Ceil           | `ceil`    | Yes               |                                   |
 | Cos            | `cos`     | Yes               |                                   |
+| Cot            | `cot`     | Yes               |                                   |
 | Divide         | `/`       | Yes               |                                   |
 | Exp            | `exp`     | Yes               |                                   |
 | Expm1          | `expm1`   | Yes               |                                   |
@@ -201,6 +202,23 @@ incompatible expressions.
 | Sum           |            | Yes, except for ANSI mode |                                                                  |
 | VariancePop   |            | Yes                       |                                                                  |
 | VarianceSamp  |            | Yes                       |                                                                  |
+
+## Window Functions
+
+```{warning}
+Window support is disabled by default due to known correctness issues. Tracking issue: [#2721](https://github.com/apache/datafusion-comet/issues/2721).
+```
+
+Comet supports using the following aggregate functions within window contexts with PARTITION BY and ORDER BY clauses. 
+
+| Expression | Spark-Compatible? | Compatibility Notes                          |
+| ---------- | ----------------- | -------------------------------------------- |
+| Count      | Yes               |     |
+| Max        | Yes               |     |
+| Min        | Yes               |     |
+| Sum        | Yes               |     |
+
+**Note:** Dedicated window functions such as `rank`, `dense_rank`, `row_number`, `lag`, `lead`, `ntile`, `cume_dist`, `percent_rank`, and `nth_value` are not currently supported and will fall back to Spark.
 
 ## Array Expressions
 

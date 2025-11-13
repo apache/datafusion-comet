@@ -17,35 +17,48 @@
  * under the License.
  */
 
-package org.apache.comet.serde
+package org.apache.comet.serde.operator
 
-import org.apache.spark.sql.execution.FilterExec
+import scala.jdk.CollectionConverters._
+
+import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.comet.{CometExpandExec, CometNativeExec, SerializedPlan}
+import org.apache.spark.sql.execution.ExpandExec
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
 
-object CometFilter extends CometOperatorSerde[FilterExec] {
+object CometExpand extends CometOperatorSerde[ExpandExec] {
 
-  override def enabledConfig: Option[ConfigEntry[Boolean]] =
-    Some(CometConf.COMET_EXEC_FILTER_ENABLED)
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_EXPAND_ENABLED)
 
   override def convert(
-      op: FilterExec,
+      op: ExpandExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    val cond = exprToProto(op.condition, op.child.output)
+    var allProjExprs: Seq[Expression] = Seq()
+    val projExprs = op.projections.flatMap(_.map(e => {
+      allProjExprs = allProjExprs :+ e
+      exprToProto(e, op.child.output)
+    }))
 
-    if (cond.isDefined && childOp.nonEmpty) {
-      val filterBuilder = OperatorOuterClass.Filter
+    if (projExprs.forall(_.isDefined) && childOp.nonEmpty) {
+      val expandBuilder = OperatorOuterClass.Expand
         .newBuilder()
-        .setPredicate(cond.get)
-      Some(builder.setFilter(filterBuilder).build())
+        .addAllProjectList(projExprs.map(_.get).asJava)
+        .setNumExprPerProject(op.projections.head.size)
+      Some(builder.setExpand(expandBuilder).build())
     } else {
-      withInfo(op, op.condition, op.child)
+      withInfo(op, allProjExprs: _*)
       None
     }
   }
 
+  override def createExec(nativeOp: Operator, op: ExpandExec): CometNativeExec = {
+    CometExpandExec(nativeOp, op, op.output, op.projections, op.child, SerializedPlan(None))
+  }
 }

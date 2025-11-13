@@ -739,11 +739,19 @@ case class CometHashAggregateExec(
     aggregateExpressions: Seq[AggregateExpression],
     resultExpressions: Seq[NamedExpression],
     input: Seq[Attribute],
-    mode: Option[AggregateMode],
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec
     with PartitioningPreservingUnaryExecNode {
+
+  // The aggExprs could be empty. For example, if the aggregate functions only have
+  // distinct aggregate functions or only have group by, the aggExprs is empty and
+  // modes is empty too. If aggExprs is not empty, we need to verify all the
+  // aggregates have the same mode.
+  val modes: Seq[AggregateMode] = aggregateExpressions.map(_.mode).distinct
+  assert(modes.length == 1 || modes.isEmpty)
+  val mode = modes.headOption
+
   override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(resultExpressions)
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
