@@ -23,6 +23,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Expression, ExpressionSet, SortOrder}
 import org.apache.spark.sql.catalyst.plans._
+import org.apache.spark.sql.comet.{CometNativeExec, CometSortMergeJoinExec, SerializedPlan}
 import org.apache.spark.sql.execution.joins.SortMergeJoinExec
 import org.apache.spark.sql.types._
 
@@ -128,7 +129,21 @@ object CometSortMergeJoin extends CometOperatorSerde[SortMergeJoinExec] {
       withInfo(join, allExprs: _*)
       None
     }
+  }
 
+  override def createExec(nativeOp: Operator, op: SortMergeJoinExec): CometNativeExec = {
+    CometSortMergeJoinExec(
+      nativeOp,
+      op,
+      op.output,
+      op.outputOrdering,
+      op.leftKeys,
+      op.rightKeys,
+      op.joinType,
+      op.condition,
+      op.left,
+      op.right,
+      SerializedPlan(None))
   }
 
   /**

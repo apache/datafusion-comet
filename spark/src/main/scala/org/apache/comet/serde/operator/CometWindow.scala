@@ -22,6 +22,7 @@ package org.apache.comet.serde.operator
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Expression, SortOrder, WindowExpression}
+import org.apache.spark.sql.comet.{CometNativeExec, CometWindowExec, SerializedPlan}
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.window.WindowExec
 
@@ -86,6 +87,18 @@ object CometWindow extends CometOperatorSerde[WindowExec] {
       None
     }
 
+  }
+
+  override def createExec(nativeOp: Operator, op: WindowExec): CometNativeExec = {
+    CometWindowExec(
+      nativeOp,
+      op,
+      op.output,
+      op.windowExpression,
+      op.partitionSpec,
+      op.orderSpec,
+      op.child,
+      SerializedPlan(None))
   }
 
   private def validatePartitionAndSortSpecsForWindowFunc(
