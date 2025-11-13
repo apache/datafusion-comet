@@ -28,9 +28,13 @@ import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
 
-/** Base class for all sinks */
+/**
+ * CometSink is the base class for transformations from a Spark operator to a Comet operator where
+ * the native plan is a ScanExec that will read data from the Comet operator running the JVM.
+ */
 abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 
+  /** Whether the data produced by the Comet operator is FFI safe */
   def isFfiSafe: Boolean = false
 
   override def convert(
