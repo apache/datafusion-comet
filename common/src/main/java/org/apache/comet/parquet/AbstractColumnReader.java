@@ -89,6 +89,10 @@ public abstract class AbstractColumnReader implements AutoCloseable {
     return descriptor;
   }
 
+  String getPath() {
+    return String.join(".", this.descriptor.getPath());
+  }
+
   /**
    * Set the batch size of this reader to be 'batchSize'. Also initializes the native column reader.
    */
