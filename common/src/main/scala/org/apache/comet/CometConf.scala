@@ -677,8 +677,9 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_STRICT_FLOATING_POINT: ConfigEntry[Boolean] =
     conf("spark.comet.exec.strictFloatingPoint")
       .category(CATEGORY_EXEC)
-      .doc("When enabled, fall back to Spark for floating-point operations that may differ from " +
-        s"Spark, such as when comparing or sorting -0.0 and 0.0. $COMPAT_GUIDE.")
+      .doc(
+        "When enabled, fall back to Spark for floating-point operations that may differ from " +
+          s"Spark, such as when comparing or sorting -0.0 and 0.0. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
