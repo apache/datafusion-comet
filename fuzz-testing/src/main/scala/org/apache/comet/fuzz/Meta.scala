@@ -184,6 +184,11 @@ object Meta {
         FunctionSignature(Seq(SparkStringType, SparkIntegralType)),
         FunctionSignature(Seq(SparkStringType, SparkIntegralType, SparkStringType)))),
     createUnaryStringFunction("rtrim"),
+    createFunctions(
+      "split",
+      Seq(
+        FunctionSignature(Seq(SparkStringType, SparkStringType)),
+        FunctionSignature(Seq(SparkStringType, SparkStringType, SparkIntType)))),
     createFunctionWithInputTypes("starts_with", Seq(SparkStringType, SparkStringType)),
     createFunctionWithInputTypes("string_space", Seq(SparkIntType)),
     createFunctionWithInputTypes("substring", Seq(SparkStringType, SparkIntType, SparkIntType)),
