@@ -148,6 +148,44 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("split string basic") {
+    // Basic split tests with 2 arguments (no limit)
+    withParquetTable((0 until 5).map(i => (s"value$i,test$i", i)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT split(col, ',') FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split('one,two,three', ',') FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(col, '-') FROM tbl")
+    }
+  }
+
+  test("split string with limit") {
+    // Split tests with 3 arguments (with limit)
+    withParquetTable((0 until 5).map(i => (s"a,b,c,d,e", i)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT split(col, ',', 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(col, ',', 3) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(col, ',', -1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(col, ',', 0) FROM tbl")
+    }
+  }
+
+  test("split string with regex patterns") {
+    // Test with various regex patterns
+    withParquetTable((0 until 5).map(i => (s"word1 word2  word3", i)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT split(col, ' ') FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(col, '\\\\s+') FROM tbl")
+    }
+
+    withParquetTable((0 until 5).map(i => (s"foo123bar456baz", i)), "tbl2") {
+      checkSparkAnswerAndOperator("SELECT split(col, '\\\\d+') FROM tbl2")
+    }
+  }
+
+  test("split string edge cases") {
+    // Test edge cases: empty strings, nulls, single character
+    withParquetTable(Seq(("", 0), ("single", 1), (null, 2), ("a", 3)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT split(col, ',') FROM tbl")
+    }
+  }
+
   test("Various String scalar functions") {
     val table = "names"
     withTable(table) {
