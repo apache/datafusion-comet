@@ -60,9 +60,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       assert(spark.sql(s"select * from tbl where cast($col as string) = '-0.0'").count() > 0)
       for (agg <- Seq("min", "max")) {
         withSQLConf(COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-          checkSparkAnswerAndFallbackReason(
+          checkSparkAnswerAndFallbackReasons(
             s"select $agg($col) from tbl where cast($col as string) in ('0.0', '-0.0')",
-            s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true")
+            Set(
+              "Unsupported aggregate expression(s)",
+              s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true"))
         }
         checkSparkAnswer(
           s"select $col, count(*) from tbl " +
