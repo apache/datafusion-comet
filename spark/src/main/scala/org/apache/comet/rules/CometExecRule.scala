@@ -58,8 +58,8 @@ object CometExecRule {
     Map(
       classOf[ProjectExec] -> CometProject,
       classOf[FilterExec] -> CometFilter,
-      classOf[LocalLimitExec] -> CometLocalLimit,
-      classOf[GlobalLimitExec] -> CometGlobalLimit,
+      classOf[LocalLimitExec] -> CometLocalLimitExec,
+      classOf[GlobalLimitExec] -> CometGlobalLimitExec,
       classOf[ExpandExec] -> CometExpand,
       classOf[HashAggregateExec] -> CometHashAggregate,
       classOf[ObjectHashAggregateExec] -> CometObjectHashAggregate,
@@ -67,7 +67,7 @@ object CometExecRule {
       classOf[ShuffledHashJoinExec] -> CometShuffleHashJoin,
       classOf[SortMergeJoinExec] -> CometSortMergeJoin,
       classOf[SortExec] -> CometSort,
-      classOf[LocalTableScanExec] -> CometLocalTableScan,
+      classOf[LocalTableScanExec] -> CometLocalTableScanExec,
       classOf[WindowExec] -> CometWindow)
 
   /**

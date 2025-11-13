@@ -47,8 +47,9 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
+import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometSink
 
@@ -590,6 +591,34 @@ case class CometSortExec(
         "spilled_bytes" -> SQLMetrics.createSizeMetric(sparkContext, "total spilled bytes"))
 }
 
+object CometLocalLimitExec extends CometOperatorSerde[LocalLimitExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] =
+    Some(CometConf.COMET_EXEC_LOCAL_LIMIT_ENABLED)
+
+  override def convert(
+      op: LocalLimitExec,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    if (childOp.nonEmpty) {
+      // LocalLimit doesn't use offset, but it shares same operator serde class.
+      // Just set it to zero.
+      val limitBuilder = OperatorOuterClass.Limit
+        .newBuilder()
+        .setLimit(op.limit)
+        .setOffset(0)
+      Some(builder.setLimit(limitBuilder).build())
+    } else {
+      withInfo(op, "No child operator")
+      None
+    }
+  }
+
+  override def createExec(nativeOp: Operator, op: LocalLimitExec): CometNativeExec = {
+    CometLocalLimitExec(nativeOp, op, op.limit, op.child, SerializedPlan(None))
+  }
+}
+
 case class CometLocalLimitExec(
     override val nativeOp: Operator,
     override val originalPlan: SparkPlan,
@@ -623,6 +652,32 @@ case class CometLocalLimitExec(
   }
 
   override def hashCode(): Int = Objects.hashCode(output, limit: java.lang.Integer, child)
+}
+
+object CometGlobalLimitExec extends CometOperatorSerde[GlobalLimitExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] =
+    Some(CometConf.COMET_EXEC_GLOBAL_LIMIT_ENABLED)
+
+  override def convert(
+      op: GlobalLimitExec,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    if (childOp.nonEmpty) {
+      val limitBuilder = OperatorOuterClass.Limit.newBuilder()
+
+      limitBuilder.setLimit(op.limit).setOffset(op.offset)
+
+      Some(builder.setLimit(limitBuilder).build())
+    } else {
+      withInfo(op, "No child operator")
+      None
+    }
+  }
+
+  override def createExec(nativeOp: Operator, op: GlobalLimitExec): CometNativeExec = {
+    CometGlobalLimitExec(nativeOp, op, op.limit, op.offset, op.child, SerializedPlan(None))
+  }
 }
 
 case class CometGlobalLimitExec(
