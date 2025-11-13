@@ -44,7 +44,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometConf.COMET_EXEC_SHUFFLE_ENABLED
 import org.apache.comet.CometSparkSessionExtensions._
-import org.apache.comet.rules.CometExecRule.cometNativeExecHandlers
+import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, QueryPlanSerde, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
@@ -55,7 +55,7 @@ object CometExecRule {
   /**
    * Mapping of Spark operator class to Comet operator handler.
    */
-  val cometNativeExecHandlers: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
+  val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
     Map(
       classOf[ProjectExec] -> CometProject,
       classOf[FilterExec] -> CometFilter,
@@ -70,6 +70,11 @@ object CometExecRule {
       classOf[SortExec] -> CometSort,
       classOf[LocalTableScanExec] -> CometLocalTableScan,
       classOf[WindowExec] -> CometWindow)
+
+  val sinks: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
+    Map(classOf[UnionExec] -> CometUnion)
+
+  val allExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] = nativeExecs ++ sinks
 
 }
 
@@ -265,21 +270,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           "TakeOrderedAndProject requires shuffle to be enabled")
         withInfo(s, Seq(info1, info2).flatten.mkString(","))
 
-      case u: UnionExec
-          if CometConf.COMET_EXEC_UNION_ENABLED.get(conf) &&
-            u.children.forall(isCometNative) =>
-        newPlanWithProto(
-          u, {
-            val cometOp = CometUnionExec(u, u.output, u.children)
-            CometSinkPlaceHolder(_, u, cometOp)
-          })
-
-      case u: UnionExec if !CometConf.COMET_EXEC_UNION_ENABLED.get(conf) =>
-        withInfo(u, "Union is not enabled")
-
-      case op: UnionExec if !op.children.forall(isCometNative) =>
-        op
-
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
         newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
@@ -387,7 +377,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       case op =>
         // check if this is a fully native operator
-        cometNativeExecHandlers.get(op.getClass) match {
+        allExecs.get(op.getClass) match {
           case Some(_handler) =>
             if (op.children.forall(isCometNative)) {
               val handler = _handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
