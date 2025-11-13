@@ -52,7 +52,7 @@ import org.apache.comet.serde.operator._
 object CometExecRule {
 
   /**
-   * Mapping of Spark operator class to Comet operator handler.
+   * Fully native operators.
    */
   val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
     Map(
@@ -70,6 +70,9 @@ object CometExecRule {
       classOf[LocalTableScanExec] -> CometLocalTableScan,
       classOf[WindowExec] -> CometWindow)
 
+  /**
+   * Sinks that have a native plan of ScanExec.
+   */
   val sinks: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
     Map(
       classOf[UnionExec] -> CometUnion,
