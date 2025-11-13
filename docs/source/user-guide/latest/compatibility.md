@@ -47,7 +47,7 @@ Spark normalizes NaN and zero for floating point numbers for several cases. See 
 However, one exception is comparison. Spark does not normalize NaN and zero when comparing values
 because they are handled well in Spark (e.g., `SQLOrderingUtil.compareFloats`). But the comparison
 functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., [arrow::compute::kernels::cmp::eq](https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#)).
-So Comet will add additional normalization expression of NaN and zero for comparison, and may still have differences
+So Comet adds additional normalization expression of NaN and zero for comparisons, and may still have differences
 to Spark in some cases, especially when the data contains both positive and negative zero. This is likely an edge
 case that is not of concern for many users. If it is a concern, setting `spark.comet.exec.strictFloatingPoint=true`
 will make relevant operations fall back to Spark.
