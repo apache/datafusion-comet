@@ -433,7 +433,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast FloatType to DecimalType(10,2) - allow incompat") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
       castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
     }
   }
@@ -493,7 +493,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast DoubleType to DecimalType(10,2) - allow incompat") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
       castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
     }
   }
@@ -781,7 +781,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   ignore("cast StringType to TimestampType") {
     // https://github.com/apache/datafusion-comet/issues/328
-    withSQLConf((CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key, "true")) {
+    withSQLConf((CometConf.getExprAllowIncompatConfigKey(classOf[Cast]), "true")) {
       val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ gen.generateStrings(
         dataSize,
         timestampPattern,
@@ -832,7 +832,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // test for invalid inputs
     withSQLConf(
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
       val values = Seq("-9?", "1-", "0.5")
       castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
     }
@@ -1268,7 +1268,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // with ANSI enabled, we should produce the same exception as Spark
         withSQLConf(
           SQLConf.ANSI_ENABLED.key -> "true",
-          CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+          CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
 
           // cast() should throw exception on invalid inputs when ansi mode is enabled
           val df = data.withColumn("converted", col("a").cast(toType))
