@@ -339,16 +339,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           plan
         }
 
-      // this case should be checked only after the previous case checking for a
-      // child BroadcastExchange has been applied, otherwise that transform
-      // never gets applied
-      case op: BroadcastHashJoinExec if !op.children.forall(isCometNative) =>
-        op
-
-      case op: BroadcastHashJoinExec
-          if !CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) =>
-        withInfo(op, "BroadcastHashJoin is not enabled")
-
       // For AQE shuffle stage on a Comet shuffle exchange
       case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
         newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
