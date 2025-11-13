@@ -31,6 +31,8 @@ import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataTy
 /** Base class for all sinks */
 abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 
+  def isFfiSafe: Boolean = false
+
   override def convert(
       op: T,
       builder: Operator.Builder,
@@ -68,7 +70,8 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 //      case _ =>
 //        false
 //    }
-//    scanBuilder.setArrowFfiSafe(ffiSafe)
+
+    scanBuilder.setArrowFfiSafe(isFfiSafe)
 
     val scanTypes = op.output.flatten { attr =>
       serializeDataType(attr.dataType)

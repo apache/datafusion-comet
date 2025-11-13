@@ -19,7 +19,6 @@
 
 package org.apache.comet.rules
 
-import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
@@ -72,7 +71,10 @@ object CometExecRule {
       classOf[WindowExec] -> CometWindow)
 
   val sinks: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
-    Map(classOf[UnionExec] -> CometUnion)
+    Map(
+      classOf[UnionExec] -> CometUnion,
+      classOf[CollectLimitExec] -> CometCollectLimit,
+      classOf[TakeOrderedAndProjectExec] -> CometTakeOrderedAndProject)
 
   val allExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] = nativeExecs ++ sinks
 
@@ -200,31 +202,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         val nativeOp = operator2Proto(cometOp)
         CometScanWrapper(nativeOp.get, cometOp)
 
-      case op: CollectLimitExec =>
-        val fallbackReasons = new ListBuffer[String]()
-        if (!CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.get(conf)) {
-          fallbackReasons += s"${CometConf.COMET_EXEC_COLLECT_LIMIT_ENABLED.key} is false"
-        }
-        if (!isCometShuffleEnabled(conf)) {
-          fallbackReasons += "Comet shuffle is not enabled"
-        }
-        if (fallbackReasons.nonEmpty) {
-          withInfos(op, fallbackReasons.toSet)
-        } else {
-          if (!isCometNative(op.child)) {
-            // no reason to report reason if child is not native
-            op
-          } else {
-            operator2Proto(op)
-              .map { nativeOp =>
-                val cometOp =
-                  CometCollectLimitExec(op, op.limit, op.offset, op.child)
-                CometSinkPlaceHolder(nativeOp, op, cometOp)
-              }
-              .getOrElse(op)
-          }
-        }
-
       case c @ CoalesceExec(numPartitions, child)
           if CometConf.COMET_EXEC_COALESCE_ENABLED.get(conf)
             && isCometNative(child) =>
@@ -240,35 +217,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       case op: CoalesceExec if !op.children.forall(isCometNative) =>
         op
-
-      case s: TakeOrderedAndProjectExec
-          if isCometNative(s.child) && CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED
-            .get(conf)
-            && isCometShuffleEnabled(conf) &&
-            CometTakeOrderedAndProjectExec.isSupported(s) =>
-        operator2Proto(s)
-          .map { nativeOp =>
-            val cometOp =
-              CometTakeOrderedAndProjectExec(
-                s,
-                s.output,
-                s.limit,
-                s.offset,
-                s.sortOrder,
-                s.projectList,
-                s.child)
-            CometSinkPlaceHolder(nativeOp, s, cometOp)
-          }
-          .getOrElse(s)
-
-      case s: TakeOrderedAndProjectExec =>
-        val info1 = createMessage(
-          !CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED.get(conf),
-          "TakeOrderedAndProject is not enabled")
-        val info2 = createMessage(
-          !isCometShuffleEnabled(conf),
-          "TakeOrderedAndProject requires shuffle to be enabled")
-        withInfo(s, Seq(info1, info2).flatten.mkString(","))
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
@@ -376,11 +324,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
       case op =>
-        // check if this is a fully native operator
-        allExecs.get(op.getClass) match {
-          case Some(_handler) =>
+        allExecs
+          .get(op.getClass)
+          .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]]) match {
+          case Some(handler) =>
             if (op.children.forall(isCometNative)) {
-              val handler = _handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
               if (isOperatorEnabled(handler, op)) {
                 val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
                 val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
@@ -995,8 +943,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case _: CometSparkToColumnarExec => true
       case _: CometSinkPlaceHolder => true
       case _: CoalesceExec => true
-      case _: CollectLimitExec => true
-      case _: UnionExec => true
       case _: TakeOrderedAndProjectExec => true
       case _ => false
     }

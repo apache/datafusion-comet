@@ -25,13 +25,9 @@ import org.apache.spark.serializer.Serializer
 import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.util.truncatedString
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffledBatchRDD, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{SparkPlan, TakeOrderedAndProjectExec, UnaryExecNode, UnsafeRowSerializer}
+import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode, UnsafeRowSerializer}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.vectorized.ColumnarBatch
-
-import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.exprToProto
-import org.apache.comet.serde.QueryPlanSerde.supportedSortType
 
 /**
  * Comet physical plan node for Spark `TakeOrderedAndProjectExec`.
@@ -130,25 +126,4 @@ case class CometTakeOrderedAndProjectExec(
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
-}
-
-object CometTakeOrderedAndProjectExec {
-  def isSupported(plan: TakeOrderedAndProjectExec): Boolean = {
-    val exprs = plan.projectList.map { p =>
-      val o = exprToProto(p, plan.child.output)
-      if (o.isEmpty) {
-        withInfo(plan, s"unsupported projection: $p")
-      }
-      o
-    }
-    val sortOrders = plan.sortOrder.map { s =>
-      val o = exprToProto(s, plan.child.output)
-      if (o.isEmpty) {
-        withInfo(plan, s"unsupported sort order: $s")
-      }
-      o
-    }
-    exprs.forall(_.isDefined) && sortOrders.forall(_.isDefined) &&
-    supportedSortType(plan, plan.sortOrder)
-  }
 }
