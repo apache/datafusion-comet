@@ -75,9 +75,9 @@ object CometExecRule {
    */
   val sinks: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
     Map(
-      classOf[UnionExec] -> CometUnion,
-      classOf[CollectLimitExec] -> CometCollectLimit,
-      classOf[TakeOrderedAndProjectExec] -> CometTakeOrderedAndProject)
+      classOf[UnionExec] -> CometUnionExec,
+      classOf[CollectLimitExec] -> CometCollectLimitExec,
+      classOf[TakeOrderedAndProjectExec] -> CometTakeOrderedAndProjectExec)
 
   val allExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] = nativeExecs ++ sinks
 

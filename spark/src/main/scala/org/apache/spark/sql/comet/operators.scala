@@ -46,9 +46,11 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException}
+import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.parquet.CometParquetUtils
+import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.operator.CometSink
 
 /**
  * A Comet physical operator
@@ -692,6 +694,18 @@ case class CometExpandExec(
 
   // TODO: support native Expand metrics
   override lazy val metrics: Map[String, SQLMetric] = Map.empty
+}
+
+object CometUnionExec extends CometSink[UnionExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_UNION_ENABLED)
+
+  override def createExec(
+      nativeOp: OperatorOuterClass.Operator,
+      op: UnionExec): CometNativeExec = {
+    CometSinkPlaceHolder(nativeOp, op, CometUnionExec(op, op.output, op.children))
+  }
 }
 
 case class CometUnionExec(

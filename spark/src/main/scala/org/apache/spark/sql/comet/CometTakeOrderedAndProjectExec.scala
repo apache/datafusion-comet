@@ -25,9 +25,61 @@ import org.apache.spark.serializer.Serializer
 import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.util.truncatedString
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffledBatchRDD, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode, UnsafeRowSerializer}
+import org.apache.spark.sql.execution.{SparkPlan, TakeOrderedAndProjectExec, UnaryExecNode, UnsafeRowSerializer}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.vectorized.ColumnarBatch
+
+import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.CometSparkSessionExtensions.isCometShuffleEnabled
+import org.apache.comet.serde.{Compatible, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, supportedSortType}
+import org.apache.comet.serde.operator.CometSink
+
+object CometTakeOrderedAndProjectExec extends CometSink[TakeOrderedAndProjectExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED)
+
+  override def getSupportLevel(op: TakeOrderedAndProjectExec): SupportLevel = {
+    if (!isCometShuffleEnabled(op.conf)) {
+      return Unsupported(Some("TakeOrderedAndProject requires shuffle to be enabled"))
+    }
+    op.projectList.foreach { p =>
+      val o = exprToProto(p, op.child.output)
+      if (o.isEmpty) {
+        return Unsupported(Some(s"unsupported projection: $p"))
+      }
+      o
+    }
+    op.sortOrder.foreach { s =>
+      val o = exprToProto(s, op.child.output)
+      if (o.isEmpty) {
+        return Unsupported(Some(s"unsupported sort order: $s"))
+      }
+      o
+    }
+    if (!supportedSortType(op, op.sortOrder)) {
+      return Unsupported(Some("unsupported data type in sort order"))
+    }
+    Compatible()
+  }
+
+  override def createExec(
+      nativeOp: OperatorOuterClass.Operator,
+      op: TakeOrderedAndProjectExec): CometNativeExec = {
+    CometSinkPlaceHolder(
+      nativeOp,
+      op,
+      CometTakeOrderedAndProjectExec(
+        op,
+        op.output,
+        op.limit,
+        op.offset,
+        op.sortOrder,
+        op.projectList,
+        op.child))
+  }
+}
 
 /**
  * Comet physical plan node for Spark `TakeOrderedAndProjectExec`.
