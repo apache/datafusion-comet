@@ -136,7 +136,12 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   test("array_append") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayAppend]) -> "true") {
+    val incompatKey = if (isSpark40Plus) {
+      classOf[ArrayInsert]
+    } else {
+      classOf[ArrayAppend]
+    }
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(incompatKey) -> "true") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withTempDir { dir =>
           withTempView("t1") {
