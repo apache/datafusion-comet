@@ -544,6 +544,36 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             false
           }
 
+        // Check for unsupported transform functions in residual expressions
+        // iceberg-rust can only handle identity transforms in residuals; all other transforms
+        // (truncate, bucket, year, month, day, hour) must fall back to Spark
+        val transformFunctionsSupported = tasksOpt match {
+          case Some(tasks) =>
+            try {
+              IcebergReflection.findNonIdentityTransformInResiduals(tasks) match {
+                case Some(transformType) =>
+                  // Found unsupported transform
+                  fallbackReasons +=
+                    s"Iceberg transform function '$transformType' in residual expression " +
+                      "is not yet supported by iceberg-rust. " +
+                      "Only identity transforms are supported."
+                  false
+                case None =>
+                  // No unsupported transforms found - safe to use native execution
+                  true
+              }
+            } catch {
+              case e: Exception =>
+                // Reflection failure - cannot verify safety, must fall back
+                fallbackReasons += "Iceberg reflection failure: Could not check for " +
+                  s"transform functions in residuals: ${e.getMessage}"
+                false
+            }
+          case None =>
+            // No tasks to check - continue
+            true
+        }
+
         // Check for unsupported struct types in delete files
         val deleteFileTypesSupported = (tableOpt, tasksOpt) match {
           case (Some(table), Some(tasks)) =>
@@ -592,7 +622,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
         if (schemaSupported && fileIOCompatible && formatVersionSupported && allParquetFiles &&
           allSupportedFilesystems && partitionTypesSupported &&
-          complexTypePredicatesSupported &&
+          complexTypePredicatesSupported && transformFunctionsSupported &&
           deleteFileTypesSupported) {
           // Iceberg tables require type promotion for schema evolution (add/drop columns)
           SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")

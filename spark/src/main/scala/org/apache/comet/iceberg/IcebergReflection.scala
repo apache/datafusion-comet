@@ -45,6 +45,7 @@ object IcebergReflection extends Logging {
     val PARTITION_SPEC_PARSER = "org.apache.iceberg.PartitionSpecParser"
     val PARTITION_SPEC = "org.apache.iceberg.PartitionSpec"
     val PARTITION_FIELD = "org.apache.iceberg.PartitionField"
+    val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
   }
 
   /**
@@ -425,5 +426,67 @@ object IcebergReflection extends Logging {
             s"$fieldId: ${e.getMessage}")
         None
     }
+  }
+
+  /**
+   * Checks if tasks have non-identity transforms in their residual expressions.
+   *
+   * Residual expressions are filters that must be evaluated after reading data from Parquet.
+   * iceberg-rust can only handle simple column references in residuals, not transformed columns.
+   * Transform functions like truncate, bucket, year, month, day, hour require evaluation by
+   * Spark.
+   *
+   * @param tasks
+   *   List of Iceberg FileScanTask objects
+   * @return
+   *   Some(transformType) if an unsupported transform is found (e.g., "truncate[4]"), None if all
+   *   transforms are identity or no transforms are present
+   * @throws Exception
+   *   if reflection fails - caller must handle appropriately (fallback in planning, fatal in
+   *   serialization)
+   */
+  def findNonIdentityTransformInResiduals(tasks: java.util.List[_]): Option[String] = {
+    import scala.jdk.CollectionConverters._
+
+    // scalastyle:off classforname
+    val fileScanTaskClass = Class.forName(ClassNames.FILE_SCAN_TASK)
+    val contentScanTaskClass = Class.forName(ClassNames.CONTENT_SCAN_TASK)
+    val unboundPredicateClass = Class.forName(ClassNames.UNBOUND_PREDICATE)
+    // scalastyle:on classforname
+
+    tasks.asScala.foreach { task =>
+      if (fileScanTaskClass.isInstance(task)) {
+        try {
+          val residualMethod = contentScanTaskClass.getMethod("residual")
+          val residual = residualMethod.invoke(task)
+
+          // Check if residual is an UnboundPredicate with a transform
+          if (unboundPredicateClass.isInstance(residual)) {
+            val termMethod = unboundPredicateClass.getMethod("term")
+            val term = termMethod.invoke(residual)
+
+            // Check if term has a transform
+            try {
+              val transformMethod = term.getClass.getMethod("transform")
+              transformMethod.setAccessible(true)
+              val transform = transformMethod.invoke(term)
+              val transformStr = transform.toString
+
+              // Only identity transform is supported in residuals
+              if (transformStr != Transforms.IDENTITY) {
+                return Some(transformStr)
+              }
+            } catch {
+              case _: NoSuchMethodException =>
+              // No transform method means it's a simple reference - OK
+            }
+          }
+        } catch {
+          case _: Exception =>
+          // Skip tasks where we can't get residual - they may not have one
+        }
+      }
+    }
+    None
   }
 }
