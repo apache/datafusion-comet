@@ -208,6 +208,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ConcatWs.enabled` | Enable Comet acceleration for `ConcatWs` | true |
 | `spark.comet.expression.Contains.enabled` | Enable Comet acceleration for `Contains` | true |
 | `spark.comet.expression.Cos.enabled` | Enable Comet acceleration for `Cos` | true |
+| `spark.comet.expression.Cot.enabled` | Enable Comet acceleration for `Cot` | true |
 | `spark.comet.expression.CreateArray.enabled` | Enable Comet acceleration for `CreateArray` | true |
 | `spark.comet.expression.CreateNamedStruct.enabled` | Enable Comet acceleration for `CreateNamedStruct` | true |
 | `spark.comet.expression.DateAdd.enabled` | Enable Comet acceleration for `DateAdd` | true |

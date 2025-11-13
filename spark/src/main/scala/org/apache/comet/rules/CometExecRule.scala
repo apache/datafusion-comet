@@ -185,31 +185,14 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         val nativeOp = operator2Proto(scan).get
         CometNativeScan.createExec(nativeOp, scan)
 
-      // Fully native Iceberg scan for V2 - convert CometBatchScanExec to CometIcebergNativeScanExec
+      // Fully native Iceberg scan for V2
       // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometScanRule
       case scan: CometBatchScanExec
           if scan.wrapped.scan.getClass.getName ==
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
-        // Metadata must be present - if not, CometScanRule should have rejected this scan
-        val metadata = scan.nativeIcebergScanMetadata.getOrElse {
-          throw new IllegalStateException(
-            "Programming error: CometBatchScanExec for Iceberg scan is missing metadata. " +
-              "This indicates CometScanRule created a CometBatchScanExec without metadata, " +
-              "which should never happen.")
-        }
-
-        // Serialize CometBatchScanExec to extract FileScanTasks and get proto
-        QueryPlanSerde.operator2Proto(scan) match {
+        operator2Proto(scan) match {
           case Some(nativeOp) =>
-            // Extract metadataLocation from proto for display purposes
-            val metadataLocation = nativeOp.getIcebergScan.getMetadataLocation
-            // Create native Iceberg scan exec with pre-extracted metadata
-            CometIcebergNativeScanExec(
-              nativeOp,
-              scan.wrapped,
-              session,
-              metadataLocation,
-              metadata)
+            CometIcebergNativeScan.createExec(nativeOp, scan)
           case None =>
             // Serialization failed, fall back to CometBatchScanExec
             scan
@@ -911,6 +894,12 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         CometNativeScan.convert(scan, builder, childOp: _*)
+
+      // Fully native Iceberg scan for V2
+      case scan: CometBatchScanExec
+          if scan.wrapped.scan.getClass.getName ==
+            "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
+        CometIcebergNativeScan.convert(scan, builder, childOp: _*)
 
       case op if isCometSink(op) =>
         val supportedTypes =

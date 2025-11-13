@@ -23,7 +23,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.comet.CometBatchScanExec
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.ConfigEntry
@@ -850,5 +850,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     builder.clearChildren()
     Some(builder.setIcebergScan(icebergScanBuilder).build())
+  }
+
+  override def createExec(nativeOp: Operator, op: CometBatchScanExec): CometNativeExec = {
+    import org.apache.spark.sql.comet.CometIcebergNativeScanExec
+
+    // Extract metadata - it must be present at this point
+    val metadata = op.nativeIcebergScanMetadata.getOrElse {
+      throw new IllegalStateException(
+        "Programming error: CometBatchScanExec.nativeIcebergScanMetadata is None. " +
+          "Metadata should have been extracted in CometScanRule.")
+    }
+
+    // Extract metadataLocation from the native operator
+    val metadataLocation = nativeOp.getIcebergScan.getMetadataLocation
+
+    // Create the CometIcebergNativeScanExec using the companion object's apply method
+    CometIcebergNativeScanExec(nativeOp, op.wrapped, op.session, metadataLocation, metadata)
   }
 }
