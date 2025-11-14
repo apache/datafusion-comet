@@ -162,11 +162,6 @@ case class CometBatchScanExec(
 }
 
 object CometBatchScanExec extends DataTypeSupport {
-  // Custom unapply for backward compatibility with 2-parameter pattern matching
-  def unapply(exec: CometBatchScanExec): Option[(BatchScanExec, Seq[Expression])] = {
-    Some((exec.wrapped, exec.runtimeFilters))
-  }
-
   override def isTypeSupported(
       dt: DataType,
       name: String,
