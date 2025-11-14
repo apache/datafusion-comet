@@ -371,7 +371,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         } else {
           fallbackReasons += "Iceberg scan contains files with unsupported filesystem " +
             s"schemes: ${unsupportedSchemes.mkString(", ")}. " +
-            s"Comet only supports: file, s3, s3a, gs, gcs, oss, abfss, abfs, wasbs, wasb"
+            "Comet only supports: file, s3, s3a, gs, gcs, oss, abfss, abfs, wasbs, wasb"
           false
         }
 
