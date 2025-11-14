@@ -783,17 +783,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                         throw new RuntimeException(msg, e)
                     }
 
-                    try {
-                      val formatMethod = contentFileClass.getMethod("format")
-                      val format = formatMethod.invoke(dataFile)
-                      taskBuilder.setDataFileFormat(format.toString)
-                    } catch {
-                      case e: Exception =>
-                        logWarning(
-                          "Failed to extract file format from FileScanTask," +
-                            s"defaulting to PARQUET: ${e.getMessage}")
-                        taskBuilder.setDataFileFormat(IcebergReflection.FileFormats.PARQUET)
-                    }
+                    taskBuilder.setDataFileFormat(metadata.fileFormat)
 
                     // Serialize delete files (position deletes and equality deletes)
                     serializeDeleteFiles(task, contentFileClass, fileScanTaskClass, taskBuilder)

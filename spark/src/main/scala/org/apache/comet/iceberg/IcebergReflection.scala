@@ -733,7 +733,8 @@ case class CometIcebergNativeScanMetadata(
     tasks: java.util.List[_],
     scanSchema: Any,
     globalFieldIdMapping: Map[String, Int],
-    catalogProperties: Map[String, String])
+    catalogProperties: Map[String, String],
+    fileFormat: String)
 
 object CometIcebergNativeScanMetadata extends Logging {
 
@@ -775,6 +776,11 @@ object CometIcebergNativeScanMetadata extends Logging {
 
       val globalFieldIdMapping = buildFieldIdMapping(scanSchema)
 
+      // File format is always PARQUET,
+      // validated in CometScanRule.validateFileFormatsAndSchemes()
+      // Hardcoded here for extensibility (future ORC/Avro support would add logic here)
+      val fileFormat = FileFormats.PARQUET
+
       CometIcebergNativeScanMetadata(
         table = table,
         metadataLocation = metadataLocation,
@@ -782,7 +788,8 @@ object CometIcebergNativeScanMetadata extends Logging {
         tasks = tasks,
         scanSchema = scanSchema,
         globalFieldIdMapping = globalFieldIdMapping,
-        catalogProperties = catalogProperties)
+        catalogProperties = catalogProperties,
+        fileFormat = fileFormat)
     }
   }
 }
