@@ -484,7 +484,7 @@ object CometConf extends ShimCometConf {
           "the native query plan before execution and again after execution, with " +
           "metrics.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_EXPLAIN_TRANSFORMATIONS: ConfigEntry[Boolean] =
     conf("spark.comet.explain.rules")
