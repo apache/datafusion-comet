@@ -64,6 +64,11 @@ runs:
       run: |
         ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ inputs.maven_opts }}
 
+    - name: Install prettier
+      shell: bash
+      run: |
+        npm install -g prettier
+
     - name: Check for any local git changes (such as generated docs)
       shell: bash
       run: |
