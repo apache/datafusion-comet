@@ -20,6 +20,7 @@
 package org.apache.comet.expressions
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType}
 
 import org.apache.comet.CometConf
@@ -91,7 +92,11 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         castBuilder.setChild(childExpr)
         castBuilder.setDatatype(dataType)
         castBuilder.setEvalMode(evalModeToProto(evalMode))
-        castBuilder.setAllowIncompat(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get())
+        castBuilder.setAllowIncompat(
+          CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() ||
+            SQLConf.get
+              .getConfString(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]), "false")
+              .toBoolean)
         castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
         Some(
           ExprOuterClass.Expr

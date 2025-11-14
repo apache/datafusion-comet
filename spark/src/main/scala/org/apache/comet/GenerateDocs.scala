@@ -77,7 +77,7 @@ object GenerateDocs {
                 // append env var info if present
                 val docWithEnvVar = conf.envVar match {
                   case Some(envVarName) =>
-                    s"$doc Can be overridden by environment variable `$envVarName`."
+                    s"$doc It can be overridden by the environment variable `$envVarName`."
                   case None => doc
                 }
                 if (conf.defaultValue.isEmpty) {
