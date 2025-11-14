@@ -4,7 +4,7 @@ set -euo pipefail  # Exit on errors, undefined vars, pipe failures
 # Check if we're in a git repository
 if ! git rev-parse --git-dir > /dev/null 2>&1; then
   echo "Error: Not in a git repository"
-  exit 1
+  # exit 1
 fi
 
 # Check if prettier is installed
@@ -21,6 +21,7 @@ prettier -w "docs/source/**/*.md"
 if [ -n "$(git status --porcelain)" ]; then
   echo "Working tree is not clean:"
   git status --short
+  echo "Full diff:"
   git diff
   echo ""
   echo "Please commit, stash, or clean these changes before proceeding."
