@@ -407,7 +407,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
             if (exprAllowIncompat) {
               if (notes.isDefined) {
                 logWarning(
-                  s"Comet supports $fn when ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true " +
+                  s"Comet supports $fn when " +
+                    s"${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true " +
                     s"but has notes: ${notes.get}")
               }
               aggHandler.convert(aggExpr, fn, inputs, binding, conf)
@@ -511,7 +512,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
           if (exprAllowIncompat) {
             if (notes.isDefined) {
               logWarning(
-                s"Comet supports $expr when ${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true " +
+                s"Comet supports $expr when " +
+                  s"${CometConf.getExprAllowIncompatConfigKey(exprConfName)}=true " +
                   s"but has notes: ${notes.get}")
             }
             handler.convert(expr, inputs, binding)
