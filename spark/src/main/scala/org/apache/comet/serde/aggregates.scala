@@ -46,6 +46,7 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
 
     if (expr.dataType == DataTypes.FloatType || expr.dataType == DataTypes.DoubleType) {
       if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get()) {
+        // https://github.com/apache/datafusion-comet/issues/2448
         withInfo(
           aggExpr,
           s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true")
@@ -92,6 +93,7 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
 
     if (expr.dataType == DataTypes.FloatType || expr.dataType == DataTypes.DoubleType) {
       if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get()) {
+        // https://github.com/apache/datafusion-comet/issues/2448
         withInfo(
           aggExpr,
           s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true")

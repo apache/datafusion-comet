@@ -49,6 +49,7 @@ object CometSortOrder extends CometExpressionSerde[SortOrder] {
 
     if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
       containsFloatingPoint(expr.child.dataType)) {
+      // https://github.com/apache/datafusion-comet/issues/2626
       Incompatible(
         Some(
           "Sorting on floating-point is not 100% compatible with Spark, and Comet is running " +
