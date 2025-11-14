@@ -151,38 +151,38 @@ class CometStringExpressionSuite extends CometTestBase {
   test("split string basic") {
     // Basic split tests with 2 arguments (no limit)
     withParquetTable((0 until 5).map(i => (s"value$i,test$i", i)), "tbl") {
-      checkSparkAnswerAndOperator("SELECT split(col, ',') FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl")
       checkSparkAnswerAndOperator("SELECT split('one,two,three', ',') FROM tbl")
-      checkSparkAnswerAndOperator("SELECT split(col, '-') FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(_1, '-') FROM tbl")
     }
   }
 
   test("split string with limit") {
     // Split tests with 3 arguments (with limit)
     withParquetTable((0 until 5).map(i => (s"a,b,c,d,e", i)), "tbl") {
-      checkSparkAnswerAndOperator("SELECT split(col, ',', 2) FROM tbl")
-      checkSparkAnswerAndOperator("SELECT split(col, ',', 3) FROM tbl")
-      checkSparkAnswerAndOperator("SELECT split(col, ',', -1) FROM tbl")
-      checkSparkAnswerAndOperator("SELECT split(col, ',', 0) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',', 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',', 3) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',', -1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',', 0) FROM tbl")
     }
   }
 
   test("split string with regex patterns") {
     // Test with various regex patterns
     withParquetTable((0 until 5).map(i => (s"word1 word2  word3", i)), "tbl") {
-      checkSparkAnswerAndOperator("SELECT split(col, ' ') FROM tbl")
-      checkSparkAnswerAndOperator("SELECT split(col, '\\\\s+') FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(_1, ' ') FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(_1, '\\\\s+') FROM tbl")
     }
 
     withParquetTable((0 until 5).map(i => (s"foo123bar456baz", i)), "tbl2") {
-      checkSparkAnswerAndOperator("SELECT split(col, '\\\\d+') FROM tbl2")
+      checkSparkAnswerAndOperator("SELECT split(_1, '\\\\d+') FROM tbl2")
     }
   }
 
   test("split string edge cases") {
     // Test edge cases: empty strings, nulls, single character
     withParquetTable(Seq(("", 0), ("single", 1), (null, 2), ("a", 3)), "tbl") {
-      checkSparkAnswerAndOperator("SELECT split(col, ',') FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl")
     }
   }
 
@@ -192,12 +192,12 @@ class CometStringExpressionSuite extends CometTestBase {
 
     // CJK characters
     withParquetTable(Seq(("你好,世界", 0), ("こんにちは,世界", 1)), "tbl_cjk") {
-      checkSparkAnswerAndOperator("SELECT split(col, ',') FROM tbl_cjk")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_cjk")
     }
 
     // Emoji and symbols
     withParquetTable(Seq(("😀,😃,😄", 0), ("🔥,💧,🌍", 1), ("α,β,γ", 2)), "tbl_emoji") {
-      checkSparkAnswerAndOperator("SELECT split(col, ',') FROM tbl_emoji")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_emoji")
     }
 
     // Combining characters / grapheme clusters
@@ -210,7 +210,7 @@ class CometStringExpressionSuite extends CometTestBase {
         ("मानक,हिन्दी", 2)
       ), // Devanagari script
       "tbl_graphemes") {
-      checkSparkAnswerAndOperator("SELECT split(col, ',') FROM tbl_graphemes")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_graphemes")
     }
 
     // Mixed ASCII and multi-byte with regex patterns
@@ -218,12 +218,12 @@ class CometStringExpressionSuite extends CometTestBase {
       Seq(("hello世界test你好", 0), ("foo😀bar😃baz", 1), ("abc한글def", 2)), // Korean Hangul
       "tbl_mixed") {
       // Split on ASCII word boundaries
-      checkSparkAnswerAndOperator("SELECT split(col, '[a-z]+') FROM tbl_mixed")
+      checkSparkAnswerAndOperator("SELECT split(_1, '[a-z]+') FROM tbl_mixed")
     }
 
     // RTL (Right-to-Left) characters
     withParquetTable(Seq(("مرحبا,عالم", 0), ("שלום,עולם", 1)), "tbl_rtl") { // Arabic, Hebrew
-      checkSparkAnswerAndOperator("SELECT split(col, ',') FROM tbl_rtl")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_rtl")
     }
 
     // Zero-width characters and special Unicode
@@ -233,7 +233,7 @@ class CometStringExpressionSuite extends CometTestBase {
         ("foo\u00ADbar", 1)
       ), // Soft hyphen
       "tbl_special") {
-      checkSparkAnswerAndOperator("SELECT split(col, '\u200B') FROM tbl_special")
+      checkSparkAnswerAndOperator("SELECT split(_1, '\u200B') FROM tbl_special")
     }
 
     // Surrogate pairs (4-byte UTF-8)
@@ -243,7 +243,7 @@ class CometStringExpressionSuite extends CometTestBase {
         ("𠜎,𠜱,𠝹", 1)
       ), // CJK Extension B
       "tbl_surrogate") {
-      checkSparkAnswerAndOperator("SELECT split(col, ',') FROM tbl_surrogate")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_surrogate")
     }
   }
 
@@ -258,13 +258,13 @@ class CometStringExpressionSuite extends CometTestBase {
       ), // Non-breaking space
       "tbl_space") {
       // Split on any whitespace (should match all Unicode whitespace)
-      checkSparkAnswerAndOperator("SELECT split(col, '\\\\s+') FROM tbl_space")
+      checkSparkAnswerAndOperator("SELECT split(_1, '\\\\s+') FROM tbl_space")
     }
 
     // Split with limit on UTF-8 strings
     withParquetTable(Seq(("你,好,世,界", 0), ("😀,😃,😄,😁", 1)), "tbl_utf8_limit") {
-      checkSparkAnswerAndOperator("SELECT split(col, ',', 2) FROM tbl_utf8_limit")
-      checkSparkAnswerAndOperator("SELECT split(col, ',', -1) FROM tbl_utf8_limit")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',', 2) FROM tbl_utf8_limit")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',', -1) FROM tbl_utf8_limit")
     }
   }
 

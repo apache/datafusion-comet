@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{ArrayRef, GenericStringArray, Int32Array, ListArray, OffsetSizeTrait};
+use arrow::array::{Array, ArrayRef, GenericStringArray, ListArray};
 use arrow::datatypes::{DataType, Field};
 use datafusion::common::{
     cast::as_generic_string_array, exec_err, DataFusionError, Result as DataFusionResult,
@@ -157,8 +157,8 @@ fn split_array(
     Ok(ColumnarValue::Array(Arc::new(list_array)))
 }
 
-fn split_large_string_array<O: OffsetSizeTrait>(
-    string_array: &GenericStringArray<O>,
+fn split_large_string_array(
+    string_array: &GenericStringArray<i64>,
     regex: &Regex,
     limit: i32,
 ) -> DataFusionResult<ColumnarValue> {
