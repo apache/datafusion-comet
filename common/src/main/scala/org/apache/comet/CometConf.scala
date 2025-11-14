@@ -492,7 +492,7 @@ object CometConf extends ShimCometConf {
       .doc("When this setting is enabled, Comet will log all plan transformations performed " +
         "in physical optimizer rules. Default: false")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_LOG_FALLBACK_REASONS: ConfigEntry[Boolean] =
     conf("spark.comet.logFallbackReasons.enabled")
