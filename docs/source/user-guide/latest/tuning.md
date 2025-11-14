@@ -28,8 +28,8 @@ maximum of 512 blocking threads. These values can be overridden using the enviro
 and `COMET_MAX_BLOCKING_THREADS`.
 
 It is recommended that `COMET_WORKER_THREADS` be set to the number of executor cores. This may not be necessary
-in some environments, such as Kubernetes, where the number of cores allocated to a pod will already be equal to the 
-number of executor cores. 
+in some environments, such as Kubernetes, where the number of cores allocated to a pod will already be equal to the
+number of executor cores.
 
 ## Memory Tuning
 
@@ -50,7 +50,7 @@ leading to out-of-memory exceptions. To work around this issue, it is possible t
 set `spark.comet.exec.memoryPool.fraction` to a value less than `1.0` to restrict the amount of memory that can be
 reserved by Comet.
 
-For more details about Spark off-heap memory mode, please refer to [Spark documentation]. 
+For more details about Spark off-heap memory mode, please refer to [Spark documentation].
 
 [Spark documentation]: https://spark.apache.org/docs/latest/configuration.html
 
@@ -61,7 +61,6 @@ The valid pool types are:
 - `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
 - `greedy_unified`
 
-
 The `fair_unified` pool types prevents operators from using more than an even fraction of the available memory
 (i.e. `pool_size / num_reservations`). This pool works best when you know beforehand
 the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
@@ -71,7 +70,6 @@ The `greedy_unified` pool type implements a greedy first-come first-serve limit.
 need to spill or have a single spillable operator.
 
 [shuffle]: #shuffle
-
 [Advanced Memory Tuning]: #advanced-memory-tuning
 
 ### Determining How Much Memory to Allocate
