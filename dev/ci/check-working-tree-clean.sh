@@ -11,6 +11,7 @@ fi
 if [ -n "$(git status --porcelain)" ]; then
   echo "Working tree is not clean:"
   git status --short
+  git diff
   echo ""
   echo "Please commit, stash, or clean these changes before proceeding."
   exit 1
