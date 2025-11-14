@@ -185,9 +185,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(abs);
             make_comet_scalar_udf!("abs", func, without data_type)
         }
-        "string_to_array" => {
+        "split" => {
             let func = Arc::new(crate::string_funcs::spark_split);
-            make_comet_scalar_udf!("string_to_array", func, without data_type)
+            make_comet_scalar_udf!("split", func, without data_type)
         }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
