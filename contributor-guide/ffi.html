@@ -578,7 +578,7 @@ in Java on-heap memory keeps growing until the batches are released in native co
 <section id="ownership-transfer">
 <h3>Ownership Transfer<a class="headerlink" href="#ownership-transfer" title="Link to this heading">#</a></h3>
 <p>The Arrow C data interface supports ownership transfer by registering callbacks in the C struct that is passed over
-the JNI boundary for the function to delete the array data.  For example, the <code class="docutils literal notranslate"><span class="pre">ArrowArray</span></code> struct has:</p>
+the JNI boundary for the function to delete the array data. For example, the <code class="docutils literal notranslate"><span class="pre">ArrowArray</span></code> struct has:</p>
 <div class="highlight-c notranslate"><div class="highlight"><pre><span></span><span class="c1">// Release callback</span>
 <span class="kt">void</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">release</span><span class="p">)(</span><span class="k">struct</span><span class="w"> </span><span class="nc">ArrowArray</span><span class="o">*</span><span class="p">);</span>
 </pre></div>

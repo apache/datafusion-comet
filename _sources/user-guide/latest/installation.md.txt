@@ -36,7 +36,7 @@ We recommend only using Comet with Spark versions where we currently have both C
 Other versions may work well enough for development and evaluation purposes.
 
 | Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
-|---------------| ------------ | ------------- |-------------------|-----------------------|
+| ------------- | ------------ | ------------- | ----------------- | --------------------- |
 | 3.4.3         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
 | 3.5.5         | 11/17        | 2.12/2.13     | Yes               | No                    |
 | 3.5.6         | 11/17        | 2.12/2.13     | Yes               | No                    |
@@ -48,7 +48,7 @@ Experimental support is provided for the following versions of Apache Spark and 
 use only and should not be used in production yet.
 
 | Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
-|---------------| ------------ | ------------- | ----------------- |-----------------------|
+| ------------- | ------------ | ------------- | ----------------- | --------------------- |
 | 4.0.1         | 17           | 2.13          | Yes               | Yes                   |
 
 Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by

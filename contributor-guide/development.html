@@ -527,7 +527,7 @@ in their name in <code class="docutils literal notranslate"><span class="pre">or
 The plan stability testing framework is located in the <code class="docutils literal notranslate"><span class="pre">spark</span></code> module and can be run using the following commands.</p>
 <p>First, Comet needs to be installed for each Spark version to be tested:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span>install<span class="w"> </span>-DskipTests<span class="w"> </span>-Pspark-3.4
-./mvnw<span class="w"> </span>install<span class="w"> </span>-DskipTests<span class="w"> </span>-Pspark-3.5<span class="w"> </span>
+./mvnw<span class="w"> </span>install<span class="w"> </span>-DskipTests<span class="w"> </span>-Pspark-3.5
 <span class="c1"># note that Spark 4.0 requires JDK 17 or later</span>
 ./mvnw<span class="w"> </span>install<span class="w"> </span>-DskipTests<span class="w"> </span>-Pspark-4.0
 </pre></div>
@@ -588,6 +588,19 @@ cargo<span class="w"> </span>clippy<span class="w"> </span>--color<span class="o
 </pre></div>
 </div>
 <p>Make sure to resolve any Clippy warnings before submitting your pull request, as the CI/CD pipeline will fail if warnings are present.</p>
+</section>
+<section id="how-to-format-md-document">
+<h2>How to format <code class="docutils literal notranslate"><span class="pre">.md</span></code> document<a class="headerlink" href="#how-to-format-md-document" title="Link to this heading">#</a></h2>
+<p>We are using <code class="docutils literal notranslate"><span class="pre">prettier</span></code> to format <code class="docutils literal notranslate"><span class="pre">.md</span></code> files.</p>
+<p>You can either use <code class="docutils literal notranslate"><span class="pre">npm</span> <span class="pre">i</span> <span class="pre">-g</span> <span class="pre">prettier</span></code> to install it globally or use <code class="docutils literal notranslate"><span class="pre">npx</span></code> to run it as a standalone binary. Using <code class="docutils literal notranslate"><span class="pre">npx</span></code> required a working node environment. Upgrading to the latest prettier is recommended (by adding <code class="docutils literal notranslate"><span class="pre">--upgrade</span></code> to the <code class="docutils literal notranslate"><span class="pre">npm</span></code> command).</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>$<span class="w"> </span>prettier<span class="w"> </span>--version
+<span class="m">2</span>.3.0
+</pre></div>
+</div>
+<p>After you’ve confirmed your prettier version, you can format all the <code class="docutils literal notranslate"><span class="pre">.md</span></code> files:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>npx<span class="w"> </span>prettier<span class="w"> </span><span class="s2">&quot;**/*.md&quot;</span><span class="w"> </span>--write
+</pre></div>
+</div>
 </section>
 </section>
 
