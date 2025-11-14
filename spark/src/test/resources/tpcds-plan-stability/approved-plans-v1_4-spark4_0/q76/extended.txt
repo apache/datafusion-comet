@@ -1,4 +1,4 @@
- TakeOrderedAndProject [COMET: ]
+TakeOrderedAndProject
 +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(channel#1, col_name#2, d_year#3, d_qoy#4, i_category#5, count(1)#6 AS sales_cnt#7, MakeDecimal(sum(UnscaledValue(ext_sales_price#8))#9,17,2) AS sales_amt#10)]
    +- CometColumnarToRow
       +- CometExchange
