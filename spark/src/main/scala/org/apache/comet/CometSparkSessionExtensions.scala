@@ -141,7 +141,7 @@ object CometSparkSessionExtensions extends Logging {
   // 1. `COMET_EXEC_SHUFFLE_ENABLED` is true
   // 2. `spark.shuffle.manager` is set to `CometShuffleManager`
   // 3. Off-heap memory is enabled || Spark/Comet unit testing
-  private[comet] def isCometShuffleEnabled(conf: SQLConf): Boolean =
+  def isCometShuffleEnabled(conf: SQLConf): Boolean =
     COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
 
   def isCometShuffleManagerEnabled(conf: SQLConf): Boolean = {

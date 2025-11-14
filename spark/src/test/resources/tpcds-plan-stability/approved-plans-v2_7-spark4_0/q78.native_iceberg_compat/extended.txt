@@ -1,4 +1,4 @@
- TakeOrderedAndProject [COMET: ]
+TakeOrderedAndProject
 +- Project
    +- SortMergeJoin
       :- Project

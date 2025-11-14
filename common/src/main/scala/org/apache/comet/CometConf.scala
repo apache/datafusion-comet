@@ -924,7 +924,7 @@ private class TypedConfigBuilder[T](
   }
 }
 
-private[comet] abstract class ConfigEntry[T](
+abstract class ConfigEntry[T](
     val key: String,
     val valueConverter: String => T,
     val stringConverter: T => String,
