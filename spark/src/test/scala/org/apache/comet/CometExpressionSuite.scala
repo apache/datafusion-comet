@@ -72,7 +72,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataGenOptions(generateNegativeZero = true))
     df.createOrReplaceTempView("tbl")
 
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+    withSQLConf(
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       checkSparkAnswerAndFallbackReasons(
         "select * from tbl order by 1, 2",
         Set(
@@ -94,7 +96,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataGenOptions(generateNegativeZero = true))
     df.createOrReplaceTempView("tbl")
 
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+    withSQLConf(
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       checkSparkAnswerAndFallbackReason(
         "select * from tbl order by 1, 2",
         "unsupported range partitioning sort order")
@@ -118,7 +122,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataGenOptions(generateNegativeZero = true))
     df.createOrReplaceTempView("tbl")
 
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+    withSQLConf(
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       checkSparkAnswerAndFallbackReason(
         "select * from tbl order by 1, 2",
         "unsupported range partitioning sort order")

@@ -1044,6 +1044,15 @@ trait CometBaseAggregate {
 
       val aggExprs =
         aggregateExpressions.map(aggExprToProto(_, output, binding, aggregate.conf))
+
+      if (aggExprs.exists(_.isEmpty)) {
+        withInfo(
+          aggregate,
+          "Unsupported aggregate expression(s)",
+          aggregateExpressions ++ aggregateExpressions.map(_.aggregateFunction): _*)
+        return None
+      }
+
       if (childOp.nonEmpty && groupingExprs.forall(_.isDefined) &&
         aggExprs.forall(_.isDefined)) {
         val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
