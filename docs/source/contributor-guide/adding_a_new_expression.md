@@ -72,9 +72,9 @@ object CometUnhex extends CometExpressionSerde[Unhex] {
 
 The `CometExpressionSerde` trait provides three methods you can override:
 
-* `convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr]` - **Required**. Converts the Spark expression to protobuf. Return `None` if the expression cannot be converted.
-* `getSupportLevel(expr: T): SupportLevel` - Optional. Returns the level of support for the expression. See "Using getSupportLevel" section below for details.
-* `getExprConfigName(expr: T): String` - Optional. Returns a short name for configuration keys. Defaults to the Spark class name.
+- `convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr]` - **Required**. Converts the Spark expression to protobuf. Return `None` if the expression cannot be converted.
+- `getSupportLevel(expr: T): SupportLevel` - Optional. Returns the level of support for the expression. See "Using getSupportLevel" section below for details.
+- `getExprConfigName(expr: T): String` - Optional. Returns a short name for configuration keys. Defaults to the Spark class name.
 
 For simple scalar functions that map directly to a DataFusion function, you can use the built-in `CometScalarFunction` implementation:
 
@@ -97,9 +97,9 @@ The `exprToProtoInternal` method will automatically use this mapping to find and
 
 A few things to note:
 
-* The `convert` method is recursively called on child expressions using `exprToProtoInternal`, so you'll need to make sure that the child expressions are also converted to protobuf.
-* `scalarFunctionExprToProtoWithReturnType` is for scalar functions that need to return type information. Your expression may use a different method depending on the type of expression.
-* Use helper methods like `createBinaryExpr` and `createUnaryExpr` from `QueryPlanSerde` for common expression patterns.
+- The `convert` method is recursively called on child expressions using `exprToProtoInternal`, so you'll need to make sure that the child expressions are also converted to protobuf.
+- `scalarFunctionExprToProtoWithReturnType` is for scalar functions that need to return type information. Your expression may use a different method depending on the type of expression.
+- Use helper methods like `createBinaryExpr` and `createUnaryExpr` from `QueryPlanSerde` for common expression patterns.
 
 #### Using getSupportLevel
 
@@ -111,9 +111,9 @@ The `getSupportLevel` method allows you to control whether an expression should 
 
 The method returns one of three `SupportLevel` values:
 
-* **`Compatible(notes: Option[String] = None)`** - Comet supports this expression with full compatibility with Spark, or may have known differences in specific edge cases that are unlikely to be an issue for most users. This is the default if you don't override `getSupportLevel`.
-* **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can be different from Spark. The expression will only be used if `spark.comet.expr.allowIncompatible=true` or the expression-specific config `spark.comet.expr.<exprName>.allowIncompatible=true` is set.
-* **`Unsupported(notes: Option[String] = None)`** - Comet does not support this expression under the current conditions. The expression will not be used and Spark will fall back to its native execution.
+- **`Compatible(notes: Option[String] = None)`** - Comet supports this expression with full compatibility with Spark, or may have known differences in specific edge cases that are unlikely to be an issue for most users. This is the default if you don't override `getSupportLevel`.
+- **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can be different from Spark. The expression will only be used if `spark.comet.expr.allowIncompatible=true` or the expression-specific config `spark.comet.expr.<exprName>.allowIncompatible=true` is set.
+- **`Unsupported(notes: Option[String] = None)`** - Comet does not support this expression under the current conditions. The expression will not be used and Spark will fall back to its native execution.
 
 All three support levels accept an optional `notes` parameter to provide additional context about the support level.
 
@@ -291,6 +291,7 @@ match fun_name {
 ```
 
 The `make_comet_scalar_udf!` macro has several variants depending on whether your function needs:
+
 - A data type parameter: `make_comet_scalar_udf!("ceil", spark_ceil, data_type)`
 - No data type parameter: `make_comet_scalar_udf!("unhex", func, without data_type)`
 - An eval mode: `make_comet_scalar_udf!("decimal_div", spark_decimal_div, data_type, eval_mode)`
@@ -356,7 +357,7 @@ Your `CometExpressionSerde` implementation can also access shim methods by mixin
 
 ## Resources
 
-* [Variance PR](https://github.com/apache/datafusion-comet/pull/297)
-  * Aggregation function
-* [Unhex PR](https://github.com/apache/datafusion-comet/pull/342)
-  * Basic scalar function with shims for different Spark versions
+- [Variance PR](https://github.com/apache/datafusion-comet/pull/297)
+  - Aggregation function
+- [Unhex PR](https://github.com/apache/datafusion-comet/pull/342)
+  - Basic scalar function with shims for different Spark versions

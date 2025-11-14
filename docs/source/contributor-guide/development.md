@@ -80,7 +80,7 @@ However if the tests is related to the native side. Please make sure to run `mak
 ### Running Tests from command line
 
 It is possible to specify which ScalaTest suites you want to run from the CLI using the `suites`
-argument, for example if you only want to execute the test cases that contains *valid*
+argument, for example if you only want to execute the test cases that contains _valid_
 in their name in `org.apache.comet.CometCastSuite` you can use
 
 ```sh
@@ -98,7 +98,7 @@ First, Comet needs to be installed for each Spark version to be tested:
 
 ```sh
 ./mvnw install -DskipTests -Pspark-3.4
-./mvnw install -DskipTests -Pspark-3.5 
+./mvnw install -DskipTests -Pspark-3.5
 # note that Spark 4.0 requires JDK 17 or later
 ./mvnw install -DskipTests -Pspark-4.0
 ```
@@ -115,6 +115,7 @@ export SPARK_HOME=`pwd`
 ```
 
 and
+
 ```sh
 export SPARK_HOME=`pwd`
 ./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.4 -nsu test
@@ -133,6 +134,7 @@ SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -pl spark -Dsuites="org.apache.spark.sql.co
 ```
 
 and
+
 ```sh
 export SPARK_HOME=`pwd`
 SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.4 -nsu test
