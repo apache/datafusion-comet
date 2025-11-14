@@ -93,9 +93,10 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         castBuilder.setDatatype(dataType)
         castBuilder.setEvalMode(evalModeToProto(evalMode))
         castBuilder.setAllowIncompat(
-          SQLConf.get
-            .getConfString(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]), "false")
-            .toBoolean)
+          CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() ||
+            SQLConf.get
+              .getConfString(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]), "false")
+              .toBoolean)
         castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
         Some(
           ExprOuterClass.Expr
