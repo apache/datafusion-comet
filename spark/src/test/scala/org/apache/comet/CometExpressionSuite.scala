@@ -72,7 +72,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataGenOptions(generateNegativeZero = true))
     df.createOrReplaceTempView("tbl")
 
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+    withSQLConf(
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       checkSparkAnswerAndFallbackReasons(
         "select * from tbl order by 1, 2",
         Set(
@@ -94,7 +96,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataGenOptions(generateNegativeZero = true))
     df.createOrReplaceTempView("tbl")
 
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+    withSQLConf(
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       checkSparkAnswerAndFallbackReason(
         "select * from tbl order by 1, 2",
         "unsupported range partitioning sort order")
@@ -118,7 +122,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataGenOptions(generateNegativeZero = true))
     df.createOrReplaceTempView("tbl")
 
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+    withSQLConf(
+      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
+      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       checkSparkAnswerAndFallbackReason(
         "select * from tbl order by 1, 2",
         "unsupported range partitioning sort order")
@@ -1348,7 +1354,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "log2",
           "sin",
           "sqrt",
-          "tan")) {
+          "tan",
+          "cot")) {
         val (_, cometPlan) =
           checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
         val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
@@ -1964,7 +1971,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq(
           (
             s"select * from $table LIMIT 10",
-            Set("spark.comet.exec.collectLimit.enabled is false")))
+            Set("Native support for operator CollectLimitExec is disabled. " +
+              "Set spark.comet.exec.collectLimit.enabled=true to enable it")))
           .foreach(test => {
             val qry = test._1
             val expected = test._2

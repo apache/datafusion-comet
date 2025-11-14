@@ -17,19 +17,14 @@
  * under the License.
  */
 
-package org.apache.comet.serde.operator
-
-import scala.jdk.CollectionConverters._
+package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, Descending, NullsFirst, NullsLast, SortOrder}
-import org.apache.spark.sql.execution.SortExec
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, MapType, StructType}
+import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.{CometExpressionSerde, CometOperatorSerde, Compatible, ExprOuterClass, Incompatible, OperatorOuterClass, SupportLevel}
-import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, exprToProtoInternal, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 object CometSortOrder extends CometExpressionSerde[SortOrder] {
 
@@ -46,9 +41,14 @@ object CometSortOrder extends CometExpressionSerde[SortOrder] {
       }
     }
 
-    if (containsFloatingPoint(expr.child.dataType)) {
-      Incompatible(Some(
-        s"Sorting on floating-point is not 100% compatible with Spark. ${CometConf.COMPAT_GUIDE}"))
+    if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
+      containsFloatingPoint(expr.child.dataType)) {
+      // https://github.com/apache/datafusion-comet/issues/2626
+      Incompatible(
+        Some(
+          "Sorting on floating-point is not 100% compatible with Spark, and Comet is running " +
+            s"with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
+            s"${CometConf.COMPAT_GUIDE}"))
     } else {
       Compatible()
     }
@@ -85,33 +85,4 @@ object CometSortOrder extends CometExpressionSerde[SortOrder] {
       None
     }
   }
-}
-
-object CometSort extends CometOperatorSerde[SortExec] {
-
-  override def enabledConfig: Option[ConfigEntry[Boolean]] =
-    Some(CometConf.COMET_EXEC_SORT_ENABLED)
-
-  override def convert(
-      op: SortExec,
-      builder: Operator.Builder,
-      childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    if (!supportedSortType(op, op.sortOrder)) {
-      withInfo(op, "Unsupported data type in sort expressions")
-      return None
-    }
-
-    val sortOrders = op.sortOrder.map(exprToProto(_, op.child.output))
-
-    if (sortOrders.forall(_.isDefined) && childOp.nonEmpty) {
-      val sortBuilder = OperatorOuterClass.Sort
-        .newBuilder()
-        .addAllSortOrders(sortOrders.map(_.get).asJava)
-      Some(builder.setSort(sortBuilder).build())
-    } else {
-      withInfo(op, "sort order not supported", op.sortOrder: _*)
-      None
-    }
-  }
-
 }

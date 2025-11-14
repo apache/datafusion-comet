@@ -19,14 +19,126 @@
 
 package org.apache.spark.sql.comet
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, NamedExpression, SortOrder}
+import scala.jdk.CollectionConverters._
+
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, NamedExpression, SortOrder, WindowExpression}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.execution.window.WindowExec
 
 import com.google.common.base.Objects
 
+import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.{CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, windowExprToProto}
+
+object CometWindowExec extends CometOperatorSerde[WindowExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_WINDOW_ENABLED)
+
+  override def getSupportLevel(op: WindowExec): SupportLevel = {
+    Incompatible(Some("Native WindowExec has known correctness issues"))
+  }
+
+  override def convert(
+      op: WindowExec,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    val output = op.child.output
+
+    val winExprs: Array[WindowExpression] = op.windowExpression.flatMap { expr =>
+      expr match {
+        case alias: Alias =>
+          alias.child match {
+            case winExpr: WindowExpression =>
+              Some(winExpr)
+            case _ =>
+              None
+          }
+        case _ =>
+          None
+      }
+    }.toArray
+
+    if (winExprs.length != op.windowExpression.length) {
+      withInfo(op, "Unsupported window expression(s)")
+      return None
+    }
+
+    if (op.partitionSpec.nonEmpty && op.orderSpec.nonEmpty &&
+      !validatePartitionAndSortSpecsForWindowFunc(op.partitionSpec, op.orderSpec, op)) {
+      return None
+    }
+
+    val windowExprProto = winExprs.map(windowExprToProto(_, output, op.conf))
+    val partitionExprs = op.partitionSpec.map(exprToProto(_, op.child.output))
+
+    val sortOrders = op.orderSpec.map(exprToProto(_, op.child.output))
+
+    if (windowExprProto.forall(_.isDefined) && partitionExprs.forall(_.isDefined)
+      && sortOrders.forall(_.isDefined)) {
+      val windowBuilder = OperatorOuterClass.Window.newBuilder()
+      windowBuilder.addAllWindowExpr(windowExprProto.map(_.get).toIterable.asJava)
+      windowBuilder.addAllPartitionByList(partitionExprs.map(_.get).asJava)
+      windowBuilder.addAllOrderByList(sortOrders.map(_.get).asJava)
+      Some(builder.setWindow(windowBuilder).build())
+    } else {
+      None
+    }
+
+  }
+
+  override def createExec(nativeOp: Operator, op: WindowExec): CometNativeExec = {
+    CometWindowExec(
+      nativeOp,
+      op,
+      op.output,
+      op.windowExpression,
+      op.partitionSpec,
+      op.orderSpec,
+      op.child,
+      SerializedPlan(None))
+  }
+
+  private def validatePartitionAndSortSpecsForWindowFunc(
+      partitionSpec: Seq[Expression],
+      orderSpec: Seq[SortOrder],
+      op: SparkPlan): Boolean = {
+    if (partitionSpec.length != orderSpec.length) {
+      return false
+    }
+
+    val partitionColumnNames = partitionSpec.collect {
+      case a: AttributeReference => a.name
+      case other =>
+        withInfo(op, s"Unsupported partition expression: ${other.getClass.getSimpleName}")
+        return false
+    }
+
+    val orderColumnNames = orderSpec.collect { case s: SortOrder =>
+      s.child match {
+        case a: AttributeReference => a.name
+        case other =>
+          withInfo(op, s"Unsupported sort expression: ${other.getClass.getSimpleName}")
+          return false
+      }
+    }
+
+    if (partitionColumnNames.zip(orderColumnNames).exists { case (partCol, orderCol) =>
+        partCol != orderCol
+      }) {
+      withInfo(op, "Partitioning and sorting specifications must be the same.")
+      return false
+    }
+
+    true
+  }
+
+}
 
 /**
  * Comet physical plan node for Spark `WindowsExec`.
