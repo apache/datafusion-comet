@@ -149,6 +149,18 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 }
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
+
+  override def getSupportLevel(avg: Average): SupportLevel = {
+    avg.evalMode match {
+      case EvalMode.ANSI =>
+        Incompatible(Some("ANSI mode is not supported"))
+      case EvalMode.TRY =>
+        Incompatible(Some("TRY mode is not supported"))
+      case _ =>
+        Compatible()
+    }
+  }
+
   override def convert(
       aggExpr: AggregateExpression,
       avg: Average,
@@ -159,20 +171,6 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
     if (!AggSerde.avgDataTypeSupported(avg.dataType)) {
       withInfo(aggExpr, s"Unsupported data type: ${avg.dataType}")
       return None
-    }
-
-    avg.evalMode match {
-      case EvalMode.ANSI if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
-        withInfo(
-          aggExpr,
-          "ANSI mode is not supported. Set " +
-            s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true to allow it anyway")
-        return None
-      case EvalMode.TRY =>
-        withInfo(aggExpr, "TRY mode is not supported")
-        return None
-      case _ =>
-      // supported
     }
 
     val child = avg.child
@@ -211,7 +209,20 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
     }
   }
 }
+
 object CometSum extends CometAggregateExpressionSerde[Sum] {
+
+  override def getSupportLevel(sum: Sum): SupportLevel = {
+    sum.evalMode match {
+      case EvalMode.ANSI =>
+        Incompatible(Some("ANSI mode is not supported"))
+      case EvalMode.TRY =>
+        Incompatible(Some("TRY mode is not supported"))
+      case _ =>
+        Compatible()
+    }
+  }
+
   override def convert(
       aggExpr: AggregateExpression,
       sum: Sum,
@@ -222,20 +233,6 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
     if (!AggSerde.sumDataTypeSupported(sum.dataType)) {
       withInfo(aggExpr, s"Unsupported data type: ${sum.dataType}")
       return None
-    }
-
-    sum.evalMode match {
-      case EvalMode.ANSI if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
-        withInfo(
-          aggExpr,
-          "ANSI mode is not supported. Set " +
-            s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true to allow it anyway")
-        return None
-      case EvalMode.TRY =>
-        withInfo(aggExpr, "TRY mode is not supported")
-        return None
-      case _ =>
-      // supported
     }
 
     val childExpr = exprToProto(sum.child, inputs, binding)
