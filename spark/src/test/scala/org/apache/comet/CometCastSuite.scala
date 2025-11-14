@@ -659,7 +659,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to FloatType (partial support)") {
     withSQLConf(
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
       SQLConf.ANSI_ENABLED.key -> "false") {
       castTest(
         gen.generateStrings(dataSize, "0123456789.", 8).toDF("a"),
@@ -675,7 +675,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to DoubleType (partial support)") {
     withSQLConf(
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
       SQLConf.ANSI_ENABLED.key -> "false") {
       castTest(
         gen.generateStrings(dataSize, "0123456789.", 8).toDF("a"),
@@ -692,7 +692,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to DecimalType(10,2) (partial support)") {
     withSQLConf(
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
+      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
       SQLConf.ANSI_ENABLED.key -> "false") {
       val values = gen
         .generateStrings(dataSize, "0123456789.", 8)
