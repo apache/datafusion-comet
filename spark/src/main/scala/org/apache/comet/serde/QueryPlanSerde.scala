@@ -26,43 +26,25 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
-import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 import org.apache.spark.sql.comet._
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
-import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isCometScan, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions._
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
-import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.Types.{DataType => ProtoDataType}
 import org.apache.comet.serde.Types.DataType._
 import org.apache.comet.serde.literals.CometLiteral
-import org.apache.comet.serde.operator.{CometLocalTableScan, CometProject, CometSort, CometSortOrder}
 import org.apache.comet.shims.CometExprShim
 
 /**
  * An utility object for query plan and expression serialization.
  */
 object QueryPlanSerde extends Logging with CometExprShim {
-
-  /**
-   * Mapping of Spark operator class to Comet operator handler.
-   */
-  private val opSerdeMap: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
-    Map(
-      classOf[ProjectExec] -> CometProject,
-      classOf[SortExec] -> CometSort,
-      classOf[LocalTableScanExec] -> CometLocalTableScan)
 
   private val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[ArrayAppend] -> CometArrayAppend,
@@ -132,6 +114,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Sqrt] -> CometScalarFunction("sqrt"),
     classOf[Subtract] -> CometSubtract,
     classOf[Tan] -> CometScalarFunction("tan"),
+    classOf[Cot] -> CometScalarFunction("cot"),
     classOf[UnaryMinus] -> CometUnaryMinus,
     classOf[Unhex] -> CometUnhex,
     classOf[Abs] -> CometAbs)
@@ -233,7 +216,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Literal] -> CometLiteral,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
-    classOf[SortOrder] -> CometSortOrder)
+    classOf[SortOrder] -> CometSortOrder,
+    classOf[StaticInvoke] -> CometStaticInvoke)
 
   /**
    * Mapping of Spark expression class to Comet expression handler.
@@ -701,30 +685,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         // `PromotePrecision` is just a wrapper, don't need to serialize it.
         exprToProtoInternal(child, inputs, binding)
 
-      // With Spark 3.4, CharVarcharCodegenUtils.readSidePadding gets called to pad spaces for
-      // char types.
-      // See https://github.com/apache/spark/pull/38151
-      case s: StaticInvoke
-          // classOf gets ther runtime class of T, which lets us compare directly
-          // Otherwise isInstanceOf[Class[T]] will always evaluate to true for Class[_]
-          if s.staticObject == classOf[CharVarcharCodegenUtils] &&
-            s.dataType.isInstanceOf[StringType] &&
-            s.functionName == "readSidePadding" &&
-            s.arguments.size == 2 &&
-            s.propagateNull &&
-            !s.returnNullable &&
-            s.isDeterministic =>
-        val argsExpr = Seq(
-          exprToProtoInternal(Cast(s.arguments(0), StringType), inputs, binding),
-          exprToProtoInternal(s.arguments(1), inputs, binding))
-
-        if (argsExpr.forall(_.isDefined)) {
-          scalarFunctionExprToProto("read_side_padding", argsExpr: _*)
-        } else {
-          withInfo(expr, s.arguments: _*)
-          None
-        }
-
       case KnownFloatingPointNormalized(NormalizeNaNAndZero(expr)) =>
         val dataType = serializeDataType(expr.dataType)
         if (dataType.isEmpty) {
@@ -907,183 +867,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
   }
 
-  /**
-   * Convert a Spark plan operator to a protobuf Comet operator.
-   *
-   * @param op
-   *   Spark plan operator
-   * @param childOp
-   *   previously converted protobuf Comet operators, which will be consumed by the Spark plan
-   *   operator as its children
-   * @return
-   *   The converted Comet native operator for the input `op`, or `None` if the `op` cannot be
-   *   converted to a native operator.
-   */
-  def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
-    val conf = op.conf
-    val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
-    childOp.foreach(builder.addChildren)
-
-    op match {
-
-      // Fully native scan for V1
-      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
-        CometNativeScan.convert(scan, builder, childOp: _*)
-
-      case filter: FilterExec if CometConf.COMET_EXEC_FILTER_ENABLED.get(conf) =>
-        CometFilter.convert(filter, builder, childOp: _*)
-
-      case limit: LocalLimitExec if CometConf.COMET_EXEC_LOCAL_LIMIT_ENABLED.get(conf) =>
-        CometLocalLimit.convert(limit, builder, childOp: _*)
-
-      case globalLimitExec: GlobalLimitExec
-          if CometConf.COMET_EXEC_GLOBAL_LIMIT_ENABLED.get(conf) =>
-        CometGlobalLimit.convert(globalLimitExec, builder, childOp: _*)
-
-      case expand: ExpandExec if CometConf.COMET_EXEC_EXPAND_ENABLED.get(conf) =>
-        CometExpand.convert(expand, builder, childOp: _*)
-
-      case _: WindowExec if CometConf.COMET_EXEC_WINDOW_ENABLED.get(conf) =>
-        withInfo(op, "Window expressions are not supported")
-        None
-
-      case aggregate: HashAggregateExec if CometConf.COMET_EXEC_AGGREGATE_ENABLED.get(conf) =>
-        CometHashAggregate.convert(aggregate, builder, childOp: _*)
-
-      case aggregate: ObjectHashAggregateExec
-          if CometConf.COMET_EXEC_AGGREGATE_ENABLED.get(conf) =>
-        CometObjectHashAggregate.convert(aggregate, builder, childOp: _*)
-
-      case join: BroadcastHashJoinExec
-          if CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(conf) =>
-        CometBroadcastHashJoin.convert(join, builder, childOp: _*)
-
-      case join: ShuffledHashJoinExec if CometConf.COMET_EXEC_HASH_JOIN_ENABLED.get(conf) =>
-        CometShuffleHashJoin.convert(join, builder, childOp: _*)
-
-      case join: SortMergeJoinExec =>
-        if (CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED.get(conf)) {
-          CometSortMergeJoin.convert(join, builder, childOp: _*)
-        } else {
-          withInfo(join, "SortMergeJoin is not enabled")
-          None
-        }
-
-      case op if isCometSink(op) =>
-        val supportedTypes =
-          op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
-
-        if (!supportedTypes) {
-          withInfo(op, "Unsupported data type")
-          return None
-        }
-
-        // These operators are source of Comet native execution chain
-        val scanBuilder = OperatorOuterClass.Scan.newBuilder()
-        val source = op.simpleStringWithNodeId()
-        if (source.isEmpty) {
-          scanBuilder.setSource(op.getClass.getSimpleName)
-        } else {
-          scanBuilder.setSource(source)
-        }
-
-        val ffiSafe = op match {
-          case _ if isExchangeSink(op) =>
-            // Source of broadcast exchange batches is ArrowStreamReader
-            // Source of shuffle exchange batches is NativeBatchDecoderIterator
-            true
-          case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_COMET =>
-            // native_comet scan reuses mutable buffers
-            false
-          case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
-            // native_iceberg_compat scan reuses mutable buffers for constant columns
-            // https://github.com/apache/datafusion-comet/issues/2152
-            false
-          case _ =>
-            false
-        }
-        scanBuilder.setArrowFfiSafe(ffiSafe)
-
-        val scanTypes = op.output.flatten { attr =>
-          serializeDataType(attr.dataType)
-        }
-
-        if (scanTypes.length == op.output.length) {
-          scanBuilder.addAllFields(scanTypes.asJava)
-
-          // Sink operators don't have children
-          builder.clearChildren()
-
-          Some(builder.setScan(scanBuilder).build())
-        } else {
-          // There are unsupported scan type
-          withInfo(
-            op,
-            s"unsupported Comet operator: ${op.nodeName}, due to unsupported data types above")
-          None
-        }
-
-      case op =>
-        opSerdeMap.get(op.getClass) match {
-          case Some(handler) =>
-            handler.enabledConfig.foreach { enabledConfig =>
-              if (!enabledConfig.get(op.conf)) {
-                withInfo(
-                  op,
-                  s"Native support for operator ${op.getClass.getSimpleName} is disabled. " +
-                    s"Set ${enabledConfig.key}=true to enable it.")
-                return None
-              }
-            }
-            handler.asInstanceOf[CometOperatorSerde[SparkPlan]].convert(op, builder, childOp: _*)
-          case _ =>
-            // Emit warning if:
-            //  1. it is not Spark shuffle operator, which is handled separately
-            //  2. it is not a Comet operator
-            if (!op.nodeName.contains("Comet") && !op.isInstanceOf[ShuffleExchangeExec]) {
-              withInfo(op, s"unsupported Spark operator: ${op.nodeName}")
-            }
-            None
-        }
-    }
-  }
-
-  /**
-   * Whether the input Spark operator `op` can be considered as a Comet sink, i.e., the start of
-   * native execution. If it is true, we'll wrap `op` with `CometScanWrapper` or
-   * `CometSinkPlaceHolder` later in `CometSparkSessionExtensions` after `operator2proto` is
-   * called.
-   */
-  private def isCometSink(op: SparkPlan): Boolean = {
-    if (isExchangeSink(op)) {
-      return true
-    }
-    op match {
-      case s if isCometScan(s) => true
-      case _: CometSparkToColumnarExec => true
-      case _: CometSinkPlaceHolder => true
-      case _: CoalesceExec => true
-      case _: CollectLimitExec => true
-      case _: UnionExec => true
-      case _: TakeOrderedAndProjectExec => true
-      case _: WindowExec => true
-      case _ => false
-    }
-  }
-
-  private def isExchangeSink(op: SparkPlan): Boolean = {
-    op match {
-      case _: ShuffleExchangeExec => true
-      case ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) => true
-      case ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) => true
-      case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
-      case BroadcastQueryStageExec(_, ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) =>
-        true
-      case _: BroadcastExchangeExec => true
-      case _ => false
-    }
-  }
-
   // Utility method. Adds explain info if the result of calling exprToProto is None
   def optExprWithInfo(
       optExpr: Option[Expr],
@@ -1144,25 +927,3 @@ object QueryPlanSerde extends Logging with CometExprShim {
   }
 
 }
-
-sealed trait SupportLevel
-
-/**
- * Comet either supports this feature with full compatibility with Spark, or may have known
- * differences in some specific edge cases that are unlikely to be an issue for most users.
- *
- * Any compatibility differences are noted in the
- * [[https://datafusion.apache.org/comet/user-guide/compatibility.html Comet Compatibility Guide]].
- */
-case class Compatible(notes: Option[String] = None) extends SupportLevel
-
-/**
- * Comet supports this feature but results can be different from Spark.
- *
- * Any compatibility differences are noted in the
- * [[https://datafusion.apache.org/comet/user-guide/compatibility.html Comet Compatibility Guide]].
- */
-case class Incompatible(notes: Option[String] = None) extends SupportLevel
-
-/** Comet does not support this feature */
-case class Unsupported(notes: Option[String] = None) extends SupportLevel
