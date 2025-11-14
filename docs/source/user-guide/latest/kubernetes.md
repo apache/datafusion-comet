@@ -36,6 +36,7 @@ found [here](https://github.com/apache/datafusion-comet/tree/main/benchmarks).
 ## Helm chart
 
 Install helm Spark operator for Kubernetes
+
 ```bash
 # Add the Helm repository
 helm repo add spark-operator https://kubeflow.github.io/spark-operator
@@ -46,6 +47,7 @@ helm install spark-operator spark-operator/spark-operator --namespace spark-oper
 ```
 
 Check the operator is deployed
+
 ```bash
 helm status --namespace spark-operator spark-operator
 
@@ -57,6 +59,7 @@ TEST SUITE: None
 ```
 
 Create example Spark application file `spark-pi.yaml`
+
 ```bash
 apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
@@ -96,22 +99,27 @@ spec:
     coreLimit: 1200m
     memory: 512m
 ```
+
 Refer to [Comet builds](#comet-docker-images)
 
 Run Apache Spark application with Comet enabled
+
 ```bash
 kubectl apply -f spark-pi.yaml
 sparkapplication.sparkoperator.k8s.io/spark-pi created
 ```
 
 Check application status
+
 ```bash
 kubectl get sparkapp spark-pi
 
 NAME       STATUS    ATTEMPTS   START                  FINISH       AGE
 spark-pi   RUNNING   1          2025-03-18T21:19:48Z   <no value>   65s
 ```
+
 To check more runtime details
+
 ```bash
 kubectl describe sparkapplication spark-pi
 
@@ -129,7 +137,9 @@ Events:
 ```
 
 Get Driver Logs
+
 ```bash
 kubectl logs spark-pi-driver
 ```
+
 More info on [Kube Spark operator](https://www.kubeflow.org/docs/components/spark-operator/getting-started/)

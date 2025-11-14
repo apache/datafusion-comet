@@ -102,4 +102,3 @@ $SPARK_HOME/bin/spark-submit \
     --queries /opt/datafusion-benchmarks/tpcds/queries-spark \
     --iterations 1
 ```
-

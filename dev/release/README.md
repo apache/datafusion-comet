@@ -260,7 +260,7 @@ Run the release-tarball script to move the tarball to the release subversion rep
 
 ### Create a release in the GitHub repository
 
-Go to https://github.com/apache/datafusion-comet/releases and create a release for the release tag, and paste the 
+Go to https://github.com/apache/datafusion-comet/releases and create a release for the release tag, and paste the
 changelog in the description.
 
 ### Publishing Maven Artifacts

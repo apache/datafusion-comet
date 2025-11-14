@@ -70,7 +70,7 @@ mkdir /tmp/spark-events
 Set `SPARK_MASTER` env var (IP address will need to be edited):
 
 ```shell
-export SPARK_MASTER=spark://172.31.34.87:7077 
+export SPARK_MASTER=spark://172.31.34.87:7077
 ```
 
 Set `SPARK_LOCAL_DIRS` to point to EBS volume
