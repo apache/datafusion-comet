@@ -172,3 +172,20 @@ cargo clippy --color=never --all-targets --workspace -- -D warnings
 ```
 
 Make sure to resolve any Clippy warnings before submitting your pull request, as the CI/CD pipeline will fail if warnings are present.
+
+## How to format `.md` document
+
+We are using `prettier` to format `.md` files.
+
+You can either use `npm i -g prettier` to install it globally or use `npx` to run it as a standalone binary. Using `npx` required a working node environment. Upgrading to the latest prettier is recommended (by adding `--upgrade` to the `npm` command).
+
+```bash
+$ prettier --version
+2.3.0
+```
+
+After you've confirmed your prettier version, you can format all the `.md` files:
+
+```bash
+npx prettier "**/*.md" --write
+```
