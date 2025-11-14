@@ -41,9 +41,14 @@ object CometSortOrder extends CometExpressionSerde[SortOrder] {
       }
     }
 
-    if (containsFloatingPoint(expr.child.dataType)) {
-      Incompatible(Some(
-        s"Sorting on floating-point is not 100% compatible with Spark. ${CometConf.COMPAT_GUIDE}"))
+    if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
+      containsFloatingPoint(expr.child.dataType)) {
+      // https://github.com/apache/datafusion-comet/issues/2626
+      Incompatible(
+        Some(
+          "Sorting on floating-point is not 100% compatible with Spark, and Comet is running " +
+            s"with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
+            s"${CometConf.COMPAT_GUIDE}"))
     } else {
       Compatible()
     }
