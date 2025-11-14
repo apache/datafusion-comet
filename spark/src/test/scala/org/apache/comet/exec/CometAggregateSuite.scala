@@ -28,15 +28,50 @@ import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{avg, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
  * Test suite dedicated to Comet native aggregate operator
  */
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
+
+  test("min/max floating point with negative zero") {
+    val r = new Random(42)
+    val schema = StructType(
+      Seq(
+        StructField("float_col", DataTypes.FloatType, nullable = true),
+        StructField("double_col", DataTypes.DoubleType, nullable = true)))
+    val df = FuzzDataGenerator.generateDataFrame(
+      r,
+      spark,
+      schema,
+      1000,
+      DataGenOptions(generateNegativeZero = true))
+    df.createOrReplaceTempView("tbl")
+
+    for (col <- Seq("float_col", "double_col")) {
+      // assert that data contains positive and negative zero
+      assert(spark.sql(s"select * from tbl where cast($col as string) = '0.0'").count() > 0)
+      assert(spark.sql(s"select * from tbl where cast($col as string) = '-0.0'").count() > 0)
+      for (agg <- Seq("min", "max")) {
+        withSQLConf(COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+          checkSparkAnswerAndFallbackReasons(
+            s"select $agg($col) from tbl where cast($col as string) in ('0.0', '-0.0')",
+            Set(
+              "Unsupported aggregate expression(s)",
+              s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true"))
+        }
+        checkSparkAnswer(
+          s"select $col, count(*) from tbl " +
+            s"where cast($col as string) in ('0.0', '-0.0') group by $col")
+      }
+    }
+  }
 
   test("avg decimal") {
     withTempDir { dir =>
