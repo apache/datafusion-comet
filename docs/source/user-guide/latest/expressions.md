@@ -31,9 +31,6 @@ of expressions that be disabled.
 Expressions that are not Spark-compatible will fall back to Spark by default and can be enabled by setting
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`.
 
-It is also possible to specify `spark.comet.expression.allowIncompatible=true` to enable all
-incompatible expressions.
-
 ## Conditional Expressions
 
 | Expression | SQL                                         | Spark-Compatible? |

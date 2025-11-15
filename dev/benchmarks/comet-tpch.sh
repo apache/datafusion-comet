@@ -41,7 +41,7 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.exec.replaceSortMergeJoin=true \
-    --conf spark.comet.expression.allowIncompatible=true \
+    --conf spark.comet.expression.Cast.allowIncompatible=true \
     --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
     --conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.DefaultAWSCredentialsProviderChain \
     tpcbench.py \
