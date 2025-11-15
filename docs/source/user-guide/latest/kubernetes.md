@@ -79,7 +79,6 @@ spec:
     "spark.plugins": "org.apache.spark.CometPlugin"
     "spark.comet.enabled": "true"
     "spark.comet.exec.enabled": "true"
-    "spark.comet.expression.allowIncompatible": "true"
     "spark.comet.exec.shuffle.enabled": "true"
     "spark.comet.exec.shuffle.mode": "auto"
     "spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
