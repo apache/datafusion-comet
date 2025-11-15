@@ -32,8 +32,9 @@ Comet has the following limitations when reading Parquet files:
 
 ## ANSI Mode
 
-Comet will fall back to Spark for the following expressions when ANSI mode is enabled, unless
-`spark.comet.expression.allowIncompatible=true`.
+Comet will fall back to Spark for the following expressions when ANSI mode is enabled. Thes expressions can be enabled by setting
+`spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
+the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
 
 - Average
 - Sum
@@ -57,9 +58,6 @@ will make relevant operations fall back to Spark.
 Expressions that are not 100% Spark-compatible will fall back to Spark by default and can be enabled by setting
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
 the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
-
-It is also possible to specify `spark.comet.expression.allowIncompatible=true` to enable all
-incompatible expressions.
 
 ## Regular Expressions
 

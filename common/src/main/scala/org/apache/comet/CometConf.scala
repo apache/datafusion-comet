@@ -666,14 +666,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_EXPR_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
-    conf("spark.comet.expression.allowIncompatible")
-      .category(CATEGORY_EXEC)
-      .doc("Comet is not currently fully compatible with Spark for all expressions. " +
-        s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_EXEC_STRICT_FLOATING_POINT: ConfigEntry[Boolean] =
     conf("spark.comet.exec.strictFloatingPoint")
       .category(CATEGORY_EXEC)
