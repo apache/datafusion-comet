@@ -41,4 +41,9 @@ jobs:
         run: npm install -g prettier
 
       - name: Check markdown formatting
-        run: prettier --check "**/*.md"
+        run: |
+          # if you encounter error, run prettier locally and commit changes using instructions at:
+          #
+          # https://datafusion.apache.org/comet/contributor-guide/development.html#how-to-format-md-document
+          #
+          prettier --check "**/*.md"
