@@ -568,7 +568,7 @@ under the License.
 <td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.enabled</span></code></p></td>
-<td><p>Whether to enable Comet extension for Spark. When this is turned on, Spark will use Comet to read Parquet data source. Note that to enable native vectorized execution, both this config and <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code> need to be enabled. Can be overridden by environment variable <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET</span></code>.</p></td>
+<td><p>Whether to enable Comet extension for Spark. When this is turned on, Spark will use Comet to read Parquet data source. Note that to enable native vectorized execution, both this config and <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code> need to be enabled. It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET</span></code>.</p></td>
 <td><p>true</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exceptionOnDatetimeRebase</span></code></p></td>
@@ -587,23 +587,19 @@ under the License.
 <td><p>When enabled, fall back to Spark for floating-point operations that may differ from Spark, such as when comparing or sorting -0.0 and 0.0. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.allowIncompatible</span></code></p></td>
-<td><p>Comet is not currently fully compatible with Spark for all expressions. Set this config to true to allow them anyway. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
-<td><p>false</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code></p></td>
 <td><p>The maximum amount of data (in bytes) stored inside the temporary directories.</p></td>
 <td><p>107374182400b</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.updateInterval</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.updateInterval</span></code></p></td>
 <td><p>The interval in milliseconds to update metrics. If interval is negative, metrics will be updated upon task completion.</p></td>
 <td><p>3000</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeLoadRequired</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeLoadRequired</span></code></p></td>
 <td><p>Whether to require Comet native library to load successfully when Comet is enabled. If not, Comet will silently fallback to Spark when it fails to load the native lib. Otherwise, an error will be thrown and the Spark job will be aborted.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.regexp.allowIncompatible</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.regexp.allowIncompatible</span></code></p></td>
 <td><p>Comet is not currently fully compatible with Spark for all regular expressions. Set this config to true to allow them anyway. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
 <td><p>false</p></td>
 </tr>
@@ -642,7 +638,7 @@ under the License.
 <td><p>false</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.logFallbackReasons.enabled</span></code></p></td>
-<td><p>When this setting is enabled, Comet will log warnings for all fallback reasons. Can be overridden by environment variable <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET_LOG_FALLBACK_REASONS</span></code>.</p></td>
+<td><p>When this setting is enabled, Comet will log warnings for all fallback reasons. It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET_LOG_FALLBACK_REASONS</span></code>.</p></td>
 <td><p>false</p></td>
 </tr>
 </tbody>
@@ -773,7 +769,7 @@ under the License.
 <td><p>false</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.onHeap.enabled</span></code></p></td>
-<td><p>Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests. Can be overridden by environment variable <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET_ONHEAP</span></code>.</p></td>
+<td><p>Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests. It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET_ONHEAP</span></code>.</p></td>
 <td><p>false</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.onHeap.memoryPool</span></code></p></td>
@@ -793,7 +789,7 @@ under the License.
 <td><p>Range,InMemoryTableScan,RDDScan</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.testing.strict</span></code></p></td>
-<td><p>Experimental option to enable strict testing, which will fail tests that could be more comprehensive, such as checking for a specific fallback reason. Can be overridden by environment variable <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET_STRICT_TESTING</span></code>.</p></td>
+<td><p>Experimental option to enable strict testing, which will fail tests that could be more comprehensive, such as checking for a specific fallback reason. It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET_STRICT_TESTING</span></code>.</p></td>
 <td><p>false</p></td>
 </tr>
 </tbody>

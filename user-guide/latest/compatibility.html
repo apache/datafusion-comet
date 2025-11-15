@@ -472,8 +472,9 @@ under the License.
 </section>
 <section id="ansi-mode">
 <h2>ANSI Mode<a class="headerlink" href="#ansi-mode" title="Link to this heading">#</a></h2>
-<p>Comet will fall back to Spark for the following expressions when ANSI mode is enabled, unless
-<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.allowIncompatible=true</span></code>.</p>
+<p>Comet will fall back to Spark for the following expressions when ANSI mode is enabled. Thes expressions can be enabled by setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code>, where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the Spark expression class name. See
+the <a class="reference internal" href="expressions.html"><span class="std std-doc">Comet Supported Expressions Guide</span></a> for more information on this configuration setting.</p>
 <ul class="simple">
 <li><p>Average</p></li>
 <li><p>Sum</p></li>
@@ -497,8 +498,6 @@ will make relevant operations fall back to Spark.</p>
 <p>Expressions that are not 100% Spark-compatible will fall back to Spark by default and can be enabled by setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code>, where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the Spark expression class name. See
 the <a class="reference internal" href="expressions.html"><span class="std std-doc">Comet Supported Expressions Guide</span></a> for more information on this configuration setting.</p>
-<p>It is also possible to specify <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.allowIncompatible=true</span></code> to enable all
-incompatible expressions.</p>
 </section>
 <section id="regular-expressions">
 <h2>Regular Expressions<a class="headerlink" href="#regular-expressions" title="Link to this heading">#</a></h2>
