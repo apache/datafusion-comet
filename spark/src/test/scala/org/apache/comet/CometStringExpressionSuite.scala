@@ -174,27 +174,23 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("Chr") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-      val table = "test"
-      withTable(table) {
-        sql(s"create table $table(col varchar(20)) using parquet")
-        sql(
-          s"insert into $table values('65'), ('66'), ('67'), ('68'), ('65'), ('66'), ('67'), ('68')")
-        checkSparkAnswerAndOperator(s"SELECT chr(col) FROM $table")
-      }
+    val table = "test"
+    withTable(table) {
+      sql(s"create table $table(col varchar(20)) using parquet")
+      sql(
+        s"insert into $table values('65'), ('66'), ('67'), ('68'), ('65'), ('66'), ('67'), ('68')")
+      checkSparkAnswerAndOperator(s"SELECT chr(col) FROM $table")
     }
   }
 
   test("Chr with null character") {
     // test compatibility with Spark, spark supports chr(0)
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-      val table = "test0"
-      withTable(table) {
-        sql(s"create table $table(c9 int, c4 int) using parquet")
-        sql(s"insert into $table values(0, 0), (66, null), (null, 70), (null, null)")
-        val query = s"SELECT chr(c9), chr(c4) FROM $table"
-        checkSparkAnswerAndOperator(query)
-      }
+    val table = "test0"
+    withTable(table) {
+      sql(s"create table $table(c9 int, c4 int) using parquet")
+      sql(s"insert into $table values(0, 0), (66, null), (null, 70), (null, null)")
+      val query = s"SELECT chr(c9), chr(c4) FROM $table"
+      checkSparkAnswerAndOperator(query)
     }
   }
 
