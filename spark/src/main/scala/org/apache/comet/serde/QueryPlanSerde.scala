@@ -27,8 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.comet._
-import org.apache.spark.sql.execution
-import org.apache.spark.sql.execution._
+import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -204,17 +203,16 @@ object QueryPlanSerde extends Logging with CometExprShim {
   private val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // TODO PromotePrecision
     // TODO KnownFloatingPointNormalized
-    // TODO ScalarSubquery
     // TODO UnscaledValue
-    // TODO MakeDecimal
-    // TODO BloomFilterMightContain
-    // TODO RegExpReplace
     classOf[Alias] -> CometAlias,
     classOf[AttributeReference] -> CometAttributeReference,
+    classOf[BloomFilterMightContain] -> CometBloomFilterMightContain,
     classOf[CheckOverflow] -> CometCheckOverflow,
     classOf[Coalesce] -> CometCoalesce,
     classOf[Literal] -> CometLiteral,
+    classOf[MakeDecimal] -> CometMakeDecimal,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
+    classOf[ScalarSubquery] -> CometScalarSubquery,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
     classOf[SortOrder] -> CometSortOrder,
     classOf[StaticInvoke] -> CometStaticInvoke)
@@ -556,57 +554,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
         }
 
-      case s @ execution.ScalarSubquery(_, _) =>
-        if (supportedDataType(s.dataType)) {
-          val dataType = serializeDataType(s.dataType)
-          if (dataType.isEmpty) {
-            withInfo(s, s"Scalar subquery returns unsupported datatype ${s.dataType}")
-            return None
-          }
-
-          val builder = ExprOuterClass.Subquery
-            .newBuilder()
-            .setId(s.exprId.id)
-            .setDatatype(dataType.get)
-          Some(ExprOuterClass.Expr.newBuilder().setSubquery(builder).build())
-        } else {
-          withInfo(s, s"Unsupported data type: ${s.dataType}")
-          None
-        }
-
-      case UnscaledValue(child) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr =
-          scalarFunctionExprToProtoWithReturnType("unscaled_value", LongType, false, childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case MakeDecimal(child, precision, scale, true) =>
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = scalarFunctionExprToProtoWithReturnType(
-          "make_decimal",
-          DecimalType(precision, scale),
-          false,
-          childExpr)
-        optExprWithInfo(optExpr, expr, child)
-
-      case b @ BloomFilterMightContain(_, _) =>
-        val bloomFilter = b.left
-        val value = b.right
-        val bloomFilterExpr = exprToProtoInternal(bloomFilter, inputs, binding)
-        val valueExpr = exprToProtoInternal(value, inputs, binding)
-        if (bloomFilterExpr.isDefined && valueExpr.isDefined) {
-          val builder = ExprOuterClass.BloomFilterMightContain.newBuilder()
-          builder.setBloomFilter(bloomFilterExpr.get)
-          builder.setValue(valueExpr.get)
-          Some(
-            ExprOuterClass.Expr
-              .newBuilder()
-              .setBloomFilterMightContain(builder)
-              .build())
-        } else {
-          withInfo(expr, bloomFilter, value)
-          None
-        }
       case r @ Reverse(child) if child.dataType.isInstanceOf[ArrayType] =>
         convert(r, CometArrayReverse)
       case expr =>
