@@ -21,14 +21,24 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, InitCap, Length, Like, Literal, Lower, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
-import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, InitCap, Length, Like, Literal, Lower, RegExpReplace, Reverse, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+
+object CometReverse extends CometScalarFunction[Reverse]("reverse") {
+  override def convert(expr: Reverse, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    if (expr.child.dataType.isInstanceOf[ArrayType]) {
+      CometArrayReverse.convert(expr, inputs, binding)
+    } else {
+      super.convert(expr, inputs, binding)
+    }
+  }
+}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 

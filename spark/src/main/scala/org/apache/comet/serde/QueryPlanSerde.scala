@@ -152,7 +152,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[Lower] -> CometLower,
     classOf[OctetLength] -> CometScalarFunction("octet_length"),
     classOf[RegExpReplace] -> CometRegExpReplace,
-    classOf[Reverse] -> CometScalarFunction("reverse"),
+    classOf[Reverse] -> CometReverse,
     classOf[RLike] -> CometRLike,
     classOf[StartsWith] -> CometScalarFunction("starts_with"),
     classOf[StringInstr] -> CometScalarFunction("instr"),
@@ -554,8 +554,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
           ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
         }
 
-      case r @ Reverse(child) if child.dataType.isInstanceOf[ArrayType] =>
-        convert(r, CometArrayReverse)
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
           case Some(handler) =>
