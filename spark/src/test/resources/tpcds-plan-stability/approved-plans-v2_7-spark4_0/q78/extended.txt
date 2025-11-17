@@ -1,63 +1,61 @@
 TakeOrderedAndProject
-+- Project
-   +- SortMergeJoin
-      :- Project
-      :  +- SortMergeJoin
-      :     :- Sort
-      :     :  +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(d_year#1 AS ss_sold_year#2, ss_item_sk#3, ss_customer_sk#4, sum(ss_quantity#5)#6 AS ss_qty#7, MakeDecimal(sum(UnscaledValue(ss_wholesale_cost#8))#9,17,2) AS ss_wc#10, MakeDecimal(sum(UnscaledValue(ss_sales_price#11))#12,17,2) AS ss_sp#13)]
-      :     :     +- CometColumnarToRow
-      :     :        +- CometExchange
-      :     :           +- CometHashAggregate
-      :     :              +- CometProject
-      :     :                 +- CometBroadcastHashJoin
-      :     :                    :- CometProject
-      :     :                    :  +- CometFilter
-      :     :                    :     +- CometSortMergeJoin
-      :     :                    :        :- CometSort
-      :     :                    :        :  +- CometExchange
-      :     :                    :        :     +- CometFilter
-      :     :                    :        :        +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
-      :     :                    :        :              +- SubqueryBroadcast
-      :     :                    :        :                 +- BroadcastExchange
-      :     :                    :        :                    +- CometColumnarToRow
-      :     :                    :        :                       +- CometFilter
-      :     :                    :        :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-      :     :                    :        +- CometSort
-      :     :                    :           +- CometExchange
-      :     :                    :              +- CometProject
-      :     :                    :                 +- CometFilter
-      :     :                    :                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns
-      :     :                    +- CometBroadcastExchange
-      :     :                       +- CometFilter
-      :     :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-      :     +- Sort
-      :        +- Filter
-      :           +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(d_year#14 AS ws_sold_year#15, ws_item_sk#16, ws_bill_customer_sk#17 AS ws_customer_sk#18, sum(ws_quantity#19)#20 AS ws_qty#21, MakeDecimal(sum(UnscaledValue(ws_wholesale_cost#22))#23,17,2) AS ws_wc#24, MakeDecimal(sum(UnscaledValue(ws_sales_price#25))#26,17,2) AS ws_sp#27)]
-      :              +- CometColumnarToRow
-      :                 +- CometExchange
-      :                    +- CometHashAggregate
-      :                       +- CometProject
-      :                          +- CometBroadcastHashJoin
-      :                             :- CometProject
-      :                             :  +- CometFilter
-      :                             :     +- CometSortMergeJoin
-      :                             :        :- CometSort
-      :                             :        :  +- CometExchange
-      :                             :        :     +- CometFilter
-      :                             :        :        +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales
-      :                             :        :              +- ReusedSubquery
-      :                             :        +- CometSort
-      :                             :           +- CometExchange
-      :                             :              +- CometProject
-      :                             :                 +- CometFilter
-      :                             :                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_returns
-      :                             +- CometBroadcastExchange
-      :                                +- CometFilter
-      :                                   +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-      +- Sort
-         +- Filter
-            +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(d_year#28 AS cs_sold_year#29, cs_item_sk#30, cs_bill_customer_sk#31 AS cs_customer_sk#32, sum(cs_quantity#33)#34 AS cs_qty#35, MakeDecimal(sum(UnscaledValue(cs_wholesale_cost#36))#37,17,2) AS cs_wc#38, MakeDecimal(sum(UnscaledValue(cs_sales_price#39))#40,17,2) AS cs_sp#41)]
-               +- CometColumnarToRow
++-  Project [COMET: Comet does not support Spark's BigDecimal rounding]
+   +- CometColumnarToRow
+      +- CometSortMergeJoin
+         :- CometProject
+         :  +- CometSortMergeJoin
+         :     :- CometSort
+         :     :  +- CometHashAggregate
+         :     :     +- CometExchange
+         :     :        +- CometHashAggregate
+         :     :           +- CometProject
+         :     :              +- CometBroadcastHashJoin
+         :     :                 :- CometProject
+         :     :                 :  +- CometFilter
+         :     :                 :     +- CometSortMergeJoin
+         :     :                 :        :- CometSort
+         :     :                 :        :  +- CometExchange
+         :     :                 :        :     +- CometFilter
+         :     :                 :        :        +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+         :     :                 :        :              +- SubqueryBroadcast
+         :     :                 :        :                 +- BroadcastExchange
+         :     :                 :        :                    +- CometColumnarToRow
+         :     :                 :        :                       +- CometFilter
+         :     :                 :        :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+         :     :                 :        +- CometSort
+         :     :                 :           +- CometExchange
+         :     :                 :              +- CometProject
+         :     :                 :                 +- CometFilter
+         :     :                 :                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns
+         :     :                 +- CometBroadcastExchange
+         :     :                    +- CometFilter
+         :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+         :     +- CometSort
+         :        +- CometFilter
+         :           +- CometHashAggregate
+         :              +- CometExchange
+         :                 +- CometHashAggregate
+         :                    +- CometProject
+         :                       +- CometBroadcastHashJoin
+         :                          :- CometProject
+         :                          :  +- CometFilter
+         :                          :     +- CometSortMergeJoin
+         :                          :        :- CometSort
+         :                          :        :  +- CometExchange
+         :                          :        :     +- CometFilter
+         :                          :        :        +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales
+         :                          :        :              +- ReusedSubquery
+         :                          :        +- CometSort
+         :                          :           +- CometExchange
+         :                          :              +- CometProject
+         :                          :                 +- CometFilter
+         :                          :                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_returns
+         :                          +- CometBroadcastExchange
+         :                             +- CometFilter
+         :                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+         +- CometSort
+            +- CometFilter
+               +- CometHashAggregate
                   +- CometExchange
                      +- CometHashAggregate
                         +- CometProject
@@ -79,4 +77,4 @@ TakeOrderedAndProject
                                  +- CometFilter
                                     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 
-Comet accelerated 59 out of 76 eligible operators (77%). Final plan contains 4 transitions between Spark and Comet.
+Comet accelerated 70 out of 76 eligible operators (92%). Final plan contains 2 transitions between Spark and Comet.
