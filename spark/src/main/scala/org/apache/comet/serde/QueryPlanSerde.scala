@@ -25,7 +25,6 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
-import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
@@ -202,20 +201,20 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   private val miscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // TODO PromotePrecision
-    // TODO KnownFloatingPointNormalized
-    // TODO UnscaledValue
     classOf[Alias] -> CometAlias,
     classOf[AttributeReference] -> CometAttributeReference,
     classOf[BloomFilterMightContain] -> CometBloomFilterMightContain,
     classOf[CheckOverflow] -> CometCheckOverflow,
     classOf[Coalesce] -> CometCoalesce,
+    classOf[KnownFloatingPointNormalized] -> CometKnownFloatingPointNormalized,
     classOf[Literal] -> CometLiteral,
     classOf[MakeDecimal] -> CometMakeDecimal,
     classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
     classOf[ScalarSubquery] -> CometScalarSubquery,
     classOf[SparkPartitionID] -> CometSparkPartitionId,
     classOf[SortOrder] -> CometSortOrder,
-    classOf[StaticInvoke] -> CometStaticInvoke)
+    classOf[StaticInvoke] -> CometStaticInvoke,
+    classOf[UnscaledValue] -> CometUnscaledValue)
 
   /**
    * Mapping of Spark expression class to Comet expression handler.
@@ -538,21 +537,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
         // `UnaryExpression` includes `PromotePrecision` for Spark 3.3
         // `PromotePrecision` is just a wrapper, don't need to serialize it.
         exprToProtoInternal(child, inputs, binding)
-
-      case KnownFloatingPointNormalized(NormalizeNaNAndZero(expr)) =>
-        val dataType = serializeDataType(expr.dataType)
-        if (dataType.isEmpty) {
-          withInfo(expr, s"Unsupported datatype ${expr.dataType}")
-          return None
-        }
-        val ex = exprToProtoInternal(expr, inputs, binding)
-        ex.map { child =>
-          val builder = ExprOuterClass.NormalizeNaNAndZero
-            .newBuilder()
-            .setChild(child)
-            .setDatatype(dataType.get)
-          ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
-        }
 
       case expr =>
         QueryPlanSerde.exprSerdeMap.get(expr.getClass) match {
