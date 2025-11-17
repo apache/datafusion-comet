@@ -97,7 +97,9 @@ pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
             let string_array = GenericStringArray::<i32>::from(result);
             let list_array = create_list_array(Arc::new(string_array));
 
-            Ok(ColumnarValue::Scalar(ScalarValue::List(Arc::new(list_array))))
+            Ok(ColumnarValue::Scalar(ScalarValue::List(Arc::new(
+                list_array,
+            ))))
         }
         _ => exec_err!("split expects (array, scalar) or (scalar, scalar) arguments"),
     }
