@@ -52,6 +52,7 @@ object GenerateDocs {
       w.write(s"${line.stripTrailing()}\n".getBytes)
       line match {
         case pattern(category) =>
+          w.write("<!-- prettier-ignore-start -->\n".getBytes)
           w.write("| Config | Description | Default Value |\n".getBytes)
           w.write("|--------|-------------|---------------|\n".getBytes)
           category match {
@@ -61,12 +62,14 @@ object GenerateDocs {
                 w.write(
                   s"| `$config` | Enable Comet acceleration for `$expr` | true |\n".getBytes)
               }
+              w.write("<!-- prettier-ignore-end -->\n".getBytes)
             case "enable_agg_expr" =>
               for (expr <- QueryPlanSerde.aggrSerdeMap.keys.map(_.getSimpleName).toList.sorted) {
                 val config = s"spark.comet.expression.$expr.enabled"
                 w.write(
                   s"| `$config` | Enable Comet acceleration for `$expr` | true |\n".getBytes)
               }
+              w.write("<!-- prettier-ignore-end -->\n".getBytes)
             case _ =>
               val urlPattern = """Comet\s+(Compatibility|Tuning|Tracing)\s+Guide\s+\(""".r
               val confs = publicConfigs.filter(_.category == category).toList.sortBy(_.key)
@@ -93,6 +96,7 @@ object GenerateDocs {
                   }
                 }
               }
+              w.write("<!-- prettier-ignore-end -->\n".getBytes)
           }
         case _ =>
       }
@@ -106,6 +110,7 @@ object GenerateDocs {
     for (line <- lines) {
       w.write(s"${line.stripTrailing()}\n".getBytes)
       if (line.trim == "<!--BEGIN:COMPAT_CAST_TABLE-->") {
+        w.write("<!-- prettier-ignore-start -->\n".getBytes)
         w.write("| From Type | To Type | Notes |\n".getBytes)
         w.write("|-|-|-|\n".getBytes)
         for (fromType <- CometCast.supportedTypes) {
@@ -123,7 +128,9 @@ object GenerateDocs {
             }
           }
         }
+        w.write("<!-- prettier-ignore-end -->\n".getBytes)
       } else if (line.trim == "<!--BEGIN:INCOMPAT_CAST_TABLE-->") {
+        w.write("<!-- prettier-ignore-start -->\n".getBytes)
         w.write("| From Type | To Type | Notes |\n".getBytes)
         w.write("|-|-|-|\n".getBytes)
         for (fromType <- CometCast.supportedTypes) {
@@ -140,6 +147,7 @@ object GenerateDocs {
             }
           }
         }
+        w.write("<!-- prettier-ignore-end -->\n".getBytes)
       }
     }
     w.close()
