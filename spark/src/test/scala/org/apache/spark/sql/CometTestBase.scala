@@ -411,7 +411,7 @@ abstract class CometTestBase
   // checks the plan node has no missing inputs
   // such nodes represented in plan with exclamation mark !
   // example: !CometWindowExec
-  private def checkPlanNotMissingInput(plan: SparkPlan): Unit = {
+  protected def checkPlanNotMissingInput(plan: SparkPlan): Unit = {
     def hasMissingInput(node: SparkPlan): Boolean = {
       node.missingInput.nonEmpty && node.children.nonEmpty
     }
@@ -419,7 +419,7 @@ abstract class CometTestBase
     val isCometNode = plan.nodeName.startsWith("Comet")
 
     if (isCometNode && hasMissingInput(plan)) {
-      assert(false, s"Plan ${plan.nodeName} has invalid missingInput")
+      assert(false, s"Plan node `${plan.nodeName}` has invalid missingInput")
     }
 
     // Otherwise recursively check children
