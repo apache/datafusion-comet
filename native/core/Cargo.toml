@@ -77,7 +77,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-
 object_store_opendal = {version = "0.54.0", optional = true}
 hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
 opendal = { version ="0.54.1", optional = true, features = ["services-hdfs"] }
-uuid = "1.0"
+uuid = "1.18.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.18.0"

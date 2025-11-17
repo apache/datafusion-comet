@@ -23,21 +23,56 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{avg, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
  * Test suite dedicated to Comet native aggregate operator
  */
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
+
+  test("min/max floating point with negative zero") {
+    val r = new Random(42)
+    val schema = StructType(
+      Seq(
+        StructField("float_col", DataTypes.FloatType, nullable = true),
+        StructField("double_col", DataTypes.DoubleType, nullable = true)))
+    val df = FuzzDataGenerator.generateDataFrame(
+      r,
+      spark,
+      schema,
+      1000,
+      DataGenOptions(generateNegativeZero = true))
+    df.createOrReplaceTempView("tbl")
+
+    for (col <- Seq("float_col", "double_col")) {
+      // assert that data contains positive and negative zero
+      assert(spark.sql(s"select * from tbl where cast($col as string) = '0.0'").count() > 0)
+      assert(spark.sql(s"select * from tbl where cast($col as string) = '-0.0'").count() > 0)
+      for (agg <- Seq("min", "max")) {
+        withSQLConf(COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+          checkSparkAnswerAndFallbackReasons(
+            s"select $agg($col) from tbl where cast($col as string) in ('0.0', '-0.0')",
+            Set(
+              "Unsupported aggregate expression(s)",
+              s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true"))
+        }
+        checkSparkAnswer(
+          s"select $col, count(*) from tbl " +
+            s"where cast($col as string) in ('0.0', '-0.0') group by $col")
+      }
+    }
+  }
 
   test("avg decimal") {
     withTempDir { dir =>
@@ -91,58 +126,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       val df2 = sql("SELECT count(DISTINCT 2), count(DISTINCT 3,2)")
       checkSparkAnswer(df2)
-    }
-  }
-
-  test("lead/lag should return the default value if the offset row does not exist") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
-      checkSparkAnswer(sql("""
-                             |SELECT
-                             |  lag(123, 100, 321) OVER (ORDER BY id) as lag,
-                             |  lead(123, 100, 321) OVER (ORDER BY id) as lead
-                             |FROM (SELECT 1 as id) tmp
-      """.stripMargin))
-
-      checkSparkAnswer(sql("""
-                             |SELECT
-                             |  lag(123, 100, a) OVER (ORDER BY id) as lag,
-                             |  lead(123, 100, a) OVER (ORDER BY id) as lead
-                             |FROM (SELECT 1 as id, 2 as a) tmp
-      """.stripMargin))
-    }
-  }
-
-  // based on Spark's SQLWindowFunctionSuite test of the same name
-  test("window function: partition and order expressions") {
-    for (shuffleMode <- Seq("auto", "native", "jvm")) {
-      withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
-        val df =
-          Seq((1, "a", 5), (2, "a", 6), (3, "b", 7), (4, "b", 8), (5, "c", 9), (6, "c", 10)).toDF(
-            "month",
-            "area",
-            "product")
-        df.createOrReplaceTempView("windowData")
-        val df2 = sql("""
-            |select month, area, product, sum(product + 1) over (partition by 1 order by 2)
-            |from windowData
-          """.stripMargin)
-        checkSparkAnswer(df2)
-        val cometShuffles = collect(df2.queryExecution.executedPlan) {
-          case _: CometShuffleExchangeExec => true
-        }
-        if (shuffleMode == "jvm" || shuffleMode == "auto") {
-          assert(cometShuffles.length == 1)
-        } else {
-          // we fall back to Spark for shuffle because we do not support
-          // native shuffle with a LocalTableScan input, and we do not fall
-          // back to Comet columnar shuffle due to
-          // https://github.com/apache/datafusion-comet/issues/1248
-          assert(cometShuffles.isEmpty)
-        }
-      }
     }
   }
 
@@ -982,19 +965,17 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("avg/sum overflow on decimal(38, _)") {
-    withSQLConf(CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
-      val table = "overflow_decimal_38"
-      withTable(table) {
-        sql(s"create table $table(a decimal(38, 2), b INT) using parquet")
-        sql(s"insert into $table values(42.00, 1), (999999999999999999999999999999999999.99, 1)")
-        checkSparkAnswerAndNumOfAggregates(s"select sum(a) from $table", 2)
-        sql(s"insert into $table values(42.00, 2), (99999999999999999999999999999999.99, 2)")
-        sql(s"insert into $table values(999999999999999999999999999999999999.99, 3)")
-        sql(s"insert into $table values(99999999999999999999999999999999.99, 4)")
-        checkSparkAnswerAndNumOfAggregates(
-          s"select avg(a), sum(a) from $table group by b order by b",
-          2)
-      }
+    val table = "overflow_decimal_38"
+    withTable(table) {
+      sql(s"create table $table(a decimal(38, 2), b INT) using parquet")
+      sql(s"insert into $table values(42.00, 1), (999999999999999999999999999999999999.99, 1)")
+      checkSparkAnswerAndNumOfAggregates(s"select sum(a) from $table", 2)
+      sql(s"insert into $table values(42.00, 2), (99999999999999999999999999999999.99, 2)")
+      sql(s"insert into $table values(999999999999999999999999999999999999.99, 3)")
+      sql(s"insert into $table values(99999999999999999999999999999999.99, 4)")
+      checkSparkAnswerAndNumOfAggregates(
+        s"select avg(a), sum(a) from $table group by b order by b",
+        2)
     }
   }
 
@@ -1023,7 +1004,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("final decimal avg") {
     withSQLConf(
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       Seq(true, false).foreach { dictionaryEnabled =>
         withSQLConf("parquet.enable.dictionary" -> dictionaryEnabled.toString) {
@@ -1094,7 +1074,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withSQLConf(
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> nativeShuffleEnabled.toString,
           CometConf.COMET_SHUFFLE_MODE.key -> "native",
-          CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+          CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
           withTempDir { dir =>
             val path = new Path(dir.toURI.toString, "test")
             makeParquetFile(path, 1000, 20, dictionaryEnabled)

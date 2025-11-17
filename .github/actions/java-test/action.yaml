@@ -62,7 +62,32 @@ runs:
     - name: Run Maven compile
       shell: bash
       run: |
-        ./mvnw -B compile test-compile scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ inputs.maven_opts }}
+        ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ inputs.maven_opts }}
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '24'
+
+    - name: Install prettier
+      shell: bash
+      run: |
+        npm install -g prettier
+
+    - name: Run prettier
+      shell: bash
+      run: |
+        npx prettier "**/*.md" --write
+
+    - name: Mark workspace as safe for git
+      shell: bash
+      run: |
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+    - name: Check for any local git changes (such as generated docs)
+      shell: bash
+      run: |
+        ./dev/ci/check-working-tree-clean.sh
 
     - name: Run all tests
       shell: bash

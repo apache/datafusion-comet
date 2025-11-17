@@ -52,6 +52,7 @@ object GenerateDocs {
       w.write(s"${line.stripTrailing()}\n".getBytes)
       line match {
         case pattern(category) =>
+          w.write("<!-- prettier-ignore-start -->\n".getBytes)
           w.write("| Config | Description | Default Value |\n".getBytes)
           w.write("|--------|-------------|---------------|\n".getBytes)
           category match {
@@ -61,12 +62,14 @@ object GenerateDocs {
                 w.write(
                   s"| `$config` | Enable Comet acceleration for `$expr` | true |\n".getBytes)
               }
+              w.write("<!-- prettier-ignore-end -->\n".getBytes)
             case "enable_agg_expr" =>
               for (expr <- QueryPlanSerde.aggrSerdeMap.keys.map(_.getSimpleName).toList.sorted) {
                 val config = s"spark.comet.expression.$expr.enabled"
                 w.write(
                   s"| `$config` | Enable Comet acceleration for `$expr` | true |\n".getBytes)
               }
+              w.write("<!-- prettier-ignore-end -->\n".getBytes)
             case _ =>
               val urlPattern = """Comet\s+(Compatibility|Tuning|Tracing)\s+Guide\s+\(""".r
               val confs = publicConfigs.filter(_.category == category).toList.sortBy(_.key)
@@ -74,18 +77,26 @@ object GenerateDocs {
                 // convert links to Markdown
                 val doc =
                   urlPattern.replaceAllIn(conf.doc.trim, m => s"[Comet ${m.group(1)} Guide](")
+                // append env var info if present
+                val docWithEnvVar = conf.envVar match {
+                  case Some(envVarName) =>
+                    s"$doc It can be overridden by the environment variable `$envVarName`."
+                  case None => doc
+                }
                 if (conf.defaultValue.isEmpty) {
-                  w.write(s"| `${conf.key}` | $doc | |\n".getBytes)
+                  w.write(s"| `${conf.key}` | $docWithEnvVar | |\n".getBytes)
                 } else {
                   val isBytesConf = conf.key == COMET_ONHEAP_MEMORY_OVERHEAD.key
                   if (isBytesConf) {
                     val bytes = conf.defaultValue.get.asInstanceOf[Long]
-                    w.write(s"| `${conf.key}` | $doc | $bytes MiB |\n".getBytes)
+                    w.write(s"| `${conf.key}` | $docWithEnvVar | $bytes MiB |\n".getBytes)
                   } else {
-                    w.write(s"| `${conf.key}` | $doc | ${conf.defaultValueString} |\n".getBytes)
+                    val defaultVal = conf.defaultValueString
+                    w.write(s"| `${conf.key}` | $docWithEnvVar | $defaultVal |\n".getBytes)
                   }
                 }
               }
+              w.write("<!-- prettier-ignore-end -->\n".getBytes)
           }
         case _ =>
       }
@@ -99,6 +110,7 @@ object GenerateDocs {
     for (line <- lines) {
       w.write(s"${line.stripTrailing()}\n".getBytes)
       if (line.trim == "<!--BEGIN:COMPAT_CAST_TABLE-->") {
+        w.write("<!-- prettier-ignore-start -->\n".getBytes)
         w.write("| From Type | To Type | Notes |\n".getBytes)
         w.write("|-|-|-|\n".getBytes)
         for (fromType <- CometCast.supportedTypes) {
@@ -116,7 +128,9 @@ object GenerateDocs {
             }
           }
         }
+        w.write("<!-- prettier-ignore-end -->\n".getBytes)
       } else if (line.trim == "<!--BEGIN:INCOMPAT_CAST_TABLE-->") {
+        w.write("<!-- prettier-ignore-start -->\n".getBytes)
         w.write("| From Type | To Type | Notes |\n".getBytes)
         w.write("|-|-|-|\n".getBytes)
         for (fromType <- CometCast.supportedTypes) {
@@ -133,6 +147,7 @@ object GenerateDocs {
             }
           }
         }
+        w.write("<!-- prettier-ignore-end -->\n".getBytes)
       }
     }
     w.close()

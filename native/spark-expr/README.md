@@ -19,7 +19,7 @@ under the License.
 
 # datafusion-comet-spark-expr: Spark-compatible Expressions
 
-This crate provides Apache Spark-compatible expressions for use with DataFusion and is maintained as part of the 
+This crate provides Apache Spark-compatible expressions for use with DataFusion and is maintained as part of the
 [Apache DataFusion Comet] subproject.
 
 [Apache DataFusion Comet]: https://github.com/apache/datafusion-comet/
@@ -35,4 +35,3 @@ There is a GitHub issue (https://github.com/apache/datafusion-comet/issues/2084)
 functionality from this crate to `datafusion-spark`.
 
 [datafusion-spark]: https://docs.rs/datafusion-spark/50.0.0/datafusion_spark/
-

@@ -48,12 +48,12 @@ Apache Software Foundation.
 
 Velox and DataFusion are both mature query engines that are growing in popularity.
 
-From the point of view of the usage of these query engines in Gluten and Comet, the most significant difference is 
-the choice of implementation language (Rust vs C++) and this may be the main factor that users should consider when 
-choosing a solution. For users wishing to implement UDFs in Rust, Comet would likely be a better choice. For users 
+From the point of view of the usage of these query engines in Gluten and Comet, the most significant difference is
+the choice of implementation language (Rust vs C++) and this may be the main factor that users should consider when
+choosing a solution. For users wishing to implement UDFs in Rust, Comet would likely be a better choice. For users
 wishing to implement UDFs in C++, Gluten would likely be a better choice.
 
-If users are just interested in speeding up their existing Spark jobs and do not need to implement UDFs in native 
+If users are just interested in speeding up their existing Spark jobs and do not need to implement UDFs in native
 code, then we suggest benchmarking with both solutions and choosing the fastest one for your use case.
 
 ![github-stars-datafusion-velox.png](/_static/images/github-stars-datafusion-velox.png)
@@ -74,15 +74,15 @@ suite. See the [Gluten Compatibility Guide] for more information.
 ## Performance
 
 When running a benchmark derived from TPC-H on a single node against local Parquet files, we see that both Comet
-and Gluten provide an impressive speedup when compared to Spark. Comet provides a 2.4x speedup compares to a 2.8x speedup 
+and Gluten provide an impressive speedup when compared to Spark. Comet provides a 2.4x speedup compares to a 2.8x speedup
 with Gluten.
 
 Gluten is currently faster than Comet for this particular benchmark, but we expect to close that gap over time.
 
-Although TPC-H is a good benchmark for operators such as joins and aggregates, it doesn't necessarily represent 
-real-world queries, especially for ETL use cases. For example, there are no complex types involved and no string 
+Although TPC-H is a good benchmark for operators such as joins and aggregates, it doesn't necessarily represent
+real-world queries, especially for ETL use cases. For example, there are no complex types involved and no string
 manipulation, regular expressions, or other advanced expressions. We recommend running your own benchmarks based
-on your existing Spark jobs. 
+on your existing Spark jobs.
 
 ![tpch_allqueries_comet_gluten.png](/_static/images/tpch_allqueries_comet_gluten.png)
 

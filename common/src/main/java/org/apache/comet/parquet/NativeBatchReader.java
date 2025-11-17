@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.channels.Channels;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -101,38 +102,94 @@ import static scala.jdk.javaapi.CollectionConverters.asJava;
  * </pre>
  */
 public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> implements Closeable {
+
+  /**
+   * A class that contains the necessary file information for reading a Parquet file. This class
+   * provides an abstraction over PartitionedFile properties.
+   */
+  public static class FileInfo {
+    private final long start;
+    private final long length;
+    private final String filePath;
+    private final long fileSize;
+
+    public FileInfo(long start, long length, String filePath, long fileSize)
+        throws URISyntaxException {
+      this.start = start;
+      this.length = length;
+      URI uri = new Path(filePath).toUri();
+      if (uri.getScheme() == null) {
+        uri = new Path("file://" + filePath).toUri();
+      }
+      this.filePath = uri.toString();
+      this.fileSize = fileSize;
+    }
+
+    public static FileInfo fromPartitionedFile(PartitionedFile file) throws URISyntaxException {
+      return new FileInfo(file.start(), file.length(), file.filePath().toString(), file.fileSize());
+    }
+
+    public long start() {
+      return start;
+    }
+
+    public long length() {
+      return length;
+    }
+
+    public String filePath() {
+      return filePath;
+    }
+
+    public long fileSize() {
+      return fileSize;
+    }
+
+    public URI pathUri() throws URISyntaxException {
+      return new URI(filePath);
+    }
+  }
+
   private static final Logger LOG = LoggerFactory.getLogger(NativeBatchReader.class);
   protected static final BufferAllocator ALLOCATOR = new RootAllocator();
   private NativeUtil nativeUtil = new NativeUtil();
 
-  private Configuration conf;
-  private int capacity;
-  private boolean isCaseSensitive;
-  private boolean useFieldId;
-  private boolean ignoreMissingIds;
-  private StructType partitionSchema;
-  private InternalRow partitionValues;
-  private PartitionedFile file;
-  private final Map<String, SQLMetric> metrics;
+  protected Configuration conf;
+  protected int capacity;
+  protected boolean isCaseSensitive;
+  protected boolean useFieldId;
+  protected boolean ignoreMissingIds;
+  protected StructType partitionSchema;
+  protected InternalRow partitionValues;
+  protected PartitionedFile file;
+  protected FileInfo fileInfo;
+  protected final Map<String, SQLMetric> metrics;
   // Unfortunately CometMetricNode is from the "spark" package and cannot be used directly here
   // TODO: Move it to common package?
-  private Object metricsNode = null;
+  protected Object metricsNode = null;
 
-  private StructType sparkSchema;
-  private StructType dataSchema;
+  protected StructType sparkSchema;
+  protected StructType dataSchema;
   MessageType fileSchema;
-  private MessageType requestedSchema;
-  private CometVector[] vectors;
-  private AbstractColumnReader[] columnReaders;
-  private CometSchemaImporter importer;
-  private ColumnarBatch currentBatch;
+  protected MessageType requestedSchema;
+  protected CometVector[] vectors;
+  protected AbstractColumnReader[] columnReaders;
+  protected CometSchemaImporter importer;
+  protected ColumnarBatch currentBatch;
   //  private FileReader fileReader;
-  private boolean[] missingColumns;
-  private boolean isInitialized;
-  private ParquetMetadata footer;
-  private byte[] nativeFilter;
+  protected boolean[] missingColumns;
+  protected boolean isInitialized;
+  protected ParquetMetadata footer;
+  protected byte[] nativeFilter;
+  protected AbstractColumnReader[] preInitializedReaders;
 
   private ParquetColumn parquetColumn;
+
+  /**
+   * Map from field name to spark schema index for efficient lookups during batch loading. Built
+   * once during initialization and reused across all batch loads.
+   */
+  private Map<String, Integer> sparkFieldIndexMap;
 
   /**
    * Whether the native scan should always return decimal represented by 128 bits, regardless of its
@@ -149,13 +206,19 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
    * seeing these dates/timestamps.
    */
   // TODO: (ARROW NATIVE)
-  private boolean useLegacyDateTimestamp;
+  protected boolean useLegacyDateTimestamp;
 
   /** The TaskContext object for executing this task. */
   private final TaskContext taskContext;
 
   private long totalRowCount = 0;
   private long handle;
+
+  // Protected no-arg constructor for subclasses
+  protected NativeBatchReader() {
+    this.taskContext = TaskContext$.MODULE$.get();
+    this.metrics = new HashMap<>();
+  }
 
   // Only for testing
   public NativeBatchReader(String file, int capacity) {
@@ -237,6 +300,41 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     this.taskContext = TaskContext$.MODULE$.get();
   }
 
+  /** Alternate constructor that accepts FileInfo instead of PartitionedFile. */
+  NativeBatchReader(
+      Configuration conf,
+      FileInfo fileInfo,
+      ParquetMetadata footer,
+      byte[] nativeFilter,
+      int capacity,
+      StructType sparkSchema,
+      StructType dataSchema,
+      boolean isCaseSensitive,
+      boolean useFieldId,
+      boolean ignoreMissingIds,
+      boolean useLegacyDateTimestamp,
+      StructType partitionSchema,
+      InternalRow partitionValues,
+      Map<String, SQLMetric> metrics,
+      Object metricsNode) {
+    this.conf = conf;
+    this.capacity = capacity;
+    this.sparkSchema = sparkSchema;
+    this.dataSchema = dataSchema;
+    this.isCaseSensitive = isCaseSensitive;
+    this.useFieldId = useFieldId;
+    this.ignoreMissingIds = ignoreMissingIds;
+    this.useLegacyDateTimestamp = useLegacyDateTimestamp;
+    this.partitionSchema = partitionSchema;
+    this.partitionValues = partitionValues;
+    this.fileInfo = fileInfo;
+    this.footer = footer;
+    this.nativeFilter = nativeFilter;
+    this.metrics = metrics;
+    this.metricsNode = metricsNode;
+    this.taskContext = TaskContext$.MODULE$.get();
+  }
+
   /**
    * Initialize this reader. The reason we don't do it in the constructor is that we want to close
    * any resource hold by this reader when error happens during the initialization.
@@ -248,10 +346,12 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
             CometConf.COMET_USE_DECIMAL_128().key(),
             (Boolean) CometConf.COMET_USE_DECIMAL_128().defaultValue().get());
 
-    long start = file.start();
-    long length = file.length();
-    String filePath = file.filePath().toString();
-    long fileSize = file.fileSize();
+    // Use fileInfo if available, otherwise fall back to file
+    long start = fileInfo != null ? fileInfo.start() : file.start();
+    long length = fileInfo != null ? fileInfo.length() : file.length();
+    String filePath = fileInfo != null ? fileInfo.filePath() : file.filePath().toString();
+    long fileSize = fileInfo != null ? fileInfo.fileSize() : file.fileSize();
+    URI pathUri = fileInfo != null ? fileInfo.pathUri() : file.pathUri();
 
     ParquetReadOptions.Builder builder = HadoopReadOptions.builder(conf, new Path(filePath));
 
@@ -261,7 +361,7 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     ParquetReadOptions readOptions = builder.build();
 
     Map<String, String> objectStoreOptions =
-        asJava(NativeConfig.extractObjectStoreOptions(conf, file.pathUri()));
+        asJava(NativeConfig.extractObjectStoreOptions(conf, pathUri));
 
     // TODO: enable off-heap buffer when they are ready
     ReadOptions cometReadOptions = ReadOptions.builder(conf).build();
@@ -299,14 +399,8 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
         sparkSchema =
             getSparkSchemaByFieldId(sparkSchema, requestedSchema.asGroupType(), caseSensitive);
       }
-      this.parquetColumn = getParquetColumn(requestedSchema, this.sparkSchema);
 
-      String timeZoneId = conf.get("spark.sql.session.timeZone");
-      // Native code uses "UTC" always as the timeZoneId when converting from spark to arrow schema.
-      Schema arrowSchema = Utils$.MODULE$.toArrowSchema(sparkSchema, "UTC");
-      byte[] serializedRequestedArrowSchema = serializeArrowSchema(arrowSchema);
-      Schema dataArrowSchema = Utils$.MODULE$.toArrowSchema(dataSchema, "UTC");
-      byte[] serializedDataArrowSchema = serializeArrowSchema(dataArrowSchema);
+      this.parquetColumn = getParquetColumn(requestedSchema, this.sparkSchema);
 
       // Create Column readers
       List<Type> fields = requestedSchema.getFields();
@@ -364,23 +458,30 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
           checkColumn(parquetFields[i]);
           missingColumns[i] = false;
         } else {
-          if (field.getRepetition() == Type.Repetition.REQUIRED) {
-            throw new IOException(
-                "Required column '"
-                    + field.getName()
-                    + "' is missing"
-                    + " in data file "
-                    + filePath);
-          }
-          if (field.isPrimitive()) {
-            ConstantColumnReader reader =
-                new ConstantColumnReader(nonPartitionFields[i], capacity, useDecimal128);
-            columnReaders[i] = reader;
+          if (preInitializedReaders != null
+              && i < preInitializedReaders.length
+              && preInitializedReaders[i] != null) {
+            columnReaders[i] = preInitializedReaders[i];
             missingColumns[i] = true;
           } else {
-            // the column requested is not in the file, but the native reader can handle that
-            // and will return nulls for all rows requested
-            missingColumns[i] = false;
+            if (field.getRepetition() == Type.Repetition.REQUIRED) {
+              throw new IOException(
+                  "Required column '"
+                      + field.getName()
+                      + "' is missing"
+                      + " in data file "
+                      + filePath);
+            }
+            if (field.isPrimitive()) {
+              ConstantColumnReader reader =
+                  new ConstantColumnReader(nonPartitionFields[i], capacity, useDecimal128);
+              columnReaders[i] = reader;
+              missingColumns[i] = true;
+            } else {
+              // the column requested is not in the file, but the native reader can handle that
+              // and will return nulls for all rows requested
+              missingColumns[i] = false;
+            }
           }
         }
       }
@@ -421,8 +522,43 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       CometFileKeyUnwrapper keyUnwrapper = null;
       if (encryptionEnabled) {
         keyUnwrapper = new CometFileKeyUnwrapper();
-        keyUnwrapper.storeDecryptionKeyRetriever(file.filePath().toString(), conf);
+        keyUnwrapper.storeDecryptionKeyRetriever(filePath, conf);
       }
+
+      // Filter out columns with preinitialized readers from sparkSchema before making the
+      // call to native
+      if (preInitializedReaders != null) {
+        StructType filteredSchema = new StructType();
+        StructField[] sparkFields = sparkSchema.fields();
+        // Build name map for efficient lookups
+        Map<String, Type> fileFieldNameMap =
+            caseSensitive
+                ? buildCaseSensitiveNameMap(fileFields)
+                : buildCaseInsensitiveNameMap(fileFields);
+        for (int i = 0; i < sparkFields.length; i++) {
+          // Keep the column if:
+          // 1. It doesn't have a preinitialized reader, OR
+          // 2. It has a preinitialized reader but exists in fileSchema
+          boolean hasPreInitializedReader =
+              i < preInitializedReaders.length && preInitializedReaders[i] != null;
+          String fieldName =
+              caseSensitive
+                  ? sparkFields[i].name()
+                  : sparkFields[i].name().toLowerCase(Locale.ROOT);
+          boolean existsInFileSchema = fileFieldNameMap.containsKey(fieldName);
+          if (!hasPreInitializedReader || existsInFileSchema) {
+            filteredSchema = filteredSchema.add(sparkFields[i]);
+          }
+        }
+        sparkSchema = filteredSchema;
+      }
+
+      // Native code uses "UTC" always as the timeZoneId when converting from spark to arrow schema.
+      String timeZoneId = "UTC";
+      Schema arrowSchema = Utils$.MODULE$.toArrowSchema(sparkSchema, timeZoneId);
+      byte[] serializedRequestedArrowSchema = serializeArrowSchema(arrowSchema);
+      Schema dataArrowSchema = Utils$.MODULE$.toArrowSchema(dataSchema, timeZoneId);
+      byte[] serializedDataArrowSchema = serializeArrowSchema(dataArrowSchema);
 
       int batchSize =
           conf.getInt(
@@ -443,6 +579,15 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
               objectStoreOptions,
               keyUnwrapper,
               metricsNode);
+
+      // Build spark field index map for efficient lookups during batch loading
+      StructField[] sparkFields = sparkSchema.fields();
+      sparkFieldIndexMap = new HashMap<>();
+      for (int j = 0; j < sparkFields.length; j++) {
+        String fieldName =
+            caseSensitive ? sparkFields[j].name() : sparkFields[j].name().toLowerCase(Locale.ROOT);
+        sparkFieldIndexMap.put(fieldName, j);
+      }
     }
     isInitialized = true;
   }
@@ -473,6 +618,15 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
   private Map<String, List<Type>> getCaseInsensitiveParquetFieldMap(GroupType schema) {
     return schema.getFields().stream()
         .collect(Collectors.groupingBy(f -> f.getName().toLowerCase(Locale.ROOT)));
+  }
+
+  private Map<String, Type> buildCaseSensitiveNameMap(List<Type> types) {
+    return types.stream().collect(Collectors.toMap(Type::getName, t -> t));
+  }
+
+  private Map<String, Type> buildCaseInsensitiveNameMap(List<Type> types) {
+    return types.stream()
+        .collect(Collectors.toMap(t -> t.getName().toLowerCase(Locale.ROOT), t -> t));
   }
 
   private Type getMatchingParquetFieldById(
@@ -648,11 +802,40 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
       }
     } else { // A missing column which is either primitive or complex
       if (column.required()) {
-        // Column is missing in data but the required data is non-nullable. This file is invalid.
-        throw new IOException(
-            "Required column is missing in data file. Col: " + Arrays.toString(path));
+        // check if we have a preinitialized column reader for this column.
+        int columnIndex = getColumnIndexFromParquetColumn(column);
+        if (columnIndex == -1
+            || preInitializedReaders == null
+            || columnIndex >= preInitializedReaders.length
+            || preInitializedReaders[columnIndex] == null) {
+          // Column is missing in data but the required data is non-nullable. This file is invalid.
+          throw new IOException(
+              "Required column is missing in data file. Col: " + Arrays.toString(path));
+        }
       }
     }
+  }
+
+  /**
+   * Get the column index in the requested schema for a given ParquetColumn. Returns -1 if not
+   * found.
+   */
+  private int getColumnIndexFromParquetColumn(ParquetColumn column) {
+    String[] targetPath = asJava(column.path()).toArray(new String[0]);
+    if (targetPath.length == 0) {
+      return -1;
+    }
+
+    // For top-level columns, match by name
+    String columnName = targetPath[0];
+    ParquetColumn[] parquetFields = asJava(parquetColumn.children()).toArray(new ParquetColumn[0]);
+    for (int i = 0; i < parquetFields.length; i++) {
+      String[] fieldPath = asJava(parquetFields[i].path()).toArray(new String[0]);
+      if (fieldPath.length > 0 && fieldPath[0].equals(columnName)) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   /**
@@ -834,16 +1017,34 @@ public class NativeBatchReader extends RecordReader<Void, ColumnarBatch> impleme
     importer = new CometSchemaImporter(ALLOCATOR);
 
     List<Type> fields = requestedSchema.getFields();
+    StructField[] sparkFields = sparkSchema.fields();
+
+    boolean caseSensitive =
+        conf.getBoolean(
+            SQLConf.CASE_SENSITIVE().key(),
+            (boolean) SQLConf.CASE_SENSITIVE().defaultValue().get());
+
     for (int i = 0; i < fields.size(); i++) {
       if (!missingColumns[i]) {
         if (columnReaders[i] != null) columnReaders[i].close();
         // TODO: (ARROW NATIVE) handle tz, datetime & int96 rebase
-        DataType dataType = sparkSchema.fields()[i].dataType();
         Type field = fields.get(i);
+
+        // Find the corresponding spark field by matching field names using the prebuilt map
+        String fieldName =
+            caseSensitive ? field.getName() : field.getName().toLowerCase(Locale.ROOT);
+        Integer sparkSchemaIndex = sparkFieldIndexMap.get(fieldName);
+
+        if (sparkSchemaIndex == null) {
+          throw new IOException(
+              "Could not find matching Spark field for Parquet field: " + field.getName());
+        }
+
+        DataType dataType = sparkFields[sparkSchemaIndex].dataType();
         NativeColumnReader reader =
             new NativeColumnReader(
                 this.handle,
-                i,
+                sparkSchemaIndex,
                 dataType,
                 field,
                 null,

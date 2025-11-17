@@ -1,6 +1,6 @@
- TakeOrderedAndProject [COMET: ]
+TakeOrderedAndProject
 +- Filter
-   +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+   +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
       +- CometColumnarToRow
          +- CometSort
             +- CometExchange
@@ -9,7 +9,7 @@
                      :- CometSort
                      :  +- CometColumnarExchange
                      :     +- Project
-                     :        +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                     :        +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
                      :           +- CometColumnarToRow
                      :              +- CometSort
                      :                 +- CometExchange
@@ -33,7 +33,7 @@
                      +- CometSort
                         +- CometColumnarExchange
                            +- Project
-                              +-  Window [COMET: Partitioning and sorting specifications must be the same.]
+                              +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
                                  +- CometColumnarToRow
                                     +- CometSort
                                        +- CometExchange
