@@ -465,6 +465,7 @@ under the License.
 <h2>Scan Configuration Settings<a class="headerlink" href="#scan-configuration-settings" title="Link to this heading">#</a></h2>
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[scan]-->
+<!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Config</p></th>
@@ -496,12 +497,14 @@ under the License.
 </tbody>
 </table>
 </div>
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 </section>
 <section id="parquet-reader-configuration-settings">
 <h2>Parquet Reader Configuration Settings<a class="headerlink" href="#parquet-reader-configuration-settings" title="Link to this heading">#</a></h2>
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[parquet]-->
+<!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Config</p></th>
@@ -527,7 +530,7 @@ under the License.
 <td><p>8388608</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.read.parallel.io.enabled</span></code></p></td>
-<td><p>Whether to enable Comet’s parallel reader for Parquet files. The parallel reader reads ranges of consecutive data in a file in parallel. It is faster for large files and row groups but uses more resources.</p></td>
+<td><p>Whether to enable Comet’s parallel reader for Parquet files. The parallel reader reads ranges of consecutive data in a  file in parallel. It is faster for large files and row groups but uses more resources.</p></td>
 <td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.read.parallel.io.thread-pool.size</span></code></p></td>
@@ -541,12 +544,14 @@ under the License.
 </tbody>
 </table>
 </div>
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 </section>
 <section id="query-execution-settings">
 <h2>Query Execution Settings<a class="headerlink" href="#query-execution-settings" title="Link to this heading">#</a></h2>
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[exec]-->
+<!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Config</p></th>
@@ -606,6 +611,7 @@ under the License.
 </tbody>
 </table>
 </div>
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 </section>
 <section id="viewing-explain-plan-fallback-reasons">
@@ -613,6 +619,7 @@ under the License.
 <p>These settings can be used to determine which parts of the plan are accelerated by Comet and to see why some parts of the plan could not be supported by Comet.</p>
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[exec_explain]-->
+<!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Config</p></th>
@@ -644,12 +651,14 @@ under the License.
 </tbody>
 </table>
 </div>
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 </section>
 <section id="shuffle-configuration-settings">
 <h2>Shuffle Configuration Settings<a class="headerlink" href="#shuffle-configuration-settings" title="Link to this heading">#</a></h2>
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[shuffle]-->
+<!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Config</p></th>
@@ -705,12 +714,14 @@ under the License.
 </tbody>
 </table>
 </div>
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 </section>
 <section id="memory-tuning-configuration-settings">
 <h2>Memory &amp; Tuning Configuration Settings<a class="headerlink" href="#memory-tuning-configuration-settings" title="Link to this heading">#</a></h2>
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[tuning]-->
+<!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Config</p></th>
@@ -738,12 +749,14 @@ under the License.
 </tbody>
 </table>
 </div>
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 </section>
 <section id="development-testing-settings">
 <h2>Development &amp; Testing Settings<a class="headerlink" href="#development-testing-settings" title="Link to this heading">#</a></h2>
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[testing]-->
+<!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Config</p></th>
@@ -765,7 +778,7 @@ under the License.
 <td><p>false</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.convert.parquet.enabled</span></code></p></td>
-<td><p>When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to Arrow format. This is an experimental feature and has known issues with non-UTC timezones.</p></td>
+<td><p>When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to Arrow format.  This is an experimental feature and has known issues with non-UTC timezones.</p></td>
 <td><p>false</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.onHeap.enabled</span></code></p></td>
@@ -795,12 +808,14 @@ under the License.
 </tbody>
 </table>
 </div>
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 </section>
 <section id="enabling-or-disabling-individual-operators">
 <h2>Enabling or Disabling Individual Operators<a class="headerlink" href="#enabling-or-disabling-individual-operators" title="Link to this heading">#</a></h2>
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[enable_exec]-->
+<!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Config</p></th>
@@ -884,12 +899,14 @@ under the License.
 </tbody>
 </table>
 </div>
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 </section>
 <section id="enabling-or-disabling-individual-scalar-expressions">
 <h2>Enabling or Disabling Individual Scalar Expressions<a class="headerlink" href="#enabling-or-disabling-individual-scalar-expressions" title="Link to this heading">#</a></h2>
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[enable_expr]-->
+<!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Config</p></th>
@@ -1473,12 +1490,14 @@ under the License.
 </tbody>
 </table>
 </div>
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 </section>
 <section id="enabling-or-disabling-individual-aggregate-expressions">
 <h2>Enabling or Disabling Individual Aggregate Expressions<a class="headerlink" href="#enabling-or-disabling-individual-aggregate-expressions" title="Link to this heading">#</a></h2>
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[enable_agg_expr]-->
+<!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Config</p></th>
@@ -1562,6 +1581,7 @@ under the License.
 </tbody>
 </table>
 </div>
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 </section>
 </section>
