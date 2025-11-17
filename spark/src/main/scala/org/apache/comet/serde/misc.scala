@@ -80,7 +80,7 @@ object CometMakeDecimal extends CometExpressionSerde[MakeDecimal] {
     val optExpr = scalarFunctionExprToProtoWithReturnType(
       "make_decimal",
       DecimalType(expr.precision, expr.scale),
-      false,
+      failOnError = !expr.nullOnOverflow,
       childExpr)
     optExprWithInfo(optExpr, expr, expr.child)
 
