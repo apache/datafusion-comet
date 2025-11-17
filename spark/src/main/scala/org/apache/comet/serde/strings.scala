@@ -31,6 +31,15 @@ import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 object CometReverse extends CometScalarFunction[Reverse]("reverse") {
+
+  override def getSupportLevel(expr: Reverse): SupportLevel = {
+    if (expr.child.dataType.isInstanceOf[ArrayType]) {
+      CometArrayReverse.getSupportLevel(expr)
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(expr: Reverse, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     if (expr.child.dataType.isInstanceOf[ArrayType]) {
       CometArrayReverse.convert(expr, inputs, binding)
