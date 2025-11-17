@@ -159,7 +159,7 @@ class CometStringExpressionSuite extends CometTestBase {
 
   test("split string with limit") {
     // Split tests with 3 arguments (with limit)
-    withParquetTable((0 until 5).map(i => (s"a,b,c,d,e", i)), "tbl") {
+    withParquetTable((0 until 5).map(i => ("a,b,c,d,e", i)), "tbl") {
       checkSparkAnswerAndOperator("SELECT split(_1, ',', 2) FROM tbl")
       checkSparkAnswerAndOperator("SELECT split(_1, ',', 3) FROM tbl")
       checkSparkAnswerAndOperator("SELECT split(_1, ',', -1) FROM tbl")
@@ -169,12 +169,12 @@ class CometStringExpressionSuite extends CometTestBase {
 
   test("split string with regex patterns") {
     // Test with various regex patterns
-    withParquetTable((0 until 5).map(i => (s"word1 word2  word3", i)), "tbl") {
+    withParquetTable((0 until 5).map(i => ("word1 word2  word3", i)), "tbl") {
       checkSparkAnswerAndOperator("SELECT split(_1, ' ') FROM tbl")
       checkSparkAnswerAndOperator("SELECT split(_1, '\\\\s+') FROM tbl")
     }
 
-    withParquetTable((0 until 5).map(i => (s"foo123bar456baz", i)), "tbl2") {
+    withParquetTable((0 until 5).map(i => ("foo123bar456baz", i)), "tbl2") {
       checkSparkAnswerAndOperator("SELECT split(_1, '\\\\d+') FROM tbl2")
     }
   }
