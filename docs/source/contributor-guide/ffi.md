@@ -35,10 +35,12 @@ Both scenarios use the same FFI mechanism but have different ownership semantics
 ## Arrow FFI Basics
 
 The Arrow C Data Interface defines two C structures:
+
 - `ArrowArray`: Contains pointers to data buffers and metadata
 - `ArrowSchema`: Contains type information
 
 ### Key Characteristics
+
 - **Zero-copy**: Data buffers can be shared across language boundaries without copying
 - **Ownership transfer**: Clear semantics for who owns and must free the data
 - **Release callbacks**: Custom cleanup functions for proper resource management
@@ -148,8 +150,8 @@ in Java on-heap memory keeps growing until the batches are released in native co
 
 ### Ownership Transfer
 
-The Arrow C data interface supports ownership transfer by registering callbacks in the C struct that is passed over 
-the JNI boundary for the function to delete the array data.  For example, the `ArrowArray` struct has:
+The Arrow C data interface supports ownership transfer by registering callbacks in the C struct that is passed over
+the JNI boundary for the function to delete the array data. For example, the `ArrowArray` struct has:
 
 ```c
 // Release callback
@@ -158,9 +160,8 @@ void (*release)(struct ArrowArray*);
 
 Comet currently does not always follow best practice around ownership transfer because there are some cases where
 Comet JVM code will retain references to arrays after passing them to native code and may mutate the underlying
-buffers. There is an `arrow_ffi_safe` flag in the protocol buffer definition of `Scan` that indicates whether 
+buffers. There is an `arrow_ffi_safe` flag in the protocol buffer definition of `Scan` that indicates whether
 ownership is being transferred according to the Arrow C data interface specification.
-
 
 ```protobuf
 message Scan {
@@ -176,7 +177,7 @@ message Scan {
 
 #### When ownership is NOT transferred to native:
 
-If the data originates from `native_comet` scan (or from `native_iceberg_compat` in some cases), then ownership is 
+If the data originates from `native_comet` scan (or from `native_iceberg_compat` in some cases), then ownership is
 not transferred to native and the JVM may re-use the underlying buffers in the future.
 
 It is critical that the native code performs a deep copy of the arrays if the arrays are to be buffered by
@@ -304,6 +305,7 @@ t4      Batch handle released      ArrowBuf freed        Data freed
 ```
 
 **Key Difference from JVM → Native**:
+
 - Native code controls lifecycle through batch handle
 - JVM creates `ArrowBuf` wrappers that point to native memory
 - Release callback ensures proper cleanup when JVM is done
@@ -330,6 +332,7 @@ extern "C" fn release_batch(array: *mut FFI_ArrowArray) {
 ```
 
 When JVM is done with the data:
+
 ```java
 // ArrowBuf.close() triggers the release callback
 arrowBuf.close();  // → calls native release_batch()
@@ -339,15 +342,15 @@ arrowBuf.close();  // → calls native release_batch()
 
 ### JVM → Native
 
-| Scenario | `arrow_ffi_safe` | Ownership | Action Required |
-|----------|------------------|-----------|-----------------|
-| Temporary scan | `false` | JVM keeps | **Must deep copy** to avoid corruption |
-| Ownership transfer | `true` | Native owns | Copy only to unpack dictionaries |
+| Scenario           | `arrow_ffi_safe` | Ownership   | Action Required                        |
+| ------------------ | ---------------- | ----------- | -------------------------------------- |
+| Temporary scan     | `false`          | JVM keeps   | **Must deep copy** to avoid corruption |
+| Ownership transfer | `true`           | Native owns | Copy only to unpack dictionaries       |
 
 ### Native → JVM
 
-| Scenario | Ownership | Action Required |
-|----------|-----------|-----------------|
+| Scenario  | Ownership                        | Action Required                                            |
+| --------- | -------------------------------- | ---------------------------------------------------------- |
 | All cases | Native allocates, JVM references | JVM must call `close()` to trigger native release callback |
 
 ## Further Reading

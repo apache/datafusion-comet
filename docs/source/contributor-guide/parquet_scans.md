@@ -60,34 +60,34 @@ The `native_datafusion` scan has some additional limitations:
 
 ## S3 Support
 
-There are some 
+There are some
 
 ### `native_comet`
 
-The default `native_comet` Parquet scan implementation reads data from S3 using the [Hadoop-AWS module](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html), which 
-is identical to the approach commonly used with vanilla Spark. AWS credential configuration and other Hadoop S3A 
+The default `native_comet` Parquet scan implementation reads data from S3 using the [Hadoop-AWS module](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html), which
+is identical to the approach commonly used with vanilla Spark. AWS credential configuration and other Hadoop S3A
 configurations works the same way as in vanilla Spark.
 
 ### `native_datafusion` and `native_iceberg_compat`
 
-The `native_datafusion` and `native_iceberg_compat` Parquet scan implementations completely offload data loading 
-to native code. They use the [`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and 
-support configuring S3 access using standard [Hadoop S3A configurations](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration) by translating them to 
+The `native_datafusion` and `native_iceberg_compat` Parquet scan implementations completely offload data loading
+to native code. They use the [`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and
+support configuring S3 access using standard [Hadoop S3A configurations](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration) by translating them to
 the `object_store` crate's format.
 
-This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will 
+This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will
 continue to work as long as the configurations are supported and can be translated without loss of functionality.
 
 #### Additional S3 Configuration Options
 
 Beyond credential providers, the `native_datafusion` implementation supports additional S3 configuration options:
 
-| Option | Description |
-|--------|-------------|
-| `fs.s3a.endpoint` | The endpoint of the S3 service |
-| `fs.s3a.endpoint.region` | The AWS region for the S3 service. If not specified, the region will be auto-detected. |
-| `fs.s3a.path.style.access` | Whether to use path style access for the S3 service (true/false, defaults to virtual hosted style) |
-| `fs.s3a.requester.pays.enabled` | Whether to enable requester pays for S3 requests (true/false) |
+| Option                          | Description                                                                                        |
+| ------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `fs.s3a.endpoint`               | The endpoint of the S3 service                                                                     |
+| `fs.s3a.endpoint.region`        | The AWS region for the S3 service. If not specified, the region will be auto-detected.             |
+| `fs.s3a.path.style.access`      | Whether to use path style access for the S3 service (true/false, defaults to virtual hosted style) |
+| `fs.s3a.requester.pays.enabled` | Whether to enable requester pays for S3 requests (true/false)                                      |
 
 All configuration options support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
 
@@ -130,8 +130,6 @@ The S3 support of `native_datafusion` has the following limitations:
 1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
 
 2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from native code. See [issue #1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.
-
-
 
 [#1545]: https://github.com/apache/datafusion-comet/issues/1545
 [#1758]: https://github.com/apache/datafusion-comet/issues/1758

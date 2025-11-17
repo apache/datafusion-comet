@@ -32,8 +32,9 @@ Comet has the following limitations when reading Parquet files:
 
 ## ANSI Mode
 
-Comet will fall back to Spark for the following expressions when ANSI mode is enabled, unless
-`spark.comet.expression.allowIncompatible=true`.
+Comet will fall back to Spark for the following expressions when ANSI mode is enabled. Thes expressions can be enabled by setting
+`spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
+the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
 
 - Average
 - Sum
@@ -47,20 +48,16 @@ Spark normalizes NaN and zero for floating point numbers for several cases. See 
 However, one exception is comparison. Spark does not normalize NaN and zero when comparing values
 because they are handled well in Spark (e.g., `SQLOrderingUtil.compareFloats`). But the comparison
 functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., [arrow::compute::kernels::cmp::eq](https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#)).
-So Comet will add additional normalization expression of NaN and zero for comparison.
-
-Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
-Spark if the data contains both zero and negative zero. This is likely an edge case that is not of concern for many users
-and sorting on floating-point data can be enabled by setting `spark.comet.expression.SortOrder.allowIncompatible=true`.
+So Comet adds additional normalization expression of NaN and zero for comparisons, and may still have differences
+to Spark in some cases, especially when the data contains both positive and negative zero. This is likely an edge
+case that is not of concern for many users. If it is a concern, setting `spark.comet.exec.strictFloatingPoint=true`
+will make relevant operations fall back to Spark.
 
 ## Incompatible Expressions
 
 Expressions that are not 100% Spark-compatible will fall back to Spark by default and can be enabled by setting
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
 the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
-
-It is also possible to specify `spark.comet.expression.allowIncompatible=true` to enable all
-incompatible expressions.
 
 ## Regular Expressions
 
@@ -92,6 +89,7 @@ The following cast operations are generally compatible with Spark except for the
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 
 <!--BEGIN:COMPAT_CAST_TABLE-->
+<!-- prettier-ignore-start -->
 | From Type | To Type | Notes |
 |-|-|-|
 | boolean | byte |  |
@@ -168,6 +166,7 @@ The following cast operations are generally compatible with Spark except for the
 | timestamp | long |  |
 | timestamp | string |  |
 | timestamp | date |  |
+<!-- prettier-ignore-end -->
 <!--END:COMPAT_CAST_TABLE-->
 
 ### Incompatible Casts
@@ -177,6 +176,7 @@ The following cast operations are not compatible with Spark for all inputs and a
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 
 <!--BEGIN:INCOMPAT_CAST_TABLE-->
+<!-- prettier-ignore-start -->
 | From Type | To Type | Notes |
 |-|-|-|
 | float | decimal  | There can be rounding differences |
@@ -185,6 +185,7 @@ The following cast operations are not compatible with Spark for all inputs and a
 | string | double  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
 | string | decimal  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits |
 | string | timestamp  | Not all valid formats are supported |
+<!-- prettier-ignore-end -->
 <!--END:INCOMPAT_CAST_TABLE-->
 
 ### Unsupported Casts

@@ -24,9 +24,10 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.catalyst.expressions.{Attribute, EvalMode}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ByteType, DecimalType, IntegerType, LongType, ShortType, StringType}
+import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType}
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
@@ -42,6 +43,17 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
       withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
       return None
     }
+
+    if (expr.dataType == DataTypes.FloatType || expr.dataType == DataTypes.DoubleType) {
+      if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get()) {
+        // https://github.com/apache/datafusion-comet/issues/2448
+        withInfo(
+          aggExpr,
+          s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true")
+        return None
+      }
+    }
+
     val child = expr.children.head
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(expr.dataType)
@@ -78,6 +90,17 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
       withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
       return None
     }
+
+    if (expr.dataType == DataTypes.FloatType || expr.dataType == DataTypes.DoubleType) {
+      if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get()) {
+        // https://github.com/apache/datafusion-comet/issues/2448
+        withInfo(
+          aggExpr,
+          s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true")
+        return None
+      }
+    }
+
     val child = expr.children.head
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(expr.dataType)
@@ -126,6 +149,18 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 }
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
+
+  override def getSupportLevel(avg: Average): SupportLevel = {
+    avg.evalMode match {
+      case EvalMode.ANSI =>
+        Incompatible(Some("ANSI mode is not supported"))
+      case EvalMode.TRY =>
+        Incompatible(Some("TRY mode is not supported"))
+      case _ =>
+        Compatible()
+    }
+  }
+
   override def convert(
       aggExpr: AggregateExpression,
       avg: Average,
@@ -136,20 +171,6 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
     if (!AggSerde.avgDataTypeSupported(avg.dataType)) {
       withInfo(aggExpr, s"Unsupported data type: ${avg.dataType}")
       return None
-    }
-
-    avg.evalMode match {
-      case EvalMode.ANSI if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
-        withInfo(
-          aggExpr,
-          "ANSI mode is not supported. Set " +
-            s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true to allow it anyway")
-        return None
-      case EvalMode.TRY =>
-        withInfo(aggExpr, "TRY mode is not supported")
-        return None
-      case _ =>
-      // supported
     }
 
     val child = avg.child
@@ -188,7 +209,20 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
     }
   }
 }
+
 object CometSum extends CometAggregateExpressionSerde[Sum] {
+
+  override def getSupportLevel(sum: Sum): SupportLevel = {
+    sum.evalMode match {
+      case EvalMode.ANSI =>
+        Incompatible(Some("ANSI mode is not supported"))
+      case EvalMode.TRY =>
+        Incompatible(Some("TRY mode is not supported"))
+      case _ =>
+        Compatible()
+    }
+  }
+
   override def convert(
       aggExpr: AggregateExpression,
       sum: Sum,
@@ -199,20 +233,6 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
     if (!AggSerde.sumDataTypeSupported(sum.dataType)) {
       withInfo(aggExpr, s"Unsupported data type: ${sum.dataType}")
       return None
-    }
-
-    sum.evalMode match {
-      case EvalMode.ANSI if !CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.get() =>
-        withInfo(
-          aggExpr,
-          "ANSI mode is not supported. Set " +
-            s"${CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key}=true to allow it anyway")
-        return None
-      case EvalMode.TRY =>
-        withInfo(aggExpr, "TRY mode is not supported")
-        return None
-      case _ =>
-      // supported
     }
 
     val childExpr = exprToProto(sum.child, inputs, binding)
