@@ -20,6 +20,7 @@
 package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
