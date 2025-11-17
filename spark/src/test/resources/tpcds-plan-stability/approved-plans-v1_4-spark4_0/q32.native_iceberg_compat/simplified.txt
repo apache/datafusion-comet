@@ -1,7 +1,7 @@
 WholeStageCodegen (1)
-  CometColumnarToRow
-    InputAdapter
-      CometHashAggregate [sum] [excess discount amount,sum(UnscaledValue(cs_ext_discount_amt))]
+  HashAggregate [sum] [sum(UnscaledValue(cs_ext_discount_amt)),excess discount amount,sum]
+    CometColumnarToRow
+      InputAdapter
         CometExchange #1
           CometHashAggregate [cs_ext_discount_amt] [sum]
             CometProject [cs_ext_discount_amt]

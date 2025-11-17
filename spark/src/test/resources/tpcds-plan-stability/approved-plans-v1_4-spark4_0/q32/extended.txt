@@ -1,5 +1,5 @@
-CometColumnarToRow
-+- CometHashAggregate
+ HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(MakeDecimal(sum(UnscaledValue(cs_ext_discount_amt#1))#2,17,2) AS excess discount amount#3)]
++- CometColumnarToRow
    +- CometExchange
       +- CometHashAggregate
          +- CometProject
@@ -39,4 +39,4 @@ CometColumnarToRow
                      +- CometFilter
                         +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 
-Comet accelerated 35 out of 38 eligible operators (92%). Final plan contains 2 transitions between Spark and Comet.
+Comet accelerated 34 out of 38 eligible operators (89%). Final plan contains 2 transitions between Spark and Comet.
