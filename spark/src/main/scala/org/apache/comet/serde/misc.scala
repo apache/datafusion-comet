@@ -53,12 +53,14 @@ object CometKnownFloatingPointNormalized
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
 
-    val dataType = serializeDataType(expr.dataType)
+    val wrapped = expr.child.asInstanceOf[NormalizeNaNAndZero].child
+
+    val dataType = serializeDataType(wrapped.dataType)
     if (dataType.isEmpty) {
-      withInfo(expr, s"Unsupported datatype ${expr.dataType}")
+      withInfo(wrapped, s"Unsupported datatype ${wrapped.dataType}")
       return None
     }
-    val ex = exprToProtoInternal(expr, inputs, binding)
+    val ex = exprToProtoInternal(wrapped, inputs, binding)
     ex.map { child =>
       val builder = ExprOuterClass.NormalizeNaNAndZero
         .newBuilder()
