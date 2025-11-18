@@ -44,7 +44,7 @@ object CometKnownFloatingPointNormalized
   override def getSupportLevel(expr: KnownFloatingPointNormalized): SupportLevel = {
     expr.child match {
       case _: NormalizeNaNAndZero => Compatible()
-      case _ => Unsupported()
+      case _ => Unsupported(Some("KnownFloatingPointNormalized only supports NormalizeNaNAndZero child expressions"))
     }
   }
 
