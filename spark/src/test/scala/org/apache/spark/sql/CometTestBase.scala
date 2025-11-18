@@ -419,7 +419,9 @@ abstract class CometTestBase
     val isCometNode = plan.nodeName.startsWith("Comet")
 
     if (isCometNode && hasMissingInput(plan)) {
-      assert(false, s"Plan node `${plan.nodeName}` has invalid missingInput: ${plan.missingInput}")
+      assert(
+        false,
+        s"Plan node `${plan.nodeName}` has invalid missingInput: ${plan.missingInput}")
     }
 
     // Otherwise recursively check children
