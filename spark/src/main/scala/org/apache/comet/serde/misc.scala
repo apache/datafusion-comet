@@ -68,6 +68,7 @@ object CometKnownFloatingPointNormalized
         .setDatatype(dataType.get)
       ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
     }
+    optExprWithInfo(optExpr, expr, wrapped)
   }
 }
 
