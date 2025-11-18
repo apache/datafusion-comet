@@ -19,25 +19,12 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, BloomFilterMightContain, KnownFloatingPointNormalized, MakeDecimal, UnscaledValue}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BloomFilterMightContain, KnownFloatingPointNormalized}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
-import org.apache.spark.sql.types.{DecimalType, LongType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
-object CometUnscaledValue extends CometExpressionSerde[UnscaledValue] {
-  override def convert(
-      expr: UnscaledValue,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
-    val optExpr =
-      scalarFunctionExprToProtoWithReturnType("unscaled_value", LongType, false, childExpr)
-    optExprWithInfo(optExpr, expr, expr.child)
-
-  }
-}
 object CometKnownFloatingPointNormalized
     extends CometExpressionSerde[KnownFloatingPointNormalized] {
 
@@ -68,22 +55,6 @@ object CometKnownFloatingPointNormalized
         .setDatatype(dataType.get)
       ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
     }
-  }
-}
-
-object CometMakeDecimal extends CometExpressionSerde[MakeDecimal] {
-  override def convert(
-      expr: MakeDecimal,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
-    val optExpr = scalarFunctionExprToProtoWithReturnType(
-      "make_decimal",
-      DecimalType(expr.precision, expr.scale),
-      failOnError = !expr.nullOnOverflow,
-      childExpr)
-    optExprWithInfo(optExpr, expr, expr.child)
-
   }
 }
 
