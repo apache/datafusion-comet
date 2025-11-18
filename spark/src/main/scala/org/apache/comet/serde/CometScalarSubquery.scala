@@ -33,7 +33,7 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
     if (supportedDataType(expr.dataType)) {
       val dataType = serializeDataType(expr.dataType)
       if (dataType.isEmpty) {
-        withInfo(expr, s"Scalar subquery returns unsupported datatype ${expr.dataType}")
+        withInfo(expr, s"Failed to serialize datatype ${expr.dataType} for scalar subquery")
         return None
       }
 
