@@ -31,7 +31,7 @@ object CometKnownFloatingPointNormalized
   override def getSupportLevel(expr: KnownFloatingPointNormalized): SupportLevel = {
     expr.child match {
       case _: NormalizeNaNAndZero => Compatible()
-      case _ => Unsupported()
+      case _ => Unsupported(Some("KnownFloatingPointNormalized only supports NormalizeNaNAndZero child expressions"))
     }
   }
 
@@ -48,13 +48,14 @@ object CometKnownFloatingPointNormalized
       return None
     }
     val ex = exprToProtoInternal(wrapped, inputs, binding)
-    ex.map { child =>
+    val optExpr = ex.map { child =>
       val builder = ExprOuterClass.NormalizeNaNAndZero
         .newBuilder()
         .setChild(child)
         .setDatatype(dataType.get)
       ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
     }
+    optExprWithInfo(optExpr, expr, wrapped)
   }
 }
 
