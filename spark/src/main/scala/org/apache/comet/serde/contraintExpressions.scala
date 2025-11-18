@@ -19,11 +19,11 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, BloomFilterMightContain, KnownFloatingPointNormalized}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointNormalized}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, serializeDataType}
 
 object CometKnownFloatingPointNormalized
     extends CometExpressionSerde[KnownFloatingPointNormalized] {
@@ -31,7 +31,10 @@ object CometKnownFloatingPointNormalized
   override def getSupportLevel(expr: KnownFloatingPointNormalized): SupportLevel = {
     expr.child match {
       case _: NormalizeNaNAndZero => Compatible()
-      case _ => Unsupported(Some("KnownFloatingPointNormalized only supports NormalizeNaNAndZero child expressions"))
+      case _ =>
+        Unsupported(
+          Some(
+            "KnownFloatingPointNormalized only supports NormalizeNaNAndZero child expressions"))
     }
   }
 
@@ -56,32 +59,5 @@ object CometKnownFloatingPointNormalized
       ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
     }
     optExprWithInfo(optExpr, expr, wrapped)
-  }
-}
-
-object CometBloomFilterMightContain extends CometExpressionSerde[BloomFilterMightContain] {
-
-  override def convert(
-      expr: BloomFilterMightContain,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-
-    val bloomFilter = expr.left
-    val value = expr.right
-    val bloomFilterExpr = exprToProtoInternal(bloomFilter, inputs, binding)
-    val valueExpr = exprToProtoInternal(value, inputs, binding)
-    if (bloomFilterExpr.isDefined && valueExpr.isDefined) {
-      val builder = ExprOuterClass.BloomFilterMightContain.newBuilder()
-      builder.setBloomFilter(bloomFilterExpr.get)
-      builder.setValue(valueExpr.get)
-      Some(
-        ExprOuterClass.Expr
-          .newBuilder()
-          .setBloomFilterMightContain(builder)
-          .build())
-    } else {
-      withInfo(expr, bloomFilter, value)
-      None
-    }
   }
 }
