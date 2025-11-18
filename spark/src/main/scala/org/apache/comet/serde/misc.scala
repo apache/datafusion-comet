@@ -61,7 +61,7 @@ object CometKnownFloatingPointNormalized
       return None
     }
     val ex = exprToProtoInternal(wrapped, inputs, binding)
-    ex.map { child =>
+    val optExpr = ex.map { child =>
       val builder = ExprOuterClass.NormalizeNaNAndZero
         .newBuilder()
         .setChild(child)
