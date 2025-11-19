@@ -27,28 +27,61 @@ This guide explains how to add support for a new Spark physical operator in Apac
 
 ### Types of Comet Operators
 
-#### 1. Comet Native Operators
+`CometExecRule` maintains two distinct maps of operators (see `CometExecRule.scala:54-83`):
 
-These operators run entirely in native Rust code and are the primary way to accelerate Spark workloads. For native operators, `CometExecRule` delegates to `QueryPlanSerde.operator2Proto` to:
+#### 1. Native Operators (`nativeExecs` map)
 
-- Check if the operator is enabled or disabled via configuration
-- Validate if the operator can be supported
-- Tag the operator with fallback reasons if conversion fails
-- Serialize the operator to protobuf for native execution
+These operators run entirely in native Rust code and are the primary way to accelerate Spark workloads. Native operators are registered in the `nativeExecs` map in `CometExecRule.scala:57-71`.
 
-Examples: `ProjectExec`, `FilterExec`, `SortExec`, `HashAggregateExec`, `SortMergeJoinExec`
+For native operators:
+- They are converted to their corresponding native protobuf representation
+- They execute as DataFusion operators in the native engine
+- The `CometOperatorSerde` implementation handles enable/disable checks, support validation, and protobuf serialization
 
-#### 2. Comet JVM Operators
+Examples: `ProjectExec`, `FilterExec`, `SortExec`, `HashAggregateExec`, `SortMergeJoinExec`, `ExpandExec`, `WindowExec`
 
-These operators run in the JVM but are part of the Comet execution path. For JVM operators, all checks happen in `CometExecRule` rather than `QueryPlanSerde`, because they don't need protobuf serialization.
+#### 2. Sink Operators (`sinks` map)
+
+Sink operators serve as entry points (data sources) for native execution blocks. They are registered in the `sinks` map in `CometExecRule.scala:76-81`.
+
+Key characteristics of sinks:
+- They become `ScanExec` operators in the native plan (see `operator2Proto` in `CometExecRule.scala:810-862`)
+- They can be leaf nodes that feed data into native execution blocks
+- They are wrapped with `CometScanWrapper` or `CometSinkPlaceHolder` during plan transformation
+- Examples include operators that bring data from various sources into native execution
+
+Examples: `UnionExec`, `CoalesceExec`, `CollectLimitExec`, `TakeOrderedAndProjectExec`
+
+Special sinks (not in the `sinks` map but also treated as sinks):
+- `CometScanExec` - File scans
+- `CometSparkToColumnarExec` - Conversion from Spark row format
+- `ShuffleExchangeExec` / `BroadcastExchangeExec` - Exchange operators
+
+#### 3. Comet JVM Operators
+
+These operators run in the JVM but are part of the Comet execution path. For JVM operators, all checks happen in `CometExecRule` rather than using `CometOperatorSerde`, because they don't need protobuf serialization.
 
 Examples: `CometBroadcastExchangeExec`, `CometShuffleExchangeExec`
 
-#### 3. Comet Sinks
+### Choosing the Right Operator Type
 
-Some operators serve as "sinks" or data sources for native execution, meaning they can be leaf nodes that feed data into native execution blocks.
+When adding a new operator, choose based on these criteria:
 
-Examples: `CometScanExec`, `CometBatchScanExec`, `UnionExec`, `CometSparkToColumnarExec`
+**Use Native Operators when:**
+- The operator transforms data (e.g., project, filter, sort, aggregate, join)
+- The operator has a direct DataFusion equivalent or custom implementation
+- The operator consumes native child operators and produces native output
+- The operator is in the middle of an execution pipeline
+
+**Use Sink Operators when:**
+- The operator serves as a data source for native execution (becomes a `ScanExec`)
+- The operator brings data from non-native sources (e.g., `UnionExec` combining multiple inputs)
+- The operator is typically a leaf or near-leaf node in the execution tree
+- The operator needs special handling to interface with the native engine
+
+**Implementation Note for Sinks:**
+
+Sink operators are handled specially in `CometExecRule.operator2Proto` (lines 810-862). Instead of converting to their own operator type, they are converted to `ScanExec` in the native plan. This allows them to serve as entry points for native execution blocks. The original Spark operator is wrapped with `CometScanWrapper` or `CometSinkPlaceHolder` which manages the boundary between JVM and native execution.
 
 ## Implementing a Native Operator
 
@@ -95,16 +128,22 @@ For reference, see existing operators like `Filter` (simple), `HashAggregate` (c
 
 Create a new Scala file in `spark/src/main/scala/org/apache/comet/serde/operator/` (e.g., `CometYourOperator.scala`) that extends `CometOperatorSerde[T]` where `T` is the Spark operator type.
 
-The `CometOperatorSerde` trait provides three key methods:
+The `CometOperatorSerde` trait provides several key methods:
 
 - `enabledConfig: Option[ConfigEntry[Boolean]]` - Configuration to enable/disable this operator
 - `getSupportLevel(operator: T): SupportLevel` - Determines if the operator is supported
 - `convert(op: T, builder: Operator.Builder, childOp: Operator*): Option[Operator]` - Converts to protobuf
+- `createExec(nativeOp: Operator, op: T): CometNativeExec` - Creates the Comet execution operator wrapper
+
+The validation workflow in `CometExecRule.isOperatorEnabled` (lines 876-917):
+1. Checks if the operator is enabled via `enabledConfig`
+2. Calls `getSupportLevel()` to determine compatibility
+3. Handles Compatible/Incompatible/Unsupported cases with appropriate fallback messages
 
 #### Simple Example (Filter)
 
 ```scala
-object CometFilter extends CometOperatorSerde[FilterExec] {
+object CometFilterExec extends CometOperatorSerde[FilterExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_EXEC_FILTER_ENABLED)
@@ -125,13 +164,34 @@ object CometFilter extends CometOperatorSerde[FilterExec] {
       None
     }
   }
+
+  override def createExec(nativeOp: Operator, op: FilterExec): CometNativeExec = {
+    CometFilterExec(nativeOp, op, op.output, op.condition, op.child, SerializedPlan(None))
+  }
+}
+
+case class CometFilterExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    condition: Expression,
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometUnaryExec {
+
+  override def outputPartitioning: Partitioning = child.outputPartitioning
+
+  override def outputOrdering: Seq[SortOrder] = child.outputOrdering
+
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
 }
 ```
 
 #### More Complex Example (Project)
 
 ```scala
-object CometProject extends CometOperatorSerde[ProjectExec] {
+object CometProjectExec extends CometOperatorSerde[ProjectExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_EXEC_PROJECT_ENABLED)
@@ -152,6 +212,26 @@ object CometProject extends CometOperatorSerde[ProjectExec] {
       None
     }
   }
+
+  override def createExec(nativeOp: Operator, op: ProjectExec): CometNativeExec = {
+    CometProjectExec(nativeOp, op, op.output, op.projectList, op.child, SerializedPlan(None))
+  }
+}
+
+case class CometProjectExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    projectList: Seq[NamedExpression],
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometUnaryExec
+    with PartitioningPreservingUnaryExecNode {
+
+  override def producedAttributes: AttributeSet = outputSet
+
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
 }
 ```
 
@@ -185,17 +265,37 @@ Note that Comet will treat an operator as incompatible if any of the child expre
 
 ### Step 3: Register the Operator
 
-Add your operator to the `opSerdeMap` in `QueryPlanSerde.scala`:
+Add your operator to the appropriate map in `CometExecRule.scala`:
+
+#### For Native Operators
+
+Add to the `nativeExecs` map (`CometExecRule.scala:57-71`):
 
 ```scala
-private val opSerdeMap: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
+val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
   Map(
-    classOf[ProjectExec] -> CometProject,
-    classOf[FilterExec] -> CometFilter,
+    classOf[ProjectExec] -> CometProjectExec,
+    classOf[FilterExec] -> CometFilterExec,
     // ... existing operators ...
     classOf[YourOperatorExec] -> CometYourOperator,
   )
 ```
+
+#### For Sink Operators
+
+If your operator is a sink (becomes a `ScanExec` in the native plan), add to the `sinks` map (`CometExecRule.scala:76-81`):
+
+```scala
+val sinks: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
+  Map(
+    classOf[CoalesceExec] -> CometCoalesceExec,
+    classOf[UnionExec] -> CometUnionExec,
+    // ... existing operators ...
+    classOf[YourSinkOperatorExec] -> CometYourSinkOperator,
+  )
+```
+
+Note: The `allExecs` map automatically combines both `nativeExecs` and `sinks`, so you only need to add to one of the two maps.
 
 ### Step 4: Add Configuration Entry
 
@@ -302,6 +402,132 @@ mod tests {
 ### Step 7: Update Documentation
 
 Add your operator to the supported operators list in `docs/source/user-guide/latest/compatibility.md` or similar documentation.
+
+## Implementing a Sink Operator
+
+Sink operators are converted to `ScanExec` in the native plan and serve as entry points for native execution. The implementation is simpler than native operators because sink operators extend the `CometSink` base class which provides the conversion logic.
+
+### Step 1: Create a CometOperatorSerde Implementation
+
+Create a new Scala file in `spark/src/main/scala/org/apache/spark/sql/comet/` (e.g., `CometYourSinkOperator.scala`):
+
+```scala
+import org.apache.comet.serde.operator.CometSink
+
+object CometYourSinkOperator extends CometSink[YourSinkExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] =
+    Some(CometConf.COMET_EXEC_YOUR_SINK_ENABLED)
+
+  // Optional: Override if the data produced is FFI safe
+  override def isFfiSafe: Boolean = false
+
+  override def createExec(
+      nativeOp: OperatorOuterClass.Operator,
+      op: YourSinkExec): CometNativeExec = {
+    CometSinkPlaceHolder(
+      nativeOp,
+      op,
+      CometYourSinkExec(op, op.output, /* other parameters */, op.child))
+  }
+
+  // Optional: Override getSupportLevel if you need custom validation beyond data types
+  override def getSupportLevel(operator: YourSinkExec): SupportLevel = {
+    // CometSink base class already checks data types in convert()
+    // Add any additional validation here
+    Compatible()
+  }
+}
+
+/**
+ * Comet implementation of YourSinkExec that supports columnar processing
+ */
+case class CometYourSinkExec(
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    /* other parameters */,
+    child: SparkPlan)
+    extends CometExec
+    with UnaryExecNode {
+
+  override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    // Implement columnar execution logic
+    val rdd = child.executeColumnar()
+    // Apply your sink operator's logic
+    rdd
+  }
+
+  override def outputPartitioning: Partitioning = {
+    // Define output partitioning
+  }
+
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
+}
+```
+
+**Key Points:**
+
+- Extend `CometSink[T]` which provides the `convert()` method that transforms the operator to `ScanExec`
+- The `CometSink.convert()` method (in `spark/src/main/scala/org/apache/comet/serde/operator/CometSink.scala:40-80`) automatically handles:
+  - Data type validation
+  - Conversion to `ScanExec` in the native plan
+  - Setting FFI safety flags
+- You must implement `createExec()` to wrap the operator appropriately
+- You typically need to create a corresponding `CometYourSinkExec` class that implements columnar execution
+
+### Step 2: Register the Sink
+
+Add your sink to the `sinks` map in `CometExecRule.scala:76-81`:
+
+```scala
+val sinks: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
+  Map(
+    classOf[CoalesceExec] -> CometCoalesceExec,
+    classOf[UnionExec] -> CometUnionExec,
+    classOf[YourSinkExec] -> CometYourSinkOperator,
+  )
+```
+
+### Step 3: Add Configuration
+
+Add a configuration entry in `common/src/main/scala/org/apache/comet/CometConf.scala`:
+
+```scala
+val COMET_EXEC_YOUR_SINK_ENABLED: ConfigEntry[Boolean] =
+  conf("spark.comet.exec.yourSink.enabled")
+    .doc("Whether to enable your sink operator in Comet")
+    .booleanConf
+    .createWithDefault(true)
+```
+
+### Step 4: Add Tests
+
+Test that your sink operator correctly feeds data into native execution:
+
+```scala
+test("your sink operator") {
+  withTable("test_table") {
+    sql("CREATE TABLE test_table(col1 INT, col2 STRING) USING parquet")
+    sql("INSERT INTO test_table VALUES (1, 'a'), (2, 'b')")
+
+    // Test query that uses your sink operator followed by native operators
+    checkSparkAnswerAndOperator(
+      "SELECT col1 + 1 FROM (/* query that produces YourSinkExec */)"
+    )
+  }
+}
+```
+
+**Important Notes for Sinks:**
+
+- Sinks extend the `CometSink` base class, which provides the `convert()` method implementation
+- The `CometSink.convert()` method automatically handles conversion to `ScanExec` in the native plan
+- You don't need to add protobuf definitions for sink operators - they use the standard `Scan` message
+- You don't need Rust implementation for sinks - they become standard `ScanExec` operators that read from the JVM
+- Sink implementations should provide a columnar-compatible execution class (e.g., `CometCoalesceExec`)
+- The `createExec()` method wraps the operator with `CometSinkPlaceHolder` to manage the JVM-to-native boundary
+- See `CometCoalesceExec.scala` or `CometUnionExec` in `spark/src/main/scala/org/apache/spark/sql/comet/` for reference implementations
 
 ## Implementing a JVM Operator
 
