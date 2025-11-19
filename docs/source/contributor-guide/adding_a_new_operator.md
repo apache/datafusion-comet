@@ -181,6 +181,8 @@ Support levels:
 - **`Incompatible()`** - Supported but may differ; requires explicit opt-in
 - **`Unsupported()`** - Not supported under current conditions
 
+Note that Comet will treat an operator as incompatible if any of the child expressions are incompatible.
+
 ### Step 3: Register the Operator
 
 Add your operator to the `opSerdeMap` in `QueryPlanSerde.scala`:
