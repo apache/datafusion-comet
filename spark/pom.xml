@@ -178,7 +178,7 @@ under the License.
   </dependencies>
 
   <profiles>
-    <!-- Iceberg dependencies vary by Spark version (Iceberg 1.5.2 for Spark 3.x, 1.10.0 for Spark 4.0) -->
+    <!-- Iceberg dependencies vary by Spark version (Iceberg 1.8.1 for Spark 3.x, 1.10.0 for Spark 4.0) -->
     <profile>
       <id>spark-3.4</id>
       <dependencies>
