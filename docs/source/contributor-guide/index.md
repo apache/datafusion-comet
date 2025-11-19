@@ -30,6 +30,7 @@ Parquet Scans <parquet_scans>
 Development Guide <development>
 Debugging Guide <debugging>
 Benchmarking Guide <benchmarking>
+Adding a New Operator <adding_a_new_operator>
 Adding a New Expression <adding_a_new_expression>
 Tracing <tracing>
 Profiling Native Code <profiling_native_code>
