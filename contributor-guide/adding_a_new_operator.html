@@ -1,0 +1,1076 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Adding a New Operator &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=cd442bcd" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/adding_a_new_operator';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Adding a New Expression" href="adding_a_new_expression.html" />
+    <link rel="prev" title="Comet Benchmarking Guide" href="benchmarking.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../about/index.html">Comet Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/index.html">User Guide</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Contributor Guide</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="contributing.html">Getting Started</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html#plugin-components">Plugin Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ffi.html">Arrow FFI</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parquet_scans.html">Parquet Scans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="development.html">Development Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Adding a New Operator</a></li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tracing.html">Tracing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="profiling_native_code.html">Profiling Native Code</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../asf/index.html">ASF Links</a></li>
+</ul>
+
+  </div>
+</nav>
+</div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Adding a New Operator</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!---
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+<section id="adding-a-new-operator">
+<h1>Adding a New Operator<a class="headerlink" href="#adding-a-new-operator" title="Link to this heading">#</a></h1>
+<p>This guide explains how to add support for a new Spark physical operator in Apache DataFusion Comet.</p>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> is responsible for replacing Spark operators with Comet operators. There are different approaches to
+implementing Comet operators depending on where they execute and how they integrate with the native execution engine.</p>
+<section id="types-of-comet-operators">
+<h3>Types of Comet Operators<a class="headerlink" href="#types-of-comet-operators" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> maintains two distinct maps of operators:</p>
+<section id="native-operators-nativeexecs-map">
+<h4>1. Native Operators (<code class="docutils literal notranslate"><span class="pre">nativeExecs</span></code> map)<a class="headerlink" href="#native-operators-nativeexecs-map" title="Link to this heading">#</a></h4>
+<p>These operators run entirely in native Rust code and are the primary way to accelerate Spark workloads. Native
+operators are registered in the <code class="docutils literal notranslate"><span class="pre">nativeExecs</span></code> map in <code class="docutils literal notranslate"><span class="pre">CometExecRule.scala</span></code>.</p>
+<p>Key characteristics of native operators:</p>
+<ul class="simple">
+<li><p>They are converted to their corresponding native protobuf representation</p></li>
+<li><p>They execute as DataFusion operators in the native engine</p></li>
+<li><p>The <code class="docutils literal notranslate"><span class="pre">CometOperatorSerde</span></code> implementation handles enable/disable checks, support validation, and protobuf serialization</p></li>
+</ul>
+<p>Examples: <code class="docutils literal notranslate"><span class="pre">ProjectExec</span></code>, <code class="docutils literal notranslate"><span class="pre">FilterExec</span></code>, <code class="docutils literal notranslate"><span class="pre">SortExec</span></code>, <code class="docutils literal notranslate"><span class="pre">HashAggregateExec</span></code>, <code class="docutils literal notranslate"><span class="pre">SortMergeJoinExec</span></code>, <code class="docutils literal notranslate"><span class="pre">ExpandExec</span></code>, <code class="docutils literal notranslate"><span class="pre">WindowExec</span></code></p>
+</section>
+<section id="sink-operators-sinks-map">
+<h4>2. Sink Operators (<code class="docutils literal notranslate"><span class="pre">sinks</span></code> map)<a class="headerlink" href="#sink-operators-sinks-map" title="Link to this heading">#</a></h4>
+<p>Sink operators serve as entry points (data sources) for native execution blocks. They are registered in the <code class="docutils literal notranslate"><span class="pre">sinks</span></code>
+map in <code class="docutils literal notranslate"><span class="pre">CometExecRule.scala</span></code>.</p>
+<p>Key characteristics of sinks:</p>
+<ul class="simple">
+<li><p>They become <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> operators in the native plan (see <code class="docutils literal notranslate"><span class="pre">operator2Proto</span></code> in <code class="docutils literal notranslate"><span class="pre">CometExecRule.scala</span></code>)</p></li>
+<li><p>They can be leaf nodes that feed data into native execution blocks</p></li>
+<li><p>They are wrapped with <code class="docutils literal notranslate"><span class="pre">CometScanWrapper</span></code> or <code class="docutils literal notranslate"><span class="pre">CometSinkPlaceHolder</span></code> during plan transformation</p></li>
+<li><p>Examples include operators that bring data from various sources into native execution</p></li>
+</ul>
+<p>Examples: <code class="docutils literal notranslate"><span class="pre">UnionExec</span></code>, <code class="docutils literal notranslate"><span class="pre">CoalesceExec</span></code>, <code class="docutils literal notranslate"><span class="pre">CollectLimitExec</span></code>, <code class="docutils literal notranslate"><span class="pre">TakeOrderedAndProjectExec</span></code></p>
+<p>Special sinks (not in the <code class="docutils literal notranslate"><span class="pre">sinks</span></code> map but also treated as sinks):</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">CometScanExec</span></code> - File scans</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code> - Conversion from Spark row format</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ShuffleExchangeExec</span></code> / <code class="docutils literal notranslate"><span class="pre">BroadcastExchangeExec</span></code> - Exchange operators</p></li>
+</ul>
+</section>
+<section id="comet-jvm-operators">
+<h4>3. Comet JVM Operators<a class="headerlink" href="#comet-jvm-operators" title="Link to this heading">#</a></h4>
+<p>These operators run in the JVM but are part of the Comet execution path. For JVM operators, all checks happen
+in <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> rather than using <code class="docutils literal notranslate"><span class="pre">CometOperatorSerde</span></code>, because they don’t need protobuf serialization.</p>
+<p>Examples: <code class="docutils literal notranslate"><span class="pre">CometBroadcastExchangeExec</span></code>, <code class="docutils literal notranslate"><span class="pre">CometShuffleExchangeExec</span></code></p>
+</section>
+</section>
+<section id="choosing-the-right-operator-type">
+<h3>Choosing the Right Operator Type<a class="headerlink" href="#choosing-the-right-operator-type" title="Link to this heading">#</a></h3>
+<p>When adding a new operator, choose based on these criteria:</p>
+<p><strong>Use Native Operators when:</strong></p>
+<ul class="simple">
+<li><p>The operator transforms data (e.g., project, filter, sort, aggregate, join)</p></li>
+<li><p>The operator has a direct DataFusion equivalent or custom implementation</p></li>
+<li><p>The operator consumes native child operators and produces native output</p></li>
+<li><p>The operator is in the middle of an execution pipeline</p></li>
+</ul>
+<p><strong>Use Sink Operators when:</strong></p>
+<ul class="simple">
+<li><p>The operator serves as a data source for native execution (becomes a <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code>)</p></li>
+<li><p>The operator brings data from non-native sources (e.g., <code class="docutils literal notranslate"><span class="pre">UnionExec</span></code> combining multiple inputs)</p></li>
+<li><p>The operator is typically a leaf or near-leaf node in the execution tree</p></li>
+<li><p>The operator needs special handling to interface with the native engine</p></li>
+</ul>
+<p><strong>Implementation Note for Sinks:</strong></p>
+<p>Sink operators are handled specially in <code class="docutils literal notranslate"><span class="pre">CometExecRule.operator2Proto</span></code>. Instead of converting to their own operator
+type, they are converted to <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> in the native plan. This allows them to serve as entry points for native
+execution blocks. The original Spark operator is wrapped with <code class="docutils literal notranslate"><span class="pre">CometScanWrapper</span></code> or <code class="docutils literal notranslate"><span class="pre">CometSinkPlaceHolder</span></code> which
+manages the boundary between JVM and native execution.</p>
+</section>
+</section>
+<section id="implementing-a-native-operator">
+<h2>Implementing a Native Operator<a class="headerlink" href="#implementing-a-native-operator" title="Link to this heading">#</a></h2>
+<p>This section focuses on adding a native operator, which is the most common and complex case.</p>
+<section id="step-1-define-the-protobuf-message">
+<h3>Step 1: Define the Protobuf Message<a class="headerlink" href="#step-1-define-the-protobuf-message" title="Link to this heading">#</a></h3>
+<p>First, add the operator definition to <code class="docutils literal notranslate"><span class="pre">native/proto/src/proto/operator.proto</span></code>.</p>
+<section id="add-to-the-operator-message">
+<h4>Add to the Operator Message<a class="headerlink" href="#add-to-the-operator-message" title="Link to this heading">#</a></h4>
+<p>Add your new operator to the <code class="docutils literal notranslate"><span class="pre">oneof</span> <span class="pre">op_struct</span></code> in the main <code class="docutils literal notranslate"><span class="pre">Operator</span></code> message:</p>
+<div class="highlight-proto notranslate"><div class="highlight"><pre><span></span><span class="kd">message</span><span class="w"> </span><span class="nc">Operator</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">repeated</span><span class="w"> </span><span class="n">Operator</span><span class="w"> </span><span class="na">children</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<span class="w">  </span><span class="kt">uint32</span><span class="w"> </span><span class="na">plan_id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span>
+
+<span class="w">  </span><span class="k">oneof</span><span class="w"> </span><span class="n">op_struct</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">Scan</span><span class="w"> </span><span class="na">scan</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">100</span><span class="p">;</span>
+<span class="w">    </span><span class="n">Projection</span><span class="w"> </span><span class="na">projection</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">101</span><span class="p">;</span>
+<span class="w">    </span><span class="n">Filter</span><span class="w"> </span><span class="na">filter</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">102</span><span class="p">;</span>
+<span class="w">    </span><span class="c1">// ... existing operators ...</span>
+<span class="w">    </span><span class="n">YourNewOperator</span><span class="w"> </span><span class="na">your_new_operator</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">112</span><span class="p">;</span><span class="w">  </span><span class="c1">// Choose next available number</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="define-the-operator-message">
+<h4>Define the Operator Message<a class="headerlink" href="#define-the-operator-message" title="Link to this heading">#</a></h4>
+<p>Create a message for your operator with the necessary fields:</p>
+<div class="highlight-proto notranslate"><div class="highlight"><pre><span></span><span class="kd">message</span><span class="w"> </span><span class="nc">YourNewOperator</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="c1">// Fields specific to your operator</span>
+<span class="w">  </span><span class="k">repeated</span><span class="w"> </span><span class="n">spark.spark_expression.Expr</span><span class="w"> </span><span class="na">expressions</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<span class="w">  </span><span class="c1">// Add other configuration fields as needed</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>For reference, see existing operators like <code class="docutils literal notranslate"><span class="pre">Filter</span></code> (simple), <code class="docutils literal notranslate"><span class="pre">HashAggregate</span></code> (complex), or <code class="docutils literal notranslate"><span class="pre">Sort</span></code> (with ordering).</p>
+</section>
+</section>
+<section id="step-2-create-a-cometoperatorserde-implementation">
+<h3>Step 2: Create a CometOperatorSerde Implementation<a class="headerlink" href="#step-2-create-a-cometoperatorserde-implementation" title="Link to this heading">#</a></h3>
+<p>Create a new Scala file in <code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/serde/operator/</span></code> (e.g., <code class="docutils literal notranslate"><span class="pre">CometYourOperator.scala</span></code>) that extends <code class="docutils literal notranslate"><span class="pre">CometOperatorSerde[T]</span></code> where <code class="docutils literal notranslate"><span class="pre">T</span></code> is the Spark operator type.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">CometOperatorSerde</span></code> trait provides several key methods:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">enabledConfig:</span> <span class="pre">Option[ConfigEntry[Boolean]]</span></code> - Configuration to enable/disable this operator</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">getSupportLevel(operator:</span> <span class="pre">T):</span> <span class="pre">SupportLevel</span></code> - Determines if the operator is supported</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">convert(op:</span> <span class="pre">T,</span> <span class="pre">builder:</span> <span class="pre">Operator.Builder,</span> <span class="pre">childOp:</span> <span class="pre">Operator*):</span> <span class="pre">Option[Operator]</span></code> - Converts to protobuf</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">createExec(nativeOp:</span> <span class="pre">Operator,</span> <span class="pre">op:</span> <span class="pre">T):</span> <span class="pre">CometNativeExec</span></code> - Creates the Comet execution operator wrapper</p></li>
+</ul>
+<p>The validation workflow in <code class="docutils literal notranslate"><span class="pre">CometExecRule.isOperatorEnabled</span></code>:</p>
+<ol class="arabic simple">
+<li><p>Checks if the operator is enabled via <code class="docutils literal notranslate"><span class="pre">enabledConfig</span></code></p></li>
+<li><p>Calls <code class="docutils literal notranslate"><span class="pre">getSupportLevel()</span></code> to determine compatibility</p></li>
+<li><p>Handles Compatible/Incompatible/Unsupported cases with appropriate fallback messages</p></li>
+</ol>
+<section id="simple-example-filter">
+<h4>Simple Example (Filter)<a class="headerlink" href="#simple-example-filter" title="Link to this heading">#</a></h4>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">object</span><span class="w"> </span><span class="nc">CometFilterExec</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometOperatorSerde</span><span class="p">[</span><span class="nc">FilterExec</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">enabledConfig</span><span class="p">:</span><span class="w"> </span><span class="nc">Option</span><span class="p">[</span><span class="nc">ConfigEntry</span><span class="p">[</span><span class="nc">Boolean</span><span class="p">]]</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="nc">Some</span><span class="p">(</span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_EXEC_FILTER_ENABLED</span><span class="p">)</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">convert</span><span class="p">(</span>
+<span class="w">      </span><span class="n">op</span><span class="p">:</span><span class="w"> </span><span class="nc">FilterExec</span><span class="p">,</span>
+<span class="w">      </span><span class="n">builder</span><span class="p">:</span><span class="w"> </span><span class="nc">Operator</span><span class="p">.</span><span class="nc">Builder</span><span class="p">,</span>
+<span class="w">      </span><span class="n">childOp</span><span class="p">:</span><span class="w"> </span><span class="nc">OperatorOuterClass</span><span class="p">.</span><span class="nc">Operator</span><span class="o">*</span><span class="p">):</span><span class="w"> </span><span class="nc">Option</span><span class="p">[</span><span class="nc">OperatorOuterClass</span><span class="p">.</span><span class="nc">Operator</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">val</span><span class="w"> </span><span class="n">cond</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">exprToProto</span><span class="p">(</span><span class="n">op</span><span class="p">.</span><span class="n">condition</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">child</span><span class="p">.</span><span class="n">output</span><span class="p">)</span>
+
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">cond</span><span class="p">.</span><span class="n">isDefined</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">childOp</span><span class="p">.</span><span class="n">nonEmpty</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="kd">val</span><span class="w"> </span><span class="n">filterBuilder</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">OperatorOuterClass</span><span class="p">.</span><span class="nc">Filter</span>
+<span class="w">        </span><span class="p">.</span><span class="n">newBuilder</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="n">setPredicate</span><span class="p">(</span><span class="n">cond</span><span class="p">.</span><span class="n">get</span><span class="p">)</span>
+<span class="w">      </span><span class="nc">Some</span><span class="p">(</span><span class="n">builder</span><span class="p">.</span><span class="n">setFilter</span><span class="p">(</span><span class="n">filterBuilder</span><span class="p">).</span><span class="n">build</span><span class="p">())</span>
+<span class="w">    </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="n">withInfo</span><span class="p">(</span><span class="n">op</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">condition</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">child</span><span class="p">)</span>
+<span class="w">      </span><span class="nc">None</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">createExec</span><span class="p">(</span><span class="n">nativeOp</span><span class="p">:</span><span class="w"> </span><span class="nc">Operator</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">:</span><span class="w"> </span><span class="nc">FilterExec</span><span class="p">):</span><span class="w"> </span><span class="nc">CometNativeExec</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nc">CometFilterExec</span><span class="p">(</span><span class="n">nativeOp</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">output</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">condition</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">child</span><span class="p">,</span><span class="w"> </span><span class="nc">SerializedPlan</span><span class="p">(</span><span class="nc">None</span><span class="p">))</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="k">case</span><span class="w"> </span><span class="k">class</span><span class="w"> </span><span class="nc">CometFilterExec</span><span class="p">(</span>
+<span class="w">    </span><span class="k">override</span><span class="w"> </span><span class="kd">val</span><span class="w"> </span><span class="n">nativeOp</span><span class="p">:</span><span class="w"> </span><span class="nc">Operator</span><span class="p">,</span>
+<span class="w">    </span><span class="k">override</span><span class="w"> </span><span class="kd">val</span><span class="w"> </span><span class="n">originalPlan</span><span class="p">:</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="p">,</span>
+<span class="w">    </span><span class="k">override</span><span class="w"> </span><span class="kd">val</span><span class="w"> </span><span class="n">output</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">Attribute</span><span class="p">],</span>
+<span class="w">    </span><span class="n">condition</span><span class="p">:</span><span class="w"> </span><span class="nc">Expression</span><span class="p">,</span>
+<span class="w">    </span><span class="n">child</span><span class="p">:</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="p">,</span>
+<span class="w">    </span><span class="k">override</span><span class="w"> </span><span class="kd">val</span><span class="w"> </span><span class="n">serializedPlanOpt</span><span class="p">:</span><span class="w"> </span><span class="nc">SerializedPlan</span><span class="p">)</span>
+<span class="w">    </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometUnaryExec</span><span class="w"> </span><span class="p">{</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">outputPartitioning</span><span class="p">:</span><span class="w"> </span><span class="nc">Partitioning</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">child</span><span class="p">.</span><span class="n">outputPartitioning</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">outputOrdering</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">SortOrder</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">child</span><span class="p">.</span><span class="n">outputOrdering</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">protected</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">withNewChildInternal</span><span class="p">(</span><span class="n">newChild</span><span class="p">:</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="p">):</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="bp">this</span><span class="p">.</span><span class="n">copy</span><span class="p">(</span><span class="n">child</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">newChild</span><span class="p">)</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="more-complex-example-project">
+<h4>More Complex Example (Project)<a class="headerlink" href="#more-complex-example-project" title="Link to this heading">#</a></h4>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">object</span><span class="w"> </span><span class="nc">CometProjectExec</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometOperatorSerde</span><span class="p">[</span><span class="nc">ProjectExec</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">enabledConfig</span><span class="p">:</span><span class="w"> </span><span class="nc">Option</span><span class="p">[</span><span class="nc">ConfigEntry</span><span class="p">[</span><span class="nc">Boolean</span><span class="p">]]</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="nc">Some</span><span class="p">(</span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_EXEC_PROJECT_ENABLED</span><span class="p">)</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">convert</span><span class="p">(</span>
+<span class="w">      </span><span class="n">op</span><span class="p">:</span><span class="w"> </span><span class="nc">ProjectExec</span><span class="p">,</span>
+<span class="w">      </span><span class="n">builder</span><span class="p">:</span><span class="w"> </span><span class="nc">Operator</span><span class="p">.</span><span class="nc">Builder</span><span class="p">,</span>
+<span class="w">      </span><span class="n">childOp</span><span class="p">:</span><span class="w"> </span><span class="nc">Operator</span><span class="o">*</span><span class="p">):</span><span class="w"> </span><span class="nc">Option</span><span class="p">[</span><span class="nc">OperatorOuterClass</span><span class="p">.</span><span class="nc">Operator</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">val</span><span class="w"> </span><span class="n">exprs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">projectList</span><span class="p">.</span><span class="n">map</span><span class="p">(</span><span class="n">exprToProto</span><span class="p">(</span><span class="n">_</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">child</span><span class="p">.</span><span class="n">output</span><span class="p">))</span>
+
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">exprs</span><span class="p">.</span><span class="n">forall</span><span class="p">(</span><span class="n">_</span><span class="p">.</span><span class="n">isDefined</span><span class="p">)</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">childOp</span><span class="p">.</span><span class="n">nonEmpty</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="kd">val</span><span class="w"> </span><span class="n">projectBuilder</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">OperatorOuterClass</span><span class="p">.</span><span class="nc">Projection</span>
+<span class="w">        </span><span class="p">.</span><span class="n">newBuilder</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="n">addAllProjectList</span><span class="p">(</span><span class="n">exprs</span><span class="p">.</span><span class="n">map</span><span class="p">(</span><span class="n">_</span><span class="p">.</span><span class="n">get</span><span class="p">).</span><span class="n">asJava</span><span class="p">)</span>
+<span class="w">      </span><span class="nc">Some</span><span class="p">(</span><span class="n">builder</span><span class="p">.</span><span class="n">setProjection</span><span class="p">(</span><span class="n">projectBuilder</span><span class="p">).</span><span class="n">build</span><span class="p">())</span>
+<span class="w">    </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="n">withInfo</span><span class="p">(</span><span class="n">op</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">projectList</span><span class="p">:</span><span class="w"> </span><span class="n">_*</span><span class="p">)</span>
+<span class="w">      </span><span class="nc">None</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">createExec</span><span class="p">(</span><span class="n">nativeOp</span><span class="p">:</span><span class="w"> </span><span class="nc">Operator</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">:</span><span class="w"> </span><span class="nc">ProjectExec</span><span class="p">):</span><span class="w"> </span><span class="nc">CometNativeExec</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nc">CometProjectExec</span><span class="p">(</span><span class="n">nativeOp</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">output</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">projectList</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">child</span><span class="p">,</span><span class="w"> </span><span class="nc">SerializedPlan</span><span class="p">(</span><span class="nc">None</span><span class="p">))</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="k">case</span><span class="w"> </span><span class="k">class</span><span class="w"> </span><span class="nc">CometProjectExec</span><span class="p">(</span>
+<span class="w">    </span><span class="k">override</span><span class="w"> </span><span class="kd">val</span><span class="w"> </span><span class="n">nativeOp</span><span class="p">:</span><span class="w"> </span><span class="nc">Operator</span><span class="p">,</span>
+<span class="w">    </span><span class="k">override</span><span class="w"> </span><span class="kd">val</span><span class="w"> </span><span class="n">originalPlan</span><span class="p">:</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="p">,</span>
+<span class="w">    </span><span class="k">override</span><span class="w"> </span><span class="kd">val</span><span class="w"> </span><span class="n">output</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">Attribute</span><span class="p">],</span>
+<span class="w">    </span><span class="n">projectList</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">NamedExpression</span><span class="p">],</span>
+<span class="w">    </span><span class="n">child</span><span class="p">:</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="p">,</span>
+<span class="w">    </span><span class="k">override</span><span class="w"> </span><span class="kd">val</span><span class="w"> </span><span class="n">serializedPlanOpt</span><span class="p">:</span><span class="w"> </span><span class="nc">SerializedPlan</span><span class="p">)</span>
+<span class="w">    </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometUnaryExec</span>
+<span class="w">    </span><span class="k">with</span><span class="w"> </span><span class="nc">PartitioningPreservingUnaryExecNode</span><span class="w"> </span><span class="p">{</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">producedAttributes</span><span class="p">:</span><span class="w"> </span><span class="nc">AttributeSet</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">outputSet</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">protected</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">withNewChildInternal</span><span class="p">(</span><span class="n">newChild</span><span class="p">:</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="p">):</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="bp">this</span><span class="p">.</span><span class="n">copy</span><span class="p">(</span><span class="n">child</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">newChild</span><span class="p">)</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="using-getsupportlevel">
+<h4>Using getSupportLevel<a class="headerlink" href="#using-getsupportlevel" title="Link to this heading">#</a></h4>
+<p>Override <code class="docutils literal notranslate"><span class="pre">getSupportLevel</span></code> to control operator support based on specific conditions:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getSupportLevel</span><span class="p">(</span><span class="n">operator</span><span class="p">:</span><span class="w"> </span><span class="nc">YourOperatorExec</span><span class="p">):</span><span class="w"> </span><span class="nc">SupportLevel</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="c1">// Check for unsupported features</span>
+<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">operator</span><span class="p">.</span><span class="n">hasUnsupportedFeature</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nc">Unsupported</span><span class="p">(</span><span class="nc">Some</span><span class="p">(</span><span class="s">&quot;Feature X is not supported&quot;</span><span class="p">))</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="c1">// Check for incompatible behavior</span>
+<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">operator</span><span class="p">.</span><span class="n">hasKnownDifferences</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nc">Incompatible</span><span class="p">(</span><span class="nc">Some</span><span class="p">(</span><span class="s">&quot;Known differences in edge case Y&quot;</span><span class="p">))</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="nc">Compatible</span><span class="p">()</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Support levels:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">Compatible()</span></code></strong> - Fully compatible with Spark (default)</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">Incompatible()</span></code></strong> - Supported but may differ; requires explicit opt-in</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">Unsupported()</span></code></strong> - Not supported under current conditions</p></li>
+</ul>
+<p>Note that Comet will treat an operator as incompatible if any of the child expressions are incompatible.</p>
+</section>
+</section>
+<section id="step-3-register-the-operator">
+<h3>Step 3: Register the Operator<a class="headerlink" href="#step-3-register-the-operator" title="Link to this heading">#</a></h3>
+<p>Add your operator to the appropriate map in <code class="docutils literal notranslate"><span class="pre">CometExecRule.scala</span></code>:</p>
+<section id="for-native-operators">
+<h4>For Native Operators<a class="headerlink" href="#for-native-operators" title="Link to this heading">#</a></h4>
+<p>Add to the <code class="docutils literal notranslate"><span class="pre">nativeExecs</span></code> map (<code class="docutils literal notranslate"><span class="pre">CometExecRule.scala</span></code>):</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="kd">val</span><span class="w"> </span><span class="n">nativeExecs</span><span class="p">:</span><span class="w"> </span><span class="nc">Map</span><span class="p">[</span><span class="nc">Class</span><span class="p">[</span><span class="n">_</span><span class="w"> </span><span class="o">&lt;:</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="p">],</span><span class="w"> </span><span class="nc">CometOperatorSerde</span><span class="p">[</span><span class="n">_</span><span class="p">]]</span><span class="w"> </span><span class="o">=</span>
+<span class="w">  </span><span class="nc">Map</span><span class="p">(</span>
+<span class="w">    </span><span class="k">classOf</span><span class="p">[</span><span class="nc">ProjectExec</span><span class="p">]</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometProjectExec</span><span class="p">,</span>
+<span class="w">    </span><span class="k">classOf</span><span class="p">[</span><span class="nc">FilterExec</span><span class="p">]</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometFilterExec</span><span class="p">,</span>
+<span class="w">    </span><span class="c1">// ... existing operators ...</span>
+<span class="w">    </span><span class="k">classOf</span><span class="p">[</span><span class="nc">YourOperatorExec</span><span class="p">]</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometYourOperator</span><span class="p">,</span>
+<span class="w">  </span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="for-sink-operators">
+<h4>For Sink Operators<a class="headerlink" href="#for-sink-operators" title="Link to this heading">#</a></h4>
+<p>If your operator is a sink (becomes a <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> in the native plan), add to the <code class="docutils literal notranslate"><span class="pre">sinks</span></code> map (<code class="docutils literal notranslate"><span class="pre">CometExecRule.scala</span></code>):</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="kd">val</span><span class="w"> </span><span class="n">sinks</span><span class="p">:</span><span class="w"> </span><span class="nc">Map</span><span class="p">[</span><span class="nc">Class</span><span class="p">[</span><span class="n">_</span><span class="w"> </span><span class="o">&lt;:</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="p">],</span><span class="w"> </span><span class="nc">CometOperatorSerde</span><span class="p">[</span><span class="n">_</span><span class="p">]]</span><span class="w"> </span><span class="o">=</span>
+<span class="w">  </span><span class="nc">Map</span><span class="p">(</span>
+<span class="w">    </span><span class="k">classOf</span><span class="p">[</span><span class="nc">CoalesceExec</span><span class="p">]</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometCoalesceExec</span><span class="p">,</span>
+<span class="w">    </span><span class="k">classOf</span><span class="p">[</span><span class="nc">UnionExec</span><span class="p">]</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometUnionExec</span><span class="p">,</span>
+<span class="w">    </span><span class="c1">// ... existing operators ...</span>
+<span class="w">    </span><span class="k">classOf</span><span class="p">[</span><span class="nc">YourSinkOperatorExec</span><span class="p">]</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometYourSinkOperator</span><span class="p">,</span>
+<span class="w">  </span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Note: The <code class="docutils literal notranslate"><span class="pre">allExecs</span></code> map automatically combines both <code class="docutils literal notranslate"><span class="pre">nativeExecs</span></code> and <code class="docutils literal notranslate"><span class="pre">sinks</span></code>, so you only need to add to one of the two maps.</p>
+</section>
+</section>
+<section id="step-4-add-configuration-entry">
+<h3>Step 4: Add Configuration Entry<a class="headerlink" href="#step-4-add-configuration-entry" title="Link to this heading">#</a></h3>
+<p>Add a configuration entry in <code class="docutils literal notranslate"><span class="pre">common/src/main/scala/org/apache/comet/CometConf.scala</span></code>:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="kd">val</span><span class="w"> </span><span class="nc">COMET_EXEC_YOUR_OPERATOR_ENABLED</span><span class="p">:</span><span class="w"> </span><span class="nc">ConfigEntry</span><span class="p">[</span><span class="nc">Boolean</span><span class="p">]</span><span class="w"> </span><span class="o">=</span>
+<span class="w">  </span><span class="n">conf</span><span class="p">(</span><span class="s">&quot;spark.comet.exec.yourOperator.enabled&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">doc</span><span class="p">(</span><span class="s">&quot;Whether to enable your operator in Comet&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">booleanConf</span>
+<span class="w">    </span><span class="p">.</span><span class="n">createWithDefault</span><span class="p">(</span><span class="kc">true</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Run <code class="docutils literal notranslate"><span class="pre">make</span></code> to update the user guide. The new configuration option will be added to <code class="docutils literal notranslate"><span class="pre">docs/source/user-guide/latest/configs.md</span></code>.</p>
+</section>
+<section id="step-5-implement-the-native-operator-in-rust">
+<h3>Step 5: Implement the Native Operator in Rust<a class="headerlink" href="#step-5-implement-the-native-operator-in-rust" title="Link to this heading">#</a></h3>
+<section id="update-the-planner">
+<h4>Update the Planner<a class="headerlink" href="#update-the-planner" title="Link to this heading">#</a></h4>
+<p>In <code class="docutils literal notranslate"><span class="pre">native/core/src/execution/planner.rs</span></code>, add a match case in the operator deserialization logic to handle your new protobuf message:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">datafusion_comet_proto</span><span class="p">::</span><span class="n">spark_operator</span><span class="p">::</span><span class="n">operator</span><span class="p">::</span><span class="n">OpStruct</span><span class="p">;</span>
+
+<span class="c1">// In the create_plan or similar method:</span>
+<span class="k">match</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">op_struct</span><span class="p">.</span><span class="n">as_ref</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nb">Some</span><span class="p">(</span><span class="n">OpStruct</span><span class="p">::</span><span class="n">Scan</span><span class="p">(</span><span class="n">scan</span><span class="p">))</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="c1">// ... existing cases ...</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="nb">Some</span><span class="p">(</span><span class="n">OpStruct</span><span class="p">::</span><span class="n">YourNewOperator</span><span class="p">(</span><span class="n">your_op</span><span class="p">))</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="n">create_your_operator_exec</span><span class="p">(</span><span class="n">your_op</span><span class="p">,</span><span class="w"> </span><span class="n">children</span><span class="p">,</span><span class="w"> </span><span class="n">session_ctx</span><span class="p">)</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">    </span><span class="c1">// ... other cases ...</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="implement-the-operator">
+<h4>Implement the Operator<a class="headerlink" href="#implement-the-operator" title="Link to this heading">#</a></h4>
+<p>Create the operator implementation, either in an existing file or a new file in <code class="docutils literal notranslate"><span class="pre">native/core/src/execution/operators/</span></code>:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">use</span><span class="w"> </span><span class="n">datafusion</span><span class="p">::</span><span class="n">physical_plan</span><span class="p">::{</span><span class="n">ExecutionPlan</span><span class="p">,</span><span class="w"> </span><span class="o">..</span><span class="p">.};</span>
+<span class="k">use</span><span class="w"> </span><span class="n">datafusion_comet_proto</span><span class="p">::</span><span class="n">spark_operator</span><span class="p">::</span><span class="n">YourNewOperator</span><span class="p">;</span>
+
+<span class="k">pub</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">create_your_operator_exec</span><span class="p">(</span>
+<span class="w">    </span><span class="n">op</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">YourNewOperator</span><span class="p">,</span>
+<span class="w">    </span><span class="n">children</span><span class="p">:</span><span class="w"> </span><span class="nb">Vec</span><span class="o">&lt;</span><span class="n">Arc</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">ExecutionPlan</span><span class="o">&gt;&gt;</span><span class="p">,</span>
+<span class="w">    </span><span class="n">session_ctx</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">SessionContext</span><span class="p">,</span>
+<span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">Arc</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">ExecutionPlan</span><span class="o">&gt;</span><span class="p">,</span><span class="w"> </span><span class="n">ExecutionError</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// Deserialize expressions and configuration</span>
+<span class="w">    </span><span class="c1">// Create and return the execution plan</span>
+
+<span class="w">    </span><span class="c1">// Option 1: Use existing DataFusion operator</span>
+<span class="w">    </span><span class="c1">// Ok(Arc::new(SomeDataFusionExec::try_new(...)?))</span>
+
+<span class="w">    </span><span class="c1">// Option 2: Implement custom operator (see ExpandExec for example)</span>
+<span class="w">    </span><span class="c1">// Ok(Arc::new(YourCustomExec::new(...)))</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>For custom operators, you’ll need to implement the <code class="docutils literal notranslate"><span class="pre">ExecutionPlan</span></code> trait. See <code class="docutils literal notranslate"><span class="pre">native/core/src/execution/operators/expand.rs</span></code> or <code class="docutils literal notranslate"><span class="pre">scan.rs</span></code> for examples.</p>
+</section>
+</section>
+<section id="step-6-add-tests">
+<h3>Step 6: Add Tests<a class="headerlink" href="#step-6-add-tests" title="Link to this heading">#</a></h3>
+<section id="scala-integration-tests">
+<h4>Scala Integration Tests<a class="headerlink" href="#scala-integration-tests" title="Link to this heading">#</a></h4>
+<p>Add tests in <code class="docutils literal notranslate"><span class="pre">spark/src/test/scala/org/apache/comet/exec/CometExecSuite.scala</span></code> or a related test suite:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">&quot;your operator&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">withTable</span><span class="p">(</span><span class="s">&quot;test_table&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;CREATE TABLE test_table(col1 INT, col2 STRING) USING parquet&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;INSERT INTO test_table VALUES (1, &#39;a&#39;), (2, &#39;b&#39;)&quot;</span><span class="p">)</span>
+
+<span class="w">    </span><span class="c1">// Test query that uses your operator</span>
+<span class="w">    </span><span class="n">checkSparkAnswerAndOperator</span><span class="p">(</span>
+<span class="w">      </span><span class="s">&quot;SELECT * FROM test_table WHERE col1 &gt; 1&quot;</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">checkSparkAnswerAndOperator</span></code> helper verifies:</p>
+<ol class="arabic simple">
+<li><p>Results match Spark’s native execution</p></li>
+<li><p>Your operator is actually being used (not falling back)</p></li>
+</ol>
+</section>
+<section id="rust-unit-tests">
+<h4>Rust Unit Tests<a class="headerlink" href="#rust-unit-tests" title="Link to this heading">#</a></h4>
+<p>Add unit tests in your Rust implementation file:</p>
+<div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="cp">#[cfg(test)]</span>
+<span class="k">mod</span><span class="w"> </span><span class="nn">tests</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">use</span><span class="w"> </span><span class="k">super</span><span class="p">::</span><span class="o">*</span><span class="p">;</span>
+
+<span class="w">    </span><span class="cp">#[test]</span>
+<span class="w">    </span><span class="k">fn</span><span class="w"> </span><span class="nf">test_your_operator</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="c1">// Test operator creation and execution</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="step-7-update-documentation">
+<h3>Step 7: Update Documentation<a class="headerlink" href="#step-7-update-documentation" title="Link to this heading">#</a></h3>
+<p>Add your operator to the supported operators list in <code class="docutils literal notranslate"><span class="pre">docs/source/user-guide/latest/compatibility.md</span></code> or similar documentation.</p>
+</section>
+</section>
+<section id="implementing-a-sink-operator">
+<h2>Implementing a Sink Operator<a class="headerlink" href="#implementing-a-sink-operator" title="Link to this heading">#</a></h2>
+<p>Sink operators are converted to <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> in the native plan and serve as entry points for native execution. The implementation is simpler than native operators because sink operators extend the <code class="docutils literal notranslate"><span class="pre">CometSink</span></code> base class which provides the conversion logic.</p>
+<section id="step-1-create-a-cometoperatorserde-implementation">
+<h3>Step 1: Create a CometOperatorSerde Implementation<a class="headerlink" href="#step-1-create-a-cometoperatorserde-implementation" title="Link to this heading">#</a></h3>
+<p>Create a new Scala file in <code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/spark/sql/comet/</span></code> (e.g., <code class="docutils literal notranslate"><span class="pre">CometYourSinkOperator.scala</span></code>):</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">import</span><span class="w"> </span><span class="nn">org</span><span class="p">.</span><span class="nn">apache</span><span class="p">.</span><span class="nn">comet</span><span class="p">.</span><span class="nn">serde</span><span class="p">.</span><span class="nn">operator</span><span class="p">.</span><span class="nc">CometSink</span>
+
+<span class="k">object</span><span class="w"> </span><span class="nc">CometYourSinkOperator</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometSink</span><span class="p">[</span><span class="nc">YourSinkExec</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">enabledConfig</span><span class="p">:</span><span class="w"> </span><span class="nc">Option</span><span class="p">[</span><span class="nc">ConfigEntry</span><span class="p">[</span><span class="nc">Boolean</span><span class="p">]]</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="nc">Some</span><span class="p">(</span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_EXEC_YOUR_SINK_ENABLED</span><span class="p">)</span>
+
+<span class="w">  </span><span class="c1">// Optional: Override if the data produced is FFI safe</span>
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">isFfiSafe</span><span class="p">:</span><span class="w"> </span><span class="nc">Boolean</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">createExec</span><span class="p">(</span>
+<span class="w">      </span><span class="n">nativeOp</span><span class="p">:</span><span class="w"> </span><span class="nc">OperatorOuterClass</span><span class="p">.</span><span class="nc">Operator</span><span class="p">,</span>
+<span class="w">      </span><span class="n">op</span><span class="p">:</span><span class="w"> </span><span class="nc">YourSinkExec</span><span class="p">):</span><span class="w"> </span><span class="nc">CometNativeExec</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nc">CometSinkPlaceHolder</span><span class="p">(</span>
+<span class="w">      </span><span class="n">nativeOp</span><span class="p">,</span>
+<span class="w">      </span><span class="n">op</span><span class="p">,</span>
+<span class="w">      </span><span class="nc">CometYourSinkExec</span><span class="p">(</span><span class="n">op</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">output</span><span class="p">,</span><span class="w"> </span><span class="cm">/* other parameters */</span><span class="p">,</span><span class="w"> </span><span class="n">op</span><span class="p">.</span><span class="n">child</span><span class="p">))</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="c1">// Optional: Override getSupportLevel if you need custom validation beyond data types</span>
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getSupportLevel</span><span class="p">(</span><span class="n">operator</span><span class="p">:</span><span class="w"> </span><span class="nc">YourSinkExec</span><span class="p">):</span><span class="w"> </span><span class="nc">SupportLevel</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// CometSink base class already checks data types in convert()</span>
+<span class="w">    </span><span class="c1">// Add any additional validation here</span>
+<span class="w">    </span><span class="nc">Compatible</span><span class="p">()</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="cm">/**</span>
+<span class="cm"> * Comet implementation of YourSinkExec that supports columnar processing</span>
+<span class="cm"> */</span>
+<span class="k">case</span><span class="w"> </span><span class="k">class</span><span class="w"> </span><span class="nc">CometYourSinkExec</span><span class="p">(</span>
+<span class="w">    </span><span class="k">override</span><span class="w"> </span><span class="kd">val</span><span class="w"> </span><span class="n">originalPlan</span><span class="p">:</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="p">,</span>
+<span class="w">    </span><span class="k">override</span><span class="w"> </span><span class="kd">val</span><span class="w"> </span><span class="n">output</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">Attribute</span><span class="p">],</span>
+<span class="w">    </span><span class="cm">/* other parameters */</span><span class="p">,</span>
+<span class="w">    </span><span class="n">child</span><span class="p">:</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="p">)</span>
+<span class="w">    </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometExec</span>
+<span class="w">    </span><span class="k">with</span><span class="w"> </span><span class="nc">UnaryExecNode</span><span class="w"> </span><span class="p">{</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">protected</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">doExecuteColumnar</span><span class="p">():</span><span class="w"> </span><span class="nc">RDD</span><span class="p">[</span><span class="nc">ColumnarBatch</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// Implement columnar execution logic</span>
+<span class="w">    </span><span class="kd">val</span><span class="w"> </span><span class="n">rdd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">child</span><span class="p">.</span><span class="n">executeColumnar</span><span class="p">()</span>
+<span class="w">    </span><span class="c1">// Apply your sink operator&#39;s logic</span>
+<span class="w">    </span><span class="n">rdd</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">outputPartitioning</span><span class="p">:</span><span class="w"> </span><span class="nc">Partitioning</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// Define output partitioning</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">protected</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">withNewChildInternal</span><span class="p">(</span><span class="n">newChild</span><span class="p">:</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="p">):</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="w"> </span><span class="o">=</span>
+<span class="w">    </span><span class="bp">this</span><span class="p">.</span><span class="n">copy</span><span class="p">(</span><span class="n">child</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">newChild</span><span class="p">)</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><strong>Key Points:</strong></p>
+<ul class="simple">
+<li><p>Extend <code class="docutils literal notranslate"><span class="pre">CometSink[T]</span></code> which provides the <code class="docutils literal notranslate"><span class="pre">convert()</span></code> method that transforms the operator to <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code></p></li>
+<li><p>The <code class="docutils literal notranslate"><span class="pre">CometSink.convert()</span></code> method (in <code class="docutils literal notranslate"><span class="pre">CometSink.scala</span></code>) automatically handles:</p>
+<ul>
+<li><p>Data type validation</p></li>
+<li><p>Conversion to <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> in the native plan</p></li>
+<li><p>Setting FFI safety flags</p></li>
+</ul>
+</li>
+<li><p>You must implement <code class="docutils literal notranslate"><span class="pre">createExec()</span></code> to wrap the operator appropriately</p></li>
+<li><p>You typically need to create a corresponding <code class="docutils literal notranslate"><span class="pre">CometYourSinkExec</span></code> class that implements columnar execution</p></li>
+</ul>
+</section>
+<section id="step-2-register-the-sink">
+<h3>Step 2: Register the Sink<a class="headerlink" href="#step-2-register-the-sink" title="Link to this heading">#</a></h3>
+<p>Add your sink to the <code class="docutils literal notranslate"><span class="pre">sinks</span></code> map in <code class="docutils literal notranslate"><span class="pre">CometExecRule.scala</span></code>:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="kd">val</span><span class="w"> </span><span class="n">sinks</span><span class="p">:</span><span class="w"> </span><span class="nc">Map</span><span class="p">[</span><span class="nc">Class</span><span class="p">[</span><span class="n">_</span><span class="w"> </span><span class="o">&lt;:</span><span class="w"> </span><span class="nc">SparkPlan</span><span class="p">],</span><span class="w"> </span><span class="nc">CometOperatorSerde</span><span class="p">[</span><span class="n">_</span><span class="p">]]</span><span class="w"> </span><span class="o">=</span>
+<span class="w">  </span><span class="nc">Map</span><span class="p">(</span>
+<span class="w">    </span><span class="k">classOf</span><span class="p">[</span><span class="nc">CoalesceExec</span><span class="p">]</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometCoalesceExec</span><span class="p">,</span>
+<span class="w">    </span><span class="k">classOf</span><span class="p">[</span><span class="nc">UnionExec</span><span class="p">]</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometUnionExec</span><span class="p">,</span>
+<span class="w">    </span><span class="k">classOf</span><span class="p">[</span><span class="nc">YourSinkExec</span><span class="p">]</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometYourSinkOperator</span><span class="p">,</span>
+<span class="w">  </span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="step-3-add-configuration">
+<h3>Step 3: Add Configuration<a class="headerlink" href="#step-3-add-configuration" title="Link to this heading">#</a></h3>
+<p>Add a configuration entry in <code class="docutils literal notranslate"><span class="pre">CometConf.scala</span></code>:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="kd">val</span><span class="w"> </span><span class="nc">COMET_EXEC_YOUR_SINK_ENABLED</span><span class="p">:</span><span class="w"> </span><span class="nc">ConfigEntry</span><span class="p">[</span><span class="nc">Boolean</span><span class="p">]</span><span class="w"> </span><span class="o">=</span>
+<span class="w">  </span><span class="n">conf</span><span class="p">(</span><span class="s">&quot;spark.comet.exec.yourSink.enabled&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">doc</span><span class="p">(</span><span class="s">&quot;Whether to enable your sink operator in Comet&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">booleanConf</span>
+<span class="w">    </span><span class="p">.</span><span class="n">createWithDefault</span><span class="p">(</span><span class="kc">true</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="step-4-add-tests">
+<h3>Step 4: Add Tests<a class="headerlink" href="#step-4-add-tests" title="Link to this heading">#</a></h3>
+<p>Test that your sink operator correctly feeds data into native execution:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">&quot;your sink operator&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">withTable</span><span class="p">(</span><span class="s">&quot;test_table&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;CREATE TABLE test_table(col1 INT, col2 STRING) USING parquet&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;INSERT INTO test_table VALUES (1, &#39;a&#39;), (2, &#39;b&#39;)&quot;</span><span class="p">)</span>
+
+<span class="w">    </span><span class="c1">// Test query that uses your sink operator followed by native operators</span>
+<span class="w">    </span><span class="n">checkSparkAnswerAndOperator</span><span class="p">(</span>
+<span class="w">      </span><span class="s">&quot;SELECT col1 + 1 FROM (/* query that produces YourSinkExec */)&quot;</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><strong>Important Notes for Sinks:</strong></p>
+<ul class="simple">
+<li><p>Sinks extend the <code class="docutils literal notranslate"><span class="pre">CometSink</span></code> base class, which provides the <code class="docutils literal notranslate"><span class="pre">convert()</span></code> method implementation</p></li>
+<li><p>The <code class="docutils literal notranslate"><span class="pre">CometSink.convert()</span></code> method automatically handles conversion to <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> in the native plan</p></li>
+<li><p>You don’t need to add protobuf definitions for sink operators - they use the standard <code class="docutils literal notranslate"><span class="pre">Scan</span></code> message</p></li>
+<li><p>You don’t need Rust implementation for sinks - they become standard <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> operators that read from the JVM</p></li>
+<li><p>Sink implementations should provide a columnar-compatible execution class (e.g., <code class="docutils literal notranslate"><span class="pre">CometCoalesceExec</span></code>)</p></li>
+<li><p>The <code class="docutils literal notranslate"><span class="pre">createExec()</span></code> method wraps the operator with <code class="docutils literal notranslate"><span class="pre">CometSinkPlaceHolder</span></code> to manage the JVM-to-native boundary</p></li>
+<li><p>See <code class="docutils literal notranslate"><span class="pre">CometCoalesceExec.scala</span></code> or <code class="docutils literal notranslate"><span class="pre">CometUnionExec</span></code> in <code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/spark/sql/comet/</span></code> for reference implementations</p></li>
+</ul>
+</section>
+</section>
+<section id="implementing-a-jvm-operator">
+<h2>Implementing a JVM Operator<a class="headerlink" href="#implementing-a-jvm-operator" title="Link to this heading">#</a></h2>
+<p>For operators that run in the JVM:</p>
+<ol class="arabic simple">
+<li><p>Create a new operator class extending appropriate Spark base classes in <code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/</span></code></p></li>
+<li><p>Add matching logic in <code class="docutils literal notranslate"><span class="pre">CometExecRule.scala</span></code> to transform the Spark operator</p></li>
+<li><p>No protobuf or Rust implementation needed</p></li>
+</ol>
+<p>Example pattern from <code class="docutils literal notranslate"><span class="pre">CometExecRule.scala</span></code>:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">case</span><span class="w"> </span><span class="n">s</span><span class="p">:</span><span class="w"> </span><span class="nc">ShuffleExchangeExec</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">nativeShuffleSupported</span><span class="p">(</span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">  </span><span class="nc">CometShuffleExchangeExec</span><span class="p">(</span><span class="n">s</span><span class="p">,</span><span class="w"> </span><span class="n">shuffleType</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">CometNativeShuffle</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="common-patterns-and-helpers">
+<h2>Common Patterns and Helpers<a class="headerlink" href="#common-patterns-and-helpers" title="Link to this heading">#</a></h2>
+<section id="expression-conversion">
+<h3>Expression Conversion<a class="headerlink" href="#expression-conversion" title="Link to this heading">#</a></h3>
+<p>Use <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde.exprToProto</span></code> to convert Spark expressions to protobuf:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="kd">val</span><span class="w"> </span><span class="n">protoExpr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">exprToProto</span><span class="p">(</span><span class="n">sparkExpr</span><span class="p">,</span><span class="w"> </span><span class="n">inputSchema</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="handling-fallback">
+<h3>Handling Fallback<a class="headerlink" href="#handling-fallback" title="Link to this heading">#</a></h3>
+<p>Use <code class="docutils literal notranslate"><span class="pre">withInfo</span></code> to tag operators with fallback reasons:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">canConvert</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">withInfo</span><span class="p">(</span><span class="n">op</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;Reason for fallback&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">childNodes</span><span class="p">:</span><span class="w"> </span><span class="n">_*</span><span class="p">)</span>
+<span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="nc">None</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="child-operator-validation">
+<h3>Child Operator Validation<a class="headerlink" href="#child-operator-validation" title="Link to this heading">#</a></h3>
+<p>Always check that child operators were successfully converted:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">childOp</span><span class="p">.</span><span class="n">isEmpty</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="c1">// Cannot convert if children failed</span>
+<span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="nc">None</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="debugging-tips">
+<h2>Debugging Tips<a class="headerlink" href="#debugging-tips" title="Link to this heading">#</a></h2>
+<ol class="arabic simple">
+<li><p><strong>Enable verbose logging</strong>: Set <code class="docutils literal notranslate"><span class="pre">spark.comet.explain.format=verbose</span></code> to see detailed plan transformations</p></li>
+<li><p><strong>Check fallback reasons</strong>: Set <code class="docutils literal notranslate"><span class="pre">spark.comet.logFallbackReasons.enabled=true</span></code> to log why operators fall back to Spark</p></li>
+<li><p><strong>Verify protobuf</strong>: Add debug prints in Rust to inspect deserialized operators</p></li>
+<li><p><strong>Use EXPLAIN</strong>: Run <code class="docutils literal notranslate"><span class="pre">EXPLAIN</span> <span class="pre">EXTENDED</span></code> on queries to see the physical plan</p></li>
+</ol>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="benchmarking.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Comet Benchmarking Guide</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="adding_a_new_expression.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Adding a New Expression</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
