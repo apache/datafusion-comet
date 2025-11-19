@@ -46,7 +46,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanE
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.parquet.{CometParquetScan, Native}
+import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.shims.CometTypeShim
 
@@ -261,6 +261,33 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           val cometScan = CometParquetScan(session, scanExec.scan.asInstanceOf[ParquetScan])
           CometBatchScanExec(
             scanExec.copy(scan = cometScan),
+            runtimeFilters = scanExec.runtimeFilters)
+        } else {
+          withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+      // Iceberg scan - patched version implementing SupportsComet interface
+      case s: SupportsComet =>
+        val fallbackReasons = new ListBuffer[String]()
+
+        if (!s.isCometEnabled) {
+          fallbackReasons += "Comet extension is not enabled for " +
+            s"${scanExec.scan.getClass.getSimpleName}: not enabled on data source side"
+        }
+
+        val schemaSupported =
+          CometBatchScanExec.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
+
+        if (!schemaSupported) {
+          fallbackReasons += "Comet extension is not enabled for " +
+            s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
+        }
+
+        if (s.isCometEnabled && schemaSupported) {
+          // When reading from Iceberg, we automatically enable type promotion
+          SQLConf.get.setConfString(COMET_SCHEMA_EVOLUTION_ENABLED.key, "true")
+          CometBatchScanExec(
+            scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)
         } else {
           withInfos(scanExec, fallbackReasons.toSet)
