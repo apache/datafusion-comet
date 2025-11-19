@@ -46,7 +46,7 @@ Examples: `CometBroadcastExchangeExec`, `CometShuffleExchangeExec`
 
 #### 3. Comet Sinks
 
-Some operators serve as "sinks" or entry points for native execution, meaning they can be leaf nodes that feed data into native execution blocks.
+Some operators serve as "sinks" or data sources for native execution, meaning they can be leaf nodes that feed data into native execution blocks.
 
 Examples: `CometScanExec`, `CometBatchScanExec`, `UnionExec`, `CometSparkToColumnarExec`
 
