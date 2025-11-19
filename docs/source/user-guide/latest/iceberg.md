@@ -143,5 +143,6 @@ scala> spark.sql(s"SELECT * from t1").explain()
 ```
 
 ## Known issues
- - Spark Runtime Filtering isn't [working](https://github.com/apache/datafusion-comet/issues/2116)
-   - You can bypass the issue by either setting `spark.sql.adaptive.enabled=false` or `spark.comet.exec.broadcastExchange.enabled=false`
+
+- Spark Runtime Filtering isn't [working](https://github.com/apache/datafusion-comet/issues/2116)
+  - You can bypass the issue by either setting `spark.sql.adaptive.enabled=false` or `spark.comet.exec.broadcastExchange.enabled=false`

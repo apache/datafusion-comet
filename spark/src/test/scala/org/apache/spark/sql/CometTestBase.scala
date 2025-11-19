@@ -306,7 +306,7 @@ abstract class CometTestBase
    * This method does not check that Comet replaced any operators or that the results match in the
    * case where the query is successful against both Spark and Comet.
    */
-  protected def checkSparkMaybeThrows(
+  protected def checkSparkAnswerMaybeThrows(
       df: => DataFrame): (Option[Throwable], Option[Throwable]) = {
     var expected: Try[Array[Row]] = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -316,8 +316,8 @@ abstract class CometTestBase
 
     (expected, actual) match {
       case (Success(_), Success(_)) =>
-        // TODO compare results and confirm that they match
-        // https://github.com/apache/datafusion-comet/issues/2657
+        // compare results and confirm that they match
+        checkSparkAnswer(df)
         (None, None)
       case _ =>
         (expected.failed.toOption, actual.failed.toOption)
@@ -385,6 +385,8 @@ abstract class CometTestBase
             s"plan: ${new ExtendedExplainInfo().generateExtendedInfo(plan)}")
       case _ =>
     }
+
+    checkPlanNotMissingInput(plan)
   }
 
   protected def findFirstNonCometOperator(
@@ -404,6 +406,28 @@ abstract class CometTestBase
       case _ =>
     }
     None
+  }
+
+  // checks the plan node has no missing inputs
+  // such nodes represented in plan with exclamation mark !
+  // example: !CometWindowExec
+  protected def checkPlanNotMissingInput(plan: SparkPlan): Unit = {
+    def hasMissingInput(node: SparkPlan): Boolean = {
+      node.missingInput.nonEmpty && node.children.nonEmpty
+    }
+
+    val isCometNode = plan.nodeName.startsWith("Comet")
+
+    if (isCometNode && hasMissingInput(plan)) {
+      assert(
+        false,
+        s"Plan node `${plan.nodeName}` has invalid missingInput: ${plan.missingInput}")
+    }
+
+    // Otherwise recursively check children
+    plan.children.foreach { child =>
+      checkPlanNotMissingInput(child)
+    }
   }
 
   private def checkPlanContains(plan: SparkPlan, includePlans: Class[_]*): Unit = {

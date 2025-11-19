@@ -25,7 +25,7 @@
 
 When `spark.comet.scan.enabled` is enabled, Parquet scans will be performed natively by Comet if all data types
 in the schema are supported. When this option is not enabled, the scan will fall back to Spark. In this case,
-enabling `spark.comet.convert.parquet.enabled` will immediately convert the data into Arrow format, allowing native 
+enabling `spark.comet.convert.parquet.enabled` will immediately convert the data into Arrow format, allowing native
 execution to happen after that, but the process may not be efficient.
 
 ### Apache Iceberg
@@ -59,12 +59,13 @@ Comet supports most standard storage systems, such as local file system and obje
 Apache DataFusion Comet native reader seamlessly scans files from remote HDFS for [supported formats](#supported-spark-data-sources)
 
 ### Using experimental native DataFusion reader
+
 Unlike to native Comet reader the Datafusion reader fully supports nested types processing. This reader is currently experimental only
 
 To build Comet with native DataFusion reader and remote HDFS support it is required to have a JDK installed
 
 Example:
-Build a Comet for `spark-3.5` provide a JDK path in `JAVA_HOME` 
+Build a Comet for `spark-3.5` provide a JDK path in `JAVA_HOME`
 Provide the JRE linker path in `RUSTFLAGS`, the path can vary depending on the system. Typically JRE linker is a part of installed JDK
 
 ```shell
@@ -73,7 +74,7 @@ make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME
 ```
 
 Start Comet with experimental reader and HDFS support as [described](installation.md/#run-spark-shell-with-comet-enabled)
-and add additional parameters 
+and add additional parameters
 
 ```shell
 --conf spark.comet.scan.impl=native_datafusion \
@@ -82,7 +83,8 @@ and add additional parameters
 --conf dfs.client.use.datanode.hostname = true
 ```
 
-Query a struct type from Remote HDFS 
+Query a struct type from Remote HDFS
+
 ```shell
 spark.read.parquet("hdfs://namenode:9000/user/data").show(false)
 
@@ -100,7 +102,7 @@ root
 +- CometNativeScan:  (1)
 
 
-(1) CometNativeScan: 
+(1) CometNativeScan:
 Output [3]: [id#0, first_name#1, personal_info#4]
 Arguments: [id#0, first_name#1, personal_info#4]
 
@@ -127,23 +129,27 @@ More on [HDFS Reader](https://github.com/apache/datafusion-comet/blob/main/nativ
 ### Local HDFS development
 
 - Configure local machine network. Add hostname to `/etc/hosts`
+
 ```shell
 127.0.0.1	localhost   namenode datanode1 datanode2 datanode3
 ::1             localhost namenode datanode1 datanode2 datanode3
 ```
 
-- Start local HDFS cluster, 3 datanodes, namenode url is `namenode:9000` 
+- Start local HDFS cluster, 3 datanodes, namenode url is `namenode:9000`
+
 ```shell
 docker compose -f kube/local/hdfs-docker-compose.yml up
 ```
 
 - Check the local namenode is up and running on `http://localhost:9870/dfshealth.html#tab-overview`
 - Build a project with HDFS support
+
 ```shell
 JAVA_HOME="/opt/homebrew/opt/openjdk@11" make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
-- Run local test 
+- Run local test
+
 ```scala
 
     withSQLConf(
@@ -159,6 +165,7 @@ JAVA_HOME="/opt/homebrew/opt/openjdk@11" make release PROFILES="-Pspark-3.5" COM
     }
   }
 ```
+
 Or use `spark-shell` with HDFS support as described [above](#using-experimental-native-datafusion-reader)
 
 ## S3
@@ -167,7 +174,7 @@ Or use `spark-shell` with HDFS support as described [above](#using-experimental-
 
 One major difference between Spark and Comet is the mechanism for discovering Root
 CA Certificates. Spark uses the JVM to read CA Certificates from the Java Trust Store, but native Comet
-scans use system Root CA Certificates (typically stored 
+scans use system Root CA Certificates (typically stored
 in `/etc/ssl/certs` on Linux). These scans will not be able to interact with S3 if the Root CA Certificates are not
 installed.
 
@@ -175,16 +182,16 @@ installed.
 
 AWS credential providers can be configured using the `fs.s3a.aws.credentials.provider` configuration. The following table shows the supported credential providers and their configuration options:
 
-| Credential provider | Description | Supported Options |
-|---------------------|-------------|-------------------|
-| `org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider` | Access S3 using access key and secret key | `fs.s3a.access.key`, `fs.s3a.secret.key` |
-| `org.apache.hadoop.fs.s3a.TemporaryAWSCredentialsProvider` | Access S3 using temporary credentials | `fs.s3a.access.key`, `fs.s3a.secret.key`, `fs.s3a.session.token` |
-| `org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider` | Access S3 using AWS STS assume role | `fs.s3a.assumed.role.arn`, `fs.s3a.assumed.role.session.name` (optional), `fs.s3a.assumed.role.credentials.provider` (optional) |
-| `org.apache.hadoop.fs.s3a.auth.IAMInstanceCredentialsProvider` | Access S3 using EC2 instance profile or ECS task credentials (tries ECS first, then IMDS) | None (auto-detected) |
-| `org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider`<br/>`com.amazonaws.auth.AnonymousAWSCredentials`<br/>`software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider` | Access S3 without authentication (public buckets only) | None |
-| `com.amazonaws.auth.EnvironmentVariableCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider` | Load credentials from environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`) | None |
-| `com.amazonaws.auth.InstanceProfileCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.InstanceProfileCredentialsProvider` | Access S3 using EC2 instance metadata service (IMDS) | None |
-| `com.amazonaws.auth.ContainerCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.ContainerCredentialsProvider`<br/>`com.amazonaws.auth.EC2ContainerCredentialsProviderWrapper` | Access S3 using ECS task credentials | None |
-| `com.amazonaws.auth.WebIdentityTokenCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.WebIdentityTokenFileCredentialsProvider` | Authenticate using web identity token file | None |
+| Credential provider                                                                                                                                                                          | Description                                                                                                     | Supported Options                                                                                                               |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider`                                                                                                                                      | Access S3 using access key and secret key                                                                       | `fs.s3a.access.key`, `fs.s3a.secret.key`                                                                                        |
+| `org.apache.hadoop.fs.s3a.TemporaryAWSCredentialsProvider`                                                                                                                                   | Access S3 using temporary credentials                                                                           | `fs.s3a.access.key`, `fs.s3a.secret.key`, `fs.s3a.session.token`                                                                |
+| `org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider`                                                                                                                                | Access S3 using AWS STS assume role                                                                             | `fs.s3a.assumed.role.arn`, `fs.s3a.assumed.role.session.name` (optional), `fs.s3a.assumed.role.credentials.provider` (optional) |
+| `org.apache.hadoop.fs.s3a.auth.IAMInstanceCredentialsProvider`                                                                                                                               | Access S3 using EC2 instance profile or ECS task credentials (tries ECS first, then IMDS)                       | None (auto-detected)                                                                                                            |
+| `org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider`<br/>`com.amazonaws.auth.AnonymousAWSCredentials`<br/>`software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider`       | Access S3 without authentication (public buckets only)                                                          | None                                                                                                                            |
+| `com.amazonaws.auth.EnvironmentVariableCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider`                                             | Load credentials from environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`) | None                                                                                                                            |
+| `com.amazonaws.auth.InstanceProfileCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.InstanceProfileCredentialsProvider`                                                     | Access S3 using EC2 instance metadata service (IMDS)                                                            | None                                                                                                                            |
+| `com.amazonaws.auth.ContainerCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.ContainerCredentialsProvider`<br/>`com.amazonaws.auth.EC2ContainerCredentialsProviderWrapper` | Access S3 using ECS task credentials                                                                            | None                                                                                                                            |
+| `com.amazonaws.auth.WebIdentityTokenCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.WebIdentityTokenFileCredentialsProvider`                                               | Authenticate using web identity token file                                                                      | None                                                                                                                            |
 
 Multiple credential providers can be specified in a comma-separated list using the `fs.s3a.aws.credentials.provider` configuration, just as Hadoop AWS supports. If `fs.s3a.aws.credentials.provider` is not configured, Hadoop S3A's default credential provider chain will be used. All configuration options also support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
