@@ -169,19 +169,19 @@ fn extract_s3_config_options(
     }
 
     // Extract and handle path style access (virtual hosted style)
-    let mut virtual_hosted_style_request = false;
+    let mut path_style_access = false;
     if let Some(path_style) = get_config_trimmed(configs, bucket, "path.style.access") {
-        virtual_hosted_style_request = path_style.to_lowercase() == "true";
+        path_style_access = path_style.to_lowercase() == "true";
         s3_configs.insert(
             AmazonS3ConfigKey::VirtualHostedStyleRequest,
-            virtual_hosted_style_request.to_string(),
+            (!path_style_access).to_string(),
         );
     }
 
-    // Extract endpoint configuration and modify if virtual hosted style is enabled
+    // Extract endpoint configuration and modify if path style access is enabled
     if let Some(endpoint) = get_config_trimmed(configs, bucket, "endpoint") {
         let normalized_endpoint =
-            normalize_endpoint(endpoint, bucket, virtual_hosted_style_request);
+            normalize_endpoint(endpoint, bucket, path_style_access);
         if let Some(endpoint) = normalized_endpoint {
             s3_configs.insert(AmazonS3ConfigKey::Endpoint, endpoint);
         }
@@ -202,7 +202,7 @@ fn extract_s3_config_options(
 fn normalize_endpoint(
     endpoint: &str,
     bucket: &str,
-    virtual_hosted_style_request: bool,
+    force_path_style: bool,
 ) -> Option<String> {
     if endpoint.is_empty() {
         return None;
@@ -221,7 +221,7 @@ fn normalize_endpoint(
         endpoint.to_string()
     };
 
-    if virtual_hosted_style_request {
+    if force_path_style {
         if endpoint.ends_with("/") {
             Some(format!("{endpoint}{bucket}"))
         } else {
@@ -1849,6 +1849,81 @@ mod tests {
         assert_eq!(
             s3_configs.get(&AmazonS3ConfigKey::RequestPayer),
             Some(&"true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_s3_config_path_style_access() {
+        // Case 1: path.style.access is true -> VirtualHostedStyleRequest should be false
+        let mut configs = HashMap::new();
+        configs.insert("fs.s3a.path.style.access".to_string(), "true".to_string());
+        let s3_configs = extract_s3_config_options(&configs, "test-bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"false".to_string())
+        );
+
+        // Case 2: path.style.access is false -> VirtualHostedStyleRequest should be true
+        let mut configs = HashMap::new();
+        configs.insert("fs.s3a.path.style.access".to_string(), "false".to_string());
+        let s3_configs = extract_s3_config_options(&configs, "test-bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            Some(&"true".to_string())
+        );
+
+        // Case 3: path.style.access is not set -> VirtualHostedStyleRequest should not be set
+        let configs = HashMap::new();
+        let s3_configs = extract_s3_config_options(&configs, "test-bucket");
+        assert_eq!(
+            s3_configs.get(&AmazonS3ConfigKey::VirtualHostedStyleRequest),
+            None
+        );
+    }
+
+
+    #[test]
+    fn test_normalize_endpoint() {
+        let bucket = "test-bucket";
+
+        // Case 1: force_path_style = true -> should append bucket
+        assert_eq!(
+            normalize_endpoint("http://localhost:9000", bucket, true),
+            Some("http://localhost:9000/test-bucket".to_string())
+        );
+        assert_eq!(
+            normalize_endpoint("http://localhost:9000/", bucket, true),
+            Some("http://localhost:9000/test-bucket".to_string())
+        );
+        assert_eq!(
+            normalize_endpoint("https://my-s3-compatible.com", bucket, true),
+            Some("https://my-s3-compatible.com/test-bucket".to_string())
+        );
+
+        // Case 2: force_path_style = false -> should NOT append bucket
+        assert_eq!(
+            normalize_endpoint("http://localhost:9000", bucket, false),
+            Some("http://localhost:9000".to_string())
+        );
+        assert_eq!(
+            normalize_endpoint("https://my-s3-compatible.com", bucket, false),
+            Some("https://my-s3-compatible.com".to_string())
+        );
+
+        // Case 3: Default S3 endpoint -> should return None (ignored)
+        assert_eq!(
+            normalize_endpoint("s3.amazonaws.com", bucket, true),
+            None
+        );
+        assert_eq!(
+            normalize_endpoint("s3.amazonaws.com", bucket, false),
+            None
+        );
+
+        // Case 4: Empty endpoint -> should return None
+        assert_eq!(
+            normalize_endpoint("", bucket, true),
+            None
         );
     }
 
