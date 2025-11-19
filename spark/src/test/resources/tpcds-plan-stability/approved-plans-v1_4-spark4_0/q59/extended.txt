@@ -1,58 +1,53 @@
-TakeOrderedAndProject
-+- Project
-   +- BroadcastHashJoin
-      :- Project
-      :  +- BroadcastHashJoin
-      :     :- Project
-      :     :  +- BroadcastHashJoin
-      :     :     :-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(d_week_seq#1, ss_store_sk#2, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#3 = Sunday   ) THEN ss_sales_price#4 END))#5,17,2) AS sun_sales#6, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#3 = Monday   ) THEN ss_sales_price#4 END))#7,17,2) AS mon_sales#8, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#3 = Tuesday  ) THEN ss_sales_price#4 END))#9,17,2) AS tue_sales#10, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#3 = Wednesday) THEN ss_sales_price#4 END))#11,17,2) AS wed_sales#12, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#3 = Thursday ) THEN ss_sales_price#4 END))#13,17,2) AS thu_sales#14, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#3 = Friday   ) THEN ss_sales_price#4 END))#15,17,2) AS fri_sales#16, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#3 = Saturday ) THEN ss_sales_price#4 END))#17,17,2) AS sat_sales#18)]
-      :     :     :  +- CometColumnarToRow
-      :     :     :     +- CometExchange
-      :     :     :        +- CometHashAggregate
-      :     :     :           +- CometProject
-      :     :     :              +- CometBroadcastHashJoin
-      :     :     :                 :- CometFilter
-      :     :     :                 :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
-      :     :     :                 +- CometBroadcastExchange
-      :     :     :                    +- CometProject
-      :     :     :                       +- CometFilter
-      :     :     :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-      :     :     +- BroadcastExchange
-      :     :        +- CometColumnarToRow
-      :     :           +- CometProject
-      :     :              +- CometFilter
-      :     :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
-      :     +- BroadcastExchange
-      :        +- CometColumnarToRow
-      :           +- CometProject
-      :              +- CometFilter
-      :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-      +- BroadcastExchange
-         +- Project
-            +- BroadcastHashJoin
-               :- Project
-               :  +- BroadcastHashJoin
-               :     :-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(d_week_seq#19, ss_store_sk#20, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#21 = Sunday   ) THEN ss_sales_price#22 END))#5,17,2) AS sun_sales#23, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#21 = Monday   ) THEN ss_sales_price#22 END))#7,17,2) AS mon_sales#24, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#21 = Tuesday  ) THEN ss_sales_price#22 END))#9,17,2) AS tue_sales#25, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#21 = Wednesday) THEN ss_sales_price#22 END))#11,17,2) AS wed_sales#26, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#21 = Thursday ) THEN ss_sales_price#22 END))#13,17,2) AS thu_sales#27, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#21 = Friday   ) THEN ss_sales_price#22 END))#15,17,2) AS fri_sales#28, MakeDecimal(sum(UnscaledValue(CASE WHEN (d_day_name#21 = Saturday ) THEN ss_sales_price#22 END))#17,17,2) AS sat_sales#29)]
-               :     :  +- CometColumnarToRow
-               :     :     +- CometExchange
-               :     :        +- CometHashAggregate
-               :     :           +- CometProject
-               :     :              +- CometBroadcastHashJoin
-               :     :                 :- CometFilter
-               :     :                 :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
-               :     :                 +- CometBroadcastExchange
-               :     :                    +- CometProject
-               :     :                       +- CometFilter
-               :     :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-               :     +- BroadcastExchange
-               :        +- CometColumnarToRow
-               :           +- CometProject
-               :              +- CometFilter
-               :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
-               +- BroadcastExchange
-                  +- CometColumnarToRow
+CometColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometProject
+      +- CometBroadcastHashJoin
+         :- CometProject
+         :  +- CometBroadcastHashJoin
+         :     :- CometProject
+         :     :  +- CometBroadcastHashJoin
+         :     :     :- CometHashAggregate
+         :     :     :  +- CometExchange
+         :     :     :     +- CometHashAggregate
+         :     :     :        +- CometProject
+         :     :     :           +- CometBroadcastHashJoin
+         :     :     :              :- CometFilter
+         :     :     :              :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+         :     :     :              +- CometBroadcastExchange
+         :     :     :                 +- CometProject
+         :     :     :                    +- CometFilter
+         :     :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+         :     :     +- CometBroadcastExchange
+         :     :        +- CometProject
+         :     :           +- CometFilter
+         :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+         :     +- CometBroadcastExchange
+         :        +- CometProject
+         :           +- CometFilter
+         :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+         +- CometBroadcastExchange
+            +- CometProject
+               +- CometBroadcastHashJoin
+                  :- CometProject
+                  :  +- CometBroadcastHashJoin
+                  :     :- CometHashAggregate
+                  :     :  +- CometExchange
+                  :     :     +- CometHashAggregate
+                  :     :        +- CometProject
+                  :     :           +- CometBroadcastHashJoin
+                  :     :              :- CometFilter
+                  :     :              :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                  :     :              +- CometBroadcastExchange
+                  :     :                 +- CometProject
+                  :     :                    +- CometFilter
+                  :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                  :     +- CometBroadcastExchange
+                  :        +- CometProject
+                  :           +- CometFilter
+                  :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+                  +- CometBroadcastExchange
                      +- CometProject
                         +- CometFilter
                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 
-Comet accelerated 32 out of 50 eligible operators (64%). Final plan contains 6 transitions between Spark and Comet.
+Comet accelerated 50 out of 50 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet.

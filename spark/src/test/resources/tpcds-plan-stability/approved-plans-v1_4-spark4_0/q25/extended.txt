@@ -1,6 +1,6 @@
-TakeOrderedAndProject
-+-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(i_item_id#1, i_item_desc#2, s_store_id#3, s_store_name#4, MakeDecimal(sum(UnscaledValue(ss_net_profit#5))#6,17,2) AS store_sales_profit#7, MakeDecimal(sum(UnscaledValue(sr_net_loss#8))#9,17,2) AS store_returns_loss#10, MakeDecimal(sum(UnscaledValue(cs_net_profit#11))#12,17,2) AS catalog_sales_profit#13)]
-   +- CometColumnarToRow
+CometColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometHashAggregate
       +- CometExchange
          +- CometHashAggregate
             +- CometProject
@@ -59,4 +59,4 @@ TakeOrderedAndProject
                         +- CometFilter
                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
 
-Comet accelerated 50 out of 57 eligible operators (87%). Final plan contains 3 transitions between Spark and Comet.
+Comet accelerated 52 out of 57 eligible operators (91%). Final plan contains 3 transitions between Spark and Comet.

@@ -1,8 +1,8 @@
-TakeOrderedAndProject [sum(ss_ext_sales_price),d_year,i_category_id,i_category]
-  WholeStageCodegen (1)
-    HashAggregate [d_year,i_category_id,i_category,sum] [sum(UnscaledValue(ss_ext_sales_price)),sum(ss_ext_sales_price),sum]
-      CometColumnarToRow
-        InputAdapter
+WholeStageCodegen (1)
+  CometColumnarToRow
+    InputAdapter
+      CometTakeOrderedAndProject [d_year,i_category_id,i_category,sum(ss_ext_sales_price)]
+        CometHashAggregate [sum] [d_year,i_category_id,i_category,sum(ss_ext_sales_price),sum(UnscaledValue(ss_ext_sales_price))]
           CometExchange [d_year,i_category_id,i_category] #1
             CometHashAggregate [ss_ext_sales_price] [d_year,i_category_id,i_category,sum]
               CometProject [d_year,ss_ext_sales_price,i_category_id,i_category]

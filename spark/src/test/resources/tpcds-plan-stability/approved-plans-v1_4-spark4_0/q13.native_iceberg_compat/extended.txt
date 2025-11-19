@@ -1,5 +1,5 @@
- HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(avg(ss_quantity#1)#2 AS avg(ss_quantity)#3, cast((avg(UnscaledValue(ss_ext_sales_price#4))#5 / 100.0) as decimal(11,6)) AS avg(ss_ext_sales_price)#6, cast((avg(UnscaledValue(ss_ext_wholesale_cost#7))#8 / 100.0) as decimal(11,6)) AS avg(ss_ext_wholesale_cost)#9, MakeDecimal(sum(UnscaledValue(ss_ext_wholesale_cost#7))#10,17,2) AS sum(ss_ext_wholesale_cost)#11)]
-+- CometColumnarToRow
+CometColumnarToRow
++- CometHashAggregate
    +- CometExchange
       +- CometHashAggregate
          +- CometProject
@@ -39,4 +39,4 @@
                   +- CometFilter
                      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.household_demographics
 
-Comet accelerated 35 out of 38 eligible operators (92%). Final plan contains 2 transitions between Spark and Comet.
+Comet accelerated 36 out of 38 eligible operators (94%). Final plan contains 2 transitions between Spark and Comet.
