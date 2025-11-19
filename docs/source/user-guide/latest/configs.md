@@ -214,6 +214,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.BitwiseNot.enabled` | Enable Comet acceleration for `BitwiseNot` | true |
 | `spark.comet.expression.BitwiseOr.enabled` | Enable Comet acceleration for `BitwiseOr` | true |
 | `spark.comet.expression.BitwiseXor.enabled` | Enable Comet acceleration for `BitwiseXor` | true |
+| `spark.comet.expression.BloomFilterMightContain.enabled` | Enable Comet acceleration for `BloomFilterMightContain` | true |
 | `spark.comet.expression.CaseWhen.enabled` | Enable Comet acceleration for `CaseWhen` | true |
 | `spark.comet.expression.Cast.enabled` | Enable Comet acceleration for `Cast` | true |
 | `spark.comet.expression.Ceil.enabled` | Enable Comet acceleration for `Ceil` | true |
@@ -224,6 +225,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ConcatWs.enabled` | Enable Comet acceleration for `ConcatWs` | true |
 | `spark.comet.expression.Contains.enabled` | Enable Comet acceleration for `Contains` | true |
 | `spark.comet.expression.Cos.enabled` | Enable Comet acceleration for `Cos` | true |
+| `spark.comet.expression.Cosh.enabled` | Enable Comet acceleration for `Cosh` | true |
 | `spark.comet.expression.Cot.enabled` | Enable Comet acceleration for `Cot` | true |
 | `spark.comet.expression.CreateArray.enabled` | Enable Comet acceleration for `CreateArray` | true |
 | `spark.comet.expression.CreateNamedStruct.enabled` | Enable Comet acceleration for `CreateNamedStruct` | true |
@@ -258,6 +260,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.IsNaN.enabled` | Enable Comet acceleration for `IsNaN` | true |
 | `spark.comet.expression.IsNotNull.enabled` | Enable Comet acceleration for `IsNotNull` | true |
 | `spark.comet.expression.IsNull.enabled` | Enable Comet acceleration for `IsNull` | true |
+| `spark.comet.expression.KnownFloatingPointNormalized.enabled` | Enable Comet acceleration for `KnownFloatingPointNormalized` | true |
 | `spark.comet.expression.Length.enabled` | Enable Comet acceleration for `Length` | true |
 | `spark.comet.expression.LessThan.enabled` | Enable Comet acceleration for `LessThan` | true |
 | `spark.comet.expression.LessThanOrEqual.enabled` | Enable Comet acceleration for `LessThanOrEqual` | true |
@@ -267,6 +270,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Log10.enabled` | Enable Comet acceleration for `Log10` | true |
 | `spark.comet.expression.Log2.enabled` | Enable Comet acceleration for `Log2` | true |
 | `spark.comet.expression.Lower.enabled` | Enable Comet acceleration for `Lower` | true |
+| `spark.comet.expression.MakeDecimal.enabled` | Enable Comet acceleration for `MakeDecimal` | true |
 | `spark.comet.expression.MapEntries.enabled` | Enable Comet acceleration for `MapEntries` | true |
 | `spark.comet.expression.MapFromArrays.enabled` | Enable Comet acceleration for `MapFromArrays` | true |
 | `spark.comet.expression.MapKeys.enabled` | Enable Comet acceleration for `MapKeys` | true |
@@ -289,6 +293,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Remainder.enabled` | Enable Comet acceleration for `Remainder` | true |
 | `spark.comet.expression.Reverse.enabled` | Enable Comet acceleration for `Reverse` | true |
 | `spark.comet.expression.Round.enabled` | Enable Comet acceleration for `Round` | true |
+| `spark.comet.expression.ScalarSubquery.enabled` | Enable Comet acceleration for `ScalarSubquery` | true |
 | `spark.comet.expression.Second.enabled` | Enable Comet acceleration for `Second` | true |
 | `spark.comet.expression.Sha1.enabled` | Enable Comet acceleration for `Sha1` | true |
 | `spark.comet.expression.Sha2.enabled` | Enable Comet acceleration for `Sha2` | true |
@@ -296,6 +301,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ShiftRight.enabled` | Enable Comet acceleration for `ShiftRight` | true |
 | `spark.comet.expression.Signum.enabled` | Enable Comet acceleration for `Signum` | true |
 | `spark.comet.expression.Sin.enabled` | Enable Comet acceleration for `Sin` | true |
+| `spark.comet.expression.Sinh.enabled` | Enable Comet acceleration for `Sinh` | true |
 | `spark.comet.expression.SortOrder.enabled` | Enable Comet acceleration for `SortOrder` | true |
 | `spark.comet.expression.SparkPartitionID.enabled` | Enable Comet acceleration for `SparkPartitionID` | true |
 | `spark.comet.expression.Sqrt.enabled` | Enable Comet acceleration for `Sqrt` | true |
@@ -316,10 +322,12 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Substring.enabled` | Enable Comet acceleration for `Substring` | true |
 | `spark.comet.expression.Subtract.enabled` | Enable Comet acceleration for `Subtract` | true |
 | `spark.comet.expression.Tan.enabled` | Enable Comet acceleration for `Tan` | true |
+| `spark.comet.expression.Tanh.enabled` | Enable Comet acceleration for `Tanh` | true |
 | `spark.comet.expression.TruncDate.enabled` | Enable Comet acceleration for `TruncDate` | true |
 | `spark.comet.expression.TruncTimestamp.enabled` | Enable Comet acceleration for `TruncTimestamp` | true |
 | `spark.comet.expression.UnaryMinus.enabled` | Enable Comet acceleration for `UnaryMinus` | true |
 | `spark.comet.expression.Unhex.enabled` | Enable Comet acceleration for `Unhex` | true |
+| `spark.comet.expression.UnscaledValue.enabled` | Enable Comet acceleration for `UnscaledValue` | true |
 | `spark.comet.expression.Upper.enabled` | Enable Comet acceleration for `Upper` | true |
 | `spark.comet.expression.WeekDay.enabled` | Enable Comet acceleration for `WeekDay` | true |
 | `spark.comet.expression.WeekOfYear.enabled` | Enable Comet acceleration for `WeekOfYear` | true |

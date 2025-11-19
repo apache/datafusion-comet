@@ -37,9 +37,9 @@ TakeOrderedAndProject
                                                    +- Filter
                                                       +- Window
                                                          +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-                                                            +- Sort
-                                                               +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: List(s_state#1, MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#3,17,2) AS _w0#4, s_state#1)]
-                                                                  +- CometColumnarToRow
+                                                            +- CometColumnarToRow
+                                                               +- CometSort
+                                                                  +- CometHashAggregate
                                                                      +- CometExchange
                                                                         +- CometHashAggregate
                                                                            +- CometProject
@@ -58,4 +58,4 @@ TakeOrderedAndProject
                                                                                        +- CometFilter
                                                                                           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 
-Comet accelerated 32 out of 53 eligible operators (60%). Final plan contains 6 transitions between Spark and Comet.
+Comet accelerated 34 out of 53 eligible operators (64%). Final plan contains 6 transitions between Spark and Comet.

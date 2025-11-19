@@ -1,93 +1,90 @@
-TakeOrderedAndProject
-+- HashAggregate
-   +- CometColumnarToRow
-      +- CometColumnarExchange
-         +- HashAggregate
-            +- Expand
-               +- Union
-                  :-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: Vector(MakeDecimal(sum(UnscaledValue(sales_price#1))#2,17,2) AS sales#3, MakeDecimal(sum(UnscaledValue(return_amt#4))#5,17,2) AS returns#6, (MakeDecimal(sum(UnscaledValue(profit#7))#8,17,2) - MakeDecimal(sum(UnscaledValue(net_loss#9))#10,17,2)) AS profit#11, store channel AS channel#12, concat(store, s_store_id#13) AS id#14)]
-                  :  +- CometColumnarToRow
-                  :     +- CometExchange
-                  :        +- CometHashAggregate
-                  :           +- CometProject
-                  :              +- CometBroadcastHashJoin
-                  :                 :- CometProject
-                  :                 :  +- CometBroadcastHashJoin
-                  :                 :     :- CometUnion
-                  :                 :     :  :- CometProject
-                  :                 :     :  :  +- CometFilter
-                  :                 :     :  :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
-                  :                 :     :  :           +- SubqueryBroadcast
-                  :                 :     :  :              +- BroadcastExchange
-                  :                 :     :  :                 +- CometColumnarToRow
-                  :                 :     :  :                    +- CometProject
-                  :                 :     :  :                       +- CometFilter
-                  :                 :     :  :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-                  :                 :     :  +- CometProject
-                  :                 :     :     +- CometFilter
-                  :                 :     :        +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns
-                  :                 :     :              +- ReusedSubquery
-                  :                 :     +- CometBroadcastExchange
-                  :                 :        +- CometProject
-                  :                 :           +- CometFilter
-                  :                 :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-                  :                 +- CometBroadcastExchange
-                  :                    +- CometProject
-                  :                       +- CometFilter
-                  :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
-                  :-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: Vector(MakeDecimal(sum(UnscaledValue(sales_price#15))#16,17,2) AS sales#17, MakeDecimal(sum(UnscaledValue(return_amt#18))#19,17,2) AS returns#20, (MakeDecimal(sum(UnscaledValue(profit#21))#22,17,2) - MakeDecimal(sum(UnscaledValue(net_loss#23))#24,17,2)) AS profit#25, catalog channel AS channel#26, concat(catalog_page, cp_catalog_page_id#27) AS id#28)]
-                  :  +- CometColumnarToRow
-                  :     +- CometExchange
-                  :        +- CometHashAggregate
-                  :           +- CometProject
-                  :              +- CometBroadcastHashJoin
-                  :                 :- CometProject
-                  :                 :  +- CometBroadcastHashJoin
-                  :                 :     :- CometUnion
-                  :                 :     :  :- CometProject
-                  :                 :     :  :  +- CometFilter
-                  :                 :     :  :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales
-                  :                 :     :  :           +- ReusedSubquery
-                  :                 :     :  +- CometProject
-                  :                 :     :     +- CometFilter
-                  :                 :     :        +- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_returns
-                  :                 :     :              +- ReusedSubquery
-                  :                 :     +- CometBroadcastExchange
-                  :                 :        +- CometProject
-                  :                 :           +- CometFilter
-                  :                 :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-                  :                 +- CometBroadcastExchange
-                  :                    +- CometProject
-                  :                       +- CometFilter
-                  :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_page
-                  +-  HashAggregate [COMET: makedecimal is not supported, Unsupported result expressions found in: Vector(MakeDecimal(sum(UnscaledValue(sales_price#29))#30,17,2) AS sales#31, MakeDecimal(sum(UnscaledValue(return_amt#32))#33,17,2) AS returns#34, (MakeDecimal(sum(UnscaledValue(profit#35))#36,17,2) - MakeDecimal(sum(UnscaledValue(net_loss#37))#38,17,2)) AS profit#39, web channel AS channel#40, concat(web_site, web_site_id#41) AS id#42)]
-                     +- CometColumnarToRow
-                        +- CometExchange
-                           +- CometHashAggregate
-                              +- CometProject
-                                 +- CometBroadcastHashJoin
-                                    :- CometProject
-                                    :  +- CometBroadcastHashJoin
-                                    :     :- CometUnion
-                                    :     :  :- CometProject
-                                    :     :  :  +- CometFilter
-                                    :     :  :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales
-                                    :     :  :           +- ReusedSubquery
-                                    :     :  +- CometProject
-                                    :     :     +- CometBroadcastHashJoin
-                                    :     :        :- CometBroadcastExchange
-                                    :     :        :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_returns
-                                    :     :        :        +- ReusedSubquery
-                                    :     :        +- CometProject
-                                    :     :           +- CometFilter
-                                    :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales
-                                    :     +- CometBroadcastExchange
-                                    :        +- CometProject
-                                    :           +- CometFilter
-                                    :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-                                    +- CometBroadcastExchange
-                                       +- CometProject
-                                          +- CometFilter
-                                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_site
+CometColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometHashAggregate
+      +- CometExchange
+         +- CometHashAggregate
+            +- CometExpand
+               +- CometUnion
+                  :- CometHashAggregate
+                  :  +- CometExchange
+                  :     +- CometHashAggregate
+                  :        +- CometProject
+                  :           +- CometBroadcastHashJoin
+                  :              :- CometProject
+                  :              :  +- CometBroadcastHashJoin
+                  :              :     :- CometUnion
+                  :              :     :  :- CometProject
+                  :              :     :  :  +- CometFilter
+                  :              :     :  :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                  :              :     :  :           +- SubqueryBroadcast
+                  :              :     :  :              +- BroadcastExchange
+                  :              :     :  :                 +- CometColumnarToRow
+                  :              :     :  :                    +- CometProject
+                  :              :     :  :                       +- CometFilter
+                  :              :     :  :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                  :              :     :  +- CometProject
+                  :              :     :     +- CometFilter
+                  :              :     :        +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns
+                  :              :     :              +- ReusedSubquery
+                  :              :     +- CometBroadcastExchange
+                  :              :        +- CometProject
+                  :              :           +- CometFilter
+                  :              :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                  :              +- CometBroadcastExchange
+                  :                 +- CometProject
+                  :                    +- CometFilter
+                  :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+                  :- CometHashAggregate
+                  :  +- CometExchange
+                  :     +- CometHashAggregate
+                  :        +- CometProject
+                  :           +- CometBroadcastHashJoin
+                  :              :- CometProject
+                  :              :  +- CometBroadcastHashJoin
+                  :              :     :- CometUnion
+                  :              :     :  :- CometProject
+                  :              :     :  :  +- CometFilter
+                  :              :     :  :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales
+                  :              :     :  :           +- ReusedSubquery
+                  :              :     :  +- CometProject
+                  :              :     :     +- CometFilter
+                  :              :     :        +- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_returns
+                  :              :     :              +- ReusedSubquery
+                  :              :     +- CometBroadcastExchange
+                  :              :        +- CometProject
+                  :              :           +- CometFilter
+                  :              :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                  :              +- CometBroadcastExchange
+                  :                 +- CometProject
+                  :                    +- CometFilter
+                  :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_page
+                  +- CometHashAggregate
+                     +- CometExchange
+                        +- CometHashAggregate
+                           +- CometProject
+                              +- CometBroadcastHashJoin
+                                 :- CometProject
+                                 :  +- CometBroadcastHashJoin
+                                 :     :- CometUnion
+                                 :     :  :- CometProject
+                                 :     :  :  +- CometFilter
+                                 :     :  :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales
+                                 :     :  :           +- ReusedSubquery
+                                 :     :  +- CometProject
+                                 :     :     +- CometBroadcastHashJoin
+                                 :     :        :- CometBroadcastExchange
+                                 :     :        :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_returns
+                                 :     :        :        +- ReusedSubquery
+                                 :     :        +- CometProject
+                                 :     :           +- CometFilter
+                                 :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales
+                                 :     +- CometBroadcastExchange
+                                 :        +- CometProject
+                                 :           +- CometFilter
+                                 :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                 +- CometBroadcastExchange
+                                    +- CometProject
+                                       +- CometFilter
+                                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_site
 
-Comet accelerated 71 out of 86 eligible operators (82%). Final plan contains 5 transitions between Spark and Comet.
+Comet accelerated 79 out of 86 eligible operators (91%). Final plan contains 2 transitions between Spark and Comet.
