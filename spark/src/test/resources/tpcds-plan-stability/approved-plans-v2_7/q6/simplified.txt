@@ -1,7 +1,7 @@
 WholeStageCodegen (1)
   CometColumnarToRow
     InputAdapter
-      CometTakeOrderedAndProject [state,cnt,ca_state]
+      CometTakeOrderedAndProject [ca_state] [state,cnt]
         CometFilter [state,cnt,ca_state]
           CometHashAggregate [count] [state,cnt,ca_state,count(1)]
             CometExchange [ca_state] #1
