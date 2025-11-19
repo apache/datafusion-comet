@@ -23,17 +23,20 @@ This guide explains how to add support for a new Spark physical operator in Apac
 
 ## Overview
 
-`CometExecRule` is responsible for replacing Spark operators with Comet operators. There are different approaches to implementing Comet operators depending on where they execute and how they integrate with the native execution engine.
+`CometExecRule` is responsible for replacing Spark operators with Comet operators. There are different approaches to
+implementing Comet operators depending on where they execute and how they integrate with the native execution engine.
 
 ### Types of Comet Operators
 
-`CometExecRule` maintains two distinct maps of operators (see `CometExecRule.scala:54-83`):
+`CometExecRule` maintains two distinct maps of operators:
 
 #### 1. Native Operators (`nativeExecs` map)
 
-These operators run entirely in native Rust code and are the primary way to accelerate Spark workloads. Native operators are registered in the `nativeExecs` map in `CometExecRule.scala:57-71`.
+These operators run entirely in native Rust code and are the primary way to accelerate Spark workloads. Native
+operators are registered in the `nativeExecs` map in `CometExecRule.scala`.
 
-For native operators:
+Key characteristics of native operators:
+
 - They are converted to their corresponding native protobuf representation
 - They execute as DataFusion operators in the native engine
 - The `CometOperatorSerde` implementation handles enable/disable checks, support validation, and protobuf serialization
@@ -42,10 +45,12 @@ Examples: `ProjectExec`, `FilterExec`, `SortExec`, `HashAggregateExec`, `SortMer
 
 #### 2. Sink Operators (`sinks` map)
 
-Sink operators serve as entry points (data sources) for native execution blocks. They are registered in the `sinks` map in `CometExecRule.scala:76-81`.
+Sink operators serve as entry points (data sources) for native execution blocks. They are registered in the `sinks`
+map in `CometExecRule.scala`.
 
 Key characteristics of sinks:
-- They become `ScanExec` operators in the native plan (see `operator2Proto` in `CometExecRule.scala:810-862`)
+
+- They become `ScanExec` operators in the native plan (see `operator2Proto` in `CometExecRule.scala`)
 - They can be leaf nodes that feed data into native execution blocks
 - They are wrapped with `CometScanWrapper` or `CometSinkPlaceHolder` during plan transformation
 - Examples include operators that bring data from various sources into native execution
@@ -53,13 +58,15 @@ Key characteristics of sinks:
 Examples: `UnionExec`, `CoalesceExec`, `CollectLimitExec`, `TakeOrderedAndProjectExec`
 
 Special sinks (not in the `sinks` map but also treated as sinks):
+
 - `CometScanExec` - File scans
 - `CometSparkToColumnarExec` - Conversion from Spark row format
 - `ShuffleExchangeExec` / `BroadcastExchangeExec` - Exchange operators
 
 #### 3. Comet JVM Operators
 
-These operators run in the JVM but are part of the Comet execution path. For JVM operators, all checks happen in `CometExecRule` rather than using `CometOperatorSerde`, because they don't need protobuf serialization.
+These operators run in the JVM but are part of the Comet execution path. For JVM operators, all checks happen
+in `CometExecRule` rather than using `CometOperatorSerde`, because they don't need protobuf serialization.
 
 Examples: `CometBroadcastExchangeExec`, `CometShuffleExchangeExec`
 
@@ -68,12 +75,14 @@ Examples: `CometBroadcastExchangeExec`, `CometShuffleExchangeExec`
 When adding a new operator, choose based on these criteria:
 
 **Use Native Operators when:**
+
 - The operator transforms data (e.g., project, filter, sort, aggregate, join)
 - The operator has a direct DataFusion equivalent or custom implementation
 - The operator consumes native child operators and produces native output
 - The operator is in the middle of an execution pipeline
 
 **Use Sink Operators when:**
+
 - The operator serves as a data source for native execution (becomes a `ScanExec`)
 - The operator brings data from non-native sources (e.g., `UnionExec` combining multiple inputs)
 - The operator is typically a leaf or near-leaf node in the execution tree
@@ -81,7 +90,10 @@ When adding a new operator, choose based on these criteria:
 
 **Implementation Note for Sinks:**
 
-Sink operators are handled specially in `CometExecRule.operator2Proto` (lines 810-862). Instead of converting to their own operator type, they are converted to `ScanExec` in the native plan. This allows them to serve as entry points for native execution blocks. The original Spark operator is wrapped with `CometScanWrapper` or `CometSinkPlaceHolder` which manages the boundary between JVM and native execution.
+Sink operators are handled specially in `CometExecRule.operator2Proto`. Instead of converting to their own operator
+type, they are converted to `ScanExec` in the native plan. This allows them to serve as entry points for native
+execution blocks. The original Spark operator is wrapped with `CometScanWrapper` or `CometSinkPlaceHolder` which
+manages the boundary between JVM and native execution.
 
 ## Implementing a Native Operator
 
@@ -135,7 +147,8 @@ The `CometOperatorSerde` trait provides several key methods:
 - `convert(op: T, builder: Operator.Builder, childOp: Operator*): Option[Operator]` - Converts to protobuf
 - `createExec(nativeOp: Operator, op: T): CometNativeExec` - Creates the Comet execution operator wrapper
 
-The validation workflow in `CometExecRule.isOperatorEnabled` (lines 876-917):
+The validation workflow in `CometExecRule.isOperatorEnabled`:
+
 1. Checks if the operator is enabled via `enabledConfig`
 2. Calls `getSupportLevel()` to determine compatibility
 3. Handles Compatible/Incompatible/Unsupported cases with appropriate fallback messages
@@ -269,7 +282,7 @@ Add your operator to the appropriate map in `CometExecRule.scala`:
 
 #### For Native Operators
 
-Add to the `nativeExecs` map (`CometExecRule.scala:57-71`):
+Add to the `nativeExecs` map (`CometExecRule.scala`):
 
 ```scala
 val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
@@ -283,7 +296,7 @@ val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
 
 #### For Sink Operators
 
-If your operator is a sink (becomes a `ScanExec` in the native plan), add to the `sinks` map (`CometExecRule.scala:76-81`):
+If your operator is a sink (becomes a `ScanExec` in the native plan), add to the `sinks` map (`CometExecRule.scala`):
 
 ```scala
 val sinks: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
@@ -469,7 +482,7 @@ case class CometYourSinkExec(
 **Key Points:**
 
 - Extend `CometSink[T]` which provides the `convert()` method that transforms the operator to `ScanExec`
-- The `CometSink.convert()` method (in `spark/src/main/scala/org/apache/comet/serde/operator/CometSink.scala:40-80`) automatically handles:
+- The `CometSink.convert()` method (in `CometSink.scala`) automatically handles:
   - Data type validation
   - Conversion to `ScanExec` in the native plan
   - Setting FFI safety flags
@@ -478,7 +491,7 @@ case class CometYourSinkExec(
 
 ### Step 2: Register the Sink
 
-Add your sink to the `sinks` map in `CometExecRule.scala:76-81`:
+Add your sink to the `sinks` map in `CometExecRule.scala`:
 
 ```scala
 val sinks: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
@@ -491,7 +504,7 @@ val sinks: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
 
 ### Step 3: Add Configuration
 
-Add a configuration entry in `common/src/main/scala/org/apache/comet/CometConf.scala`:
+Add a configuration entry in `CometConf.scala`:
 
 ```scala
 val COMET_EXEC_YOUR_SINK_ENABLED: ConfigEntry[Boolean] =
