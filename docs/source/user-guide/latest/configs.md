@@ -226,6 +226,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ConcatWs.enabled` | Enable Comet acceleration for `ConcatWs` | true |
 | `spark.comet.expression.Contains.enabled` | Enable Comet acceleration for `Contains` | true |
 | `spark.comet.expression.Cos.enabled` | Enable Comet acceleration for `Cos` | true |
+| `spark.comet.expression.Cosh.enabled` | Enable Comet acceleration for `Cosh` | true |
 | `spark.comet.expression.Cot.enabled` | Enable Comet acceleration for `Cot` | true |
 | `spark.comet.expression.CreateArray.enabled` | Enable Comet acceleration for `CreateArray` | true |
 | `spark.comet.expression.CreateNamedStruct.enabled` | Enable Comet acceleration for `CreateNamedStruct` | true |
@@ -301,6 +302,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ShiftRight.enabled` | Enable Comet acceleration for `ShiftRight` | true |
 | `spark.comet.expression.Signum.enabled` | Enable Comet acceleration for `Signum` | true |
 | `spark.comet.expression.Sin.enabled` | Enable Comet acceleration for `Sin` | true |
+| `spark.comet.expression.Sinh.enabled` | Enable Comet acceleration for `Sinh` | true |
 | `spark.comet.expression.SortOrder.enabled` | Enable Comet acceleration for `SortOrder` | true |
 | `spark.comet.expression.SparkPartitionID.enabled` | Enable Comet acceleration for `SparkPartitionID` | true |
 | `spark.comet.expression.Sqrt.enabled` | Enable Comet acceleration for `Sqrt` | true |
@@ -321,6 +323,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Substring.enabled` | Enable Comet acceleration for `Substring` | true |
 | `spark.comet.expression.Subtract.enabled` | Enable Comet acceleration for `Subtract` | true |
 | `spark.comet.expression.Tan.enabled` | Enable Comet acceleration for `Tan` | true |
+| `spark.comet.expression.Tanh.enabled` | Enable Comet acceleration for `Tanh` | true |
 | `spark.comet.expression.TruncDate.enabled` | Enable Comet acceleration for `TruncDate` | true |
 | `spark.comet.expression.TruncTimestamp.enabled` | Enable Comet acceleration for `TruncTimestamp` | true |
 | `spark.comet.expression.UnaryMinus.enabled` | Enable Comet acceleration for `UnaryMinus` | true |
