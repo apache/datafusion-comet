@@ -387,6 +387,8 @@ abstract class CometTestBase
             s"plan: ${new ExtendedExplainInfo().generateExtendedInfo(plan)}")
       case _ =>
     }
+
+    checkPlanNotMissingInput(plan)
   }
 
   protected def findFirstNonCometOperator(
@@ -406,6 +408,28 @@ abstract class CometTestBase
       case _ =>
     }
     None
+  }
+
+  // checks the plan node has no missing inputs
+  // such nodes represented in plan with exclamation mark !
+  // example: !CometWindowExec
+  protected def checkPlanNotMissingInput(plan: SparkPlan): Unit = {
+    def hasMissingInput(node: SparkPlan): Boolean = {
+      node.missingInput.nonEmpty && node.children.nonEmpty
+    }
+
+    val isCometNode = plan.nodeName.startsWith("Comet")
+
+    if (isCometNode && hasMissingInput(plan)) {
+      assert(
+        false,
+        s"Plan node `${plan.nodeName}` has invalid missingInput: ${plan.missingInput}")
+    }
+
+    // Otherwise recursively check children
+    plan.children.foreach { child =>
+      checkPlanNotMissingInput(child)
+    }
   }
 
   private def checkPlanContains(plan: SparkPlan, includePlans: Class[_]*): Unit = {
