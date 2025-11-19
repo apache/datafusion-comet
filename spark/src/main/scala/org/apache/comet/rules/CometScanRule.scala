@@ -267,7 +267,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         }
 
       // Iceberg scan - patched version implementing SupportsComet interface
-      case s: SupportsComet =>
+      case s: SupportsComet if !COMET_ICEBERG_NATIVE_ENABLED.get() =>
         val fallbackReasons = new ListBuffer[String]()
 
         if (!s.isCometEnabled) {
