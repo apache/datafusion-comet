@@ -222,13 +222,30 @@ fn normalize_endpoint(
     };
 
     if force_path_style {
+        // Path-style: bucket in path
+        // Example: https://s3.oss-me-central-1.aliyuncs.com/my-bucket/key
         if endpoint.ends_with("/") {
             Some(format!("{endpoint}{bucket}"))
         } else {
             Some(format!("{endpoint}/{bucket}"))
         }
     } else {
-        Some(endpoint) // Avoid extra to_string() call since endpoint is already a String
+        // Virtual-hosted-style: bucket in subdomain
+        // For custom endpoints (non-AWS), we need to manually insert the bucket as a subdomain
+        // because object_store crate only does this automatically for AWS S3 endpoints.
+        // Example: https://my-bucket.s3.oss-me-central-1.aliyuncs.com/key
+        
+        // Parse the endpoint to insert bucket as subdomain
+        if let Some(protocol_end) = endpoint.find("://") {
+            let protocol = &endpoint[..protocol_end + 3]; // "https://" or "http://"
+            let rest = &endpoint[protocol_end + 3..];     // "s3.oss-me-central-1.aliyuncs.com" or "s3.oss-me-central-1.aliyuncs.com/path"
+            
+            // Insert bucket as first subdomain
+            Some(format!("{protocol}{bucket}.{rest}"))
+        } else {
+            // Shouldn't happen since we add protocol above, but fallback
+            Some(format!("{bucket}.{endpoint}"))
+        }
     }
 }
 
@@ -1900,14 +1917,18 @@ mod tests {
             Some("https://my-s3-compatible.com/test-bucket".to_string())
         );
 
-        // Case 2: force_path_style = false -> should NOT append bucket
+        // Case 2: force_path_style = false -> should insert bucket as subdomain
         assert_eq!(
             normalize_endpoint("http://localhost:9000", bucket, false),
-            Some("http://localhost:9000".to_string())
+            Some("http://test-bucket.localhost:9000".to_string())
         );
         assert_eq!(
             normalize_endpoint("https://my-s3-compatible.com", bucket, false),
-            Some("https://my-s3-compatible.com".to_string())
+            Some("https://test-bucket.my-s3-compatible.com".to_string())
+        );
+        assert_eq!(
+            normalize_endpoint("https://s3.oss-me-central-1.aliyuncs.com", bucket, false),
+            Some("https://test-bucket.s3.oss-me-central-1.aliyuncs.com".to_string())
         );
 
         // Case 3: Default S3 endpoint -> should return None (ignored)
@@ -1929,12 +1950,14 @@ mod tests {
 
     #[test]
     fn test_extract_s3_config_custom_endpoint() {
+        // When path.style.access is not set, it defaults to false (virtual-hosted-style)
+        // So bucket should be inserted as subdomain
         let cases = vec![
-            ("custom.endpoint.com", "https://custom.endpoint.com"),
-            ("https://custom.endpoint.com", "https://custom.endpoint.com"),
+            ("custom.endpoint.com", "https://test-bucket.custom.endpoint.com"),
+            ("https://custom.endpoint.com", "https://test-bucket.custom.endpoint.com"),
             (
                 "https://custom.endpoint.com/path/to/resource",
-                "https://custom.endpoint.com/path/to/resource",
+                "https://test-bucket.custom.endpoint.com/path/to/resource",
             ),
         ];
         for (endpoint, configured_endpoint) in cases {
