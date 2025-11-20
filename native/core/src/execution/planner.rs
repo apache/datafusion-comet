@@ -115,10 +115,10 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
-    RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr, SumDecimal, TimestampTruncExpr,
-    ToJson, UnboundColumn, Variance, AvgInt
+    ArrayInsert, Avg, AvgDecimal, AvgInt, Cast, CheckOverflow, Correlation, Covariance,
+    CreateNamedStruct, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
+    NormalizeNaNAndZero, RLike, RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr,
+    SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -1894,8 +1894,11 @@ impl PhysicalPlanner {
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let input_datatype = to_arrow_datatype(expr.sum_datatype.as_ref().unwrap());
                 let builder = match datatype {
-                    
-                    DataType::Int8 | DataType::UInt8 | DataType::Int16 | DataType::UInt16 | DataType::Int32 => {
+                    DataType::Int8
+                    | DataType::UInt8
+                    | DataType::Int16
+                    | DataType::UInt16
+                    | DataType::Int32 => {
                         let func =
                             AggregateUDF::new_from_impl(AvgInt::new(datatype, input_datatype));
                         AggregateExprBuilder::new(Arc::new(func), vec![child])

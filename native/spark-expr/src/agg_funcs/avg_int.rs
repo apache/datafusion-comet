@@ -15,15 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::any::Any;
+use crate::{AvgDecimal, EvalMode};
 use arrow::array::{ArrayRef, BooleanArray};
 use arrow::datatypes::{DataType, FieldRef};
 use datafusion::common::{DataFusionError, Result as DFResult, ScalarValue};
-use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF, Signature};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::type_coercion::aggregates::avg_return_type;
 use datafusion::logical_expr::Volatility::Immutable;
-use crate::{AvgDecimal, EvalMode};
+use datafusion::logical_expr::{
+    Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF, Signature,
+};
+use std::any::Any;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AvgInt {
@@ -34,13 +36,13 @@ pub struct AvgInt {
 impl AvgInt {
     pub fn try_new(data_type: DataType, eval_mode: EvalMode) -> DFResult<Self> {
         match data_type {
-            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
-                Ok(Self {
+            DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => Ok(Self {
                 signature: Signature::user_defined(Immutable),
-                eval_mode
-                })
-            },
-            _ => {Err(DataFusionError::Internal("inalid data type for AvgInt".to_string()))}
+                eval_mode,
+            }),
+            _ => Err(DataFusionError::Internal(
+                "inalid data type for AvgInt".to_string(),
+            )),
         }
     }
 }
@@ -58,7 +60,7 @@ impl AggregateUDFImpl for AvgInt {
         ReversedUDAF::Identical
     }
 
-    fn signature(&self) -> &Signature  {
+    fn signature(&self) -> &Signature {
         &self.signature
     }
 
@@ -70,7 +72,10 @@ impl AggregateUDFImpl for AvgInt {
         true
     }
 
-    fn accumulator(&self, acc_args: AccumulatorArgs) -> datafusion::common::Result<Box<dyn Accumulator>> {
+    fn accumulator(
+        &self,
+        acc_args: AccumulatorArgs,
+    ) -> datafusion::common::Result<Box<dyn Accumulator>> {
         todo!()
     }
 
@@ -82,7 +87,10 @@ impl AggregateUDFImpl for AvgInt {
         false
     }
 
-    fn create_groups_accumulator(&self, _args: AccumulatorArgs) -> datafusion::common::Result<Box<dyn GroupsAccumulator>> {
+    fn create_groups_accumulator(
+        &self,
+        _args: AccumulatorArgs,
+    ) -> datafusion::common::Result<Box<dyn GroupsAccumulator>> {
         Ok(Box::new(AvgIntGroupsAccumulator::new(self.eval_mode)))
     }
 
@@ -91,7 +99,7 @@ impl AggregateUDFImpl for AvgInt {
     }
 }
 
-struct AvgIntegerAccumulator{
+struct AvgIntegerAccumulator {
     sum: Option<i64>,
     count: u64,
     eval_mode: EvalMode,
@@ -99,29 +107,28 @@ struct AvgIntegerAccumulator{
 
 impl AvgIntegerAccumulator {
     fn new(eval_mode: EvalMode) -> Self {
-        Self{
-            sum : Some(0),
+        Self {
+            sum: Some(0),
             count: 0,
-            eval_mode
+            eval_mode,
         }
     }
 }
 
-impl Accumulator for AvgIntegerAccumulator {
-    
-}
+impl Accumulator for AvgIntegerAccumulator {}
 
-struct AvgIntGroupsAccumulator {
+struct AvgIntGroupsAccumulator {}
 
-}
-
-impl AvgIntGroupsAccumulator {
-
-}
-
+impl AvgIntGroupsAccumulator {}
 
 impl GroupsAccumulator for AvgIntGroupsAccumulator {
-    fn update_batch(&mut self, values: &[ArrayRef], group_indices: &[usize], opt_filter: Option<&BooleanArray>, total_num_groups: usize) -> datafusion::common::Result<()> {
+    fn update_batch(
+        &mut self,
+        values: &[ArrayRef],
+        group_indices: &[usize],
+        opt_filter: Option<&BooleanArray>,
+        total_num_groups: usize,
+    ) -> datafusion::common::Result<()> {
         todo!()
     }
 
@@ -133,7 +140,13 @@ impl GroupsAccumulator for AvgIntGroupsAccumulator {
         todo!()
     }
 
-    fn merge_batch(&mut self, values: &[ArrayRef], group_indices: &[usize], opt_filter: Option<&BooleanArray>, total_num_groups: usize) -> datafusion::common::Result<()> {
+    fn merge_batch(
+        &mut self,
+        values: &[ArrayRef],
+        group_indices: &[usize],
+        opt_filter: Option<&BooleanArray>,
+        total_num_groups: usize,
+    ) -> datafusion::common::Result<()> {
         todo!()
     }
 
