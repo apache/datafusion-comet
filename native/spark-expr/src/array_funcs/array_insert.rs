@@ -222,6 +222,13 @@ fn array_insert<O: OffsetSizeTrait>(
         let start = window[0].as_usize();
         let end = window[1].as_usize();
         let len = end - start;
+
+        // Return null for the entire row when pos is null (consistent with Spark's behavior)
+        if pos_data.is_null(row_index) {
+            new_offsets.push(new_offsets[row_index]);
+            list_valid.push(false);
+            continue;
+        }
         let pos = pos_data.value(row_index);
 
         if list_array.is_null(row_index) {
