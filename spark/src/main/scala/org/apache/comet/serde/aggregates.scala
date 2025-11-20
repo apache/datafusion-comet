@@ -29,7 +29,8 @@ import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
+import org.apache.comet.shims.CometEvalModeUtil
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
 
@@ -150,17 +151,6 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
 
-  override def getSupportLevel(avg: Average): SupportLevel = {
-    avg.evalMode match {
-      case EvalMode.ANSI =>
-        Incompatible(Some("ANSI mode is not supported"))
-      case EvalMode.TRY =>
-        Incompatible(Some("TRY mode is not supported"))
-      case _ =>
-        Compatible()
-    }
-  }
-
   override def convert(
       aggExpr: AggregateExpression,
       avg: Average,
@@ -192,7 +182,7 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
       val builder = ExprOuterClass.Avg.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
-      builder.setFailOnError(avg.evalMode == EvalMode.ANSI)
+      builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(avg.evalMode)))
       builder.setSumDatatype(sumDataType.get)
 
       Some(

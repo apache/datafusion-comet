@@ -118,7 +118,7 @@ use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
     RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr, SumDecimal, TimestampTruncExpr,
-    ToJson, UnboundColumn, Variance,
+    ToJson, UnboundColumn, Variance, AvgInt
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -1894,6 +1894,12 @@ impl PhysicalPlanner {
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let input_datatype = to_arrow_datatype(expr.sum_datatype.as_ref().unwrap());
                 let builder = match datatype {
+                    
+                    DataType::Int8 | DataType::UInt8 | DataType::Int16 | DataType::UInt16 | DataType::Int32 => {
+                        let func =
+                            AggregateUDF::new_from_impl(AvgInt::new(datatype, input_datatype));
+                        AggregateExprBuilder::new(Arc::new(func), vec![child])
+                    }
                     DataType::Decimal128(_, _) => {
                         let func =
                             AggregateUDF::new_from_impl(AvgDecimal::new(datatype, input_datatype));

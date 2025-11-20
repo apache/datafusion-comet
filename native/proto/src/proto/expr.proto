@@ -137,7 +137,7 @@ message Avg {
   Expr child = 1;
   DataType datatype = 2;
   DataType sum_datatype = 3;
-  bool fail_on_error = 4; // currently unused (useful for deciding Ansi vs Legacy mode)
+  EvalMode eval_mode = 4;
 }
 
 message First {
