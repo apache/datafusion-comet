@@ -45,6 +45,7 @@ arrow = {workspace = true}
 criterion = { version = "0.7", features = ["async", "async_tokio", "async_std"] }
 rand = { workspace = true}
 tokio = { version = "1", features = ["rt-multi-thread"] }
+datafusion = { workspace = true, features = ["sql"] }
 
 [lib]
 name = "datafusion_comet_spark_expr"

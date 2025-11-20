@@ -2231,7 +2231,7 @@ impl PhysicalPlanner {
             partition_by,
             sort_phy_exprs,
             window_frame.into(),
-            input_schema.as_ref(),
+            input_schema,
             false, // TODO: Ignore nulls
             false, // TODO: Spark does not support DISTINCT ... OVER
             None,

@@ -25,8 +25,7 @@ use arrow::compute::sum;
 use arrow::datatypes::{DataType, Field, FieldRef};
 use datafusion::common::{not_impl_err, Result, ScalarValue};
 use datafusion::logical_expr::{
-    type_coercion::aggregates::avg_return_type, Accumulator, AggregateUDFImpl, EmitTo,
-    GroupsAccumulator, ReversedUDAF, Signature,
+    Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF, Signature,
 };
 use datafusion::physical_expr::expressions::format_state_name;
 use std::{any::Any, sync::Arc};
@@ -35,6 +34,13 @@ use arrow::array::ArrowNativeTypeOp;
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::Volatility::Immutable;
 use DataType::*;
+
+fn avg_return_type(_name: &str, data_type: &DataType) -> Result<DataType> {
+    match data_type {
+        Float64 => Ok(Float64),
+        _ => not_impl_err!("Avg return type for {data_type}"),
+    }
+}
 
 /// AVG aggregate expression
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
