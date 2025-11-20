@@ -117,9 +117,9 @@ jobs:
               org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
           - name: "parquet"
             value: |
+              org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite
               org.apache.comet.parquet.ParquetReadV1Suite
               org.apache.comet.parquet.ParquetReadV2Suite
-              org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite
               org.apache.spark.sql.comet.ParquetDatetimeRebaseV1Suite
               org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
               org.apache.spark.sql.comet.ParquetEncryptionITCase
