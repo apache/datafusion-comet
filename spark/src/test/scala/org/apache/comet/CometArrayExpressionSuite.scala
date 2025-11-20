@@ -26,6 +26,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArraysOverlap, ArrayUnion}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
@@ -210,11 +211,13 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             .withColumn("arrInsertResult", expr("array_insert(arr, 1, 1)"))
             .withColumn("arrInsertNegativeIndexResult", expr("array_insert(arr, -1, 1)"))
             .withColumn("arrPosGreaterThanSize", expr("array_insert(arr, 8, 1)"))
+            .withColumn("arrPosIsNull", expr("array_insert(arr, cast(null as int), 1)"))
             .withColumn("arrNegPosGreaterThanSize", expr("array_insert(arr, -8, 1)"))
             .withColumn("arrInsertNone", expr("array_insert(arr, 1, null)"))
           checkSparkAnswerAndOperator(df.select("arrInsertResult"))
           checkSparkAnswerAndOperator(df.select("arrInsertNegativeIndexResult"))
           checkSparkAnswerAndOperator(df.select("arrPosGreaterThanSize"))
+          checkSparkAnswerAndOperator(df.select("arrPosIsNull"))
           checkSparkAnswerAndOperator(df.select("arrNegPosGreaterThanSize"))
           checkSparkAnswerAndOperator(df.select("arrInsertNone"))
         })
@@ -800,6 +803,30 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       checkSparkAnswerAndFallbackReason(
         "select reverse(array(array(c1), array(c2))) AS x FROM t1",
         fallbackReason)
+    }
+  }
+
+  test("array_reverse 2") {
+    // This test validates data correctness for array<binary> columns with nullable elements.
+    // See https://github.com/apache/datafusion-comet/issues/2612
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val schemaOptions =
+          SchemaGenOptions(generateArray = true, generateStruct = false, generateMap = false)
+        val dataOptions = DataGenOptions(allowNull = true, generateNegativeZero = false)
+        ParquetGenerator.makeParquetFile(random, spark, filename, 100, schemaOptions, dataOptions)
+      }
+      withTempView("t1") {
+        val table = spark.read.parquet(filename)
+        table.createOrReplaceTempView("t1")
+        for (field <- table.schema.fields.filter(_.dataType.isInstanceOf[ArrayType])) {
+          val sql = s"SELECT ${field.name}, reverse(${field.name}) FROM t1 ORDER BY ${field.name}"
+          checkSparkAnswer(sql)
+        }
+      }
     }
   }
 }
