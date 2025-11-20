@@ -17,8 +17,8 @@
 
 use crate::{arithmetic_overflow_error, EvalMode};
 use arrow::array::{
-    cast::AsArray, Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray,
-    Int64Array, PrimitiveArray,
+    as_primitive_array, cast::AsArray, Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType,
+    BooleanArray, Int64Array, PrimitiveArray,
 };
 use arrow::datatypes::{
     ArrowNativeType, DataType, Field, FieldRef, Int16Type, Int32Type, Int64Type, Int8Type,
@@ -138,7 +138,12 @@ impl Accumulator for SumIntegerAccumulator {
         {
             for i in 0..int_array.len() {
                 if !int_array.is_null(i) {
-                    let v = int_array.value(i).to_i64().unwrap();
+                    let v = int_array.value(i).to_i64().ok_or_else(|| {
+                        DataFusionError::Internal(format!(
+                            "Failed to convert value {:?} to i64",
+                            int_array.value(i)
+                        ))
+                    })?;
                     match eval_mode {
                         EvalMode::Legacy => {
                             sum = v.add_wrapping(sum);
@@ -175,34 +180,22 @@ impl Accumulator for SumIntegerAccumulator {
             let running_sum = self.sum.unwrap_or(0);
             let sum = match values.data_type() {
                 DataType::Int64 => update_sum_internal(
-                    values
-                        .as_any()
-                        .downcast_ref::<PrimitiveArray<Int64Type>>()
-                        .unwrap(),
+                    as_primitive_array::<Int64Type>(values),
                     self.eval_mode,
                     running_sum,
                 )?,
                 DataType::Int32 => update_sum_internal(
-                    values
-                        .as_any()
-                        .downcast_ref::<PrimitiveArray<Int32Type>>()
-                        .unwrap(),
+                    as_primitive_array::<Int32Type>(values),
                     self.eval_mode,
                     running_sum,
                 )?,
                 DataType::Int16 => update_sum_internal(
-                    values
-                        .as_any()
-                        .downcast_ref::<PrimitiveArray<Int16Type>>()
-                        .unwrap(),
+                    as_primitive_array::<Int16Type>(values),
                     self.eval_mode,
                     running_sum,
                 )?,
                 DataType::Int8 => update_sum_internal(
-                    values
-                        .as_any()
-                        .downcast_ref::<PrimitiveArray<Int8Type>>()
-                        .unwrap(),
+                    as_primitive_array::<Int8Type>(values),
                     self.eval_mode,
                     running_sum,
                 )?,
@@ -278,8 +271,17 @@ impl Accumulator for SumIntegerAccumulator {
             }
         }
 
-        let left = self.sum.unwrap();
-        let right = that_sum.unwrap();
+        // safe to unwrap (since we checked nulls above) but handling error just in case state is corrupt
+        let left = self.sum.ok_or_else(|| {
+            DataFusionError::Internal(
+                "Invalid state in merging batch. Current batch's is None".to_string(),
+            )
+        })?;
+        let right = that_sum.ok_or_else(|| {
+            DataFusionError::Internal(
+                "Invalid state in merging batch. Incoming sum to is None".to_string(),
+            )
+        })?;
 
         match self.eval_mode {
             EvalMode::Legacy => {
@@ -392,40 +394,28 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
 
         match values.data_type() {
             DataType::Int64 => update_groups_sum_internal(
-                values
-                    .as_any()
-                    .downcast_ref::<PrimitiveArray<Int64Type>>()
-                    .unwrap(),
+                as_primitive_array::<Int64Type>(values),
                 group_indices,
                 &mut self.sums,
                 &mut self.has_all_nulls,
                 self.eval_mode,
             )?,
             DataType::Int32 => update_groups_sum_internal(
-                values
-                    .as_any()
-                    .downcast_ref::<PrimitiveArray<Int32Type>>()
-                    .unwrap(),
+                as_primitive_array::<Int32Type>(values),
                 group_indices,
                 &mut self.sums,
                 &mut self.has_all_nulls,
                 self.eval_mode,
             )?,
             DataType::Int16 => update_groups_sum_internal(
-                values
-                    .as_any()
-                    .downcast_ref::<PrimitiveArray<Int16Type>>()
-                    .unwrap(),
+                as_primitive_array::<Int16Type>(values),
                 group_indices,
                 &mut self.sums,
                 &mut self.has_all_nulls,
                 self.eval_mode,
             )?,
             DataType::Int8 => update_groups_sum_internal(
-                values
-                    .as_any()
-                    .downcast_ref::<PrimitiveArray<Int8Type>>()
-                    .unwrap(),
+                as_primitive_array::<Int8Type>(values),
                 group_indices,
                 &mut self.sums,
                 &mut self.has_all_nulls,

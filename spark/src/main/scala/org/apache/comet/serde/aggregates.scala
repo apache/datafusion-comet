@@ -213,17 +213,6 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 
 object CometSum extends CometAggregateExpressionSerde[Sum] {
 
-  override def getSupportLevel(sum: Sum): SupportLevel = {
-    sum.evalMode match {
-      case EvalMode.ANSI =>
-        Incompatible(Some("ANSI mode is not supported"))
-      case EvalMode.TRY =>
-        Incompatible(Some("TRY mode is not supported"))
-      case _ =>
-        Compatible()
-    }
-  }
-
   override def convert(
       aggExpr: AggregateExpression,
       sum: Sum,
