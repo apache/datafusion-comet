@@ -52,6 +52,32 @@ class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  private def isIcebergVersionLessThan(targetVersion: String): Boolean = {
+    try {
+      val icebergVersion = org.apache.iceberg.IcebergBuild.version()
+      // Parse version strings like "1.5.2" or "1.6.0-SNAPSHOT"
+      val current = parseVersion(icebergVersion)
+      val target = parseVersion(targetVersion)
+      // Compare tuples: first by major, then minor, then patch
+      if (current._1 != target._1) current._1 < target._1
+      else if (current._2 != target._2) current._2 < target._2
+      else current._3 < target._3
+    } catch {
+      case _: Exception =>
+        // If we can't determine the version, assume it's old to be safe
+        true
+    }
+  }
+
+  private def parseVersion(version: String): (Int, Int, Int) = {
+    val parts = version.split("[.-]").take(3).map(_.filter(_.isDigit))
+    val major = if (parts.length > 0 && parts(0).nonEmpty) parts(0).toInt else 0
+    val minor = if (parts.length > 1 && parts(1).nonEmpty) parts(1).toInt else 0
+    val patch = if (parts.length > 2 && parts(2).nonEmpty) parts(2).toInt else 0
+    println((major, minor, patch))
+    (major, minor, patch)
+  }
+
   /**
    * We use Asia/Kathmandu because it has a non-zero number of minutes as the offset, so is an
    * interesting edge case. Also, this timezone tends to be different from the default system
@@ -79,7 +105,12 @@ class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
           generateStruct = true,
           primitiveTypes = SchemaGenOptions.defaultPrimitiveTypes.filterNot { dataType =>
             // Disable decimals - iceberg-rust doesn't support FIXED_LEN_BYTE_ARRAY in page index yet
-            dataType.isInstanceOf[DecimalType]
+            dataType.isInstanceOf[DecimalType] ||
+            // Disable ByteType and ShortType for Iceberg < 1.6.0
+            // Fixed in https://github.com/apache/iceberg/pull/10349
+            (isIcebergVersionLessThan(
+              "1.6.0") && (dataType == org.apache.spark.sql.types.DataTypes.ByteType ||
+              dataType == org.apache.spark.sql.types.DataTypes.ShortType))
           }))
 
       val options =
