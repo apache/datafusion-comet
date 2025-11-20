@@ -68,9 +68,9 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
     for (_ <- 1 to 10) {
       // We only do order by permutations of primitive types to exercise native shuffle's
       // RangePartitioning which only supports those types.
-      // This used to be df.columns.slice(0, 14) but we're removing two binary columns in
-      // CometFuzzIcebergBase.beforeAll
-      val shuffledPrimitiveCols = Random.shuffle(df.columns.slice(0, 12).toList)
+      val primitiveColumns =
+        df.schema.fields.filterNot(f => isComplexType(f.dataType)).map(_.name)
+      val shuffledPrimitiveCols = Random.shuffle(primitiveColumns.toList)
       val randomSize = Random.nextInt(shuffledPrimitiveCols.length) + 1
       val randomColsSubset = shuffledPrimitiveCols.take(randomSize).toArray.mkString(",")
       val sql = s"SELECT $randomColsSubset FROM $icebergTableName ORDER BY $randomColsSubset"
