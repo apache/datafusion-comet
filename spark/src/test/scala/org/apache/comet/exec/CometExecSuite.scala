@@ -47,8 +47,9 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometExecIterator, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometExecSuite extends CometTestBase {
@@ -62,6 +63,27 @@ class CometExecSuite extends CometTestBase {
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
         testFun
+      }
+    }
+  }
+
+  test("SQLConf serde") {
+
+    def roundtrip = {
+      val protobuf = CometExecIterator.serializeCometSQLConfs()
+      ConfigMap.parseFrom(protobuf)
+    }
+
+    // test not setting the config
+    val deserialized: ConfigMap = roundtrip
+    assert(null == deserialized.getEntriesMap.get(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key))
+
+    // test explicitly setting the config
+    for (value <- Seq("true", "false")) {
+      withSQLConf(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> value) {
+        val deserialized: ConfigMap = roundtrip
+        assert(
+          value == deserialized.getEntriesMap.get(CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key))
       }
     }
   }
@@ -527,8 +549,7 @@ class CometExecSuite extends CometTestBase {
     dataTypes.map { subqueryType =>
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
-        CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
           var column1 = s"CAST(max(_1) AS $subqueryType)"
           if (subqueryType == "BINARY") {
@@ -1438,9 +1459,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("SPARK-33474: Support typed literals as partition spec values") {
-    withSQLConf(
-      SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu",
-      CometConf.COMET_EXPR_ALLOW_INCOMPATIBLE.key -> "true") {
+    withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
       withTable("t1") {
         val binaryStr = "Spark SQL"
         val binaryHexStr = Hex.hex(UTF8String.fromString(binaryStr).getBytes).toString
@@ -2108,7 +2127,9 @@ class CometExecSuite extends CometTestBase {
   test("LocalTableScanExec spark fallback") {
     withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false") {
       val df = Seq.range(0, 10).toDF("id")
-      checkSparkAnswerAndFallbackReason(df, "LocalTableScan is not enabled")
+      checkSparkAnswerAndFallbackReason(
+        df,
+        "Native support for operator LocalTableScanExec is disabled")
     }
   }
 

@@ -48,6 +48,7 @@ message Operator {
     HashJoin hash_join = 109;
     Window window = 110;
     NativeScan native_scan = 111;
+    IcebergScan iceberg_scan = 112;
   }
 }
 
@@ -105,6 +106,92 @@ message NativeScan {
   // the map.
   map<string, string> object_store_options = 13;
   bool encryption_enabled = 14;
+}
+
+message IcebergScan {
+  // Schema to read
+  repeated SparkStructField required_schema = 1;
+
+  // Catalog-specific configuration for FileIO (credentials, S3/GCS config, etc.)
+  map<string, string> catalog_properties = 2;
+
+  // Pre-planned file scan tasks grouped by Spark partition
+  repeated IcebergFilePartition file_partitions = 3;
+
+  // Table metadata file path for FileIO initialization
+  string metadata_location = 4;
+}
+
+// Groups FileScanTasks for a single Spark partition
+message IcebergFilePartition {
+  repeated IcebergFileScanTask file_scan_tasks = 1;
+}
+
+// Iceberg FileScanTask containing data file, delete files, and residual filter
+message IcebergFileScanTask {
+  // Data file path (e.g., s3://bucket/warehouse/db/table/data/00000-0-abc.parquet)
+  string data_file_path = 1;
+
+  // Byte range to read (for split files)
+  uint64 start = 2;
+  uint64 length = 3;
+
+  // Record count if reading entire file
+  optional uint64 record_count = 4;
+
+  // File format (PARQUET, AVRO, or ORC)
+  string data_file_format = 5;
+
+  // File schema as JSON (may differ due to schema evolution)
+  string schema_json = 6;
+
+  // Field IDs to project
+  repeated int32 project_field_ids = 7;
+
+  // Delete files for MOR tables
+  repeated IcebergDeleteFile delete_files = 8;
+
+  // Residual filter after partition pruning (applied at row-group level)
+  // Example: if scan filter is "date >= '2024-01-01' AND status = 'active'"
+  // and file partition is date='2024-06-15', residual is "status = 'active'"
+  optional spark.spark_expression.Expr residual = 9;
+
+  // Partition data from manifest entry (for proper constant identification)
+  // Serialized as JSON to represent the Struct of partition values
+  optional string partition_data_json = 10;
+
+  // Partition type schema as JSON (Iceberg StructType for partition fields)
+  // Used to deserialize partition_data_json into proper Iceberg types
+  optional string partition_type_json = 12;
+
+  // Partition spec as JSON (entire PartitionSpec object)
+  // Used to determine which partition fields are identity-transformed (constants)
+  // The spec includes spec-id embedded in the JSON.
+  optional string partition_spec_json = 13;
+
+  // Name mapping from table metadata (property: schema.name-mapping.default)
+  // Used to resolve field IDs from column names when Parquet files lack field IDs
+  // or have field ID conflicts (e.g., Hive table migrations via add_files).
+  // Per Iceberg spec rule #2: "Use schema.name-mapping.default metadata to map
+  // field id to columns without field id".
+  optional string name_mapping_json = 14;
+}
+
+// Iceberg delete file for MOR tables (positional or equality deletes)
+// Positional: (file_path, row_position) pairs to skip
+// Equality: Column values to filter out (specified by equality_ids)
+message IcebergDeleteFile {
+  // Delete file path
+  string file_path = 1;
+
+  // POSITION_DELETES or EQUALITY_DELETES
+  string content_type = 2;
+
+  // Partition spec ID
+  int32 partition_spec_id = 3;
+
+  // Equality field IDs (empty for positional deletes)
+  repeated int32 equality_ids = 4;
 }
 
 message Projection {

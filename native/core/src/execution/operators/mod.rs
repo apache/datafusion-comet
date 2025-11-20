@@ -22,11 +22,13 @@ use std::fmt::Debug;
 use jni::objects::GlobalRef;
 
 pub use copy::*;
+pub use iceberg_scan::*;
 pub use scan::*;
 
 mod copy;
 mod expand;
 pub use expand::ExpandExec;
+mod iceberg_scan;
 mod scan;
 
 /// Error returned during executing operators.

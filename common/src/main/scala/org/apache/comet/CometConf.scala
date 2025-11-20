@@ -122,6 +122,16 @@ object CometConf extends ShimCometConf {
       Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT, SCAN_AUTO))
     .createWithEnvVarOrDefault("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
 
+  val COMET_ICEBERG_NATIVE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether to enable native Iceberg table scan using iceberg-rust. When enabled, " +
+          "Iceberg tables are read directly through native execution, bypassing Spark's " +
+          "DataSource V2 API for better performance.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.respectFilterPushdown")
       .category(CATEGORY_PARQUET)
@@ -666,11 +676,12 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_EXPR_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
-    conf("spark.comet.expression.allowIncompatible")
+  val COMET_EXEC_STRICT_FLOATING_POINT: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.strictFloatingPoint")
       .category(CATEGORY_EXEC)
-      .doc("Comet is not currently fully compatible with Spark for all expressions. " +
-        s"Set this config to true to allow them anyway. $COMPAT_GUIDE.")
+      .doc(
+        "When enabled, fall back to Spark for floating-point operations that may differ from " +
+          s"Spark, such as when comparing or sorting -0.0 and 0.0. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
@@ -914,7 +925,7 @@ private class TypedConfigBuilder[T](
   }
 }
 
-private[comet] abstract class ConfigEntry[T](
+abstract class ConfigEntry[T](
     val key: String,
     val valueConverter: String => T,
     val stringConverter: T => String,

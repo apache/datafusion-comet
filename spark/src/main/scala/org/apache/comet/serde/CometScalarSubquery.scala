@@ -17,35 +17,35 @@
  * under the License.
  */
 
-package org.apache.comet.serde.operator
+package org.apache.comet.serde
 
-import org.apache.spark.sql.execution.LocalLimitExec
+import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.execution.ScalarSubquery
 
-import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
-import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
 
-object CometLocalLimit extends CometOperatorSerde[LocalLimitExec] {
-
-  override def enabledConfig: Option[ConfigEntry[Boolean]] =
-    Some(CometConf.COMET_EXEC_LOCAL_LIMIT_ENABLED)
-
+object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
   override def convert(
-      op: LocalLimitExec,
-      builder: Operator.Builder,
-      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    if (childOp.nonEmpty) {
-      // LocalLimit doesn't use offset, but it shares same operator serde class.
-      // Just set it to zero.
-      val limitBuilder = OperatorOuterClass.Limit
+      expr: ScalarSubquery,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (supportedDataType(expr.dataType)) {
+      val dataType = serializeDataType(expr.dataType)
+      if (dataType.isEmpty) {
+        withInfo(expr, s"Failed to serialize datatype ${expr.dataType} for scalar subquery")
+        return None
+      }
+
+      val builder = ExprOuterClass.Subquery
         .newBuilder()
-        .setLimit(op.limit)
-        .setOffset(0)
-      Some(builder.setLimit(limitBuilder).build())
+        .setId(expr.exprId.id)
+        .setDatatype(dataType.get)
+      Some(ExprOuterClass.Expr.newBuilder().setSubquery(builder).build())
     } else {
-      withInfo(op, "No child operator")
+      withInfo(expr, s"Unsupported data type: ${expr.dataType}")
       None
     }
+
   }
 }

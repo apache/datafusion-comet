@@ -80,7 +80,7 @@ However if the tests is related to the native side. Please make sure to run `mak
 ### Running Tests from command line
 
 It is possible to specify which ScalaTest suites you want to run from the CLI using the `suites`
-argument, for example if you only want to execute the test cases that contains *valid*
+argument, for example if you only want to execute the test cases that contains _valid_
 in their name in `org.apache.comet.CometCastSuite` you can use
 
 ```sh
@@ -98,7 +98,7 @@ First, Comet needs to be installed for each Spark version to be tested:
 
 ```sh
 ./mvnw install -DskipTests -Pspark-3.4
-./mvnw install -DskipTests -Pspark-3.5 
+./mvnw install -DskipTests -Pspark-3.5
 # note that Spark 4.0 requires JDK 17 or later
 ./mvnw install -DskipTests -Pspark-4.0
 ```
@@ -115,6 +115,7 @@ export SPARK_HOME=`pwd`
 ```
 
 and
+
 ```sh
 export SPARK_HOME=`pwd`
 ./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.4 -nsu test
@@ -133,6 +134,7 @@ SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -pl spark -Dsuites="org.apache.spark.sql.co
 ```
 
 and
+
 ```sh
 export SPARK_HOME=`pwd`
 SPARK_GENERATE_GOLDEN_FILES=1 ./mvnw -pl spark -Dsuites="org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite" -Pspark-3.4 -nsu test
@@ -170,3 +172,20 @@ cargo clippy --color=never --all-targets --workspace -- -D warnings
 ```
 
 Make sure to resolve any Clippy warnings before submitting your pull request, as the CI/CD pipeline will fail if warnings are present.
+
+## How to format `.md` document
+
+We are using `prettier` to format `.md` files.
+
+You can either use `npm i -g prettier` to install it globally or use `npx` to run it as a standalone binary. Using `npx` required a working node environment. Upgrading to the latest prettier is recommended (by adding `--upgrade` to the `npm` command).
+
+```bash
+$ prettier --version
+2.3.0
+```
+
+After you've confirmed your prettier version, you can format all the `.md` files:
+
+```bash
+npx prettier "**/*.md" --write
+```

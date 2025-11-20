@@ -85,6 +85,7 @@ public abstract class CometVector extends ColumnVector {
 
   @Override
   public Decimal getDecimal(int i, int precision, int scale) {
+    if (isNullAt(i)) return null;
     if (!useDecimal128 && precision <= Decimal.MAX_INT_DIGITS() && type instanceof IntegerType) {
       return createDecimal(getInt(i), precision, scale);
     } else if (precision <= Decimal.MAX_LONG_DIGITS()) {

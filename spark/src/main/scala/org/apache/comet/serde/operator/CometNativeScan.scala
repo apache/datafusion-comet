@@ -25,7 +25,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.CometScanExec
+import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.internal.SQLConf
@@ -216,4 +216,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
     nativeScanBuilder.addFilePartitions(partitionBuilder.build())
   }
 
+  override def createExec(nativeOp: Operator, op: CometScanExec): CometNativeExec = {
+    CometNativeScanExec(nativeOp, op.wrapped, op.session)
+  }
 }
