@@ -482,15 +482,19 @@ under the License.
 <td><p>Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code> need to be enabled.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.preFetch.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled</span></code></p></td>
+<td><p>Whether to enable native Iceberg table scan using iceberg-rust. When enabled, Iceberg tables are read directly through native execution, bypassing Spark’s DataSource V2 API for better performance.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.preFetch.enabled</span></code></p></td>
 <td><p>Whether to enable pre-fetching feature of CometScan.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.preFetch.threadNum</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.preFetch.threadNum</span></code></p></td>
 <td><p>The number of threads running pre-fetching for CometScan. Effective if spark.comet.scan.preFetch.enabled is enabled. Note that more pre-fetching threads means more memory requirement to store pre-fetched row groups.</p></td>
 <td><p>2</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.hadoop.fs.comet.libhdfs.schemes</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.hadoop.fs.comet.libhdfs.schemes</span></code></p></td>
 <td><p>Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses via libhdfs, separated by commas. Valid only when built with hdfs feature enabled.</p></td>
 <td><p></p></td>
 </tr>
