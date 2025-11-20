@@ -68,13 +68,13 @@ set -x
 
 # Removing local cached parquet artifacts since they don't include test jars, which
 # could cause issues later when building Spark with SBT
-rm -rf /root/.m2/repository/org/apache/parquet
+rm -rf $HOME/.m2/repository/org/apache/parquet
 # Removing local cached protobuf that also causes building Spark with SBT
-rm -rf /root/.m2/repository/com/google/protobuf
+rm -rf $HOME/.m2/repository/com/google/protobuf
 # Removing local cached commons that also causes building Spark with SBT
-rm -rf /root/.m2/repository/org/apache/commons
+rm -rf $HOME/.m2/repository/org/apache/commons
 
-rm -rf /root/.m2/repository/commons-io
+rm -rf $HOME/.m2/repository/commons-io
 
 cd $COMET_WORKSPACE
 rm -rf apache-spark

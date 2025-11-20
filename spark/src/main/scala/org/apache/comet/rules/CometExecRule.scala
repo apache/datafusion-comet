@@ -196,6 +196,18 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         val nativeOp = operator2Proto(scan).get
         CometNativeScan.createExec(nativeOp, scan)
 
+      // Fully native Iceberg scan for V2 (iceberg-rust path)
+      // Only handle scans with native metadata; SupportsComet scans fall through to isCometScan
+      // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometScanRule
+      case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
+        operator2Proto(scan) match {
+          case Some(nativeOp) =>
+            CometIcebergNativeScan.createExec(nativeOp, scan)
+          case None =>
+            // Serialization failed, fall back to CometBatchScanExec
+            scan
+        }
+
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
         val nativeOp = operator2Proto(op)
@@ -806,6 +818,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         CometNativeScan.convert(scan, builder, childOp: _*)
+
+      // Fully native Iceberg scan for V2 (iceberg-rust path)
+      case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
+        CometIcebergNativeScan.convert(scan, builder, childOp: _*)
 
       case op if isCometSink(op) =>
         val supportedTypes =

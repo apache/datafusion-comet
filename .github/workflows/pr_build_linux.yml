@@ -103,6 +103,7 @@ jobs:
             value: |
               org.apache.comet.CometFuzzTestSuite
               org.apache.comet.CometFuzzAggregateSuite
+              org.apache.comet.CometFuzzIcebergSuite
               org.apache.comet.CometFuzzMathSuite
               org.apache.comet.DataGeneratorSuite
           - name: "shuffle"
@@ -124,6 +125,7 @@ jobs:
               org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
+              org.apache.comet.CometIcebergNativeSuite
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
