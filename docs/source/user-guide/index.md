@@ -23,7 +23,7 @@ under the License.
 :maxdepth: 2
 :caption: User Guides
 
-0.12.0-SNAPSHOT <latest/index>
+0.13.0-SNAPSHOT <latest/index>
 0.11.x <0.11/index>
 0.10.x <0.10/index>
 0.9.x <0.9/index>
