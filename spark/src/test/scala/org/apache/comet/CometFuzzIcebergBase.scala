@@ -74,7 +74,6 @@ class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
     val major = if (parts.length > 0 && parts(0).nonEmpty) parts(0).toInt else 0
     val minor = if (parts.length > 1 && parts(1).nonEmpty) parts(1).toInt else 0
     val patch = if (parts.length > 2 && parts(2).nonEmpty) parts(2).toInt else 0
-    println((major, minor, patch))
     (major, minor, patch)
   }
 
