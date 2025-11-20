@@ -122,6 +122,16 @@ object CometConf extends ShimCometConf {
       Set(SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT, SCAN_AUTO))
     .createWithEnvVarOrDefault("COMET_PARQUET_SCAN_IMPL", SCAN_AUTO)
 
+  val COMET_ICEBERG_NATIVE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether to enable native Iceberg table scan using iceberg-rust. When enabled, " +
+          "Iceberg tables are read directly through native execution, bypassing Spark's " +
+          "DataSource V2 API for better performance.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.respectFilterPushdown")
       .category(CATEGORY_PARQUET)

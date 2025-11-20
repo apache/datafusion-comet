@@ -138,6 +138,42 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
     saveAsEncryptedParquetV1Table(testDf, dir.getCanonicalPath + "/parquetV1")
   }
 
+  protected def prepareIcebergTable(
+      dir: File,
+      df: DataFrame,
+      tableName: String = "icebergTable",
+      partition: Option[String] = None): Unit = {
+    val warehouseDir = new File(dir, "iceberg-warehouse")
+
+    // Configure Hadoop catalog (same pattern as CometIcebergNativeSuite)
+    spark.conf.set("spark.sql.catalog.benchmark_cat", "org.apache.iceberg.spark.SparkCatalog")
+    spark.conf.set("spark.sql.catalog.benchmark_cat.type", "hadoop")
+    spark.conf.set("spark.sql.catalog.benchmark_cat.warehouse", warehouseDir.getAbsolutePath)
+
+    val fullTableName = s"benchmark_cat.db.$tableName"
+
+    // Drop table if exists
+    spark.sql(s"DROP TABLE IF EXISTS $fullTableName")
+
+    // Create a temp view from the DataFrame
+    df.createOrReplaceTempView("temp_df_for_iceberg")
+
+    // Create Iceberg table from temp view
+    val partitionClause = partition.map(p => s"PARTITIONED BY ($p)").getOrElse("")
+    spark.sql(s"""
+      CREATE TABLE $fullTableName
+      USING iceberg
+      TBLPROPERTIES ('format-version'='2', 'write.parquet.compression-codec' = 'snappy')
+      $partitionClause
+      AS SELECT * FROM temp_df_for_iceberg
+    """)
+
+    // Create temp view for benchmarking
+    spark.table(fullTableName).createOrReplaceTempView(tableName)
+
+    spark.catalog.dropTempView("temp_df_for_iceberg")
+  }
+
   protected def saveAsEncryptedParquetV1Table(df: DataFrameWriter[Row], dir: String): Unit = {
     val encoder = Base64.getEncoder
     val footerKey =
