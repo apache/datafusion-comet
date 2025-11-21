@@ -17,11 +17,13 @@
  * under the License.
  */
 
-package org.apache.comet
+package org.apache.comet.parquet
 
 import java.io.File
 
 import org.apache.spark.sql.CometTestBase
+
+import org.apache.comet.CometConf
 
 class CometParquetWriterSuite extends CometTestBase {
   import testImplicits._
