@@ -240,7 +240,6 @@ message ShuffleWriter {
 message ParquetWriter {
   string output_path = 1;
   CompressionCodec compression = 2;
-  int32 partition_id = 3;
 }
 
 enum AggregateMode {

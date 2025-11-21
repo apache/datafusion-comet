@@ -92,7 +92,8 @@ case class CometNativeWriteExec(nativeOp: Operator, child: SparkPlan, outputPath
       val partitionId = org.apache.spark.TaskContext.getPartitionId()
 
       // Create a new operator with the partition ID set for this specific partition
-      val writerOp = baseNativeOp.getParquetWriter.toBuilder.setPartitionId(partitionId).build()
+      // TODO this code needs to be removed
+      val writerOp = baseNativeOp.getParquetWriter.toBuilder.build()
       val partitionSpecificOp = baseNativeOp.toBuilder.setParquetWriter(writerOp).build()
 
       // Serialize the partition-specific plan

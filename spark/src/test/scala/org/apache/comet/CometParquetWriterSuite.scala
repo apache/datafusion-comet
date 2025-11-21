@@ -59,7 +59,6 @@ class CometParquetWriterSuite extends CometTestBase {
           val partFiles = outputDir.listFiles().filter(_.getName.startsWith("part-"))
           // With 3 rows and default parallelism, we should get multiple partitions
           assert(partFiles.length > 0, "Expected at least one part file to be created")
-          println(s"Created ${partFiles.length} part file(s)")
         }
       }
     }

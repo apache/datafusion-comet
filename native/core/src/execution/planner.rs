@@ -1467,7 +1467,7 @@ impl PhysicalPlanner {
                     Arc::clone(&child.native_plan),
                     writer.output_path.clone(),
                     codec,
-                    writer.partition_id,
+                    self.partition,
                 )?);
 
                 Ok((
