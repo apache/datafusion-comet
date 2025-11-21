@@ -100,6 +100,16 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
+  val COMET_NATIVE_PARQUET_WRITE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.parquet.write.enabled")
+      .category(CATEGORY_PARQUET)
+      .doc(
+        "Whether to enable native Parquet write through Comet. When enabled, " +
+          "Comet will intercept Parquet write operations and execute them natively " +
+          "for improved performance.")
+      .booleanConf
+      .createWithDefault(false)
+
   val SCAN_NATIVE_COMET = "native_comet"
   val SCAN_NATIVE_DATAFUSION = "native_datafusion"
   val SCAN_NATIVE_ICEBERG_COMPAT = "native_iceberg_compat"

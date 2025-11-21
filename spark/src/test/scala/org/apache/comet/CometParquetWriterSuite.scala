@@ -22,7 +22,7 @@ package org.apache.comet
 import java.io.File
 
 import org.apache.spark.sql.{CometTestBase, Row}
-import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
+import org.apache.spark.sql.comet.{CometExec, CometMetricNode, CometNativeWriteExec}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.{IntegerType, StringType}
 
@@ -115,6 +115,68 @@ class CometParquetWriterSuite extends CometTestBase {
         assert(result(2).getInt(0) == 3)
         assert(result(2).getString(1) == "c")
       }
+    }
+  }
+
+  test("end-to-end DataFrame write with CometNativeWriteExec") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+
+      // Create test data
+      val df = Seq((1, "a"), (2, "b"), (3, "c")).toDF("id", "value")
+
+      // Get the physical plan
+      val childPlan = df.queryExecution.executedPlan
+
+      // Create ParquetWriter operator
+      val scanOp = OperatorOuterClass.Scan
+        .newBuilder()
+        .setSource("test_input")
+        .setArrowFfiSafe(true)
+        .addFields(QueryPlanSerde.serializeDataType(IntegerType).get)
+        .addFields(QueryPlanSerde.serializeDataType(StringType).get)
+        .build()
+
+      val scanOperator = Operator
+        .newBuilder()
+        .setPlanId(1)
+        .setScan(scanOp)
+        .build()
+
+      val writerOp = OperatorOuterClass.ParquetWriter
+        .newBuilder()
+        .setOutputPath(outputPath)
+        .setCompression(OperatorOuterClass.CompressionCodec.Snappy)
+        .build()
+
+      val writerOperator = Operator
+        .newBuilder()
+        .setPlanId(2)
+        .addChildren(scanOperator)
+        .setParquetWriter(writerOp)
+        .build()
+
+      // Create CometNativeWriteExec
+      val writeExec = CometNativeWriteExec(writerOperator, childPlan, outputPath)
+
+      // Execute the write
+      writeExec.executeColumnar().count()
+
+      // Verify the file was written
+      assert(new File(outputPath).exists(), s"Output file should exist at $outputPath")
+      assert(new File(outputPath).length() > 0, "Output file should not be empty")
+
+      // Verify we can read the data back
+      val readDf = spark.read.parquet(outputPath)
+      val result = readDf.collect().sortBy(_.getInt(0))
+
+      assert(result.length == 3)
+      assert(result(0).getInt(0) == 1)
+      assert(result(0).getString(1) == "a")
+      assert(result(1).getInt(0) == 2)
+      assert(result(1).getString(1) == "b")
+      assert(result(2).getInt(0) == 3)
+      assert(result(2).getString(1) == "c")
     }
   }
 
