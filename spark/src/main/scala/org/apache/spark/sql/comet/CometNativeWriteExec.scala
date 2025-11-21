@@ -81,6 +81,10 @@ case class CometNativeWriteExec(nativeOp: Operator, child: SparkPlan, outputPath
       }
     }
 
+    // Capture metadata before the transformation
+    val numPartitions = childRDD.getNumPartitions
+    val numOutputCols = child.output.length
+
     // Execute native write operation
     childRDD.mapPartitionsInternal { iter =>
       val nativeMetrics = CometMetricNode.fromCometPlan(this)
@@ -94,10 +98,10 @@ case class CometNativeWriteExec(nativeOp: Operator, child: SparkPlan, outputPath
       val cometIter = new org.apache.comet.CometExecIterator(
         CometExec.newIterId,
         Seq(iter),
-        child.output.length,
+        numOutputCols,
         planBytes,
         nativeMetrics,
-        childRDD.getNumPartitions,
+        numPartitions,
         org.apache.spark.TaskContext.getPartitionId(),
         None,
         Seq.empty)

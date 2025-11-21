@@ -125,16 +125,23 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         cmd.fileFormat match {
           case _: ParquetFileFormat =>
             try {
-              // The child should be WriteFilesExec
+              // Use the already-transformed child plan from the WriteFilesExec
+              // The child has already been through Comet transformations
               val childPlan = exec.child match {
-                case writeFiles: WriteFilesExec => writeFiles.child
-                case other => other
+                case writeFiles: WriteFilesExec =>
+                  // The WriteFilesExec child should already be a Comet operator
+                  writeFiles.child
+                case other =>
+                  // Fallback: use the child directly
+                  other
               }
 
               // Get output path
               val outputPath = cmd.outputPath.toString
 
               println(s"Converting DataWritingCommandExec to native Parquet write: $outputPath")
+              println(s"Child plan class: ${childPlan.getClass.getName}")
+              println(s"Child plan: $childPlan")
 
               // Create native ParquetWriter operator
               val scanOp = OperatorOuterClass.Scan
