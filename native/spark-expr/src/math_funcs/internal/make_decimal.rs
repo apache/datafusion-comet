@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::math_funcs::utils::get_precision_scale;
-use arrow::datatypes::{DataType, Int32Type};
+use arrow::datatypes::DataType;
 use arrow::{
     array::{AsArray, Decimal128Builder},
     datatypes::{validate_decimal_precision, Int64Type},
