@@ -1468,6 +1468,7 @@ impl PhysicalPlanner {
                     writer.output_path.clone(),
                     codec,
                     self.partition,
+                    writer.column_names.clone(),
                 )?);
 
                 Ok((

@@ -58,6 +58,8 @@ pub struct ParquetWriterExec {
     compression: CompressionCodec,
     /// Partition ID (from Spark TaskContext)
     partition_id: i32,
+    /// Column names to use in the output Parquet file
+    column_names: Vec<String>,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     /// Cache for plan properties
@@ -71,6 +73,7 @@ impl ParquetWriterExec {
         output_path: String,
         compression: CompressionCodec,
         partition_id: i32,
+        column_names: Vec<String>,
     ) -> Result<Self> {
         // Preserve the input's partitioning so each partition writes its own file
         let input_partitioning = input.output_partitioning().clone();
@@ -87,6 +90,7 @@ impl ParquetWriterExec {
             output_path,
             compression,
             partition_id,
+            column_names,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
         })
@@ -157,6 +161,7 @@ impl ExecutionPlan for ParquetWriterExec {
                 self.output_path.clone(),
                 self.compression.clone(),
                 self.partition_id,
+                self.column_names.clone(),
             )?)),
             _ => Err(DataFusionError::Internal(
                 "ParquetWriterExec requires exactly one child".to_string(),
@@ -170,9 +175,31 @@ impl ExecutionPlan for ParquetWriterExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let input = self.input.execute(partition, context)?;
-        let schema = self.schema();
+        let input_schema = self.schema();
         let output_path = self.output_path.clone();
         let compression = self.compression_to_parquet();
+        let column_names = self.column_names.clone();
+
+        // Create output schema with correct column names
+        let output_schema = if !column_names.is_empty() {
+            // Replace the generic column names (col_0, col_1, etc.) with the actual names
+            let fields: Vec<_> = input_schema
+                .fields()
+                .iter()
+                .enumerate()
+                .map(|(i, field)| {
+                    if i < column_names.len() {
+                        Arc::new(field.as_ref().clone().with_name(&column_names[i]))
+                    } else {
+                        Arc::clone(field)
+                    }
+                })
+                .collect();
+            Arc::new(arrow::datatypes::Schema::new(fields))
+        } else {
+            // No column names provided, use input schema as-is
+            Arc::clone(&input_schema)
+        };
 
         // Strip file:// or file: prefix if present
         let local_path = output_path
@@ -208,8 +235,11 @@ impl ExecutionPlan for ParquetWriterExec {
             .set_compression(compression)
             .build();
 
-        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props))
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&output_schema), Some(props))
             .map_err(|e| DataFusionError::Execution(format!("Failed to create writer: {}", e)))?;
+
+        // Clone schema for use in async closure
+        let schema_for_write = Arc::clone(&output_schema);
 
         // Write batches
         let write_task = async move {
@@ -217,7 +247,22 @@ impl ExecutionPlan for ParquetWriterExec {
 
             while let Some(batch_result) = stream.try_next().await.transpose() {
                 let batch = batch_result?;
-                writer.write(&batch).map_err(|e| {
+
+                // Rename columns in the batch to match output schema
+                let renamed_batch = if !column_names.is_empty() {
+                    use arrow::record_batch::RecordBatch;
+                    RecordBatch::try_new(Arc::clone(&schema_for_write), batch.columns().to_vec())
+                        .map_err(|e| {
+                            DataFusionError::Execution(format!(
+                                "Failed to rename batch columns: {}",
+                                e
+                            ))
+                        })?
+                } else {
+                    batch
+                };
+
+                writer.write(&renamed_batch).map_err(|e| {
                     DataFusionError::Execution(format!("Failed to write batch: {}", e))
                 })?;
             }
@@ -233,7 +278,7 @@ impl ExecutionPlan for ParquetWriterExec {
         // Execute the write task and convert to a stream
         use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
         Ok(Box::pin(RecordBatchStreamAdapter::new(
-            schema,
+            output_schema,
             futures::stream::once(write_task).try_flatten(),
         )))
     }

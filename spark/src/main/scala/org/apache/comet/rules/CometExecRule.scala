@@ -164,6 +164,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
                 .setOutputPath(outputPath)
                 // TODO: Get compression from options
                 .setCompression(OperatorOuterClass.CompressionCodec.Snappy)
+                // Add column names to preserve them across FFI boundary
+                .addAllColumnNames(cmd.query.output.map(_.name).asJava)
                 .build()
 
               val writerOperator = Operator
@@ -235,6 +237,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
                 .setOutputPath(outputPath)
                 // TODO: Get compression from options
                 .setCompression(OperatorOuterClass.CompressionCodec.Snappy)
+                // Add column names to preserve them across FFI boundary
+                .addAllColumnNames(cmd.query.output.map(_.name).asJava)
                 .build()
 
               val writerOperator = Operator

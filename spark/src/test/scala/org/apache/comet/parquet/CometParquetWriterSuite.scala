@@ -42,6 +42,7 @@ class CometParquetWriterSuite extends CometTestBase {
           val df = spark.read.parquet(inputPath)
 
           // perform native write
+          // TODO add assertion that this actually ran with the native writer
           df.write.parquet(outputPath)
 
           // Verify the data was written correctly
@@ -49,8 +50,7 @@ class CometParquetWriterSuite extends CometTestBase {
           assert(resultDf.count() == 3, "Expected 3 rows to be written")
 
           // Verify correct data
-          // TODO native parquet writer loses column names
-          val rows = resultDf.orderBy("col_0").collect()
+          val rows = resultDf.orderBy("id").collect()
           assert(rows.length == 3)
           assert(rows(0).getInt(0) == 1 && rows(0).getString(1) == "a")
           assert(rows(1).getInt(0) == 2 && rows(1).getString(1) == "b")
