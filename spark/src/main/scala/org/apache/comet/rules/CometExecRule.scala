@@ -155,7 +155,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
               val scanOperator = Operator
                 .newBuilder()
-                .setPlanId(1) // TODO use real plan id
+                .setPlanId(exec.id)
                 .setScan(scanOp.build())
                 .build()
 
@@ -168,7 +168,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
               val writerOperator = Operator
                 .newBuilder()
-                .setPlanId(2) // TODO use real plan id
+                .setPlanId(exec.id)
                 .addChildren(scanOperator)
                 .setParquetWriter(writerOp)
                 .build()
@@ -226,7 +226,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
               val scanOperator = Operator
                 .newBuilder()
-                .setPlanId(1) // TODO use real plan id
+                .setPlanId(exec.id)
                 .setScan(scanOp.build())
                 .build()
 
@@ -239,7 +239,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
               val writerOperator = Operator
                 .newBuilder()
-                .setPlanId(2) // TODO use real plan id
+                .setPlanId(exec.id)
                 .addChildren(scanOperator)
                 .setParquetWriter(writerOp)
                 .build()

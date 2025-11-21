@@ -84,21 +84,13 @@ case class CometNativeWriteExec(nativeOp: Operator, child: SparkPlan, outputPath
     // Capture metadata before the transformation
     val numPartitions = childRDD.getNumPartitions
     val numOutputCols = child.output.length
-    val baseNativeOp = nativeOp // The base operator without partition_id set
 
     // Execute native write operation
     childRDD.mapPartitionsInternal { iter =>
       val nativeMetrics = CometMetricNode.fromCometPlan(this)
-      val partitionId = org.apache.spark.TaskContext.getPartitionId()
 
-      // Create a new operator with the partition ID set for this specific partition
-      // TODO this code needs to be removed
-      val writerOp = baseNativeOp.getParquetWriter.toBuilder.build()
-      val partitionSpecificOp = baseNativeOp.toBuilder.setParquetWriter(writerOp).build()
-
-      // Serialize the partition-specific plan
       val outputStream = new java.io.ByteArrayOutputStream()
-      partitionSpecificOp.writeTo(outputStream)
+      nativeOp.writeTo(outputStream)
       outputStream.close()
       val planBytes = outputStream.toByteArray
 
@@ -109,7 +101,7 @@ case class CometNativeWriteExec(nativeOp: Operator, child: SparkPlan, outputPath
         planBytes,
         nativeMetrics,
         numPartitions,
-        partitionId,
+        org.apache.spark.TaskContext.getPartitionId(),
         None,
         Seq.empty)
 
