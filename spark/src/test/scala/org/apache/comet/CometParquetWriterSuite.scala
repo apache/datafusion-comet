@@ -41,13 +41,9 @@ class CometParquetWriterSuite extends CometTestBase {
           CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true") {
           val df = spark.read.parquet(inputPath)
 
+          // perform native write
           df.write.parquet(outputPath)
 
-          spark.read.parquet(outputPath).show()
-          // scalastyle:off
-          println(outputPath)
-
-          // Thread.sleep(60000)
           assert(spark.read.parquet(outputPath).count() == 3)
         }
       }
