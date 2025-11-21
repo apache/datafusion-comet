@@ -21,7 +21,7 @@ package org.apache.comet.parquet
 
 import java.io.File
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, DataFrame}
 
 import org.apache.comet.CometConf
 
@@ -61,6 +61,17 @@ class CometParquetWriterSuite extends CometTestBase {
           val partFiles = outputDir.listFiles().filter(_.getName.startsWith("part-"))
           // With 3 rows and default parallelism, we should get multiple partitions
           assert(partFiles.length > 1, "Expected multiple part files to be created")
+
+          // read with and without Comet and compare
+          var sparkDf: DataFrame = null
+          var cometDf: DataFrame = null
+          withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false") {
+            sparkDf = spark.read.parquet(outputPath)
+          }
+          withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
+            cometDf = spark.read.parquet(outputPath)
+          }
+          checkAnswer(sparkDf, cometDf)
         }
       }
     }
