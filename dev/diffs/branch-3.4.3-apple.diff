@@ -1,5 +1,5 @@
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-index 140ed7ccea0..d0e5f52f7bc 100644
+index 140ed7c..8edfc5f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 @@ -877,7 +877,7 @@ class FileBasedDataSourceSuite extends QueryTest
@@ -7,7 +7,7 @@ index 140ed7ccea0..d0e5f52f7bc 100644
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
 -            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _), _) => f
-+            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _, _, _, _), _, _) => f
++            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _), _, _) => f
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.nonEmpty)
@@ -16,7 +16,8 @@ index 140ed7ccea0..d0e5f52f7bc 100644
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
 -            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _), _) => f
-+            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _, _, _, _), _, _) => f
++            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _), _, _) => f
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.isEmpty)
+
