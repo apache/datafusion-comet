@@ -24,6 +24,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+import org.apache.comet.CometExecIterator
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 /**
@@ -60,7 +61,7 @@ case class CometNativeWriteExec(nativeOp: Operator, child: SparkPlan, outputPath
   override def doExecute(): RDD[InternalRow] = {
     // Execute the native write
     val resultRDD = doExecuteColumnar()
-    // Convert to InternalRow RDD (write operations typically return empty results)
+    // Convert to empty InternalRow RDD (write operations typically return empty results)
     resultRDD.mapPartitions { iter =>
       // Consume all batches (they should be empty)
       iter.foreach(_.close())
@@ -74,8 +75,9 @@ case class CometNativeWriteExec(nativeOp: Operator, child: SparkPlan, outputPath
       child.executeColumnar()
     } else {
       // If child doesn't support columnar, convert to columnar
-      child.execute().mapPartitionsInternal { rowIter =>
-        // This is a simplified version - in production you'd need proper row to columnar conversion
+      child.execute().mapPartitionsInternal { _ =>
+        // TODO this could delegate to CometRowToColumnar, but maybe Comet
+        // does not need to support this case?
         throw new UnsupportedOperationException(
           "Row-based child operators not yet supported for native write")
       }
@@ -94,7 +96,7 @@ case class CometNativeWriteExec(nativeOp: Operator, child: SparkPlan, outputPath
       outputStream.close()
       val planBytes = outputStream.toByteArray
 
-      val cometIter = new org.apache.comet.CometExecIterator(
+      new CometExecIterator(
         CometExec.newIterId,
         Seq(iter),
         numOutputCols,
@@ -105,11 +107,6 @@ case class CometNativeWriteExec(nativeOp: Operator, child: SparkPlan, outputPath
         None,
         Seq.empty)
 
-      // Consume all output batches (they should be empty for write operations)
-      new Iterator[ColumnarBatch] {
-        override def hasNext: Boolean = cometIter.hasNext
-        override def next(): ColumnarBatch = cometIter.next()
-      }
     }
   }
 }
