@@ -29,7 +29,7 @@ import org.apache.spark.SparkContext
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE}
 import org.apache.spark.sql.TPCDSBase
 import org.apache.spark.sql.catalyst.expressions.{AttributeSet, Cast}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{Average, Sum}
+import org.apache.spark.sql.catalyst.expressions.aggregate.Average
 import org.apache.spark.sql.catalyst.util.resourceToString
 import org.apache.spark.sql.execution.{FormattedMode, ReusedSubqueryExec, SparkPlan, SubqueryBroadcastExec, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecutionSuite

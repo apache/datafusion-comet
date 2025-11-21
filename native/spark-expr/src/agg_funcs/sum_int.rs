@@ -253,12 +253,12 @@ impl Accumulator for SumIntegerAccumulator {
                 self.has_all_nulls = false;
                 return Ok(());
             }
-            self.has_all_nulls = self.has_all_nulls && that_has_all_nulls;
             if that_has_all_nulls {
                 return Ok(());
             }
             if self.has_all_nulls {
                 self.sum = that_sum;
+                self.has_all_nulls = false;
                 return Ok(());
             }
         } else {
@@ -274,12 +274,12 @@ impl Accumulator for SumIntegerAccumulator {
         // safe to unwrap (since we checked nulls above) but handling error just in case state is corrupt
         let left = self.sum.ok_or_else(|| {
             DataFusionError::Internal(
-                "Invalid state in merging batch. Current batch's is None".to_string(),
+                "Invalid state in merging batch. Current batch's sum is None".to_string(),
             )
         })?;
         let right = that_sum.ok_or_else(|| {
             DataFusionError::Internal(
-                "Invalid state in merging batch. Incoming sum to is None".to_string(),
+                "Invalid state in merging batch. Incoming sum is None".to_string(),
             )
         })?;
 
@@ -510,15 +510,13 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
                     continue;
                 }
 
-                self.has_all_nulls[group_index] =
-                    self.has_all_nulls[group_index] && that_has_all_nulls;
-
                 if that_has_all_nulls {
                     continue;
                 }
 
                 if self.has_all_nulls[group_index] {
                     self.sums[group_index] = that_sum;
+                    self.has_all_nulls[group_index] = false;
                     continue;
                 }
             } else {
