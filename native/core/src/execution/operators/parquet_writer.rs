@@ -22,7 +22,6 @@ use std::{
     fmt,
     fmt::{Debug, Formatter},
     fs::File,
-    path::Path,
     sync::Arc,
 };
 
@@ -31,12 +30,12 @@ use async_trait::async_trait;
 use datafusion::{
     error::{DataFusionError, Result},
     execution::context::TaskContext,
-    physical_expr::{EquivalenceProperties, Partitioning},
+    physical_expr::EquivalenceProperties,
     physical_plan::{
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
-        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
-        Statistics,
+        DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
+        SendableRecordBatchStream, Statistics,
     },
 };
 use futures::TryStreamExt;
@@ -70,9 +69,12 @@ impl ParquetWriterExec {
         output_path: String,
         compression: CompressionCodec,
     ) -> Result<Self> {
+        // Preserve the input's partitioning so each partition writes its own file
+        let input_partitioning = input.output_partitioning().clone();
+
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
-            Partitioning::UnknownPartitioning(1),
+            input_partitioning,
             EmissionType::Final,
             Boundedness::Bounded,
         );
@@ -167,16 +169,29 @@ impl ExecutionPlan for ParquetWriterExec {
         let output_path = self.output_path.clone();
         let compression = self.compression_to_parquet();
 
-        // Create output directory if it doesn't exist
-        if let Some(parent) = Path::new(&output_path).parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                DataFusionError::Execution(format!("Failed to create output directory: {}", e))
-            })?;
-        }
+        // Strip file:// or file: prefix if present
+        let local_path = output_path
+            .strip_prefix("file://")
+            .or_else(|| output_path.strip_prefix("file:"))
+            .unwrap_or(&output_path)
+            .to_string();
+
+        // Create output directory
+        std::fs::create_dir_all(&local_path).map_err(|e| {
+            DataFusionError::Execution(format!(
+                "Failed to create output directory '{}': {}",
+                local_path, e
+            ))
+        })?;
+
+        // Generate part file name for this partition
+        let part_file = format!("{}/part-{:05}.snappy.parquet", local_path, partition);
+
+        println!("ParquetWriter executing: partition={}, output={}", partition, part_file);
 
         // Create the Parquet file
-        let file = File::create(&output_path).map_err(|e| {
-            DataFusionError::Execution(format!("Failed to create output file: {}", e))
+        let file = File::create(&part_file).map_err(|e| {
+            DataFusionError::Execution(format!("Failed to create output file '{}': {}", part_file, e))
         })?;
 
         // Configure writer properties

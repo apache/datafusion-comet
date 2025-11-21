@@ -49,6 +49,11 @@ class CometParquetWriterSuite extends CometTestBase {
 
           df.write.parquet(outputPath)
 
+          spark.read.parquet(outputPath).show()
+          // scalastyle:off
+          println(outputPath)
+
+          // Thread.sleep(60000)
           assert(spark.read.parquet(outputPath).count() == 3)
         }
       }
