@@ -1,0 +1,216 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+//! Parquet writer operator for writing RecordBatches to Parquet files
+
+use std::{
+    any::Any,
+    fmt,
+    fmt::{Debug, Formatter},
+    fs::File,
+    path::Path,
+    sync::Arc,
+};
+
+use arrow::datatypes::SchemaRef;
+use async_trait::async_trait;
+use datafusion::{
+    error::{DataFusionError, Result},
+    execution::context::TaskContext,
+    physical_expr::{EquivalenceProperties, Partitioning},
+    physical_plan::{
+        execution_plan::{Boundedness, EmissionType},
+        metrics::{ExecutionPlanMetricsSet, MetricsSet},
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
+        Statistics,
+    },
+};
+use futures::TryStreamExt;
+use parquet::{
+    arrow::ArrowWriter,
+    basic::{Compression, ZstdLevel},
+    file::properties::WriterProperties,
+};
+
+use crate::execution::shuffle::CompressionCodec;
+
+/// Parquet writer operator that writes input batches to a Parquet file
+#[derive(Debug)]
+pub struct ParquetWriterExec {
+    /// Input execution plan
+    input: Arc<dyn ExecutionPlan>,
+    /// Output file path
+    output_path: String,
+    /// Compression codec
+    compression: CompressionCodec,
+    /// Metrics
+    metrics: ExecutionPlanMetricsSet,
+    /// Cache for plan properties
+    cache: PlanProperties,
+}
+
+impl ParquetWriterExec {
+    /// Create a new ParquetWriterExec
+    pub fn try_new(
+        input: Arc<dyn ExecutionPlan>,
+        output_path: String,
+        compression: CompressionCodec,
+    ) -> Result<Self> {
+        let cache = PlanProperties::new(
+            EquivalenceProperties::new(Arc::clone(&input.schema())),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Final,
+            Boundedness::Bounded,
+        );
+
+        Ok(ParquetWriterExec {
+            input,
+            output_path,
+            compression,
+            metrics: ExecutionPlanMetricsSet::new(),
+            cache,
+        })
+    }
+
+    fn compression_to_parquet(&self) -> Compression {
+        match self.compression {
+            CompressionCodec::None => Compression::UNCOMPRESSED,
+            CompressionCodec::Zstd(_) => Compression::ZSTD(ZstdLevel::default()),
+            CompressionCodec::Lz4Frame => Compression::LZ4,
+            CompressionCodec::Snappy => Compression::SNAPPY,
+        }
+    }
+}
+
+impl DisplayAs for ParquetWriterExec {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(
+                    f,
+                    "ParquetWriterExec: path={}, compression={:?}",
+                    self.output_path, self.compression
+                )
+            }
+            DisplayFormatType::TreeRender => unimplemented!(),
+        }
+    }
+}
+
+#[async_trait]
+impl ExecutionPlan for ParquetWriterExec {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn name(&self) -> &str {
+        "ParquetWriterExec"
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
+    fn statistics(&self) -> Result<Statistics> {
+        self.input.partition_statistics(None)
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.cache
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.input.schema()
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        match children.len() {
+            1 => Ok(Arc::new(ParquetWriterExec::try_new(
+                Arc::clone(&children[0]),
+                self.output_path.clone(),
+                self.compression.clone(),
+            )?)),
+            _ => Err(DataFusionError::Internal(
+                "ParquetWriterExec requires exactly one child".to_string(),
+            )),
+        }
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> Result<SendableRecordBatchStream> {
+        let input = self.input.execute(partition, context)?;
+        let schema = self.schema();
+        let output_path = self.output_path.clone();
+        let compression = self.compression_to_parquet();
+
+        // Create output directory if it doesn't exist
+        if let Some(parent) = Path::new(&output_path).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                DataFusionError::Execution(format!("Failed to create output directory: {}", e))
+            })?;
+        }
+
+        // Create the Parquet file
+        let file = File::create(&output_path).map_err(|e| {
+            DataFusionError::Execution(format!("Failed to create output file: {}", e))
+        })?;
+
+        // Configure writer properties
+        let props = WriterProperties::builder()
+            .set_compression(compression)
+            .build();
+
+        let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))
+            .map_err(|e| DataFusionError::Execution(format!("Failed to create writer: {}", e)))?;
+
+        // Write batches
+        let write_task = async move {
+            let mut stream = input;
+
+            while let Some(batch_result) = stream.try_next().await.transpose() {
+                let batch = batch_result?;
+                writer.write(&batch).map_err(|e| {
+                    DataFusionError::Execution(format!("Failed to write batch: {}", e))
+                })?;
+            }
+
+            writer.close().map_err(|e| {
+                DataFusionError::Execution(format!("Failed to close writer: {}", e))
+            })?;
+
+            // Return empty stream to indicate completion
+            Ok::<_, DataFusionError>(futures::stream::empty())
+        };
+
+        // Execute the write task and convert to a stream
+        use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            futures::stream::once(write_task).try_flatten(),
+        )))
+    }
+}
