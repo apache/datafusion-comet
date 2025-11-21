@@ -208,7 +208,7 @@ impl ExecutionPlan for ParquetWriterExec {
             .set_compression(compression)
             .build();
 
-        let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props))
             .map_err(|e| DataFusionError::Execution(format!("Failed to create writer: {}", e)))?;
 
         // Write batches
