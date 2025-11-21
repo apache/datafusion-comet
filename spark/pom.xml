@@ -196,6 +196,18 @@ under the License.
   </dependencies>
 
   <profiles>
+    <profile>
+      <id>spark-3.4-apple</id>
+      <dependencies>
+        <dependency>
+          <groupId>org.apache.iceberg</groupId>
+          <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
+          <version>1.5.0.30-apple</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+
     <!-- Iceberg dependencies vary by Spark version (Iceberg 1.8.1 for Spark 3.x, 1.10.0 for Spark 4.0) -->
     <profile>
       <id>spark-3.4</id>
