@@ -32,6 +32,29 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 class CometParquetWriterSuite extends CometTestBase {
   import testImplicits._
 
+  test("basic parquet write") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+
+      // Create test data and write it to a temp parquet file first
+      withTempPath { inputDir =>
+        val inputPath = new File(inputDir, "input.parquet").getAbsolutePath
+        val df = Seq((1, "a"), (2, "b"), (3, "c")).toDF("id", "value")
+        df.write.parquet(inputPath)
+
+        withSQLConf(
+          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true") {
+          val df = spark.read.parquet(inputPath)
+
+          df.write.parquet(outputPath)
+
+          assert(spark.read.parquet(outputPath).count() == 3)
+        }
+      }
+    }
+  }
+
   test("basic parquet write with native writer") {
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
