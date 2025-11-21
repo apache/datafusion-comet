@@ -105,8 +105,9 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_PARQUET)
       .doc(
         "Whether to enable native Parquet write through Comet. When enabled, " +
-          "Comet will intercept Parquet write operations and execute them natively " +
-          "for improved performance.")
+          "Comet will intercept Parquet write operations and execute them natively. This " +
+          "feature is highly experimental and only partially implemented. It should not " +
+          "be used in production.")
       .booleanConf
       .createWithDefault(false)
 

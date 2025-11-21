@@ -226,7 +226,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
               val scanOperator = Operator
                 .newBuilder()
-                .setPlanId(1)
+                .setPlanId(1) // TODO use real plan id
                 .setScan(scanOp.build())
                 .build()
 
@@ -239,16 +239,12 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
               val writerOperator = Operator
                 .newBuilder()
-                .setPlanId(2)
+                .setPlanId(2) // TODO use real plan id
                 .addChildren(scanOperator)
                 .setParquetWriter(writerOp)
                 .build()
 
-              // Create CometNativeWriteExec
-              val writeExec = CometNativeWriteExec(writerOperator, childPlan, outputPath)
-
-              println(s"Converted Parquet write to native execution: $outputPath")
-              Some(writeExec)
+              Some(CometNativeWriteExec(writerOperator, childPlan, outputPath))
             } catch {
               case e: Exception =>
                 logWarning("Failed to convert write command to native execution", e)
@@ -587,7 +583,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
     if (showTransformations && !newPlan.fastEquals(plan)) {
-      println(s"""
+      logInfo(s"""
            |=== Applying Rule $ruleName ===
            |${sideBySide(plan.treeString, newPlan.treeString).mkString("\n")}
            |""".stripMargin)
