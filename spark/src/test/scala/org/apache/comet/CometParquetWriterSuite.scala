@@ -36,15 +36,30 @@ class CometParquetWriterSuite extends CometTestBase {
         val df = Seq((1, "a"), (2, "b"), (3, "c")).toDF("id", "value")
         df.write.parquet(inputPath)
 
-        withSQLConf(
-          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
-          CometConf.COMET_EXPLAIN_NATIVE_ENABLED.key -> "true") {
+        withSQLConf(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true") {
           val df = spark.read.parquet(inputPath)
 
           // perform native write
           df.write.parquet(outputPath)
 
-          assert(spark.read.parquet(outputPath).count() == 3)
+          // Verify the data was written correctly
+          val resultDf = spark.read.parquet(outputPath)
+          assert(resultDf.count() == 3, "Expected 3 rows to be written")
+
+          // Verify correct data
+          // TODO native parquet writer loses column names
+          val rows = resultDf.orderBy("col_0").collect()
+          assert(rows.length == 3)
+          assert(rows(0).getInt(0) == 1 && rows(0).getString(1) == "a")
+          assert(rows(1).getInt(0) == 2 && rows(1).getString(1) == "b")
+          assert(rows(2).getInt(0) == 3 && rows(2).getString(1) == "c")
+
+          // Verify multiple part files were created
+          val outputDir = new File(outputPath)
+          val partFiles = outputDir.listFiles().filter(_.getName.startsWith("part-"))
+          // With 3 rows and default parallelism, we should get multiple partitions
+          assert(partFiles.length > 0, "Expected at least one part file to be created")
+          println(s"Created ${partFiles.length} part file(s)")
         }
       }
     }

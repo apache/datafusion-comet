@@ -195,11 +195,6 @@ impl ExecutionPlan for ParquetWriterExec {
             local_path, self.partition_id
         );
 
-        println!(
-            "ParquetWriter executing: partition={}, output={}",
-            self.partition_id, part_file
-        );
-
         // Create the Parquet file
         let file = File::create(&part_file).map_err(|e| {
             DataFusionError::Execution(format!(
