@@ -25,6 +25,7 @@ import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -78,12 +79,26 @@ object CometDataWritingCommandExec extends CometOperatorSerde[DataWritingCommand
               // Get output path
               val outputPath = cmd.outputPath.toString
 
+              val codecName = cmd.options.getOrElse(
+                "compression",
+                SQLConf.get.getConfString(
+                  SQLConf.PARQUET_COMPRESSION.key,
+                  SQLConf.PARQUET_COMPRESSION.defaultValueString))
+
+              val codec = codecName match {
+                case "snappy" => OperatorOuterClass.CompressionCodec.Snappy
+                case "lz4" => OperatorOuterClass.CompressionCodec.Lz4
+                case "zstd" => OperatorOuterClass.CompressionCodec.Zstd
+                case "none" => OperatorOuterClass.CompressionCodec.None
+                case other =>
+                  withInfo(op, s"Unsupported compression codec: $other")
+                  return None
+              }
+
               val writerOp = OperatorOuterClass.ParquetWriter
                 .newBuilder()
                 .setOutputPath(outputPath)
-                // TODO: Get compression from options
-                .setCompression(OperatorOuterClass.CompressionCodec.Snappy)
-                // Add column names to preserve them across FFI boundary
+                .setCompression(codec)
                 .addAllColumnNames(cmd.query.output.map(_.name).asJava)
                 .build()
 
@@ -105,11 +120,11 @@ object CometDataWritingCommandExec extends CometOperatorSerde[DataWritingCommand
                 None
             }
           case _ =>
-            // Not a Parquet write, skip
+            withInfo(op, "Only Parquet writes are supported")
             None
         }
-      case _ =>
-        // Not a write command we handle
+      case other =>
+        withInfo(op, s"Unsupported write command: ${other.getClass}")
         None
     }
   }
