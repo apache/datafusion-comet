@@ -33,8 +33,6 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
-import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
-import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -50,6 +48,7 @@ import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, Ope
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
 import org.apache.comet.serde.operator._
+import org.apache.comet.serde.operator.CometDataWritingCommandExec
 
 object CometExecRule {
 
@@ -71,6 +70,13 @@ object CometExecRule {
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
       classOf[WindowExec] -> CometWindowExec)
+
+  /**
+   * DataWritingCommandExec is handled separately in convertNode since it doesn't follow the
+   * standard pattern of having CometNativeExec children.
+   */
+  val writeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
+    Map(classOf[DataWritingCommandExec] -> CometDataWritingCommandExec)
 
   /**
    * Sinks that have a native plan of ScanExec.
@@ -111,158 +117,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   private def isCometPlan(op: SparkPlan): Boolean = op.isInstanceOf[CometPlan]
 
   private def isCometNative(op: SparkPlan): Boolean = op.isInstanceOf[CometNativeExec]
-
-  /**
-   * Try to convert a DataWritingCommandExec to use Comet native Parquet writer. Returns
-   * Some(CometNativeWriteExec) if conversion is successful, None otherwise.
-   */
-  private def tryConvertDataWritingCommand(exec: DataWritingCommandExec): Option[SparkPlan] = {
-    exec.cmd match {
-      case cmd: InsertIntoHadoopFsRelationCommand =>
-        // Check if this is a Parquet write
-        cmd.fileFormat match {
-          case _: ParquetFileFormat =>
-            try {
-              // Use the already-transformed child plan from the WriteFilesExec
-              // The child has already been through Comet transformations
-              val childPlan = exec.child match {
-                case writeFiles: WriteFilesExec =>
-                  // The WriteFilesExec child should already be a Comet operator
-                  writeFiles.child
-                case other =>
-                  // Fallback: use the child directly
-                  other
-              }
-
-              // Get output path
-              val outputPath = cmd.outputPath.toString
-
-              // Create native ParquetWriter operator
-              val scanOp = OperatorOuterClass.Scan
-                .newBuilder()
-                .setSource("write_source")
-                .setArrowFfiSafe(true)
-
-              // Add fields from the query output schema
-              cmd.query.output.foreach { attr =>
-                serializeDataType(attr.dataType) match {
-                  case Some(dataType) => scanOp.addFields(dataType)
-                  case None =>
-                    logWarning(s"Cannot serialize data type ${attr.dataType} for native write")
-                    return None
-                }
-              }
-
-              val scanOperator = Operator
-                .newBuilder()
-                .setPlanId(exec.id)
-                .setScan(scanOp.build())
-                .build()
-
-              val writerOp = OperatorOuterClass.ParquetWriter
-                .newBuilder()
-                .setOutputPath(outputPath)
-                // TODO: Get compression from options
-                .setCompression(OperatorOuterClass.CompressionCodec.Snappy)
-                // Add column names to preserve them across FFI boundary
-                .addAllColumnNames(cmd.query.output.map(_.name).asJava)
-                .build()
-
-              val writerOperator = Operator
-                .newBuilder()
-                .setPlanId(exec.id)
-                .addChildren(scanOperator)
-                .setParquetWriter(writerOp)
-                .build()
-
-              // Create CometNativeWriteExec with the transformed child plan
-              Some(CometNativeWriteExec(writerOperator, childPlan, outputPath))
-            } catch {
-              case e: Exception =>
-                logWarning("Failed to convert DataWritingCommandExec to native execution", e)
-                None
-            }
-          case _ =>
-            // Not a Parquet write, skip
-            None
-        }
-      case _ =>
-        // Not a write command we handle
-        None
-    }
-  }
-
-  /**
-   * Try to convert a write command (ExecutedCommandExec) to use Comet native Parquet writer.
-   * Returns Some(CometNativeWriteExec) if conversion is successful, None otherwise.
-   */
-  private def tryConvertWriteCommand(exec: ExecutedCommandExec): Option[SparkPlan] = {
-    exec.cmd match {
-      case cmd: InsertIntoHadoopFsRelationCommand =>
-        // Check if this is a Parquet write
-        cmd.fileFormat match {
-          case _: ParquetFileFormat =>
-            try {
-              // Plan the query to get the physical plan
-              val queryExecution = session.sessionState.executePlan(cmd.query)
-              val childPlan = queryExecution.executedPlan
-
-              // Get output path
-              val outputPath = cmd.outputPath.toString
-
-              // Create native ParquetWriter operator
-              val scanOp = OperatorOuterClass.Scan
-                .newBuilder()
-                .setSource("write_source")
-                .setArrowFfiSafe(true)
-
-              // Add fields from the query output schema
-              cmd.query.output.foreach { attr =>
-                serializeDataType(attr.dataType) match {
-                  case Some(dataType) => scanOp.addFields(dataType)
-                  case None =>
-                    logWarning(s"Cannot serialize data type ${attr.dataType} for native write")
-                    return None
-                }
-              }
-
-              val scanOperator = Operator
-                .newBuilder()
-                .setPlanId(exec.id)
-                .setScan(scanOp.build())
-                .build()
-
-              val writerOp = OperatorOuterClass.ParquetWriter
-                .newBuilder()
-                .setOutputPath(outputPath)
-                // TODO: Get compression from options
-                .setCompression(OperatorOuterClass.CompressionCodec.Snappy)
-                // Add column names to preserve them across FFI boundary
-                .addAllColumnNames(cmd.query.output.map(_.name).asJava)
-                .build()
-
-              val writerOperator = Operator
-                .newBuilder()
-                .setPlanId(exec.id)
-                .addChildren(scanOperator)
-                .setParquetWriter(writerOp)
-                .build()
-
-              Some(CometNativeWriteExec(writerOperator, childPlan, outputPath))
-            } catch {
-              case e: Exception =>
-                logWarning("Failed to convert write command to native execution", e)
-                None
-            }
-          case _ =>
-            // Not a Parquet write, skip
-            None
-        }
-      case _ =>
-        // Not a write command we handle
-        None
-    }
-  }
 
   // spotless:off
 
@@ -372,14 +226,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         val nativeOp = operator2Proto(cometOp)
         CometScanWrapper(nativeOp.get, cometOp)
 
-      // Intercept DataWritingCommandExec (Spark 3.5+)
-      case exec: DataWritingCommandExec
-          if CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.get(conf) =>
-        tryConvertDataWritingCommand(exec).getOrElse(exec)
-
-      // Intercept Parquet write commands (fallback for older Spark versions)
-      case exec: ExecutedCommandExec if CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.get(conf) =>
-        tryConvertWriteCommand(exec).getOrElse(exec)
+      // Handle DataWritingCommandExec specially since it doesn't follow the standard pattern
+      case exec: DataWritingCommandExec =>
+        CometExecRule.writeExecs.get(classOf[DataWritingCommandExec]) match {
+          case Some(handler) if isOperatorEnabled(handler, exec) =>
+            val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(exec.id)
+            handler
+              .asInstanceOf[CometOperatorSerde[DataWritingCommandExec]]
+              .convert(exec, builder)
+              .map(nativeOp =>
+                handler
+                  .asInstanceOf[CometOperatorSerde[DataWritingCommandExec]]
+                  .createExec(nativeOp, exec))
+              .getOrElse(exec)
+          case _ =>
+            exec
+        }
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
