@@ -27,8 +27,8 @@ import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, MakeDecimal, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec}
 import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, SparkPlan, WholeStageCodegenExec}
@@ -3187,4 +3187,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConcat.unsupportedReason)
     }
   }
+
+  // https://github.com/apache/datafusion-comet/issues/2813
+  test("make decimal using DataFrame API") {
+
+    sql("create table t1 using parquet as select 123456 as c1 from range(1)")
+
+    withSQLConf(
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
+      "spark.sql.ansi.enabled" -> "false",
+      "spark.sql.adaptive.enabled" -> "false",
+      "spark.comet.expression.Sum.allowIncompatible" -> "true",
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_iceberg_compat",
+      "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+
+      val df = sql("select * from t1")
+      val makeDecimalExpr = MakeDecimal(df.col("c1").expr, 3, 0)
+      val makeDecimalColumn = new Column(makeDecimalExpr)
+      val df1 = df.withColumn("result", makeDecimalColumn)
+      df1.explain("formatted")
+
+      checkSparkAnswerAndOperator(df1)
+    }
+
+  }
+
 }

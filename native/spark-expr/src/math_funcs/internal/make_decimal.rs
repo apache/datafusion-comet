@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::math_funcs::utils::get_precision_scale;
-use arrow::datatypes::DataType;
+use arrow::datatypes::{DataType, Int32Type};
 use arrow::{
     array::{AsArray, Decimal128Builder},
     datatypes::{validate_decimal_precision, Int64Type},
@@ -40,18 +40,21 @@ pub fn spark_make_decimal(
             ))),
             sv => internal_err!("Expected Int64 but found {sv:?}"),
         },
-        ColumnarValue::Array(a) => {
-            let arr = a.as_primitive::<Int64Type>();
-            let mut result = Decimal128Builder::new();
-            for v in arr.into_iter() {
-                result.append_option(long_to_decimal(&v, precision))
-            }
-            let result_type = DataType::Decimal128(precision, scale);
+        ColumnarValue::Array(a) => match a.data_type() {
+            DataType::Int64 => {
+                let arr = a.as_primitive::<Int64Type>();
+                let mut result = Decimal128Builder::new();
+                for v in arr.into_iter() {
+                    result.append_option(long_to_decimal(&v, precision))
+                }
+                let result_type = DataType::Decimal128(precision, scale);
 
-            Ok(ColumnarValue::Array(Arc::new(
-                result.finish().with_data_type(result_type),
-            )))
-        }
+                Ok(ColumnarValue::Array(Arc::new(
+                    result.finish().with_data_type(result_type),
+                )))
+            }
+            av => internal_err!("Expected Int64 but found {av:?}"),
+        },
     }
 }
 
