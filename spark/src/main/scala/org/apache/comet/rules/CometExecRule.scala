@@ -33,7 +33,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
-import org.apache.spark.sql.execution.datasources.{FileFormat, InsertIntoHadoopFsRelationCommand, WriteFilesExec}
+import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
@@ -186,7 +186,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
               Some(writeExec)
             } catch {
               case e: Exception =>
-                logWarning(s"Failed to convert DataWritingCommandExec to native execution", e)
+                logWarning("Failed to convert DataWritingCommandExec to native execution", e)
                 None
             }
           case _ =>
@@ -217,7 +217,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           None
         } catch {
           case e: Exception =>
-            logWarning(s"Failed to convert WriteFilesExec to native execution", e)
+            logWarning("Failed to convert WriteFilesExec to native execution", e)
             None
         }
       case _ =>
@@ -287,7 +287,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
               Some(writeExec)
             } catch {
               case e: Exception =>
-                logWarning(s"Failed to convert write command to native execution", e)
+                logWarning("Failed to convert write command to native execution", e)
                 None
             }
           case _ =>

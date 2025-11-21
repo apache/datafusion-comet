@@ -56,6 +56,8 @@ pub struct ParquetWriterExec {
     output_path: String,
     /// Compression codec
     compression: CompressionCodec,
+    /// Partition ID (from Spark TaskContext)
+    partition_id: i32,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     /// Cache for plan properties
@@ -68,6 +70,7 @@ impl ParquetWriterExec {
         input: Arc<dyn ExecutionPlan>,
         output_path: String,
         compression: CompressionCodec,
+        partition_id: i32,
     ) -> Result<Self> {
         // Preserve the input's partitioning so each partition writes its own file
         let input_partitioning = input.output_partitioning().clone();
@@ -83,6 +86,7 @@ impl ParquetWriterExec {
             input,
             output_path,
             compression,
+            partition_id,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
         })
@@ -152,6 +156,7 @@ impl ExecutionPlan for ParquetWriterExec {
                 Arc::clone(&children[0]),
                 self.output_path.clone(),
                 self.compression.clone(),
+                self.partition_id,
             )?)),
             _ => Err(DataFusionError::Internal(
                 "ParquetWriterExec requires exactly one child".to_string(),
@@ -185,13 +190,19 @@ impl ExecutionPlan for ParquetWriterExec {
         })?;
 
         // Generate part file name for this partition
-        let part_file = format!("{}/part-{:05}.snappy.parquet", local_path, partition);
+        let part_file = format!("{}/part-{:05}.snappy.parquet", local_path, self.partition_id);
 
-        println!("ParquetWriter executing: partition={}, output={}", partition, part_file);
+        println!(
+            "ParquetWriter executing: partition={}, output={}",
+            self.partition_id, part_file
+        );
 
         // Create the Parquet file
         let file = File::create(&part_file).map_err(|e| {
-            DataFusionError::Execution(format!("Failed to create output file '{}': {}", part_file, e))
+            DataFusionError::Execution(format!(
+                "Failed to create output file '{}': {}",
+                part_file, e
+            ))
         })?;
 
         // Configure writer properties

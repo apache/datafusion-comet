@@ -21,13 +21,7 @@ package org.apache.comet
 
 import java.io.File
 
-import org.apache.spark.sql.{CometTestBase, Row}
-import org.apache.spark.sql.comet.{CometExec, CometMetricNode, CometNativeWriteExec}
-import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.types.{IntegerType, StringType}
-
-import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
-import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.spark.sql.CometTestBase
 
 class CometParquetWriterSuite extends CometTestBase {
   import testImplicits._
