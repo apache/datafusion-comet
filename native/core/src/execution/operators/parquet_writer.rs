@@ -96,12 +96,12 @@ impl ParquetWriterExec {
         })
     }
 
-    fn compression_to_parquet(&self) -> Compression {
+    fn compression_to_parquet(&self) -> Result<Compression> {
         match self.compression {
-            CompressionCodec::None => Compression::UNCOMPRESSED,
-            CompressionCodec::Zstd(_) => Compression::ZSTD(ZstdLevel::default()),
-            CompressionCodec::Lz4Frame => Compression::LZ4,
-            CompressionCodec::Snappy => Compression::SNAPPY,
+            CompressionCodec::None => Ok(Compression::UNCOMPRESSED),
+            CompressionCodec::Zstd(level) => Ok(Compression::ZSTD(ZstdLevel::try_new(level)?)),
+            CompressionCodec::Lz4Frame => Ok(Compression::LZ4),
+            CompressionCodec::Snappy => Ok(Compression::SNAPPY),
         }
     }
 }
@@ -177,7 +177,7 @@ impl ExecutionPlan for ParquetWriterExec {
         let input = self.input.execute(partition, context)?;
         let input_schema = self.schema();
         let output_path = self.output_path.clone();
-        let compression = self.compression_to_parquet();
+        let compression = self.compression_to_parquet()?;
         let column_names = self.column_names.clone();
 
         // Create output schema with correct column names
