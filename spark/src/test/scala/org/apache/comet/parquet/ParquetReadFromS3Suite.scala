@@ -27,6 +27,7 @@ import org.apache.spark.tags.DockerTest
 
 import org.apache.comet.CometS3TestBase
 
+@DockerTest
 class ParquetReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelper {
 
   override protected val testBucketName = "test-bucket"
