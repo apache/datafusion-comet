@@ -22,6 +22,9 @@ package org.apache.comet.parquet
 import java.io.File
 
 import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.comet.CometNativeWriteExec
+import org.apache.spark.sql.execution.QueryExecution
+import org.apache.spark.sql.execution.command.DataWritingCommandExec
 
 import org.apache.comet.CometConf
 
@@ -38,12 +41,72 @@ class CometParquetWriterSuite extends CometTestBase {
         val df = Seq((1, "a"), (2, "b"), (3, "c")).toDF("id", "value")
         df.write.parquet(inputPath)
 
-        withSQLConf(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true") {
+        withSQLConf(
+          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true") {
           val df = spark.read.parquet(inputPath)
 
-          // perform native write
-          // TODO add assertion that this actually ran with the native writer
-          df.write.parquet(outputPath)
+          // Use a listener to capture the execution plan during write
+          var capturedPlan: Option[QueryExecution] = None
+
+          val listener = new org.apache.spark.sql.util.QueryExecutionListener {
+            override def onSuccess(
+                funcName: String,
+                qe: QueryExecution,
+                durationNs: Long): Unit = {
+              // Capture plans from write operations
+              if (funcName == "save" || funcName.contains("command")) {
+                capturedPlan = Some(qe)
+              }
+            }
+
+            override def onFailure(
+                funcName: String,
+                qe: QueryExecution,
+                exception: Exception): Unit = {}
+          }
+
+          spark.listenerManager.register(listener)
+
+          try {
+            // Perform native write
+            df.write.parquet(outputPath)
+
+            // Wait for listener to be called with timeout
+            val maxWaitTimeMs = 15000
+            val checkIntervalMs = 100
+            val maxIterations = maxWaitTimeMs / checkIntervalMs
+            var iterations = 0
+
+            while (capturedPlan.isEmpty && iterations < maxIterations) {
+              Thread.sleep(checkIntervalMs)
+              iterations += 1
+            }
+
+            // Verify that CometNativeWriteExec was used
+            assert(
+              capturedPlan.isDefined,
+              s"Listener was not called within ${maxWaitTimeMs}ms - no execution plan captured")
+
+            capturedPlan.foreach { qe =>
+              val executedPlan = qe.executedPlan
+              val hasNativeWrite = executedPlan.exists {
+                case _: CometNativeWriteExec => true
+                case d: DataWritingCommandExec =>
+                  d.child.exists {
+                    case _: CometNativeWriteExec => true
+                    case _ => false
+                  }
+                case _ => false
+              }
+
+              assert(
+                hasNativeWrite,
+                s"Expected CometNativeWriteExec in the plan, but got:\n${executedPlan.treeString}")
+            }
+          } finally {
+            spark.listenerManager.unregister(listener)
+          }
 
           // Verify the data was written correctly
           val resultDf = spark.read.parquet(outputPath)
