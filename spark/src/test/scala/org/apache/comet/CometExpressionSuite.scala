@@ -20,12 +20,16 @@
 package org.apache.comet
 
 import java.time.{Duration, Period}
+
 import scala.util.Random
+
 import org.scalactic.source.Position
 import org.scalatest.Tag
+
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, MakeDecimal, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometProjectExec}
 import org.apache.spark.sql.execution.{InputAdapter, ProjectExec, SparkPlan, WholeStageCodegenExec}
@@ -34,10 +38,10 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
+
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.CometConcat
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
-import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
