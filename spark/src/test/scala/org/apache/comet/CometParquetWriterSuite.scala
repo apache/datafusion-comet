@@ -103,17 +103,19 @@ class CometParquetWriterSuite extends CometTestBase {
         assert(new File(outputPath).exists(), s"Output file should exist at $outputPath")
         assert(new File(outputPath).length() > 0, "Output file should not be empty")
 
-        // Verify we can read the data back with Spark
-        val readDf = spark.read.parquet(outputPath)
-        val result = readDf.collect().sortBy(_.getInt(0))
+        // Verify we can read the data back with Spark (disable Comet for read)
+        withSQLConf("spark.comet.enabled" -> "false") {
+          val readDf = spark.read.parquet(outputPath)
+          val result = readDf.collect().sortBy(_.getInt(0))
 
-        assert(result.length == 3)
-        assert(result(0).getInt(0) == 1)
-        assert(result(0).getString(1) == "a")
-        assert(result(1).getInt(0) == 2)
-        assert(result(1).getString(1) == "b")
-        assert(result(2).getInt(0) == 3)
-        assert(result(2).getString(1) == "c")
+          assert(result.length == 3)
+          assert(result(0).getInt(0) == 1)
+          assert(result(0).getString(1) == "a")
+          assert(result(1).getInt(0) == 2)
+          assert(result(1).getString(1) == "b")
+          assert(result(2).getInt(0) == 3)
+          assert(result(2).getString(1) == "c")
+        }
       }
     }
   }
@@ -122,61 +124,67 @@ class CometParquetWriterSuite extends CometTestBase {
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
 
-      // Create test data
-      val df = Seq((1, "a"), (2, "b"), (3, "c")).toDF("id", "value")
+      // Create test data and write it to a temp parquet file first
+      withTempPath { inputDir =>
+        val inputPath = new File(inputDir, "input.parquet").getAbsolutePath
+        val df = Seq((1, "a"), (2, "b"), (3, "c")).toDF("id", "value")
+        df.write.parquet(inputPath)
 
-      // Get the physical plan
-      val childPlan = df.queryExecution.executedPlan
+        // Read from parquet to get a columnar plan
+        val childPlan = spark.read.parquet(inputPath).queryExecution.executedPlan
 
-      // Create ParquetWriter operator
-      val scanOp = OperatorOuterClass.Scan
-        .newBuilder()
-        .setSource("test_input")
-        .setArrowFfiSafe(true)
-        .addFields(QueryPlanSerde.serializeDataType(IntegerType).get)
-        .addFields(QueryPlanSerde.serializeDataType(StringType).get)
-        .build()
+        // Create ParquetWriter operator
+        val scanOp = OperatorOuterClass.Scan
+          .newBuilder()
+          .setSource("test_input")
+          .setArrowFfiSafe(true)
+          .addFields(QueryPlanSerde.serializeDataType(IntegerType).get)
+          .addFields(QueryPlanSerde.serializeDataType(StringType).get)
+          .build()
 
-      val scanOperator = Operator
-        .newBuilder()
-        .setPlanId(1)
-        .setScan(scanOp)
-        .build()
+        val scanOperator = Operator
+          .newBuilder()
+          .setPlanId(1)
+          .setScan(scanOp)
+          .build()
 
-      val writerOp = OperatorOuterClass.ParquetWriter
-        .newBuilder()
-        .setOutputPath(outputPath)
-        .setCompression(OperatorOuterClass.CompressionCodec.Snappy)
-        .build()
+        val writerOp = OperatorOuterClass.ParquetWriter
+          .newBuilder()
+          .setOutputPath(outputPath)
+          .setCompression(OperatorOuterClass.CompressionCodec.Snappy)
+          .build()
 
-      val writerOperator = Operator
-        .newBuilder()
-        .setPlanId(2)
-        .addChildren(scanOperator)
-        .setParquetWriter(writerOp)
-        .build()
+        val writerOperator = Operator
+          .newBuilder()
+          .setPlanId(2)
+          .addChildren(scanOperator)
+          .setParquetWriter(writerOp)
+          .build()
 
-      // Create CometNativeWriteExec
-      val writeExec = CometNativeWriteExec(writerOperator, childPlan, outputPath)
+        // Create CometNativeWriteExec
+        val writeExec = CometNativeWriteExec(writerOperator, childPlan, outputPath)
 
-      // Execute the write
-      writeExec.executeColumnar().count()
+        // Execute the write
+        writeExec.executeColumnar().count()
 
-      // Verify the file was written
-      assert(new File(outputPath).exists(), s"Output file should exist at $outputPath")
-      assert(new File(outputPath).length() > 0, "Output file should not be empty")
+        // Verify the file was written
+        assert(new File(outputPath).exists(), s"Output file should exist at $outputPath")
+        assert(new File(outputPath).length() > 0, "Output file should not be empty")
 
-      // Verify we can read the data back
-      val readDf = spark.read.parquet(outputPath)
-      val result = readDf.collect().sortBy(_.getInt(0))
+        // Verify we can read the data back (disable Comet for read)
+        withSQLConf("spark.comet.enabled" -> "false") {
+          val readDf = spark.read.parquet(outputPath)
+          val result = readDf.collect().sortBy(_.getInt(0))
 
-      assert(result.length == 3)
-      assert(result(0).getInt(0) == 1)
-      assert(result(0).getString(1) == "a")
-      assert(result(1).getInt(0) == 2)
-      assert(result(1).getString(1) == "b")
-      assert(result(2).getInt(0) == 3)
-      assert(result(2).getString(1) == "c")
+          assert(result.length == 3)
+          assert(result(0).getInt(0) == 1)
+          assert(result(0).getString(1) == "a")
+          assert(result(1).getInt(0) == 2)
+          assert(result(1).getString(1) == "b")
+          assert(result(2).getInt(0) == 3)
+          assert(result(2).getString(1) == "c")
+        }
+      }
     }
   }
 
