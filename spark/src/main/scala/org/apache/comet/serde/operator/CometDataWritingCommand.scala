@@ -53,7 +53,7 @@ object CometDataWritingCommandExec extends CometOperatorSerde[DataWritingCommand
               return Unsupported(Some("Bucketed writes are not supported"))
             }
 
-            if (cmd.partitionColumns.nonEmpty) {
+            if (cmd.partitionColumns.nonEmpty || cmd.staticPartitions.nonEmpty) {
               return Unsupported(Some("Partitioned writes are not supported"))
             }
 
