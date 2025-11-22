@@ -111,7 +111,7 @@ class CometBlockStoreShuffleReader[K, C](
     // Update the context task metrics for each record read.
     val metricIter = CompletionIterator[(Any, Any), Iterator[(Any, Any)]](
       recordIter.map { record =>
-        readMetrics.incRecordsRead(record._2.numRows())
+        readMetrics.incRecordsRead(record._2.numRows().toLong)
         record
       },
       context.taskMetrics().mergeShuffleReadMetrics())
