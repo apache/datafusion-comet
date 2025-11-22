@@ -218,7 +218,7 @@ impl ExecutionPlan for ParquetWriterExec {
 
         // Generate part file name for this partition
         let part_file = format!(
-            "{}/part-{:05}.snappy.parquet",
+            "{}/part-{:05}.parquet",
             local_path, self.partition_id
         );
 
