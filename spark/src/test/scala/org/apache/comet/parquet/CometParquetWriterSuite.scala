@@ -21,15 +21,18 @@ package org.apache.comet.parquet
 
 import java.io.File
 
+import scala.util.Random
+
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.comet.CometNativeWriteExec
 import org.apache.spark.sql.execution.QueryExecution
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 class CometParquetWriterSuite extends CometTestBase {
-  import testImplicits._
 
   test("basic parquet write") {
     // no support for fully native scan as input yet
@@ -41,11 +44,23 @@ class CometParquetWriterSuite extends CometTestBase {
       // Create test data and write it to a temp parquet file first
       withTempPath { inputDir =>
         val inputPath = new File(inputDir, "input.parquet").getAbsolutePath
-        val df = Seq((1, "a"), (2, "b"), (3, "c")).toDF("id", "value")
-        df.write.parquet(inputPath)
+        val schema = FuzzDataGenerator.generateSchema(
+          SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false))
+        val df = FuzzDataGenerator.generateDataFrame(
+          new Random(42),
+          spark,
+          schema,
+          1000,
+          DataGenOptions(generateNegativeZero = false))
+        withSQLConf(
+          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "false",
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Denver") {
+          df.write.parquet(inputPath)
+        }
 
         withSQLConf(
           CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
           CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
           val df = spark.read.parquet(inputPath)
@@ -114,19 +129,12 @@ class CometParquetWriterSuite extends CometTestBase {
 
           // Verify the data was written correctly
           val resultDf = spark.read.parquet(outputPath)
-          assert(resultDf.count() == 3, "Expected 3 rows to be written")
-
-          // Verify correct data
-          val rows = resultDf.orderBy("id").collect()
-          assert(rows.length == 3)
-          assert(rows(0).getInt(0) == 1 && rows(0).getString(1) == "a")
-          assert(rows(1).getInt(0) == 2 && rows(1).getString(1) == "b")
-          assert(rows(2).getInt(0) == 3 && rows(2).getString(1) == "c")
+          assert(resultDf.count() == 1000, "Expected 1000 rows to be written")
 
           // Verify multiple part files were created
           val outputDir = new File(outputPath)
           val partFiles = outputDir.listFiles().filter(_.getName.startsWith("part-"))
-          // With 3 rows and default parallelism, we should get multiple partitions
+          // With 1000 rows and default parallelism, we should get multiple partitions
           assert(partFiles.length > 1, "Expected multiple part files to be created")
 
           // read with and without Comet and compare
