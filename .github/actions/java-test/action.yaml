@@ -55,7 +55,7 @@ runs:
         path: |
           ~/.m2/repository
           /root/.m2/repository
-        key: ${{ runner.os }}-java-maven-${{ hashFiles(format('{0}/**/pom.xml', github.workspace)) }}
+        key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
         restore-keys: |
           ${{ runner.os }}-java-maven-
 
