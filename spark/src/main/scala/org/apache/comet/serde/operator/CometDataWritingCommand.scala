@@ -27,9 +27,9 @@ import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCom
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
+import org.apache.comet.serde.{CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
@@ -39,92 +39,108 @@ import org.apache.comet.serde.QueryPlanSerde.serializeDataType
  */
 object CometDataWritingCommandExec extends CometOperatorSerde[DataWritingCommandExec] {
 
+  private val supportedCompressionCodes = Set("none", "snappy", "lz4", "zstd")
+
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED)
+
+  override def getSupportLevel(op: DataWritingCommandExec): SupportLevel = {
+    op.cmd match {
+      case cmd: InsertIntoHadoopFsRelationCommand =>
+        cmd.fileFormat match {
+          case _: ParquetFileFormat =>
+            if (cmd.bucketSpec.isDefined) {
+              return Unsupported(Some("Bucketed writes are not supported"))
+            }
+
+            if (cmd.partitionColumns.nonEmpty) {
+              return Unsupported(Some("Partitioned writes are not supported"))
+            }
+
+            if (cmd.query.output.exists(attr => DataTypeSupport.isComplexType(attr.dataType))) {
+              return Unsupported(Some("Complex types are not supported"))
+            }
+
+            val codec = parseCompressionCodec(cmd)
+            if (!supportedCompressionCodes.contains(codec)) {
+              return Unsupported(Some(s"Unsupported compression codec: $codec"))
+            }
+
+            Incompatible(Some("Parquet write support is highly experimental"))
+          case _ =>
+            Unsupported(Some("Only Parquet writes are supported"))
+        }
+      case other =>
+        Unsupported(Some(s"Unsupported write command: ${other.getClass}"))
+    }
+  }
 
   override def convert(
       op: DataWritingCommandExec,
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    op.cmd match {
-      case cmd: InsertIntoHadoopFsRelationCommand =>
-        // Check if this is a Parquet write
-        cmd.fileFormat match {
-          case _: ParquetFileFormat =>
-            try {
-              // Create native ParquetWriter operator
-              val scanOp = OperatorOuterClass.Scan
-                .newBuilder()
-                .setSource("write_source")
-                .setArrowFfiSafe(true)
 
-              // Add fields from the query output schema
-              val scanTypes = cmd.query.output.flatMap { attr =>
-                serializeDataType(attr.dataType)
-              }
+    val cmd = op.cmd.asInstanceOf[InsertIntoHadoopFsRelationCommand]
+    try {
+      // Create native ParquetWriter operator
+      val scanOp = OperatorOuterClass.Scan
+        .newBuilder()
+        .setSource("write_source")
+        .setArrowFfiSafe(true)
 
-              if (scanTypes.length != cmd.query.output.length) {
-                withInfo(op, "Cannot serialize data types for native write")
-                return None
-              }
+      // Add fields from the query output schema
+      val scanTypes = cmd.query.output.flatMap { attr =>
+        serializeDataType(attr.dataType)
+      }
 
-              scanTypes.foreach(scanOp.addFields)
+      if (scanTypes.length != cmd.query.output.length) {
+        withInfo(op, "Cannot serialize data types for native write")
+        return None
+      }
 
-              val scanOperator = Operator
-                .newBuilder()
-                .setPlanId(op.id)
-                .setScan(scanOp.build())
-                .build()
+      scanTypes.foreach(scanOp.addFields)
 
-              // Get output path
-              val outputPath = cmd.outputPath.toString
+      val scanOperator = Operator
+        .newBuilder()
+        .setPlanId(op.id)
+        .setScan(scanOp.build())
+        .build()
 
-              val codecName = cmd.options.getOrElse(
-                "compression",
-                SQLConf.get.getConfString(
-                  SQLConf.PARQUET_COMPRESSION.key,
-                  SQLConf.PARQUET_COMPRESSION.defaultValueString))
+      // Get output path
+      val outputPath = cmd.outputPath.toString
 
-              val codec = codecName match {
-                case "snappy" => OperatorOuterClass.CompressionCodec.Snappy
-                case "lz4" => OperatorOuterClass.CompressionCodec.Lz4
-                case "zstd" => OperatorOuterClass.CompressionCodec.Zstd
-                case "none" => OperatorOuterClass.CompressionCodec.None
-                case other =>
-                  withInfo(op, s"Unsupported compression codec: $other")
-                  return None
-              }
+      val codec = parseCompressionCodec(cmd) match {
+        case "snappy" => OperatorOuterClass.CompressionCodec.Snappy
+        case "lz4" => OperatorOuterClass.CompressionCodec.Lz4
+        case "zstd" => OperatorOuterClass.CompressionCodec.Zstd
+        case "none" => OperatorOuterClass.CompressionCodec.None
+        case other =>
+          withInfo(op, s"Unsupported compression codec: $other")
+          return None
+      }
 
-              val writerOp = OperatorOuterClass.ParquetWriter
-                .newBuilder()
-                .setOutputPath(outputPath)
-                .setCompression(codec)
-                .addAllColumnNames(cmd.query.output.map(_.name).asJava)
-                .build()
+      val writerOp = OperatorOuterClass.ParquetWriter
+        .newBuilder()
+        .setOutputPath(outputPath)
+        .setCompression(codec)
+        .addAllColumnNames(cmd.query.output.map(_.name).asJava)
+        .build()
 
-              // Build the ParquetWriter operator
-              val writerOperator = Operator
-                .newBuilder()
-                .setPlanId(op.id)
-                .addChildren(scanOperator)
-                .setParquetWriter(writerOp)
-                .build()
+      // Build the ParquetWriter operator
+      val writerOperator = Operator
+        .newBuilder()
+        .setPlanId(op.id)
+        .addChildren(scanOperator)
+        .setParquetWriter(writerOp)
+        .build()
 
-              Some(writerOperator)
-            } catch {
-              case e: Exception =>
-                withInfo(
-                  op,
-                  "Failed to convert DataWritingCommandExec to native execution: " +
-                    s"${e.getMessage}")
-                None
-            }
-          case _ =>
-            withInfo(op, "Only Parquet writes are supported")
-            None
-        }
-      case other =>
-        withInfo(op, s"Unsupported write command: ${other.getClass}")
+      Some(writerOperator)
+    } catch {
+      case e: Exception =>
+        withInfo(
+          op,
+          "Failed to convert DataWritingCommandExec to native execution: " +
+            s"${e.getMessage}")
         None
     }
   }
@@ -145,4 +161,13 @@ object CometDataWritingCommandExec extends CometOperatorSerde[DataWritingCommand
 
     CometNativeWriteExec(nativeOp, childPlan, outputPath)
   }
+
+  private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {
+    cmd.options.getOrElse(
+      "compression",
+      SQLConf.get.getConfString(
+        SQLConf.PARQUET_COMPRESSION.key,
+        SQLConf.PARQUET_COMPRESSION.defaultValueString))
+  }
+
 }

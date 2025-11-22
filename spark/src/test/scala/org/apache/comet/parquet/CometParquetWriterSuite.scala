@@ -46,6 +46,7 @@ class CometParquetWriterSuite extends CometTestBase {
 
         withSQLConf(
           CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
           val df = spark.read.parquet(inputPath)
 
