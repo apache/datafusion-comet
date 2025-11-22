@@ -217,10 +217,7 @@ impl ExecutionPlan for ParquetWriterExec {
         })?;
 
         // Generate part file name for this partition
-        let part_file = format!(
-            "{}/part-{:05}.parquet",
-            local_path, self.partition_id
-        );
+        let part_file = format!("{}/part-{:05}.parquet", local_path, self.partition_id);
 
         // Create the Parquet file
         let file = File::create(&part_file).map_err(|e| {
