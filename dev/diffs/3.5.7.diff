@@ -1770,16 +1770,6 @@ index 2f8e401e743..a4f94417dcc 100644
      CostEvaluator.instantiate(
        classOf[SimpleShuffleSortCostEvaluator].getCanonicalName, spark.sparkContext.getConf)
      intercept[IllegalArgumentException] {
-@@ -2417,7 +2457,8 @@ class AdaptiveQueryExecSuite
-   }
- 
-   test("SPARK-48037: Fix SortShuffleWriter lacks shuffle write related metrics " +
--    "resulting in potentially inaccurate data") {
-+    "resulting in potentially inaccurate data",
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/1501")) {
-     withTable("t3") {
-       withSQLConf(
-         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
 @@ -2452,6 +2493,7 @@ class AdaptiveQueryExecSuite
            val (_, adaptive) = runAdaptiveAndVerifyResult(query)
            assert(adaptive.collect {
