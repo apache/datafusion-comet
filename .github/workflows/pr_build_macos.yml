@@ -83,6 +83,7 @@ jobs:
               org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
           - name: "parquet"
             value: |
+              org.apache.comet.parquet.CometParquetWriterSuite
               org.apache.comet.parquet.ParquetReadV1Suite
               org.apache.comet.parquet.ParquetReadV2Suite
               org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite

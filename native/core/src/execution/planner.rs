@@ -22,7 +22,7 @@ use crate::{
     errors::ExpressionError,
     execution::{
         expressions::subquery::Subquery,
-        operators::{ExecutionError, ExpandExec, ScanExec},
+        operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec},
         serde::to_arrow_datatype,
         shuffle::ShuffleWriterExec,
     },
@@ -1444,6 +1444,38 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(
                         spark_plan.plan_id,
                         shuffle_writer,
+                        vec![Arc::clone(&child)],
+                    )),
+                ))
+            }
+            OpStruct::ParquetWriter(writer) => {
+                assert_eq!(children.len(), 1);
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+
+                let codec = match writer.compression.try_into() {
+                    Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
+                    Ok(SparkCompressionCodec::Snappy) => Ok(CompressionCodec::Snappy),
+                    Ok(SparkCompressionCodec::Zstd) => Ok(CompressionCodec::Zstd(3)),
+                    Ok(SparkCompressionCodec::Lz4) => Ok(CompressionCodec::Lz4Frame),
+                    _ => Err(GeneralError(format!(
+                        "Unsupported parquet compression codec: {:?}",
+                        writer.compression
+                    ))),
+                }?;
+
+                let parquet_writer = Arc::new(ParquetWriterExec::try_new(
+                    Arc::clone(&child.native_plan),
+                    writer.output_path.clone(),
+                    codec,
+                    self.partition,
+                    writer.column_names.clone(),
+                )?);
+
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        parquet_writer,
                         vec![Arc::clone(&child)],
                     )),
                 ))

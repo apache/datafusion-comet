@@ -49,6 +49,7 @@ message Operator {
     Window window = 110;
     NativeScan native_scan = 111;
     IcebergScan iceberg_scan = 112;
+    ParquetWriter parquet_writer = 113;
   }
 }
 
@@ -234,6 +235,12 @@ message ShuffleWriter {
   CompressionCodec codec = 5;
   int32 compression_level = 6;
   bool tracing_enabled = 7;
+}
+
+message ParquetWriter {
+  string output_path = 1;
+  CompressionCodec compression = 2;
+  repeated string column_names = 4;
 }
 
 enum AggregateMode {
