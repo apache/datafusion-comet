@@ -80,13 +80,13 @@ object CometDataWritingCommandExec extends CometOperatorSerde[DataWritingCommand
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
 
-    val cmd = op.cmd.asInstanceOf[InsertIntoHadoopFsRelationCommand]
     try {
-      // Create native ParquetWriter operator
+      val cmd = op.cmd.asInstanceOf[InsertIntoHadoopFsRelationCommand]
+
       val scanOp = OperatorOuterClass.Scan
         .newBuilder()
-        .setSource("write_source")
-        .setArrowFfiSafe(true)
+        .setSource(cmd.query.nodeName)
+        .setArrowFfiSafe(false)
 
       // Add fields from the query output schema
       val scanTypes = cmd.query.output.flatMap { attr =>
@@ -106,7 +106,6 @@ object CometDataWritingCommandExec extends CometOperatorSerde[DataWritingCommand
         .setScan(scanOp.build())
         .build()
 
-      // Get output path
       val outputPath = cmd.outputPath.toString
 
       val codec = parseCompressionCodec(cmd) match {
@@ -126,7 +125,6 @@ object CometDataWritingCommandExec extends CometOperatorSerde[DataWritingCommand
         .addAllColumnNames(cmd.query.output.map(_.name).asJava)
         .build()
 
-      // Build the ParquetWriter operator
       val writerOperator = Operator
         .newBuilder()
         .setPlanId(op.id)

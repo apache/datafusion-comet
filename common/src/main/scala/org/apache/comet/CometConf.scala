@@ -102,7 +102,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_NATIVE_PARQUET_WRITE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.write.enabled")
-      .category(CATEGORY_PARQUET)
+      .category(CATEGORY_TESTING)
       .doc(
         "Whether to enable native Parquet write through Comet. When enabled, " +
           "Comet will intercept Parquet write operations and execute them natively. This " +
