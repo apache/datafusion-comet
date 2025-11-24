@@ -225,7 +225,6 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
       // Allow Incompatible is needed for Sum + Average for Spark 4.0.0 / ANSI support
-      CometConf.getExprAllowIncompatConfigKey(classOf[Average]) -> "true",
       CometConf.getExprAllowIncompatConfigKey(classOf[Sum]) -> "true",
       // as well as for v1.4/q9, v1.4/q44, v2.7.0/q6, v2.7.0/q64
       CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
