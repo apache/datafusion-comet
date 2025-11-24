@@ -48,7 +48,7 @@ import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, Ope
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
 import org.apache.comet.serde.operator._
-import org.apache.comet.serde.operator.CometDataWritingCommandExec
+import org.apache.comet.serde.operator.CometDataWritingCommand
 
 object CometExecRule {
 
@@ -76,7 +76,7 @@ object CometExecRule {
    * standard pattern of having CometNativeExec children.
    */
   val writeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
-    Map(classOf[DataWritingCommandExec] -> CometDataWritingCommandExec)
+    Map(classOf[DataWritingCommandExec] -> CometDataWritingCommand)
 
   /**
    * Sinks that have a native plan of ScanExec.

@@ -37,7 +37,7 @@ import org.apache.comet.serde.QueryPlanSerde.serializeDataType
  * CometOperatorSerde implementation for DataWritingCommandExec that converts Parquet write
  * operations to use Comet's native Parquet writer.
  */
-object CometDataWritingCommandExec extends CometOperatorSerde[DataWritingCommandExec] {
+object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec] {
 
   private val supportedCompressionCodes = Set("none", "snappy", "lz4", "zstd")
 
@@ -49,6 +49,10 @@ object CometDataWritingCommandExec extends CometOperatorSerde[DataWritingCommand
       case cmd: InsertIntoHadoopFsRelationCommand =>
         cmd.fileFormat match {
           case _: ParquetFileFormat =>
+            if (!cmd.outputPath.toString.startsWith("file:")) {
+              return Unsupported(Some("Only local filesystem output paths are supported"))
+            }
+
             if (cmd.bucketSpec.isDefined) {
               return Unsupported(Some("Bucketed writes are not supported"))
             }
