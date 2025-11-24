@@ -89,6 +89,7 @@ The following cast operations are generally compatible with Spark except for the
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 
 <!--BEGIN:COMPAT_CAST_TABLE-->
+<!-- prettier-ignore-start -->
 | From Type | To Type | Notes |
 |-|-|-|
 | boolean | byte |  |
@@ -165,6 +166,7 @@ The following cast operations are generally compatible with Spark except for the
 | timestamp | long |  |
 | timestamp | string |  |
 | timestamp | date |  |
+<!-- prettier-ignore-end -->
 <!--END:COMPAT_CAST_TABLE-->
 
 ### Incompatible Casts
@@ -174,6 +176,7 @@ The following cast operations are not compatible with Spark for all inputs and a
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 
 <!--BEGIN:INCOMPAT_CAST_TABLE-->
+<!-- prettier-ignore-start -->
 | From Type | To Type | Notes |
 |-|-|-|
 | float | decimal  | There can be rounding differences |
@@ -182,6 +185,7 @@ The following cast operations are not compatible with Spark for all inputs and a
 | string | double  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
 | string | decimal  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits |
 | string | timestamp  | Not all valid formats are supported |
+<!-- prettier-ignore-end -->
 <!--END:INCOMPAT_CAST_TABLE-->
 
 ### Unsupported Casts

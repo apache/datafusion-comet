@@ -25,19 +25,23 @@ Comet provides the following configuration settings.
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[scan]-->
+<!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | `spark.comet.scan.allowIncompatible` | Some Comet scan implementations are not currently fully compatible with Spark for all datatypes. Set this config to true to allow them anyway. For more information, refer to the [Comet Compatibility Guide](https://datafusion.apache.org/comet/user-guide/compatibility.html). | false |
 | `spark.comet.scan.enabled` | Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and `spark.comet.exec.enabled` need to be enabled. | true |
+| `spark.comet.scan.icebergNative.enabled` | Whether to enable native Iceberg table scan using iceberg-rust. When enabled, Iceberg tables are read directly through native execution, bypassing Spark's DataSource V2 API for better performance. | false |
 | `spark.comet.scan.preFetch.enabled` | Whether to enable pre-fetching feature of CometScan. | false |
 | `spark.comet.scan.preFetch.threadNum` | The number of threads running pre-fetching for CometScan. Effective if spark.comet.scan.preFetch.enabled is enabled. Note that more pre-fetching threads means more memory requirement to store pre-fetched row groups. | 2 |
 | `spark.hadoop.fs.comet.libhdfs.schemes` | Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses via libhdfs, separated by commas. Valid only when built with hdfs feature enabled. | |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Parquet Reader Configuration Settings
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[parquet]-->
+<!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | `spark.comet.parquet.enable.directBuffer` | Whether to use Java direct byte buffer when reading Parquet. | false |
@@ -47,12 +51,14 @@ Comet provides the following configuration settings.
 | `spark.comet.parquet.read.parallel.io.enabled` | Whether to enable Comet's parallel reader for Parquet files. The parallel reader reads ranges of consecutive data in a  file in parallel. It is faster for large files and row groups but uses more resources. | true |
 | `spark.comet.parquet.read.parallel.io.thread-pool.size` | The maximum number of parallel threads the parallel reader will use in a single executor. For executors configured with a smaller number of cores, use a smaller number. | 16 |
 | `spark.comet.parquet.respectFilterPushdown` | Whether to respect Spark's PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be respected when running the Spark SQL test suite but the default setting results in poor performance in Comet when using the new native scans, disabled by default | false |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Query Execution Settings
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[exec]-->
+<!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | `spark.comet.caseConversion.enabled` | Java uses locale-specific rules when converting strings to upper or lower case and Rust does not, so we disable upper and lower by default. | false |
@@ -67,6 +73,7 @@ Comet provides the following configuration settings.
 | `spark.comet.metrics.updateInterval` | The interval in milliseconds to update metrics. If interval is negative, metrics will be updated upon task completion. | 3000 |
 | `spark.comet.nativeLoadRequired` | Whether to require Comet native library to load successfully when Comet is enabled. If not, Comet will silently fallback to Spark when it fails to load the native lib. Otherwise, an error will be thrown and the Spark job will be aborted. | false |
 | `spark.comet.regexp.allowIncompatible` | Comet is not currently fully compatible with Spark for all regular expressions. Set this config to true to allow them anyway. For more information, refer to the [Comet Compatibility Guide](https://datafusion.apache.org/comet/user-guide/compatibility.html). | false |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Viewing Explain Plan & Fallback Reasons
@@ -75,6 +82,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[exec_explain]-->
+<!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | `spark.comet.explain.format` | Choose extended explain output. The default format of 'verbose' will provide the full query plan annotated with fallback reasons as well as a summary of how much of the plan was accelerated by Comet. The format 'fallback' provides a list of fallback reasons instead. | verbose |
@@ -82,12 +90,14 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.explain.rules` | When this setting is enabled, Comet will log all plan transformations performed in physical optimizer rules. Default: false | false |
 | `spark.comet.explainFallback.enabled` | When this setting is enabled, Comet will provide logging explaining the reason(s) why a query stage cannot be executed natively. Set this to false to reduce the amount of logging. | false |
 | `spark.comet.logFallbackReasons.enabled` | When this setting is enabled, Comet will log warnings for all fallback reasons. It can be overridden by the environment variable `ENABLE_COMET_LOG_FALLBACK_REASONS`. | false |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Shuffle Configuration Settings
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[shuffle]-->
+<!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | `spark.comet.columnar.shuffle.async.enabled` | Whether to enable asynchronous shuffle for Arrow-based shuffle. | false |
@@ -101,24 +111,28 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.native.shuffle.partitioning.range.enabled` | Whether to enable range partitioning for Comet native shuffle. | true |
 | `spark.comet.shuffle.preferDictionary.ratio` | The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. Note that this config is only used when `spark.comet.exec.shuffle.mode` is `jvm`. | 10.0 |
 | `spark.comet.shuffle.sizeInBytesMultiplier` | Comet reports smaller sizes for shuffle due to using Arrow's columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy. | 1.0 |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Memory & Tuning Configuration Settings
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[tuning]-->
+<!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | `spark.comet.batchSize` | The columnar batch size, i.e., the maximum number of rows that a batch can contain. | 8192 |
 | `spark.comet.exec.memoryPool` | The type of memory pool to be used for Comet native execution when running Spark in off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/tuning.html). | fair_unified |
 | `spark.comet.exec.memoryPool.fraction` | Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/tuning.html). | 1.0 |
 | `spark.comet.tracing.enabled` | Enable fine-grained tracing of events and memory usage. For more information, refer to the [Comet Tracing Guide](https://datafusion.apache.org/comet/user-guide/tracing.html). | false |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Development & Testing Settings
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[testing]-->
+<!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | `spark.comet.columnar.shuffle.memory.factor` | Fraction of Comet memory to be allocated per executor process for columnar shuffle when running in on-heap mode. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/tuning.html). | 1.0 |
@@ -131,12 +145,14 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.sparkToColumnar.enabled` | Whether to enable Spark to Arrow columnar conversion. When this is turned on, Comet will convert operators in `spark.comet.sparkToColumnar.supportedOperatorList` into Arrow columnar format before processing. This is an experimental feature and has known issues with non-UTC timezones. | false |
 | `spark.comet.sparkToColumnar.supportedOperatorList` | A comma-separated list of operators that will be converted to Arrow columnar format when `spark.comet.sparkToColumnar.enabled` is true. | Range,InMemoryTableScan,RDDScan |
 | `spark.comet.testing.strict` | Experimental option to enable strict testing, which will fail tests that could be more comprehensive, such as checking for a specific fallback reason. It can be overridden by the environment variable `ENABLE_COMET_STRICT_TESTING`. | false |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Enabling or Disabling Individual Operators
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[enable_exec]-->
+<!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | `spark.comet.exec.aggregate.enabled` | Whether to enable aggregate by default. | true |
@@ -157,12 +173,14 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.exec.takeOrderedAndProject.enabled` | Whether to enable takeOrderedAndProject by default. | true |
 | `spark.comet.exec.union.enabled` | Whether to enable union by default. | true |
 | `spark.comet.exec.window.enabled` | Whether to enable window by default. | true |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Enabling or Disabling Individual Scalar Expressions
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[enable_expr]-->
+<!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | `spark.comet.expression.Abs.enabled` | Enable Comet acceleration for `Abs` | true |
@@ -197,6 +215,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.BitwiseNot.enabled` | Enable Comet acceleration for `BitwiseNot` | true |
 | `spark.comet.expression.BitwiseOr.enabled` | Enable Comet acceleration for `BitwiseOr` | true |
 | `spark.comet.expression.BitwiseXor.enabled` | Enable Comet acceleration for `BitwiseXor` | true |
+| `spark.comet.expression.BloomFilterMightContain.enabled` | Enable Comet acceleration for `BloomFilterMightContain` | true |
 | `spark.comet.expression.CaseWhen.enabled` | Enable Comet acceleration for `CaseWhen` | true |
 | `spark.comet.expression.Cast.enabled` | Enable Comet acceleration for `Cast` | true |
 | `spark.comet.expression.Ceil.enabled` | Enable Comet acceleration for `Ceil` | true |
@@ -207,6 +226,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ConcatWs.enabled` | Enable Comet acceleration for `ConcatWs` | true |
 | `spark.comet.expression.Contains.enabled` | Enable Comet acceleration for `Contains` | true |
 | `spark.comet.expression.Cos.enabled` | Enable Comet acceleration for `Cos` | true |
+| `spark.comet.expression.Cosh.enabled` | Enable Comet acceleration for `Cosh` | true |
 | `spark.comet.expression.Cot.enabled` | Enable Comet acceleration for `Cot` | true |
 | `spark.comet.expression.CreateArray.enabled` | Enable Comet acceleration for `CreateArray` | true |
 | `spark.comet.expression.CreateNamedStruct.enabled` | Enable Comet acceleration for `CreateNamedStruct` | true |
@@ -241,6 +261,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.IsNaN.enabled` | Enable Comet acceleration for `IsNaN` | true |
 | `spark.comet.expression.IsNotNull.enabled` | Enable Comet acceleration for `IsNotNull` | true |
 | `spark.comet.expression.IsNull.enabled` | Enable Comet acceleration for `IsNull` | true |
+| `spark.comet.expression.KnownFloatingPointNormalized.enabled` | Enable Comet acceleration for `KnownFloatingPointNormalized` | true |
 | `spark.comet.expression.Length.enabled` | Enable Comet acceleration for `Length` | true |
 | `spark.comet.expression.LessThan.enabled` | Enable Comet acceleration for `LessThan` | true |
 | `spark.comet.expression.LessThanOrEqual.enabled` | Enable Comet acceleration for `LessThanOrEqual` | true |
@@ -250,6 +271,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Log10.enabled` | Enable Comet acceleration for `Log10` | true |
 | `spark.comet.expression.Log2.enabled` | Enable Comet acceleration for `Log2` | true |
 | `spark.comet.expression.Lower.enabled` | Enable Comet acceleration for `Lower` | true |
+| `spark.comet.expression.MakeDecimal.enabled` | Enable Comet acceleration for `MakeDecimal` | true |
 | `spark.comet.expression.MapEntries.enabled` | Enable Comet acceleration for `MapEntries` | true |
 | `spark.comet.expression.MapFromArrays.enabled` | Enable Comet acceleration for `MapFromArrays` | true |
 | `spark.comet.expression.MapKeys.enabled` | Enable Comet acceleration for `MapKeys` | true |
@@ -272,6 +294,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Remainder.enabled` | Enable Comet acceleration for `Remainder` | true |
 | `spark.comet.expression.Reverse.enabled` | Enable Comet acceleration for `Reverse` | true |
 | `spark.comet.expression.Round.enabled` | Enable Comet acceleration for `Round` | true |
+| `spark.comet.expression.ScalarSubquery.enabled` | Enable Comet acceleration for `ScalarSubquery` | true |
 | `spark.comet.expression.Second.enabled` | Enable Comet acceleration for `Second` | true |
 | `spark.comet.expression.Sha1.enabled` | Enable Comet acceleration for `Sha1` | true |
 | `spark.comet.expression.Sha2.enabled` | Enable Comet acceleration for `Sha2` | true |
@@ -279,6 +302,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ShiftRight.enabled` | Enable Comet acceleration for `ShiftRight` | true |
 | `spark.comet.expression.Signum.enabled` | Enable Comet acceleration for `Signum` | true |
 | `spark.comet.expression.Sin.enabled` | Enable Comet acceleration for `Sin` | true |
+| `spark.comet.expression.Sinh.enabled` | Enable Comet acceleration for `Sinh` | true |
 | `spark.comet.expression.SortOrder.enabled` | Enable Comet acceleration for `SortOrder` | true |
 | `spark.comet.expression.SparkPartitionID.enabled` | Enable Comet acceleration for `SparkPartitionID` | true |
 | `spark.comet.expression.Sqrt.enabled` | Enable Comet acceleration for `Sqrt` | true |
@@ -299,21 +323,25 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Substring.enabled` | Enable Comet acceleration for `Substring` | true |
 | `spark.comet.expression.Subtract.enabled` | Enable Comet acceleration for `Subtract` | true |
 | `spark.comet.expression.Tan.enabled` | Enable Comet acceleration for `Tan` | true |
+| `spark.comet.expression.Tanh.enabled` | Enable Comet acceleration for `Tanh` | true |
 | `spark.comet.expression.TruncDate.enabled` | Enable Comet acceleration for `TruncDate` | true |
 | `spark.comet.expression.TruncTimestamp.enabled` | Enable Comet acceleration for `TruncTimestamp` | true |
 | `spark.comet.expression.UnaryMinus.enabled` | Enable Comet acceleration for `UnaryMinus` | true |
 | `spark.comet.expression.Unhex.enabled` | Enable Comet acceleration for `Unhex` | true |
+| `spark.comet.expression.UnscaledValue.enabled` | Enable Comet acceleration for `UnscaledValue` | true |
 | `spark.comet.expression.Upper.enabled` | Enable Comet acceleration for `Upper` | true |
 | `spark.comet.expression.WeekDay.enabled` | Enable Comet acceleration for `WeekDay` | true |
 | `spark.comet.expression.WeekOfYear.enabled` | Enable Comet acceleration for `WeekOfYear` | true |
 | `spark.comet.expression.XxHash64.enabled` | Enable Comet acceleration for `XxHash64` | true |
 | `spark.comet.expression.Year.enabled` | Enable Comet acceleration for `Year` | true |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Enabling or Disabling Individual Aggregate Expressions
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 <!--BEGIN:CONFIG_TABLE[enable_agg_expr]-->
+<!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | `spark.comet.expression.Average.enabled` | Enable Comet acceleration for `Average` | true |
@@ -334,4 +362,5 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Sum.enabled` | Enable Comet acceleration for `Sum` | true |
 | `spark.comet.expression.VariancePop.enabled` | Enable Comet acceleration for `VariancePop` | true |
 | `spark.comet.expression.VarianceSamp.enabled` | Enable Comet acceleration for `VarianceSamp` | true |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
