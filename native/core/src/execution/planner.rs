@@ -115,10 +115,10 @@ use datafusion_comet_proto::{
 };
 use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
 use datafusion_comet_spark_expr::{
-    ArrayInsert, Avg, AvgDecimal, AvgInt, Cast, CheckOverflow, Correlation, Covariance,
-    CreateNamedStruct, GetArrayStructFields, GetStructField, IfExpr, ListExtract,
-    NormalizeNaNAndZero, RLike, RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr,
-    SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn, Variance,
+    ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
+    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
+    RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr, SumDecimal, TimestampTruncExpr,
+    ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -1893,28 +1893,24 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let input_datatype = to_arrow_datatype(expr.sum_datatype.as_ref().unwrap());
+                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+
                 let builder = match datatype {
-                    DataType::Int8
-                    | DataType::UInt8
-                    | DataType::Int16
-                    | DataType::UInt16
-                    | DataType::Int32 => {
-                        let func =
-                            AggregateUDF::new_from_impl(AvgInt::new(datatype, input_datatype));
-                        AggregateExprBuilder::new(Arc::new(func), vec![child])
-                    }
                     DataType::Decimal128(_, _) => {
                         let func =
                             AggregateUDF::new_from_impl(AvgDecimal::new(datatype, input_datatype));
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
                     _ => {
-                        // cast to the result data type of AVG if the result data type is different
-                        // from the input type, e.g. AVG(Int32). We should not expect a cast
-                        // failure since it should have already been checked at Spark side.
+                        // For all other numeric types (Int8/16/32/64, Float32/64):
+                        // Cast to Float64 for accumulation
                         let child: Arc<dyn PhysicalExpr> =
-                            Arc::new(CastExpr::new(Arc::clone(&child), datatype.clone(), None));
-                        let func = AggregateUDF::new_from_impl(Avg::new("avg", datatype));
+                            Arc::new(CastExpr::new(Arc::clone(&child), DataType::Float64, None));
+                        let func = AggregateUDF::new_from_impl(Avg::new(
+                            "avg",
+                            DataType::Float64,
+                            eval_mode,
+                        ));
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
                 };

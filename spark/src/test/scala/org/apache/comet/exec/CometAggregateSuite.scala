@@ -1471,6 +1471,42 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("AVG and try_avg - basic functionality") {
+    withParquetTable(
+      Seq(
+        (10L, 1),
+        (20L, 1),
+        (null.asInstanceOf[Long], 1),
+        (100L, 2),
+        (200L, 2),
+        (null.asInstanceOf[Long], 3)),
+      "tbl") {
+
+      Seq(true, false).foreach({ k =>
+        // without GROUP BY
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> k.toString) {
+          val res = sql("SELECT avg(_1) FROM tbl")
+          checkSparkAnswerAndOperator(res)
+        }
+
+        // with GROUP BY
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> k.toString) {
+          val res = sql("SELECT _2, avg(_1) FROM tbl GROUP BY _2")
+          checkSparkAnswerAndOperator(res)
+        }
+
+      })
+
+      // try_avg without GROUP BY
+      val resTry = sql("SELECT try_avg(_1) FROM tbl")
+      checkSparkAnswerAndOperator(resTry)
+
+      // try_avg with GROUP BY
+      val resTryGroup = sql("SELECT _2, try_avg(_1) FROM tbl GROUP BY _2")
+      checkSparkAnswerAndOperator(resTryGroup)
+    }
+  }
+
   protected def checkSparkAnswerAndNumOfAggregates(query: String, numAggregates: Int): Unit = {
     val df = sql(query)
     checkSparkAnswer(df)

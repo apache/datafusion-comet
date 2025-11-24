@@ -17,7 +17,6 @@
 
 mod avg;
 mod avg_decimal;
-mod avg_int;
 mod correlation;
 mod covariance;
 mod stddev;
@@ -26,7 +25,6 @@ mod variance;
 
 pub use avg::Avg;
 pub use avg_decimal::AvgDecimal;
-pub use avg_int::AvgInt;
 pub use correlation::Correlation;
 pub use covariance::Covariance;
 pub use stddev::Stddev;
