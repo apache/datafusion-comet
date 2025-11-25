@@ -1870,7 +1870,9 @@ impl PhysicalPlanner {
 
                 let builder = match datatype {
                     DataType::Decimal128(_, _) => {
-                        let func = AggregateUDF::new_from_impl(SumDecimal::try_new(datatype)?);
+                        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                        let func =
+                            AggregateUDF::new_from_impl(SumDecimal::try_new(datatype, eval_mode)?);
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
                     _ => {

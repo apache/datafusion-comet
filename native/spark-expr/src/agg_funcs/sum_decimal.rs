@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::utils::{build_bool_state, is_valid_decimal_precision};
+use crate::{arithmetic_overflow_error, EvalMode};
 use arrow::array::{
     cast::AsArray, types::Decimal128Type, Array, ArrayRef, BooleanArray, Decimal128Array,
 };
@@ -40,11 +41,11 @@ pub struct SumDecimal {
     precision: u8,
     /// Decimal scale
     scale: i8,
+    eval_mode: EvalMode,
 }
 
 impl SumDecimal {
-    pub fn try_new(data_type: DataType) -> DFResult<Self> {
-        // The `data_type` is the SUM result type passed from Spark side
+    pub fn try_new(data_type: DataType, eval_mode: EvalMode) -> DFResult<Self> {
         let (precision, scale) = match data_type {
             DataType::Decimal128(p, s) => (p, s),
             _ => {
@@ -58,6 +59,7 @@ impl SumDecimal {
             result_type: data_type,
             precision,
             scale,
+            eval_mode,
         })
     }
 }
@@ -71,6 +73,7 @@ impl AggregateUDFImpl for SumDecimal {
         Ok(Box::new(SumDecimalAccumulator::new(
             self.precision,
             self.scale,
+            self.eval_mode,
         )))
     }
 
@@ -109,6 +112,7 @@ impl AggregateUDFImpl for SumDecimal {
         Ok(Box::new(SumDecimalGroupsAccumulator::new(
             self.result_type.clone(),
             self.precision,
+            self.eval_mode,
         )))
     }
 
@@ -137,31 +141,36 @@ struct SumDecimalAccumulator {
 
     precision: u8,
     scale: i8,
+    eval_mode: EvalMode,
 }
 
 impl SumDecimalAccumulator {
-    fn new(precision: u8, scale: i8) -> Self {
+    fn new(precision: u8, scale: i8, eval_mode: EvalMode) -> Self {
         Self {
             sum: 0,
             is_empty: true,
             is_not_null: true,
             precision,
             scale,
+            eval_mode,
         }
     }
 
-    fn update_single(&mut self, values: &Decimal128Array, idx: usize) {
+    fn update_single(&mut self, values: &Decimal128Array, idx: usize) -> DFResult<()> {
         let v = unsafe { values.value_unchecked(idx) };
         let (new_sum, is_overflow) = self.sum.overflowing_add(v);
 
         if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
-            // Overflow: set buffer accumulator to null
+            if self.eval_mode == EvalMode::Ansi {
+                return Err(DataFusionError::from(arithmetic_overflow_error("decimal")));
+            }
             self.is_not_null = false;
-            return;
+            return Ok(());
         }
 
         self.sum = new_sum;
         self.is_not_null = true;
+        Ok(())
     }
 }
 
@@ -187,14 +196,14 @@ impl Accumulator for SumDecimalAccumulator {
 
         if values.null_count() == 0 {
             for i in 0..data.len() {
-                self.update_single(data, i);
+                self.update_single(data, i)?;
             }
         } else {
             for i in 0..data.len() {
                 if data.is_null(i) {
                     continue;
                 }
-                self.update_single(data, i);
+                self.update_single(data, i)?;
             }
         }
 
@@ -205,16 +214,22 @@ impl Accumulator for SumDecimalAccumulator {
         // For each group:
         //   1. if `is_empty` is true, it means either there is no value or all values for the group
         //      are null, in this case we'll return null
-        //   2. if `is_empty` is false, but `null_state` is true, it means there's an overflow. In
-        //      non-ANSI mode Spark returns null.
-        if self.is_empty
-            || !self.is_not_null
-            || !is_valid_decimal_precision(self.sum, self.precision)
-        {
+        //   2. if `is_empty` is false, but `is_not_null` is false, it means there's an overflow.
+        //      In ANSI mode we return an error, in Try/Legacy mode we return null.
+        if self.is_empty {
             ScalarValue::new_primitive::<Decimal128Type>(
                 None,
                 &DataType::Decimal128(self.precision, self.scale),
             )
+        } else if !self.is_not_null {
+            if self.eval_mode == EvalMode::Ansi {
+                Err(DataFusionError::from(arithmetic_overflow_error("decimal")))
+            } else {
+                ScalarValue::new_primitive::<Decimal128Type>(
+                    None,
+                    &DataType::Decimal128(self.precision, self.scale),
+                )
+            }
         } else {
             ScalarValue::try_new_decimal128(self.sum, self.precision, self.scale)
         }
@@ -270,16 +285,18 @@ struct SumDecimalGroupsAccumulator {
     sum: Vec<i128>,
     result_type: DataType,
     precision: u8,
+    eval_mode: EvalMode,
 }
 
 impl SumDecimalGroupsAccumulator {
-    fn new(result_type: DataType, precision: u8) -> Self {
+    fn new(result_type: DataType, precision: u8, eval_mode: EvalMode) -> Self {
         Self {
             is_not_null: BooleanBufferBuilder::new(0),
             is_empty: BooleanBufferBuilder::new(0),
             sum: Vec::new(),
             result_type,
             precision,
+            eval_mode,
         }
     }
 
@@ -288,15 +305,18 @@ impl SumDecimalGroupsAccumulator {
     }
 
     #[inline]
-    fn update_single(&mut self, group_index: usize, value: i128) {
+    fn update_single(&mut self, group_index: usize, value: i128) -> DFResult<()> {
         self.is_empty.set_bit(group_index, false);
         let (new_sum, is_overflow) = self.sum[group_index].overflowing_add(value);
         self.sum[group_index] = new_sum;
 
         if is_overflow || !is_valid_decimal_precision(new_sum, self.precision) {
-            // Overflow: set buffer accumulator to null
+            if self.eval_mode == EvalMode::Ansi {
+                return Err(DataFusionError::from(arithmetic_overflow_error("decimal")));
+            }
             self.is_not_null.set_bit(group_index, false);
         }
+        Ok(())
     }
 }
 
@@ -328,14 +348,14 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         let iter = group_indices.iter().zip(data.iter());
         if values.null_count() == 0 {
             for (&group_index, &value) in iter {
-                self.update_single(group_index, value);
+                self.update_single(group_index, value)?;
             }
         } else {
             for (idx, (&group_index, &value)) in iter.enumerate() {
                 if values.is_null(idx) {
                     continue;
                 }
-                self.update_single(group_index, value);
+                self.update_single(group_index, value)?;
             }
         }
 
@@ -463,7 +483,7 @@ mod tests {
 
     #[test]
     fn invalid_data_type() {
-        assert!(SumDecimal::try_new(DataType::Int32).is_err());
+        assert!(SumDecimal::try_new(DataType::Int32, EvalMode::Legacy).is_err());
     }
 
     #[tokio::test]
@@ -486,6 +506,7 @@ mod tests {
 
         let aggregate_udf = Arc::new(AggregateUDF::new_from_impl(SumDecimal::try_new(
             data_type.clone(),
+            EvalMode::Legacy,
         )?));
 
         let aggr_expr = AggregateExprBuilder::new(aggregate_udf, vec![c1])
