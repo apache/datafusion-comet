@@ -169,7 +169,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       "compression",
       SQLConf.get.getConfString(
         SQLConf.PARQUET_COMPRESSION.key,
-        SQLConf.PARQUET_COMPRESSION.defaultValueString))
+        SQLConf.PARQUET_COMPRESSION.defaultValueString)).toLowerCase(Locale.ROOT)
   }
 
 }
