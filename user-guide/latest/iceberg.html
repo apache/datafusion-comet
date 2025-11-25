@@ -488,8 +488,7 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </pre></div>
 </div>
 <p>Perform a clean build</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./gradlew<span class="w"> </span>clean
-./gradlew<span class="w"> </span>build<span class="w"> </span>-x<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-x<span class="w"> </span>integrationTest
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./gradlew<span class="w"> </span>clean<span class="w"> </span>build<span class="w"> </span>-x<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-x<span class="w"> </span>integrationTest
 </pre></div>
 </div>
 </section>
@@ -501,9 +500,8 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </div>
 <p>Launch Spark Shell:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--jars<span class="w"> </span><span class="nv">$COMET_JAR</span>,<span class="nv">$ICEBERG_JAR</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.driver.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span>,<span class="nv">$ICEBERG_JAR</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span>,<span class="nv">$ICEBERG_JAR</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--driver-class-path<span class="w"> </span><span class="nv">$COMET_JAR</span>:<span class="nv">$ICEBERG_JAR</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.executor.extraClassPath<span class="o">=</span><span class="nv">$COMET_JAR</span>:<span class="nv">$ICEBERG_JAR</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.sql.extensions<span class="o">=</span>org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.spark_catalog<span class="o">=</span>org.apache.iceberg.spark.SparkCatalog<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.spark_catalog.type<span class="o">=</span>hadoop<span class="w"> </span><span class="se">\</span>
