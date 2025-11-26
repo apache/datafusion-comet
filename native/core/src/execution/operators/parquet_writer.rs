@@ -76,6 +76,7 @@ pub struct ParquetWriterExec {
 
 impl ParquetWriterExec {
     /// Create a new ParquetWriterExec
+    #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         output_path: String,
