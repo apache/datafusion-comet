@@ -20,17 +20,15 @@
 package org.apache.comet.rules
 
 import java.net.URI
-
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
-
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
+import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData, MetadataColumnHelper, sideBySide}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
@@ -39,7 +37,6 @@ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
-
 import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
@@ -49,6 +46,7 @@ import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.shims.CometTypeShim
+import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 
 /**
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
@@ -265,6 +263,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         } else {
           withInfos(scanExec, fallbackReasons.toSet)
         }
+
+      case scan: CSVScan =>
+        CometBatchScanExec(scanExec, Seq.empty)
 
       // Iceberg scan - patched version implementing SupportsComet interface
       case s: SupportsComet if !COMET_ICEBERG_NATIVE_ENABLED.get() =>
