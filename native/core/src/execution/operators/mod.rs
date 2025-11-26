@@ -29,6 +29,8 @@ mod copy;
 mod expand;
 pub use expand::ExpandExec;
 mod iceberg_scan;
+mod parquet_writer;
+pub use parquet_writer::ParquetWriterExec;
 mod scan;
 
 /// Error returned during executing operators.
