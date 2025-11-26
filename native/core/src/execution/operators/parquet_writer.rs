@@ -192,6 +192,13 @@ impl ExecutionPlan for ParquetWriterExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        use datafusion::physical_plan::metrics::MetricBuilder;
+
+        // Create metrics for tracking write statistics
+        let files_written = MetricBuilder::new(&self.metrics).counter("files_written", partition);
+        let bytes_written = MetricBuilder::new(&self.metrics).counter("bytes_written", partition);
+        let rows_written = MetricBuilder::new(&self.metrics).counter("rows_written", partition);
+
         let input = self.input.execute(partition, context)?;
         let input_schema = self.input.schema(); // Get the input data schema, not metadata schema
         let output_path = self.output_path.clone();
@@ -307,15 +314,16 @@ impl ExecutionPlan for ParquetWriterExec {
                 .map(|m| m.len() as i64)
                 .unwrap_or(0);
 
-            // Log metadata for debugging and future FileCommitProtocol integration
+            // Update metrics with write statistics
+            files_written.add(1);
+            bytes_written.add(file_size as usize);
+            rows_written.add(total_rows as usize);
+
+            // Log metadata for debugging
             eprintln!(
                 "Wrote Parquet file: path={}, size={}, rows={}",
                 part_file, file_size, total_rows
             );
-
-            // TODO: Store file metadata (path, size, row count) for FileCommitProtocol
-            // For now, we just log it and return an empty stream
-            // Future: could use metrics or a side channel to communicate metadata to JVM
 
             // Return empty stream to indicate completion
             Ok::<_, DataFusionError>(futures::stream::empty())

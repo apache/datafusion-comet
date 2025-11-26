@@ -28,6 +28,7 @@ import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.Utils
 
@@ -78,6 +79,11 @@ case class CometNativeWriteExec(
 
   override def nodeName: String = "CometNativeWrite"
 
+  override lazy val metrics: Map[String, SQLMetric] = Map(
+    "files_written" -> SQLMetrics.createMetric(sparkContext, "number of written data files"),
+    "bytes_written" -> SQLMetrics.createSizeMetric(sparkContext, "written data"),
+    "rows_written" -> SQLMetrics.createMetric(sparkContext, "number of written rows"))
+
   override def doExecute(): RDD[InternalRow] = {
     // Setup job if committer is present
     committer.foreach { c =>
@@ -96,6 +102,11 @@ case class CometNativeWriteExec(
       }
       .count() // Force execution
 
+    // Extract write statistics from metrics
+    val filesWritten = metrics("files_written").value
+    val bytesWritten = metrics("bytes_written").value
+    val rowsWritten = metrics("rows_written").value
+
     // Commit job
     committer.foreach { c =>
       val jobContext = createJobContext()
@@ -103,7 +114,9 @@ case class CometNativeWriteExec(
         // For now, just commit the job without task commit messages
         // In a full implementation, we'd collect TaskCommitMessage from each task
         c.commitJob(jobContext, Seq.empty)
-        logInfo(s"Successfully committed write job to $outputPath")
+        logInfo(
+          s"Successfully committed write job to $outputPath: " +
+            s"$filesWritten files, $bytesWritten bytes, $rowsWritten rows")
       } catch {
         case e: Exception =>
           logError("Failed to commit job, aborting", e)
