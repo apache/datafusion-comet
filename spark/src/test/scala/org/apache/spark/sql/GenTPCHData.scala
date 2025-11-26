@@ -65,7 +65,9 @@ object GenTPCHData {
       // Install the data generators in all nodes
       // TODO: think a better way to install on each worker node
       //       such as https://stackoverflow.com/a/40876671
-      spark.range(0, workers, 1, workers).foreach(worker => installDBGEN(baseDir)(worker))
+      spark
+        .range(0L, workers.toLong, 1L, workers)
+        .foreach(worker => installDBGEN(baseDir)(worker))
       s"${baseDir}/dbgen"
     } else {
       config.dbgenDir
@@ -91,7 +93,7 @@ object GenTPCHData {
 
     // Clean up
     if (defaultDbgenDir != null) {
-      spark.range(0, workers, 1, workers).foreach { _ =>
+      spark.range(0L, workers.toLong, 1L, workers).foreach { _ =>
         val _ = FileUtils.deleteQuietly(defaultDbgenDir)
       }
     }

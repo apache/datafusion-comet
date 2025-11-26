@@ -23,6 +23,7 @@ import java.io.{File, FileFilter}
 import java.math.{BigDecimal, BigInteger}
 import java.time.{ZoneId, ZoneOffset}
 
+import scala.annotation.nowarn
 import scala.collection.mutable.ListBuffer
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
@@ -52,6 +53,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.rules.CometScanTypeChecker
 
+@nowarn("cat=w-flag-numeric-widen")
 abstract class ParquetReadSuite extends CometTestBase {
   import testImplicits._
 
@@ -1532,6 +1534,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("test pre-fetching multiple files") {
+    @nowarn("msg=implicit numeric widening")
     def makeRawParquetFile(
         path: Path,
         dictionaryEnabled: Boolean,
@@ -1767,7 +1770,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   private def withId(id: Int) =
-    new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id).build()
+    new MetadataBuilder().putLong(ParquetUtils.FIELD_ID_METADATA_KEY, id.toLong).build()
 
   // Based on Spark ParquetIOSuite.test("vectorized reader: array of nested struct")
   test("array of nested struct with and without field id") {
