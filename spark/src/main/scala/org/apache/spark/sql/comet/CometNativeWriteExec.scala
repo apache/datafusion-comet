@@ -68,10 +68,45 @@ case class CometNativeWriteExec(nativeOp: Operator, child: SparkPlan, outputPath
   override def doExecute(): RDD[InternalRow] = {
     // Execute the native write
     val resultRDD = doExecuteColumnar()
-    // Convert to empty InternalRow RDD (write operations typically return empty results)
+
+    // Convert metadata batches to rows and collect file statistics
     resultRDD.mapPartitions { iter =>
-      // Consume all batches (they should be empty)
-      iter.foreach(_.close())
+      val fileMetadata = scala.collection.mutable.ArrayBuffer[(String, Long, Long)]()
+
+      iter.foreach { batch =>
+        try {
+          // Extract metadata from the batch
+          // Schema: (file_path: Utf8, size_bytes: Int64, num_rows: Int64)
+          val numRows = batch.numRows()
+
+          if (numRows > 0) {
+            // Get the columns
+            val filePathColumn = batch.column(0)
+            val sizeBytesColumn = batch.column(1)
+            val numRowsColumn = batch.column(2)
+
+            // Extract values for each row (typically just one row per batch)
+            for (i <- 0 until numRows) {
+              val filePath = filePathColumn.getUTF8String(i).toString
+              val sizeBytes = sizeBytesColumn.getLong(i)
+              val rowCount = numRowsColumn.getLong(i)
+
+              fileMetadata.append((filePath, sizeBytes, rowCount))
+
+              // Log the metadata (useful for debugging)
+              logInfo(
+                s"Wrote Parquet file: path=$filePath, size=$sizeBytes bytes, rows=$rowCount")
+            }
+          }
+        } finally {
+          batch.close()
+        }
+      }
+
+      // TODO: Use fileMetadata for FileCommitProtocol integration
+      // For now, we just collected and logged it
+
+      // Return empty iterator as write operations don't return data
       Iterator.empty
     }
   }
