@@ -1550,7 +1550,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach { ansiEnabled =>
       withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
         withParquetTable(generateOverflowDecimalInputs, "tbl") {
-          val input = sql("SELECT _1 FROM tbl")
           val res = sql("SELECT SUM(_1) FROM tbl")
           if (ansiEnabled) {
             checkSparkAnswerMaybeThrows(res) match {
