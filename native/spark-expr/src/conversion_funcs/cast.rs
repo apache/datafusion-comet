@@ -20,8 +20,8 @@ use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
 use arrow::array::{
-    BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray, StringArray,
-    StructArray,
+    ArrayAccessor, BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray,
+    StringArray, StructArray,
 };
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{
@@ -44,6 +44,7 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
+use base64::prelude::*;
 use chrono::{DateTime, NaiveDate, TimeZone, Timelike};
 use datafusion::common::{
     cast::as_generic_string_array, internal_err, DataFusionError, Result as DataFusionResult,
@@ -56,6 +57,7 @@ use num::{
     ToPrimitive, Zero,
 };
 use regex::Regex;
+use std::num::ParseFloatError;
 use std::str::FromStr;
 use std::{
     any::Any,
@@ -64,8 +66,6 @@ use std::{
     num::Wrapping,
     sync::Arc,
 };
-
-use base64::prelude::*;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -217,10 +217,11 @@ fn can_cast_from_string(to_type: &DataType, options: &SparkCastOptions) -> bool 
     match to_type {
         Boolean | Int8 | Int16 | Int32 | Int64 | Binary => true,
         Float32 | Float64 => {
-            // https://github.com/apache/datafusion-comet/issues/326
-            // Does not support inputs ending with 'd' or 'f'. Does not support 'inf'.
-            // Does not support ANSI mode.
-            options.allow_incompat
+            // Now supports:
+            // - inputs ending with 'd' or 'f'
+            // - 'inf', '-inf', 'Infinity' values
+            // - ANSI mode
+            true
         }
         Decimal128(_, _) => {
             // https://github.com/apache/datafusion-comet/issues/325
@@ -976,6 +977,7 @@ fn cast_array(
             cast_string_to_timestamp(&array, to_type, eval_mode, &cast_options.timezone)
         }
         (Utf8, Date32) => cast_string_to_date(&array, to_type, eval_mode),
+        (Utf8, Float16 | Float32 | Float64) => cast_string_to_float(&array, to_type, eval_mode),
         (Int64, Int32)
         | (Int64, Int16)
         | (Int64, Int8)
@@ -1056,6 +1058,115 @@ fn cast_array(
         }
     };
     Ok(spark_cast_postprocess(cast_result?, from_type, to_type))
+}
+
+fn cast_string_to_float(
+    array: &ArrayRef,
+    to_type: &DataType,
+    eval_mode: EvalMode,
+) -> SparkResult<ArrayRef> {
+    match to_type {
+        DataType::Float32 => cast_string_to_float_impl::<Float32Type>(array, eval_mode, "FLOAT"),
+        DataType::Float64 => cast_string_to_float_impl::<Float64Type>(array, eval_mode, "DOUBLE"),
+        _ => Err(SparkError::Internal(format!(
+            "Unsupported cast to float type: {:?}",
+            to_type
+        ))),
+    }
+}
+
+fn cast_string_to_float_impl<T: ArrowPrimitiveType>(
+    array: &ArrayRef,
+    eval_mode: EvalMode,
+    type_name: &str,
+) -> SparkResult<ArrayRef>
+where
+    T::Native: FloatParse,
+{
+    let arr = array
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| SparkError::Internal("could not parse input as string type".to_string()))?;
+
+    let mut cast_array = PrimitiveArray::<T>::builder(arr.len());
+
+    for i in 0..arr.len() {
+        if arr.is_null(i) {
+            cast_array.append_null();
+        } else {
+            let str_value = arr.value(i).trim();
+            match T::Native::parse_spark_float(str_value) {
+                Ok(v) => {
+                    cast_array.append_value(v);
+                }
+                Err(_) => {
+                    if eval_mode == EvalMode::Ansi {
+                        return Err(invalid_value(arr.value(i), "STRING", type_name));
+                    } else {
+                        cast_array.append_null();
+                    }
+                }
+            }
+        }
+    }
+    Ok(Arc::new(cast_array.finish()))
+}
+
+/// Trait for parsing float from str
+trait FloatParse: Sized {
+    fn parse_spark_float(s: &str) -> Result<Self, ParseFloatError>;
+}
+
+impl FloatParse for f32 {
+    fn parse_spark_float(s: &str) -> Result<Self, ParseFloatError> {
+        let s_lower = s.to_lowercase();
+
+        if s_lower == "inf" || s_lower == "+inf" || s_lower == "infinity" || s_lower == "+infinity"
+        {
+            return Ok(f32::INFINITY);
+        }
+
+        if s_lower == "-inf" || s_lower == "-infinity" {
+            return Ok(f32::NEG_INFINITY);
+        }
+
+        if s_lower == "nan" {
+            return Ok(f32::NAN);
+        }
+
+        let pruned = if s_lower.ends_with('d') || s_lower.ends_with('f') {
+            &s[..s.len() - 1]
+        } else {
+            s
+        };
+        pruned.parse::<f32>()
+    }
+}
+
+impl FloatParse for f64 {
+    fn parse_spark_float(s: &str) -> Result<Self, ParseFloatError> {
+        let s_lower = s.to_lowercase();
+
+        if s_lower == "inf" || s_lower == "+inf" || s_lower == "infinity" || s_lower == "+infinity"
+        {
+            return Ok(f64::INFINITY);
+        }
+
+        if s_lower == "-inf" || s_lower == "-infinity" {
+            return Ok(f64::NEG_INFINITY);
+        }
+
+        if s_lower == "nan" {
+            return Ok(f64::NAN);
+        }
+
+        let cleaned = if s_lower.ends_with('d') || s_lower.ends_with('f') {
+            &s[..s.len() - 1]
+        } else {
+            s
+        };
+        cleaned.parse::<f64>()
+    }
 }
 
 fn cast_binary_to_string<O: OffsetSizeTrait>(
@@ -1185,11 +1296,13 @@ fn is_datafusion_spark_compatible(
                 | DataType::Decimal256(_, _)
                 | DataType::Utf8 // note that there can be formatting differences
         ),
-        DataType::Utf8 if allow_incompat => matches!(
+        DataType::Utf8 if allow_incompat => {
+            matches!(to_type, DataType::Binary | DataType::Decimal128(_, _))
+        }
+        DataType::Utf8 => matches!(
             to_type,
-            DataType::Binary | DataType::Float32 | DataType::Float64 | DataType::Decimal128(_, _)
+            DataType::Binary | DataType::Float32 | DataType::Float64
         ),
-        DataType::Utf8 => matches!(to_type, DataType::Binary),
         DataType::Date32 => matches!(to_type, DataType::Utf8),
         DataType::Timestamp(_, _) => {
             matches!(
