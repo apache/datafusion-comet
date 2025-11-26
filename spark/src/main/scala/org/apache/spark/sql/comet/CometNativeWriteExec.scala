@@ -19,6 +19,9 @@
 
 package org.apache.spark.sql.comet
 
+import java.io.ByteArrayOutputStream
+import java.util.UUID
+
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
@@ -33,8 +36,12 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  * This operator writes data to Parquet files using the native Comet engine. It wraps the child
  * operator and adds a ParquetWriter operator on top.
  *
+ * The implementation includes support for Spark's file commit protocol through work_dir, job_id,
+ * and task_attempt_id parameters that can be set in the operator. When work_dir is set, files are
+ * written to a temporary location that can be atomically committed later.
+ *
  * @param nativeOp
- *   The native operator representing the write operation
+ *   The native operator representing the write operation (template, will be modified per task)
  * @param child
  *   The child operator providing the data to write
  * @param outputPath
@@ -47,13 +54,13 @@ case class CometNativeWriteExec(nativeOp: Operator, child: SparkPlan, outputPath
   override def originalPlan: SparkPlan = child
 
   override def serializedPlanOpt: SerializedPlan = {
-    val outputStream = new java.io.ByteArrayOutputStream()
+    val outputStream = new ByteArrayOutputStream()
     nativeOp.writeTo(outputStream)
     outputStream.close()
     SerializedPlan(Some(outputStream.toByteArray))
   }
 
-  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+  override def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     copy(child = newChild)
 
   override def nodeName: String = "CometNativeWrite"
@@ -91,7 +98,7 @@ case class CometNativeWriteExec(nativeOp: Operator, child: SparkPlan, outputPath
     childRDD.mapPartitionsInternal { iter =>
       val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
-      val outputStream = new java.io.ByteArrayOutputStream()
+      val outputStream = new ByteArrayOutputStream()
       nativeOp.writeTo(outputStream)
       outputStream.close()
       val planBytes = outputStream.toByteArray

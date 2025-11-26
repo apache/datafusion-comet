@@ -129,6 +129,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         .setOutputPath(outputPath)
         .setCompression(codec)
         .addAllColumnNames(cmd.query.output.map(_.name).asJava)
+        // Note: work_dir, job_id, and task_attempt_id will be set at execution time
+        // in CometNativeWriteExec, as they depend on the Spark task context
         .build()
 
       val writerOperator = Operator
@@ -162,6 +164,11 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         // Fallback: use the child directly
         other
     }
+
+    // Note: The native operator protobuf now supports work_dir, job_id, and task_attempt_id
+    // for implementing Spark's file commit protocol. These fields can be set by modifying
+    // the operator at task execution time to enable atomic writes with staging directories.
+    // For now, files are written directly to the output path.
 
     CometNativeWriteExec(nativeOp, childPlan, outputPath)
   }

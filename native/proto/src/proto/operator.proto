@@ -241,6 +241,26 @@ message ParquetWriter {
   string output_path = 1;
   CompressionCodec compression = 2;
   repeated string column_names = 4;
+  // Working directory for temporary files (used by FileCommitProtocol)
+  // If not set, files are written directly to output_path
+  optional string work_dir = 5;
+  // Job ID for tracking this write operation
+  optional string job_id = 6;
+  // Task attempt ID for this specific task
+  optional int32 task_attempt_id = 7;
+}
+
+// Information about a file written by ParquetWriter
+// This is returned to the JVM for commit protocol coordination
+message WrittenFileInfo {
+  // Absolute path to the written file (may be in temp location)
+  string path = 1;
+  // Size of the file in bytes
+  int64 size_bytes = 2;
+  // Number of rows written to the file
+  int64 num_rows = 3;
+  // Partition values (empty for non-partitioned writes)
+  map<string, string> partition_values = 4;
 }
 
 enum AggregateMode {
