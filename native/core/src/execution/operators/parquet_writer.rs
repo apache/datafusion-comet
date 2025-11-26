@@ -25,11 +25,8 @@ use std::{
     sync::Arc,
 };
 
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use arrow::{
-    array::{Int64Array, StringArray},
-    record_batch::RecordBatch,
-};
+use arrow::datatypes::SchemaRef;
+use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::{
     error::{DataFusionError, Result},
@@ -93,7 +90,7 @@ impl ParquetWriterExec {
         let input_partitioning = input.output_partitioning().clone();
 
         let cache = PlanProperties::new(
-            EquivalenceProperties::new(Self::metadata_schema()),
+            EquivalenceProperties::new(Arc::clone(&input.schema())),
             input_partitioning,
             EmissionType::Final,
             Boundedness::Bounded,
@@ -111,16 +108,6 @@ impl ParquetWriterExec {
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
         })
-    }
-
-    /// Schema for the metadata returned by this operator
-    /// Returns: (file_path: Utf8, size_bytes: Int64, num_rows: Int64)
-    fn metadata_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![
-            Field::new("file_path", DataType::Utf8, false),
-            Field::new("size_bytes", DataType::Int64, false),
-            Field::new("num_rows", DataType::Int64, false),
-        ]))
     }
 
     fn compression_to_parquet(&self) -> Result<Compression> {
@@ -171,7 +158,7 @@ impl ExecutionPlan for ParquetWriterExec {
     }
 
     fn schema(&self) -> SchemaRef {
-        Self::metadata_schema()
+        self.input.schema()
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -205,7 +192,7 @@ impl ExecutionPlan for ParquetWriterExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let input = self.input.execute(partition, context)?;
-        let input_schema = self.schema();
+        let input_schema = self.input.schema(); // Get the input data schema, not metadata schema
         let output_path = self.output_path.clone();
         let work_dir = self.work_dir.clone();
         let task_attempt_id = self.task_attempt_id;
@@ -280,7 +267,6 @@ impl ExecutionPlan for ParquetWriterExec {
 
         // Clone schema for use in async closure
         let schema_for_write = Arc::clone(&output_schema);
-        let metadata_schema = Self::metadata_schema();
 
         // Write batches
         let write_task = async move {
@@ -320,31 +306,24 @@ impl ExecutionPlan for ParquetWriterExec {
                 .map(|m| m.len() as i64)
                 .unwrap_or(0);
 
-            // Create metadata RecordBatch to return to JVM
-            let file_path_array = StringArray::from(vec![part_file.clone()]);
-            let size_bytes_array = Int64Array::from(vec![file_size]);
-            let num_rows_array = Int64Array::from(vec![total_rows]);
+            // Log metadata for debugging and future FileCommitProtocol integration
+            eprintln!(
+                "Wrote Parquet file: path={}, size={}, rows={}",
+                part_file, file_size, total_rows
+            );
 
-            let metadata_batch = RecordBatch::try_new(
-                metadata_schema,
-                vec![
-                    Arc::new(file_path_array),
-                    Arc::new(size_bytes_array),
-                    Arc::new(num_rows_array),
-                ],
-            )
-            .map_err(|e| {
-                DataFusionError::Execution(format!("Failed to create metadata batch: {}", e))
-            })?;
+            // TODO: Store file metadata (path, size, row count) for FileCommitProtocol
+            // For now, we just log it and return an empty stream
+            // Future: could use metrics or a side channel to communicate metadata to JVM
 
-            // Return a stream containing the metadata batch
-            Ok::<_, DataFusionError>(futures::stream::once(async { Ok(metadata_batch) }))
+            // Return empty stream to indicate completion
+            Ok::<_, DataFusionError>(futures::stream::empty())
         };
 
         // Execute the write task and convert to a stream
         use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
         Ok(Box::pin(RecordBatchStreamAdapter::new(
-            Self::metadata_schema(),
+            self.schema(),
             futures::stream::once(write_task).try_flatten(),
         )))
     }

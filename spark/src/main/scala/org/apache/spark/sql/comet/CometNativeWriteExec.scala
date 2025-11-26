@@ -21,8 +21,6 @@ package org.apache.spark.sql.comet
 
 import java.io.ByteArrayOutputStream
 
-import scala.collection.mutable.ArrayBuffer
-
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
@@ -90,61 +88,22 @@ case class CometNativeWriteExec(
     // Execute the native write with commit protocol
     val resultRDD = doExecuteColumnar()
 
-    // Convert metadata batches and collect statistics
-    val stats = resultRDD
+    // Consume all batches (they're empty, just forcing execution)
+    resultRDD
       .mapPartitions { iter =>
-        val fileMetadata = ArrayBuffer[(String, Long, Long)]()
-
-        iter.foreach { batch =>
-          try {
-            // Extract metadata from the batch
-            // Schema: (file_path: Utf8, size_bytes: Int64, num_rows: Int64)
-            val numRows = batch.numRows()
-
-            if (numRows > 0) {
-              // Get the columns
-              val filePathColumn = batch.column(0)
-              val sizeBytesColumn = batch.column(1)
-              val numRowsColumn = batch.column(2)
-
-              // Extract values for each row (typically just one row per batch)
-              for (i <- 0 until numRows) {
-                val filePath = filePathColumn.getUTF8String(i).toString
-                val sizeBytes = sizeBytesColumn.getLong(i)
-                val rowCount = numRowsColumn.getLong(i)
-
-                fileMetadata.append((filePath, sizeBytes, rowCount))
-
-                // Log the metadata (useful for debugging)
-                logInfo(
-                  s"Wrote Parquet file: path=$filePath, size=$sizeBytes bytes, rows=$rowCount")
-              }
-            }
-          } finally {
-            batch.close()
-          }
-        }
-
-        // Return statistics from this partition
-        Iterator.single(
-          (fileMetadata.length, fileMetadata.map(_._2).sum, fileMetadata.map(_._3).sum))
+        iter.foreach(_.close())
+        Iterator.empty
       }
-      .collect()
+      .count() // Force execution
 
-    // Commit job with aggregated statistics
+    // Commit job
     committer.foreach { c =>
       val jobContext = createJobContext()
       try {
-        val totalFiles = stats.map(_._1).sum
-        val totalBytes = stats.map(_._2).sum
-        val totalRows = stats.map(_._3).sum
-
         // For now, just commit the job without task commit messages
         // In a full implementation, we'd collect TaskCommitMessage from each task
         c.commitJob(jobContext, Seq.empty)
-        logInfo(
-          s"Successfully committed write job to $outputPath: " +
-            s"$totalFiles files, $totalBytes bytes, $totalRows rows")
+        logInfo(s"Successfully committed write job to $outputPath")
       } catch {
         case e: Exception =>
           logError(s"Failed to commit job, aborting", e)
