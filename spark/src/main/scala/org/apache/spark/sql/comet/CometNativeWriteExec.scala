@@ -21,6 +21,8 @@ package org.apache.spark.sql.comet
 
 import java.io.ByteArrayOutputStream
 
+import scala.jdk.CollectionConverters._
+
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
@@ -67,6 +69,11 @@ case class CometNativeWriteExec(
 
   override def originalPlan: SparkPlan = child
 
+  // Accumulator to collect TaskCommitMessages from all tasks
+  // Must be eagerly initialized on driver, not lazy
+  @transient private val taskCommitMessagesAccum =
+    sparkContext.collectionAccumulator[FileCommitProtocol.TaskCommitMessage]("taskCommitMessages")
+
   override def serializedPlanOpt: SerializedPlan = {
     val outputStream = new ByteArrayOutputStream()
     nativeOp.writeTo(outputStream)
@@ -94,26 +101,27 @@ case class CometNativeWriteExec(
     // Execute the native write with commit protocol
     val resultRDD = doExecuteColumnar()
 
-    // Consume all batches (they're empty, just forcing execution)
+    // Force execution by consuming all batches
     resultRDD
       .mapPartitions { iter =>
         iter.foreach(_.close())
         Iterator.empty
       }
-      .count() // Force execution
+      .count()
 
     // Extract write statistics from metrics
     val filesWritten = metrics("files_written").value
     val bytesWritten = metrics("bytes_written").value
     val rowsWritten = metrics("rows_written").value
 
-    // Commit job
+    // Collect TaskCommitMessages from accumulator
+    val commitMessages = taskCommitMessagesAccum.value.asScala.toSeq
+
+    // Commit job with collected TaskCommitMessages
     committer.foreach { c =>
       val jobContext = createJobContext()
       try {
-        // For now, just commit the job without task commit messages
-        // In a full implementation, we'd collect TaskCommitMessage from each task
-        c.commitJob(jobContext, Seq.empty)
+        c.commitJob(jobContext, commitMessages)
         logInfo(
           s"Successfully committed write job to $outputPath: " +
             s"$filesWritten files, $bytesWritten bytes, $rowsWritten rows")
@@ -149,6 +157,7 @@ case class CometNativeWriteExec(
     val broadcastedCommitter = committer.map(c => sparkContext.broadcast(c))
     val capturedJobTrackerID = jobTrackerID
     val capturedNativeOp = nativeOp
+    val capturedAccumulator = taskCommitMessagesAccum // Capture accumulator for use in tasks
 
     // Execute native write operation with task-level commit protocol
     childRDD.mapPartitionsInternal { iter =>
@@ -204,7 +213,7 @@ case class CometNativeWriteExec(
         None,
         Seq.empty)
 
-      // Wrap the iterator to handle task commit/abort
+      // Wrap the iterator to handle task commit/abort and capture TaskCommitMessage
       new Iterator[ColumnarBatch] {
         private var completed = false
         private var thrownException: Option[Throwable] = None
@@ -246,8 +255,9 @@ case class CometNativeWriteExec(
             taskContext.foreach { case (committer, ctx) =>
               try {
                 if (thrownException.isEmpty) {
-                  // Commit the task
-                  committer.commitTask(ctx)
+                  // Commit the task and add message to accumulator
+                  val message = committer.commitTask(ctx)
+                  capturedAccumulator.add(message)
                   logInfo(s"Task ${ctx.getTaskAttemptID} committed successfully")
                 } else {
                   // Abort the task
