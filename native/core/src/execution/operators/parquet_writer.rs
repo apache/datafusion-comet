@@ -180,6 +180,8 @@ impl ExecutionPlan for ParquetWriterExec {
         let compression = self.compression_to_parquet()?;
         let column_names = self.column_names.clone();
 
+        assert_eq!(input_schema.fields().len(), column_names.len());
+
         // Create output schema with correct column names
         let output_schema = if !column_names.is_empty() {
             // Replace the generic column names (col_0, col_1, etc.) with the actual names
@@ -188,11 +190,7 @@ impl ExecutionPlan for ParquetWriterExec {
                 .iter()
                 .enumerate()
                 .map(|(i, field)| {
-                    if i < column_names.len() {
-                        Arc::new(field.as_ref().clone().with_name(&column_names[i]))
-                    } else {
-                        Arc::clone(field)
-                    }
+                    Arc::new(field.as_ref().clone().with_name(&column_names[i]))
                 })
                 .collect();
             Arc::new(arrow::datatypes::Schema::new(fields))
