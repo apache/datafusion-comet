@@ -165,12 +165,35 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         other
     }
 
-    // Note: The native operator protobuf now supports work_dir, job_id, and task_attempt_id
-    // for implementing Spark's file commit protocol. These fields can be set by modifying
-    // the operator at task execution time to enable atomic writes with staging directories.
-    // For now, files are written directly to the output path.
+    // Create FileCommitProtocol for atomic writes
+    val jobId = java.util.UUID.randomUUID().toString
+    val committer =
+      try {
+        // Use Spark's SQLHadoopMapReduceCommitProtocol
+        val committerClass =
+          classOf[org.apache.spark.sql.execution.datasources.SQLHadoopMapReduceCommitProtocol]
+        val constructor =
+          committerClass.getConstructor(classOf[String], classOf[String], classOf[Boolean])
+        Some(
+          constructor
+            .newInstance(
+              jobId,
+              outputPath,
+              java.lang.Boolean.FALSE // dynamicPartitionOverwrite = false for now
+            )
+            .asInstanceOf[org.apache.spark.internal.io.FileCommitProtocol])
+      } catch {
+        case e: Exception =>
+          // If we can't instantiate FileCommitProtocol, fall back to direct writes
+          // scalastyle:off println
+          System.err.println(
+            "Warning: Could not instantiate FileCommitProtocol, " +
+              s"falling back to direct writes: ${e.getMessage}")
+          // scalastyle:on println
+          None
+      }
 
-    CometNativeWriteExec(nativeOp, childPlan, outputPath)
+    CometNativeWriteExec(nativeOp, childPlan, outputPath, committer, jobId)
   }
 
   private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {
