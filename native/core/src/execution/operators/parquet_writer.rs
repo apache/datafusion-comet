@@ -189,9 +189,7 @@ impl ExecutionPlan for ParquetWriterExec {
                 .fields()
                 .iter()
                 .enumerate()
-                .map(|(i, field)| {
-                    Arc::new(field.as_ref().clone().with_name(&column_names[i]))
-                })
+                .map(|(i, field)| Arc::new(field.as_ref().clone().with_name(&column_names[i])))
                 .collect();
             Arc::new(arrow::datatypes::Schema::new(fields))
         } else {
