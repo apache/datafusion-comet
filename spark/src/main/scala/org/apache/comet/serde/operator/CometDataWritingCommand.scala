@@ -23,6 +23,7 @@ import java.util.Locale
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
@@ -184,13 +185,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
             .asInstanceOf[org.apache.spark.internal.io.FileCommitProtocol])
       } catch {
         case e: Exception =>
-          // If we can't instantiate FileCommitProtocol, fall back to direct writes
-          // scalastyle:off println
-          System.err.println(
-            "Warning: Could not instantiate FileCommitProtocol, " +
-              s"falling back to direct writes: ${e.getMessage}")
-          // scalastyle:on println
-          None
+          throw new SparkException(s"Could not instantiate FileCommitProtocol: ${e.getMessage}")
       }
 
     CometNativeWriteExec(nativeOp, childPlan, outputPath, committer, jobId)
