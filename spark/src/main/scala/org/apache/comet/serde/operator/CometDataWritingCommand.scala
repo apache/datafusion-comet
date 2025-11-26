@@ -19,6 +19,8 @@
 
 package org.apache.comet.serde.operator
 
+import java.util.Locale
+
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
@@ -165,11 +167,13 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
   }
 
   private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {
-    cmd.options.getOrElse(
-      "compression",
-      SQLConf.get.getConfString(
-        SQLConf.PARQUET_COMPRESSION.key,
-        SQLConf.PARQUET_COMPRESSION.defaultValueString)).toLowerCase(Locale.ROOT)
+    cmd.options
+      .getOrElse(
+        "compression",
+        SQLConf.get.getConfString(
+          SQLConf.PARQUET_COMPRESSION.key,
+          SQLConf.PARQUET_COMPRESSION.defaultValueString))
+      .toLowerCase(Locale.ROOT)
   }
 
 }
