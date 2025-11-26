@@ -106,7 +106,7 @@ case class CometNativeWriteExec(
         logInfo(s"Successfully committed write job to $outputPath")
       } catch {
         case e: Exception =>
-          logError(s"Failed to commit job, aborting", e)
+          logError("Failed to commit job, aborting", e)
           c.abortJob(jobContext)
           throw e
       }
