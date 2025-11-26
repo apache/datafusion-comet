@@ -503,43 +503,47 @@ not supported by Comet will fall back to regular Spark execution.</p>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>LocalLimitExec</p></td>
+<tr class="row-even"><td><p>InsertIntoHadoopFsRelationCommand</p></td>
+<td><p>No</p></td>
+<td><p>Experimental support for native Parquet writes. Disabled by default.</p></td>
+</tr>
+<tr class="row-odd"><td><p>LocalLimitExec</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>LocalTableScanExec</p></td>
+<tr class="row-even"><td><p>LocalTableScanExec</p></td>
 <td><p>No</p></td>
 <td><p>Experimental and disabled by default.</p></td>
 </tr>
-<tr class="row-even"><td><p>ObjectHashAggregateExec</p></td>
+<tr class="row-odd"><td><p>ObjectHashAggregateExec</p></td>
 <td><p>Yes</p></td>
 <td><p>Supports a limited number of aggregates, such as <code class="docutils literal notranslate"><span class="pre">bloom_filter_agg</span></code>.</p></td>
 </tr>
-<tr class="row-odd"><td><p>ProjectExec</p></td>
+<tr class="row-even"><td><p>ProjectExec</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>ShuffleExchangeExec</p></td>
+<tr class="row-odd"><td><p>ShuffleExchangeExec</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>ShuffledHashJoinExec</p></td>
+<tr class="row-even"><td><p>ShuffledHashJoinExec</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>SortExec</p></td>
+<tr class="row-odd"><td><p>SortExec</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>SortMergeJoinExec</p></td>
+<tr class="row-even"><td><p>SortMergeJoinExec</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>UnionExec</p></td>
+<tr class="row-odd"><td><p>UnionExec</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>WindowExec</p></td>
+<tr class="row-even"><td><p>WindowExec</p></td>
 <td><p>No</p></td>
 <td><p>Disabled by default due to known correctness issues.</p></td>
 </tr>
