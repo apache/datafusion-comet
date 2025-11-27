@@ -288,7 +288,8 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         }
       }
     }
-    mapStatus = MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
+    mapStatus =
+        MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths, mapId, 0);
   }
 
   @VisibleForTesting
