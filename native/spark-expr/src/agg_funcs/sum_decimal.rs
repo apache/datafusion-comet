@@ -221,12 +221,10 @@ impl Accumulator for SumDecimalAccumulator {
                 Some(sum_value) if is_valid_decimal_precision(sum_value, self.precision) => {
                     ScalarValue::try_new_decimal128(sum_value, self.precision, self.scale)
                 }
-                _ => {
-                    ScalarValue::new_primitive::<Decimal128Type>(
-                        None,
-                        &DataType::Decimal128(self.precision, self.scale),
-                    )
-                }
+                _ => ScalarValue::new_primitive::<Decimal128Type>(
+                    None,
+                    &DataType::Decimal128(self.precision, self.scale),
+                ),
             }
         }
     }
@@ -240,12 +238,10 @@ impl Accumulator for SumDecimalAccumulator {
             Some(sum_value) => {
                 ScalarValue::try_new_decimal128(sum_value, self.precision, self.scale)?
             }
-            None => {
-                ScalarValue::new_primitive::<Decimal128Type>(
-                    None,
-                    &DataType::Decimal128(self.precision, self.scale),
-                )?
-            }
+            None => ScalarValue::new_primitive::<Decimal128Type>(
+                None,
+                &DataType::Decimal128(self.precision, self.scale),
+            )?,
         };
 
         // For decimal sum, always return 2 state values regardless of eval_mode
@@ -392,33 +388,45 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
     fn evaluate(&mut self, emit_to: EmitTo) -> DFResult<ArrayRef> {
         match emit_to {
             EmitTo::All => {
-                let result = Decimal128Array::from_iter(self.sum.iter().zip(self.is_empty.iter()).map(|(&sum, &empty)| {
-                    if empty {
-                        None
-                    } else {
-                        match sum {
-                            Some(v) if is_valid_decimal_precision(v, self.precision) => Some(v),
-                            _ => None,
-                        }
-                    }
-                }))
-                .with_data_type(self.result_type.clone());
+                let result =
+                    Decimal128Array::from_iter(self.sum.iter().zip(self.is_empty.iter()).map(
+                        |(&sum, &empty)| {
+                            if empty {
+                                None
+                            } else {
+                                match sum {
+                                    Some(v) if is_valid_decimal_precision(v, self.precision) => {
+                                        Some(v)
+                                    }
+                                    _ => None,
+                                }
+                            }
+                        },
+                    ))
+                    .with_data_type(self.result_type.clone());
 
                 self.sum.clear();
                 self.is_empty.clear();
                 Ok(Arc::new(result))
             }
             EmitTo::First(n) => {
-                let result = Decimal128Array::from_iter(self.sum.drain(..n).zip(self.is_empty.drain(..n)).map(|(sum, empty)| {
-                    if empty {
-                        None
-                    } else {
-                        match sum {
-                            Some(v) if is_valid_decimal_precision(v, self.precision) => Some(v),
-                            _ => None,
-                        }
-                    }
-                }))
+                let result = Decimal128Array::from_iter(
+                    self.sum
+                        .drain(..n)
+                        .zip(self.is_empty.drain(..n))
+                        .map(|(sum, empty)| {
+                            if empty {
+                                None
+                            } else {
+                                match sum {
+                                    Some(v) if is_valid_decimal_precision(v, self.precision) => {
+                                        Some(v)
+                                    }
+                                    _ => None,
+                                }
+                            }
+                        }),
+                )
                 .with_data_type(self.result_type.clone());
 
                 Ok(Arc::new(result))
