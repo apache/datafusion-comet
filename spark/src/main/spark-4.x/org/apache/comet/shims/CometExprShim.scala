@@ -34,14 +34,12 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithIn
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim extends CommonStringExprs {
+trait CometExprShim extends CommonStringExprs with ShimSQLConf {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
   protected def binaryOutputStyle: BinaryOutputStyle = {
-    SQLConf.get
-      .getConf(SQLConf.BINARY_OUTPUT_STYLE)
-      .map(SQLConf.BinaryOutputStyle.withName) match {
+    getBinaryOutputStyle match {
       case Some(SQLConf.BinaryOutputStyle.UTF8) => BinaryOutputStyle.UTF8
       case Some(SQLConf.BinaryOutputStyle.BASIC) => BinaryOutputStyle.BASIC
       case Some(SQLConf.BinaryOutputStyle.BASE64) => BinaryOutputStyle.BASE64

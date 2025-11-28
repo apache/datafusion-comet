@@ -26,9 +26,8 @@ trait ShimSQLConf {
   protected val LEGACY = LegacyBehaviorPolicy.LEGACY
   protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
 
-  def getBinaryOutputStyle: Option[SQLConf.BinaryOutputStyle.Value] = {
+  def getBinaryOutputStyle(): Option[SQLConf.BinaryOutputStyle.Value] = {
     SQLConf.get
       .getConf(SQLConf.BINARY_OUTPUT_STYLE)
-      .map(SQLConf.BinaryOutputStyle.withName)
   }
 }

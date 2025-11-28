@@ -41,7 +41,6 @@ import org.apache.spark.internal.config.package$;
 import org.apache.spark.memory.TaskMemoryManager;
 import org.apache.spark.network.shuffle.checksum.ShuffleChecksumHelper;
 import org.apache.spark.scheduler.MapStatus;
-import org.apache.spark.scheduler.MapStatus$;
 import org.apache.spark.serializer.SerializerInstance;
 import org.apache.spark.shuffle.ShuffleWriteMetricsReporter;
 import org.apache.spark.shuffle.ShuffleWriter;
@@ -172,7 +171,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
                 .commitAllPartitions(ShuffleChecksumHelper.EMPTY_CHECKSUM_VALUE)
                 .getPartitionLengths();
         mapStatus =
-            MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
+            new MapStatusBuilder(blockManager.shuffleServerId(), partitionLengths, mapId).build();
         return;
       }
       final long openStartTime = System.nanoTime();
@@ -261,7 +260,8 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
       // TODO: We probably can move checksum generation here when concatenating partition files
       partitionLengths = writePartitionedData(mapOutputWriter);
-      mapStatus = MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
+      mapStatus =
+          new MapStatusBuilder(blockManager.shuffleServerId(), partitionLengths, mapId).build();
     } catch (Exception e) {
       try {
         mapOutputWriter.abort(e);
