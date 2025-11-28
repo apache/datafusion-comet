@@ -19,16 +19,12 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.internal.LegacyBehaviorPolicy
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 
-trait ShimSQLConf {
-  protected val LEGACY = LegacyBehaviorPolicy.LEGACY
-  protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
-
-  def getBinaryOutputStyle: Option[SQLConf.BinaryOutputStyle.Value] = {
-    SQLConf.get
-      .getConf(SQLConf.BINARY_OUTPUT_STYLE)
-      .map(SQLConf.BinaryOutputStyle.withName)
-  }
+/**
+ * `CometSumShim` acts as a shim for parsing expression Sum from different Spark versions.
+ */
+trait CometSumShim extends CometExprShim {
+  protected def sparkEvalMode(s: Sum): EvalMode.Value = s.evalMode
 }
