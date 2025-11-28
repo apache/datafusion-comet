@@ -1466,7 +1466,11 @@ impl PhysicalPlanner {
                 let parquet_writer = Arc::new(ParquetWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     writer.output_path.clone(),
-                    writer.work_dir.clone(),
+                    writer
+                        .work_dir
+                        .as_ref()
+                        .expect("work_dir is provided")
+                        .clone(),
                     writer.job_id.clone(),
                     writer.task_attempt_id,
                     codec,

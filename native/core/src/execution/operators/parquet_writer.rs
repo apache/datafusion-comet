@@ -56,8 +56,7 @@ pub struct ParquetWriterExec {
     /// Output file path (final destination)
     output_path: String,
     /// Working directory for temporary files (used by FileCommitProtocol)
-    /// If None, files are written directly to output_path
-    work_dir: Option<String>,
+    work_dir: String,
     /// Job ID for tracking this write operation
     job_id: Option<String>,
     /// Task attempt ID for this specific task
@@ -80,7 +79,7 @@ impl ParquetWriterExec {
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         output_path: String,
-        work_dir: Option<String>,
+        work_dir: String,
         job_id: Option<String>,
         task_attempt_id: Option<i32>,
         compression: CompressionCodec,
@@ -201,7 +200,6 @@ impl ExecutionPlan for ParquetWriterExec {
 
         let input = self.input.execute(partition, context)?;
         let input_schema = self.input.schema(); // Get the input data schema, not metadata schema
-        let output_path = self.output_path.clone();
         let work_dir = self.work_dir.clone();
         let task_attempt_id = self.task_attempt_id;
         let compression = self.compression_to_parquet()?;
@@ -224,18 +222,11 @@ impl ExecutionPlan for ParquetWriterExec {
             Arc::clone(&input_schema)
         };
 
-        // Determine the write path (work_dir for temp files, or output_path for direct write)
-        let write_base_path = if let Some(ref work_dir) = work_dir {
-            work_dir.clone()
-        } else {
-            output_path.clone()
-        };
-
         // Strip file:// or file: prefix if present
-        let local_path = write_base_path
+        let local_path = work_dir
             .strip_prefix("file://")
-            .or_else(|| write_base_path.strip_prefix("file:"))
-            .unwrap_or(&write_base_path)
+            .or_else(|| work_dir.strip_prefix("file:"))
+            .unwrap_or(&work_dir)
             .to_string();
 
         // Create output directory

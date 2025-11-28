@@ -154,7 +154,7 @@ case class CometNativeWriteExec(
     // Capture metadata before the transformation
     val numPartitions = childRDD.getNumPartitions
     val numOutputCols = child.output.length
-    val broadcastedCommitter = committer.map(c => sparkContext.broadcast(c))
+    val capturedCommitter = committer
     val capturedJobTrackerID = jobTrackerID
     val capturedNativeOp = nativeOp
     val capturedAccumulator = taskCommitMessagesAccum // Capture accumulator for use in tasks
@@ -165,9 +165,8 @@ case class CometNativeWriteExec(
       val taskAttemptId = org.apache.spark.TaskContext.get().taskAttemptId()
 
       // Setup task-level commit protocol if provided
-      val (workDir, taskContext, commitMsg) = broadcastedCommitter
-        .map { bc =>
-          val committer = bc.value
+      val (workDir, taskContext, commitMsg) = capturedCommitter
+        .map { committer =>
           val taskContext =
             createTaskContext(capturedJobTrackerID, partitionId, taskAttemptId.toInt)
 
