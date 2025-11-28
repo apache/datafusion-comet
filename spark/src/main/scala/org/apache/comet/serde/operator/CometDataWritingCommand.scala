@@ -23,6 +23,7 @@ import java.util.Locale
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
@@ -129,6 +130,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         .setOutputPath(outputPath)
         .setCompression(codec)
         .addAllColumnNames(cmd.query.output.map(_.name).asJava)
+        // Note: work_dir, job_id, and task_attempt_id will be set at execution time
+        // in CometNativeWriteExec, as they depend on the Spark task context
         .build()
 
       val writerOperator = Operator
@@ -163,7 +166,29 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         other
     }
 
-    CometNativeWriteExec(nativeOp, childPlan, outputPath)
+    // Create FileCommitProtocol for atomic writes
+    val jobId = java.util.UUID.randomUUID().toString
+    val committer =
+      try {
+        // Use Spark's SQLHadoopMapReduceCommitProtocol
+        val committerClass =
+          classOf[org.apache.spark.sql.execution.datasources.SQLHadoopMapReduceCommitProtocol]
+        val constructor =
+          committerClass.getConstructor(classOf[String], classOf[String], classOf[Boolean])
+        Some(
+          constructor
+            .newInstance(
+              jobId,
+              outputPath,
+              java.lang.Boolean.FALSE // dynamicPartitionOverwrite = false for now
+            )
+            .asInstanceOf[org.apache.spark.internal.io.FileCommitProtocol])
+      } catch {
+        case e: Exception =>
+          throw new SparkException(s"Could not instantiate FileCommitProtocol: ${e.getMessage}")
+      }
+
+    CometNativeWriteExec(nativeOp, childPlan, outputPath, committer, jobId)
   }
 
   private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {

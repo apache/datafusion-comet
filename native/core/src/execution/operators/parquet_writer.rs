@@ -26,6 +26,7 @@ use std::{
 };
 
 use arrow::datatypes::SchemaRef;
+use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::{
     error::{DataFusionError, Result},
@@ -52,8 +53,14 @@ use crate::execution::shuffle::CompressionCodec;
 pub struct ParquetWriterExec {
     /// Input execution plan
     input: Arc<dyn ExecutionPlan>,
-    /// Output file path
+    /// Output file path (final destination)
     output_path: String,
+    /// Working directory for temporary files (used by FileCommitProtocol)
+    work_dir: String,
+    /// Job ID for tracking this write operation
+    job_id: Option<String>,
+    /// Task attempt ID for this specific task
+    task_attempt_id: Option<i32>,
     /// Compression codec
     compression: CompressionCodec,
     /// Partition ID (from Spark TaskContext)
@@ -68,9 +75,13 @@ pub struct ParquetWriterExec {
 
 impl ParquetWriterExec {
     /// Create a new ParquetWriterExec
+    #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         output_path: String,
+        work_dir: String,
+        job_id: Option<String>,
+        task_attempt_id: Option<i32>,
         compression: CompressionCodec,
         partition_id: i32,
         column_names: Vec<String>,
@@ -88,6 +99,9 @@ impl ParquetWriterExec {
         Ok(ParquetWriterExec {
             input,
             output_path,
+            work_dir,
+            job_id,
+            task_attempt_id,
             compression,
             partition_id,
             column_names,
@@ -159,6 +173,9 @@ impl ExecutionPlan for ParquetWriterExec {
             1 => Ok(Arc::new(ParquetWriterExec::try_new(
                 Arc::clone(&children[0]),
                 self.output_path.clone(),
+                self.work_dir.clone(),
+                self.job_id.clone(),
+                self.task_attempt_id,
                 self.compression.clone(),
                 self.partition_id,
                 self.column_names.clone(),
@@ -174,9 +191,17 @@ impl ExecutionPlan for ParquetWriterExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        use datafusion::physical_plan::metrics::MetricBuilder;
+
+        // Create metrics for tracking write statistics
+        let files_written = MetricBuilder::new(&self.metrics).counter("files_written", partition);
+        let bytes_written = MetricBuilder::new(&self.metrics).counter("bytes_written", partition);
+        let rows_written = MetricBuilder::new(&self.metrics).counter("rows_written", partition);
+
         let input = self.input.execute(partition, context)?;
-        let input_schema = self.schema();
-        let output_path = self.output_path.clone();
+        let input_schema = self.input.schema(); // Get the input data schema, not metadata schema
+        let work_dir = self.work_dir.clone();
+        let task_attempt_id = self.task_attempt_id;
         let compression = self.compression_to_parquet()?;
         let column_names = self.column_names.clone();
 
@@ -198,10 +223,10 @@ impl ExecutionPlan for ParquetWriterExec {
         };
 
         // Strip file:// or file: prefix if present
-        let local_path = output_path
+        let local_path = work_dir
             .strip_prefix("file://")
-            .or_else(|| output_path.strip_prefix("file:"))
-            .unwrap_or(&output_path)
+            .or_else(|| work_dir.strip_prefix("file:"))
+            .unwrap_or(&work_dir)
             .to_string();
 
         // Create output directory
@@ -213,7 +238,15 @@ impl ExecutionPlan for ParquetWriterExec {
         })?;
 
         // Generate part file name for this partition
-        let part_file = format!("{}/part-{:05}.parquet", local_path, self.partition_id);
+        // If using FileCommitProtocol (work_dir is set), include task_attempt_id in the filename
+        let part_file = if let Some(attempt_id) = task_attempt_id {
+            format!(
+                "{}/part-{:05}-{:05}.parquet",
+                local_path, self.partition_id, attempt_id
+            )
+        } else {
+            format!("{}/part-{:05}.parquet", local_path, self.partition_id)
+        };
 
         // Create the Parquet file
         let file = File::create(&part_file).map_err(|e| {
@@ -237,13 +270,16 @@ impl ExecutionPlan for ParquetWriterExec {
         // Write batches
         let write_task = async move {
             let mut stream = input;
+            let mut total_rows = 0i64;
 
             while let Some(batch_result) = stream.try_next().await.transpose() {
                 let batch = batch_result?;
 
+                // Track row count
+                total_rows += batch.num_rows() as i64;
+
                 // Rename columns in the batch to match output schema
                 let renamed_batch = if !column_names.is_empty() {
-                    use arrow::record_batch::RecordBatch;
                     RecordBatch::try_new(Arc::clone(&schema_for_write), batch.columns().to_vec())
                         .map_err(|e| {
                             DataFusionError::Execution(format!(
@@ -264,6 +300,22 @@ impl ExecutionPlan for ParquetWriterExec {
                 DataFusionError::Execution(format!("Failed to close writer: {}", e))
             })?;
 
+            // Get file size
+            let file_size = std::fs::metadata(&part_file)
+                .map(|m| m.len() as i64)
+                .unwrap_or(0);
+
+            // Update metrics with write statistics
+            files_written.add(1);
+            bytes_written.add(file_size as usize);
+            rows_written.add(total_rows as usize);
+
+            // Log metadata for debugging
+            eprintln!(
+                "Wrote Parquet file: path={}, size={}, rows={}",
+                part_file, file_size, total_rows
+            );
+
             // Return empty stream to indicate completion
             Ok::<_, DataFusionError>(futures::stream::empty())
         };
@@ -271,7 +323,7 @@ impl ExecutionPlan for ParquetWriterExec {
         // Execute the write task and convert to a stream
         use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
         Ok(Box::pin(RecordBatchStreamAdapter::new(
-            output_schema,
+            self.schema(),
             futures::stream::once(write_task).try_flatten(),
         )))
     }
