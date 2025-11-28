@@ -17,18 +17,15 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark.sql.comet.execution.shuffle
 
-import org.apache.spark.sql.internal.LegacyBehaviorPolicy
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.scheduler.MapStatus
+import org.apache.spark.storage.BlockManagerId
 
-trait ShimSQLConf {
-  protected val LEGACY = LegacyBehaviorPolicy.LEGACY
-  protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
+class MapStatusBuilder(loc: BlockManagerId, uncompressedSizes: Array[Long], mapTaskId: Long) {
 
-  def getBinaryOutputStyle: Option[SQLConf.BinaryOutputStyle.Value] = {
-    SQLConf.get
-      .getConf(SQLConf.BINARY_OUTPUT_STYLE)
-      .map(SQLConf.BinaryOutputStyle.withName)
+  // This works for both Spark 4.1 and previous versions
+  def build(): MapStatus = {
+    MapStatus(loc, uncompressedSizes, mapTaskId)
   }
 }
