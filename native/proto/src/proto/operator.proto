@@ -250,19 +250,6 @@ message ParquetWriter {
   optional int32 task_attempt_id = 7;
 }
 
-// Information about a file written by ParquetWriter
-// This is returned to the JVM for commit protocol coordination
-message WrittenFileInfo {
-  // Absolute path to the written file (may be in temp location)
-  string path = 1;
-  // Size of the file in bytes
-  int64 size_bytes = 2;
-  // Number of rows written to the file
-  int64 num_rows = 3;
-  // Partition values (empty for non-partitioned writes)
-  map<string, string> partition_values = 4;
-}
-
 enum AggregateMode {
   Partial = 0;
   Final = 1;
