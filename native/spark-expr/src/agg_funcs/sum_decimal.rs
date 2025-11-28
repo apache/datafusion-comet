@@ -153,6 +153,11 @@ impl SumDecimalAccumulator {
     }
 
     fn update_single(&mut self, values: &Decimal128Array, idx: usize) -> DFResult<()> {
+        // If already overflowed (sum is None but not empty), stay in overflow state
+        if !self.is_empty && self.sum.is_none() {
+            return Ok(());
+        }
+
         let v = unsafe { values.value_unchecked(idx) };
         let running_sum = self.sum.unwrap_or(0);
         let (new_sum, is_overflow) = running_sum.overflowing_add(v);
@@ -181,7 +186,7 @@ impl Accumulator for SumDecimalAccumulator {
             values.len()
         );
 
-        // For decimal sum, always check for overflow regardless of eval_mode
+        // For decimal sum, always check for overflow regardless of eval_mode (per Spark's expectation)
         if !self.is_empty && self.sum.is_none() {
             return Ok(());
         }
@@ -189,23 +194,19 @@ impl Accumulator for SumDecimalAccumulator {
         let values = &values[0];
         let data = values.as_primitive::<Decimal128Type>();
 
-        if values.len() == values.null_count() {
+        // Update is_empty: it remains true only if it was true AND all values are null
+        self.is_empty = self.is_empty && values.len() == values.null_count();
+
+        if self.is_empty {
             return Ok(());
         }
 
-        if values.null_count() == 0 {
-            for i in 0..data.len() {
-                self.update_single(data, i)?;
+        for i in 0..data.len() {
+            if data.is_null(i) {
+                continue;
             }
-        } else {
-            for i in 0..data.len() {
-                if data.is_null(i) {
-                    continue;
-                }
-                self.update_single(data, i)?;
-            }
+            self.update_single(data, i)?;
         }
-
         Ok(())
     }
 
@@ -217,13 +218,15 @@ impl Accumulator for SumDecimalAccumulator {
             )
         } else {
             match self.sum {
-                Some(sum_value) => {
+                Some(sum_value) if is_valid_decimal_precision(sum_value, self.precision) => {
                     ScalarValue::try_new_decimal128(sum_value, self.precision, self.scale)
                 }
-                None => ScalarValue::new_primitive::<Decimal128Type>(
-                    None,
-                    &DataType::Decimal128(self.precision, self.scale),
-                ),
+                _ => {
+                    ScalarValue::new_primitive::<Decimal128Type>(
+                        None,
+                        &DataType::Decimal128(self.precision, self.scale),
+                    )
+                }
             }
         }
     }
@@ -237,10 +240,12 @@ impl Accumulator for SumDecimalAccumulator {
             Some(sum_value) => {
                 ScalarValue::try_new_decimal128(sum_value, self.precision, self.scale)?
             }
-            None => ScalarValue::new_primitive::<Decimal128Type>(
-                None,
-                &DataType::Decimal128(self.precision, self.scale),
-            )?,
+            None => {
+                ScalarValue::new_primitive::<Decimal128Type>(
+                    None,
+                    &DataType::Decimal128(self.precision, self.scale),
+                )?
+            }
         };
 
         // For decimal sum, always return 2 state values regardless of eval_mode
@@ -387,12 +392,16 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
     fn evaluate(&mut self, emit_to: EmitTo) -> DFResult<ArrayRef> {
         match emit_to {
             EmitTo::All => {
-                let result = Decimal128Array::from_iter(
-                    self.sum
-                        .iter()
-                        .zip(self.is_empty.iter())
-                        .map(|(&sum, &empty)| if empty { None } else { sum }),
-                )
+                let result = Decimal128Array::from_iter(self.sum.iter().zip(self.is_empty.iter()).map(|(&sum, &empty)| {
+                    if empty {
+                        None
+                    } else {
+                        match sum {
+                            Some(v) if is_valid_decimal_precision(v, self.precision) => Some(v),
+                            _ => None,
+                        }
+                    }
+                }))
                 .with_data_type(self.result_type.clone());
 
                 self.sum.clear();
@@ -400,12 +409,16 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
                 Ok(Arc::new(result))
             }
             EmitTo::First(n) => {
-                let result = Decimal128Array::from_iter(
-                    self.sum
-                        .drain(..n)
-                        .zip(self.is_empty.drain(..n))
-                        .map(|(sum, empty)| if empty { None } else { sum }),
-                )
+                let result = Decimal128Array::from_iter(self.sum.drain(..n).zip(self.is_empty.drain(..n)).map(|(sum, empty)| {
+                    if empty {
+                        None
+                    } else {
+                        match sum {
+                            Some(v) if is_valid_decimal_precision(v, self.precision) => Some(v),
+                            _ => None,
+                        }
+                    }
+                }))
                 .with_data_type(self.result_type.clone());
 
                 Ok(Arc::new(result))

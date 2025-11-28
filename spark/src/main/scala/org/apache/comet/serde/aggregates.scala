@@ -213,6 +213,17 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 
 object CometSum extends CometAggregateExpressionSerde[Sum] {
 
+  override def getSupportLevel(sum: Sum): SupportLevel = {
+    sum.evalMode match {
+      case EvalMode.ANSI if !sum.dataType.isInstanceOf[DecimalType] =>
+        Incompatible(Some("ANSI mode for non decimal inputs is not supported"))
+      case EvalMode.TRY if !sum.dataType.isInstanceOf[DecimalType] =>
+        Incompatible(Some("TRY mode for non decimal inputs is not supported"))
+      case _ =>
+        Compatible()
+    }
+  }
+
   override def convert(
       aggExpr: AggregateExpression,
       sum: Sum,
