@@ -172,7 +172,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
                 .commitAllPartitions(ShuffleChecksumHelper.EMPTY_CHECKSUM_VALUE)
                 .getPartitionLengths();
         mapStatus =
-            MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
+            MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths, mapId, 0);
         return;
       }
       final long openStartTime = System.nanoTime();
@@ -261,7 +261,8 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
       // TODO: We probably can move checksum generation here when concatenating partition files
       partitionLengths = writePartitionedData(mapOutputWriter);
-      mapStatus = MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
+      mapStatus =
+          MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths, mapId, 0);
     } catch (Exception e) {
       try {
         mapOutputWriter.abort(e);

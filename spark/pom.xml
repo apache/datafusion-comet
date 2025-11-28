@@ -217,6 +217,19 @@ under the License.
         </dependency>
       </dependencies>
     </profile>
+
+    <profile>
+      <id>spark-4.1</id>
+      <dependencies>
+        <dependency>
+          <groupId>org.apache.iceberg</groupId>
+          <!-- TODO: Upgrade after iceberg-spark-runtime-4.1_2.13 release -->
+          <artifactId>iceberg-spark-runtime-4.0_${scala.binary.version}</artifactId>
+          <version>1.10.0</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
+    </profile>
   </profiles>
 
   <build>
