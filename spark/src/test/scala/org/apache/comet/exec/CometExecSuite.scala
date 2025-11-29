@@ -469,7 +469,7 @@ class CometExecSuite extends CometTestBase {
     val dayTimeDf = Seq(106751991L, 106751991L, 2L)
       .map(Duration.ofDays)
       .toDF("v")
-    Seq(longDf).foreach { df =>
+    Seq(longDf, yearMonthDf, dayTimeDf).foreach { df =>
       checkSparkAnswer(df.repartitionByRange(2, col("v")).selectExpr("try_sum(v)"))
     }
   }
