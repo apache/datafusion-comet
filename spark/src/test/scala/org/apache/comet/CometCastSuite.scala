@@ -697,6 +697,41 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(values, DataTypes.createDecimalType(10, 2))
   }
 
+  test("cast StringType to DecimalType(10,2) basic values") {
+    val values = Seq(
+      "123.45",
+      "-67.89",
+      "0.001",
+      "999.99",
+      "123.456",
+      "123.45D",
+      ".5",
+      "5.",
+      "+123.45",
+      "  123.45  ",
+      "inf",
+      "",
+      "abc",
+      null).toDF("a")
+    castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = false)
+  }
+
+  test("cast StringType to DecimalType(38,10) high precision") {
+    val values = Seq(
+      "123.45",
+      "-67.89",
+      "9999999999999999999999999999.9999999999",
+      "-9999999999999999999999999999.9999999999",
+      "0.0000000001",
+      "123456789012345678.1234567890",
+      "123.456",
+      "inf",
+      "",
+      "abc",
+      null).toDF("a")
+    castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = false)
+  }
+
   test("cast StringType to DecimalType(10,2) (partial support)") {
     withSQLConf(
       CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
