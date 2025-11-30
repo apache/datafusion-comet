@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, InitCap, Length, Like, Literal, Lower, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, InitCap, Length, Like, Literal, Lower, RegExpReplace, RegExpExtract, RegExpExtractAll, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
@@ -283,6 +283,104 @@ trait CommonStringExprs {
       case _ =>
         withInfo(expr, "Comet only supports decoding with 'utf-8'.")
         None
+    }
+  }
+}
+
+object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
+  override def getSupportLevel(expr: RegExpExtract): SupportLevel = {
+    // Check if the pattern is compatible with Spark
+    expr.regexp match {
+      case Literal(pattern, DataTypes.StringType) =>
+        if (!RegExp.isSupportedPattern(pattern.toString) &&
+          !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+          withInfo(
+            expr,
+            s"Regexp pattern $pattern is not compatible with Spark. " +
+              s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
+              "to allow it anyway.")
+          return Incompatible()
+        }
+      case _ =>
+        // Pattern must be a literal
+        return Unsupported(Some("Only literal regexp patterns are supported"))
+    }
+    
+    // Check if idx is a literal
+    expr.idx match {
+      case Literal(_, DataTypes.IntegerType) => Compatible()
+      case _ =>
+        Unsupported(Some("Only literal group index is supported"))
+    }
+  }
+
+  override def convert(
+      expr: RegExpExtract,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
+    val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
+    val idxExpr = exprToProtoInternal(expr.idx, inputs, binding)
+    
+    val optExpr = scalarFunctionExprToProto(
+      "regexp_extract",
+      subjectExpr,
+      patternExpr,
+      idxExpr)
+    optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.idx)
+  }
+}
+
+object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
+  override def getSupportLevel(expr: RegExpExtractAll): SupportLevel = {
+    // Check if the pattern is compatible with Spark
+    expr.regexp match {
+      case Literal(pattern, DataTypes.StringType) =>
+        if (!RegExp.isSupportedPattern(pattern.toString) &&
+          !CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.get()) {
+          withInfo(
+            expr,
+            s"Regexp pattern $pattern is not compatible with Spark. " +
+              s"Set ${CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key}=true " +
+              "to allow it anyway.")
+          return Incompatible()
+        }
+      case _ =>
+        // Pattern must be a literal
+        return Unsupported(Some("Only literal regexp patterns are supported"))
+    }
+    
+    // Check if idx is a literal if exists
+    if (expr.idx.isDefined) {
+      expr.idx.get match {
+        case Literal(_, DataTypes.IntegerType) => Compatible()
+        case _ => return Unsupported(Some("Only literal group index is supported"))
+      }
+    }
+  }
+  
+  override def convert(expr: RegExpExtractAll, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
+    val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
+    
+    val optExpr = if (expr.idx.isDefined) {
+      val idxExpr = exprToProtoInternal(expr.idx.get, inputs, binding)
+      scalarFunctionExprToProto(
+        "regexp_extract_all",
+        subjectExpr,
+        patternExpr,
+        idxExpr)
+    } else {
+      scalarFunctionExprToProto(
+        "regexp_extract_all",
+        subjectExpr,
+        patternExpr)
+    }
+    
+    if (expr.idx.isDefined) {
+      optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.idx.get)
+    } else {
+      optExprWithInfo(optExpr, expr, expr.subject, expr.regexp)
     }
   }
 }
