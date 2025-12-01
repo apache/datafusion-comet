@@ -29,7 +29,7 @@ import org.apache.spark.SparkContext
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE}
 import org.apache.spark.sql.TPCDSBase
 import org.apache.spark.sql.catalyst.expressions.{AttributeSet, Cast}
-import org.apache.spark.sql.catalyst.expressions.aggregate.Average
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Average, Sum}
 import org.apache.spark.sql.catalyst.util.resourceToString
 import org.apache.spark.sql.execution.{FormattedMode, ReusedSubqueryExec, SparkPlan, SubqueryBroadcastExec, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecutionSuite
@@ -225,6 +225,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
       // Allow Incompatible is needed for Sum + Average for Spark 4.0.0 / ANSI support
+      CometConf.getExprAllowIncompatConfigKey(classOf[Sum]) -> "true",
       CometConf.getExprAllowIncompatConfigKey(classOf[Average]) -> "true",
       // as well as for v1.4/q9, v1.4/q44, v2.7.0/q6, v2.7.0/q64
       CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
