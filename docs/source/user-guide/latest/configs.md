@@ -291,6 +291,8 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.RLike.enabled` | Enable Comet acceleration for `RLike` | true |
 | `spark.comet.expression.Rand.enabled` | Enable Comet acceleration for `Rand` | true |
 | `spark.comet.expression.Randn.enabled` | Enable Comet acceleration for `Randn` | true |
+| `spark.comet.expression.RegExpExtract.enabled` | Enable Comet acceleration for `RegExpExtract` | true |
+| `spark.comet.expression.RegExpExtractAll.enabled` | Enable Comet acceleration for `RegExpExtractAll` | true |
 | `spark.comet.expression.RegExpReplace.enabled` | Enable Comet acceleration for `RegExpReplace` | true |
 | `spark.comet.expression.Remainder.enabled` | Enable Comet acceleration for `Remainder` | true |
 | `spark.comet.expression.Reverse.enabled` | Enable Comet acceleration for `Reverse` | true |

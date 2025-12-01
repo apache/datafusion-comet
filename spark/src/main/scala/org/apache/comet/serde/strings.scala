@@ -321,11 +321,7 @@ object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
     val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
     val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
     val idxExpr = exprToProtoInternal(expr.idx, inputs, binding)
-    val optExpr = scalarFunctionExprToProto(
-      "regexp_extract",
-      subjectExpr,
-      patternExpr,
-      idxExpr)
+    val optExpr = scalarFunctionExprToProto("regexp_extract", subjectExpr, patternExpr, idxExpr)
     optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.idx)
   }
 }
@@ -349,7 +345,7 @@ object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
     }
 
     // Check if idx is a literal
-    // For regexp_extract_all, idx will be default to 1 if not specified
+    // For regexp_extract_all, idx will default to 0 (group 0, entire match) if not specified
     expr.idx match {
       case Literal(_, DataTypes.IntegerType) =>
         Compatible()
@@ -365,11 +361,8 @@ object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
     val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
     val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
     val idxExpr = exprToProtoInternal(expr.idx, inputs, binding)
-    val optExpr = scalarFunctionExprToProto(
-      "regexp_extract_all",
-      subjectExpr,
-      patternExpr,
-      idxExpr)
+    val optExpr =
+      scalarFunctionExprToProto("regexp_extract_all", subjectExpr, patternExpr, idxExpr)
     optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.idx)
   }
 }
