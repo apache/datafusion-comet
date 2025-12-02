@@ -154,4 +154,76 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
+  test("explode with nullable projected column") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df = Seq((1, Some("A"), Array(1, 2)), (2, None, Array(3, 4)), (3, Some("C"), Array(5)))
+        .toDF("id", "name", "arr")
+        .selectExpr("id", "name", "explode(arr) as value")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("explode_outer with nullable projected column") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df =
+        Seq((1, Some("A"), Array(1, 2)), (2, None, Array.empty[Int]), (3, Some("C"), Array(5)))
+          .toDF("id", "name", "arr")
+          .selectExpr("id", "name", "explode_outer(arr) as value")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("explode with mixed null, empty, and non-empty arrays") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df = Seq(
+        (1, Some(Array(1, 2))),
+        (2, None),
+        (3, Some(Array.empty[Int])),
+        (4, Some(Array(3))),
+        (5, None),
+        (6, Some(Array(4, 5, 6))))
+        .toDF("id", "arr")
+        .selectExpr("id", "explode(arr) as value")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("explode_outer with mixed null, empty, and non-empty arrays") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df = Seq(
+        (1, Some(Array(1, 2))),
+        (2, None),
+        (3, Some(Array.empty[Int])),
+        (4, Some(Array(3))),
+        (5, None),
+        (6, Some(Array(4, 5, 6))))
+        .toDF("id", "arr")
+        .selectExpr("id", "explode_outer(arr) as value")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("explode with multiple nullable columns") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df = Seq(
+        (Some(1), Some("A"), Some(100), Array(1, 2)),
+        (None, Some("B"), None, Array(3)),
+        (Some(3), None, Some(300), Array(4, 5)),
+        (None, None, None, Array(6)))
+        .toDF("id", "name", "value", "arr")
+        .selectExpr("id", "name", "value", "explode(arr) as element")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
 }
