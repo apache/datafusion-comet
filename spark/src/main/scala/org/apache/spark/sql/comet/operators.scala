@@ -44,7 +44,7 @@ import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType}
+import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -889,13 +889,21 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     CometConf.COMET_EXEC_EXPLODE_ENABLED)
 
   override def getSupportLevel(op: GenerateExec): SupportLevel = {
-    if (op.generator.nodeName.toLowerCase(Locale.ROOT) != "explode") {
-      Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
-    }
     if (!op.generator.deterministic) {
       return Unsupported(Some("Only deterministic generators are supported"))
     }
-    Compatible()
+    if (op.generator.children.length != 1) {
+      return Unsupported(Some("generators with multiple inputs are not supported"))
+    }
+    if (op.generator.nodeName.toLowerCase(Locale.ROOT) != "explode") {
+      return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
+    }
+    op.generator.children.head.dataType match {
+      case _: ArrayType =>
+        Compatible()
+      case other =>
+        Unsupported(Some(s"Unsupported data type: $other"))
+    }
   }
 
   override def convert(
@@ -904,12 +912,6 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
     // Check if this is an explode or explode_outer operation
     val generator = op.generator
-
-    // The generator should have exactly one child (the array expression)
-    if (generator.children.length != 1) {
-      withInfo(op, generator)
-      return None
-    }
 
     val childExpr = generator.children.head
     val childExprProto = exprToProto(childExpr, op.child.output)
