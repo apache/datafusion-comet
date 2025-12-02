@@ -48,7 +48,7 @@ jobs:
     env:
       JAVA_VERSION: 11
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -73,7 +73,7 @@ jobs:
           key: tpcds-${{ hashFiles('.github/workflows/benchmark.yml') }}
       - name: Checkout tpcds-kit repository
         if: steps.cache-tpcds-sf-1.outputs.cache-hit != 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: databricks/tpcds-kit
           path: ./tpcds-kit
@@ -100,7 +100,7 @@ jobs:
       matrix:
         join: [sort_merge, broadcast, hash]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:

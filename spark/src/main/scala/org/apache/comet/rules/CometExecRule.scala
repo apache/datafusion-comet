@@ -32,7 +32,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.execution.command.ExecutedCommandExec
+import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
 import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -48,6 +48,7 @@ import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, Ope
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
 import org.apache.comet.serde.operator._
+import org.apache.comet.serde.operator.CometDataWritingCommand
 
 object CometExecRule {
 
@@ -69,6 +70,13 @@ object CometExecRule {
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
       classOf[WindowExec] -> CometWindowExec)
+
+  /**
+   * DataWritingCommandExec is handled separately in convertNode since it doesn't follow the
+   * standard pattern of having CometNativeExec children.
+   */
+  val writeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
+    Map(classOf[DataWritingCommandExec] -> CometDataWritingCommand)
 
   /**
    * Sinks that have a native plan of ScanExec.
@@ -217,6 +225,23 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         val cometOp = CometSparkToColumnarExec(op)
         val nativeOp = operator2Proto(cometOp)
         CometScanWrapper(nativeOp.get, cometOp)
+
+      // Handle DataWritingCommandExec specially since it doesn't follow the standard pattern
+      case exec: DataWritingCommandExec =>
+        CometExecRule.writeExecs.get(classOf[DataWritingCommandExec]) match {
+          case Some(handler) if isOperatorEnabled(handler, exec) =>
+            val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(exec.id)
+            handler
+              .asInstanceOf[CometOperatorSerde[DataWritingCommandExec]]
+              .convert(exec, builder)
+              .map(nativeOp =>
+                handler
+                  .asInstanceOf[CometOperatorSerde[DataWritingCommandExec]]
+                  .createExec(nativeOp, exec))
+              .getOrElse(exec)
+          case _ =>
+            exec
+        }
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
