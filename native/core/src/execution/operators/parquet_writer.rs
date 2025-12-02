@@ -159,7 +159,7 @@ impl ExecutionPlan for ParquetWriterExec {
     }
 
     fn schema(&self) -> SchemaRef {
-        self.input.schema()
+        Arc::new(Schema::empty())
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -200,7 +200,7 @@ impl ExecutionPlan for ParquetWriterExec {
         let rows_written = MetricBuilder::new(&self.metrics).counter("rows_written", partition);
 
         let input = self.input.execute(partition, context)?;
-        let input_schema = self.input.schema(); // Get the input data schema, not metadata schema
+        let input_schema = self.input.schema();
         let work_dir = self.work_dir.clone();
         let task_attempt_id = self.task_attempt_id;
         let compression = self.compression_to_parquet()?;
@@ -208,20 +208,14 @@ impl ExecutionPlan for ParquetWriterExec {
 
         assert_eq!(input_schema.fields().len(), column_names.len());
 
-        // Create output schema with correct column names
-        let output_schema = if !column_names.is_empty() {
-            // Replace the generic column names (col_0, col_1, etc.) with the actual names
-            let fields: Vec<_> = input_schema
-                .fields()
-                .iter()
-                .enumerate()
-                .map(|(i, field)| Arc::new(field.as_ref().clone().with_name(&column_names[i])))
-                .collect();
-            Arc::new(arrow::datatypes::Schema::new(fields))
-        } else {
-            // No column names provided, use input schema as-is
-            Arc::clone(&input_schema)
-        };
+        // Replace the generic column names (col_0, col_1, etc.) with the actual names
+        let fields: Vec<_> = input_schema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(i, field)| Arc::new(field.as_ref().clone().with_name(&column_names[i])))
+            .collect();
+        let output_schema = Arc::new(arrow::datatypes::Schema::new(fields));
 
         // Strip file:// or file: prefix if present
         let local_path = work_dir
@@ -323,7 +317,7 @@ impl ExecutionPlan for ParquetWriterExec {
 
         // Execute the write task and create a stream that does not return any batches
         Ok(Box::pin(RecordBatchStreamAdapter::new(
-            Arc::new(Schema::empty()),
+            self.schema(),
             futures::stream::once(write_task).try_flatten(),
         )))
     }
