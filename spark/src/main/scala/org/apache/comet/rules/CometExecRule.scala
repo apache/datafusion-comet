@@ -348,20 +348,16 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   private def tryNativeShuffle(s: ShuffleExchangeExec): Option[SparkPlan] = {
-    if (nativeShuffleSupported(s)) {
-      operator2ProtoIfAllChildrenAreNative(s) match {
-        case Some(nativeOp) =>
-          // Switch to use Decimal128 regardless of precision, since Arrow native execution
-          // doesn't support Decimal32 and Decimal64 yet.
-          conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
-          val cometOp = CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
-          Some(CometSinkPlaceHolder(nativeOp, s, cometOp))
-        case None =>
-          None
+    Some(s)
+      .filter(_ => nativeShuffleSupported(s))
+      .flatMap(_ => operator2ProtoIfAllChildrenAreNative(s))
+      .map { nativeOp =>
+        // Switch to use Decimal128 regardless of precision, since Arrow native execution
+        // doesn't support Decimal32 and Decimal64 yet.
+        conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
+        val cometOp = CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
+        CometSinkPlaceHolder(nativeOp, s, cometOp)
       }
-    } else {
-      None
-    }
   }
 
   private def tryColumnarShuffle(s: ShuffleExchangeExec): Option[SparkPlan] = {
@@ -369,23 +365,18 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     // (if configured).
     // If the child of ShuffleExchangeExec is also a ShuffleExchangeExec, we should not
     // convert it to CometColumnarShuffle,
-    if (columnarShuffleSupported(s)) {
-      operator2Proto(s) match {
-        case Some(nativeOp) =>
-          s.child match {
-            case n if n.isInstanceOf[CometNativeExec] || !n.supportsColumnar =>
-              val cometOp =
-                CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
-              Some(CometSinkPlaceHolder(nativeOp, s, cometOp))
-            case _ =>
-              None
-          }
-        case None =>
-          None
+    Some(s)
+      .filter(_ => columnarShuffleSupported(s))
+      .flatMap(_ => operator2Proto(s))
+      .flatMap { nativeOp =>
+        s.child match {
+          case n if n.isInstanceOf[CometNativeExec] || !n.supportsColumnar =>
+            val cometOp = CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
+            Some(CometSinkPlaceHolder(nativeOp, s, cometOp))
+          case _ =>
+            None
+        }
       }
-    } else {
-      None
-    }
   }
 
   private def normalizePlan(plan: SparkPlan): SparkPlan = {
