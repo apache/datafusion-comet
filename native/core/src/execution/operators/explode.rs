@@ -240,8 +240,9 @@ impl ExplodeStream {
             let column = column.into_array(batch.num_rows())?;
 
             // Use MutableArrayData to efficiently replicate rows
+            // Use true for nullable to properly handle null values in projected columns
             let column_data = column.to_data();
-            let mut mutable = MutableArrayData::new(vec![&column_data], false, output_row_count);
+            let mut mutable = MutableArrayData::new(vec![&column_data], true, output_row_count);
 
             for &row_idx in &row_indices {
                 mutable.extend(0, row_idx, row_idx + 1);
