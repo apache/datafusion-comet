@@ -35,7 +35,7 @@ import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
+import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
@@ -44,14 +44,18 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
+  override def getSupportLevel(scan: CometScanExec): SupportLevel = {
+    if (scan.scanImpl != CometConf.SCAN_NATIVE_DATAFUSION) {
+      Unsupported(Some(s"Scan implementation ${scan.scanImpl} is not native DataFusion"))
+    } else {
+      super.getSupportLevel(scan)
+    }
+  }
+
   override def convert(
       scan: CometScanExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    // Only handle native DataFusion scans; other scan implementations return None
-    if (scan.scanImpl != CometConf.SCAN_NATIVE_DATAFUSION) {
-      return None
-    }
 
     val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
     nativeScanBuilder.setSource(scan.simpleStringWithNodeId())

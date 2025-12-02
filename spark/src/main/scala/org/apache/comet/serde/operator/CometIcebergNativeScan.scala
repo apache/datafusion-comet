@@ -28,13 +28,21 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.ConfigEntry
 import org.apache.comet.iceberg.IcebergReflection
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
+import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] with Logging {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
+
+  override def getSupportLevel(scan: CometBatchScanExec): SupportLevel = {
+    if (scan.nativeIcebergScanMetadata.isEmpty) {
+      Unsupported(Some("Native Iceberg scan metadata not available"))
+    } else {
+      super.getSupportLevel(scan)
+    }
+  }
 
   /**
    * Constants specific to Iceberg expression conversion (not in shared IcebergReflection).
@@ -538,13 +546,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       scan: CometBatchScanExec,
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    // Only handle scans with native Iceberg metadata
-    // SupportsComet scans (without native metadata) should return None and fall through to other handlers
-    // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometScanRule
-    if (scan.nativeIcebergScanMetadata.isEmpty) {
-      return None
-    }
-
     val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
 
     // Get pre-extracted metadata from planning phase
