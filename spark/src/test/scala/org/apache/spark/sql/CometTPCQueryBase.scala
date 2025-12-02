@@ -40,7 +40,6 @@ trait CometTPCQueryBase extends Logging {
       .setMaster(System.getProperty("spark.sql.test.master", "local[*]"))
       .setAppName(this.getClass.getSimpleName.stripSuffix("$"))
       .set("spark.sql.parquet.compression.codec", "snappy")
-      .set("spark.eventLog.enabled", "true")
       .set(
         "spark.sql.shuffle.partitions",
         System.getProperty("spark.sql.shuffle.partitions", "4"))
