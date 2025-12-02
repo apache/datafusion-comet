@@ -919,10 +919,7 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       op: GenerateExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    // Check if this is an explode or explode_outer operation
-    val generator = op.generator
-
-    val childExpr = generator.children.head
+    val childExpr = op.generator.children.head
     val childExprProto = exprToProto(childExpr, op.child.output)
 
     if (childExprProto.isEmpty) {
