@@ -551,6 +551,17 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             firstNativeOp = true
           }
 
+          // CometNativeWriteExec is special: it has two separate plans:
+          // 1. A protobuf plan (nativeOp) describing the write operation
+          // 2. A Spark plan (child) that produces the data to write
+          // The serializedPlanOpt is a def that always returns Some(...) by serializing
+          // nativeOp on-demand, so it doesn't need convertBlock(). However, its child
+          // (e.g., CometNativeScanExec) may need its own serialization. Reset the flag
+          // so children can start their own native execution blocks.
+          if (op.isInstanceOf[CometNativeWriteExec]) {
+            firstNativeOp = true
+          }
+
           newPlan
         case op =>
           firstNativeOp = true

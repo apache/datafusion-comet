@@ -35,9 +35,6 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOpt
 class CometParquetWriterSuite extends CometTestBase {
 
   test("basic parquet write") {
-    // no support for fully native scan as input yet
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
-
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
 
