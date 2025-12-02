@@ -899,12 +899,16 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
     }
     if (op.outer) {
+      // DataFusion UnnestExec has different semantics to Spark for this case
+      // https://github.com/apache/datafusion/issues/19053
       return Incompatible(Some("Empty arrays are not preserved as null outputs when outer=true"))
     }
     op.generator.children.head.dataType match {
       case _: ArrayType =>
         Compatible()
       case _: MapType =>
+        // TODO add support for map types
+        // https://github.com/apache/datafusion-comet/issues/2837
         Unsupported(Some("Comet only supports explode/explode_outer for arrays, not maps"))
       case other =>
         Unsupported(Some(s"Unsupported data type: $other"))
