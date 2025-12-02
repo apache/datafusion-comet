@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet
 
 import java.io.ByteArrayOutputStream
+import java.util.Locale
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
@@ -53,7 +54,7 @@ import com.google.common.base.Objects
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
@@ -887,19 +888,22 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_EXPLODE_ENABLED)
 
+  override def getSupportLevel(op: GenerateExec): SupportLevel = {
+    if (op.generator.nodeName.toLowerCase(Locale.ROOT) != "explode") {
+      Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
+    }
+    if (!op.generator.deterministic) {
+      return Unsupported(Some("Only deterministic generators are supported"))
+    }
+    Compatible()
+  }
+
   override def convert(
       op: GenerateExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
     // Check if this is an explode or explode_outer operation
     val generator = op.generator
-    val isExplode = generator.nodeName match {
-      case "explode" => true
-      case "explode_outer" => true
-      case _ => return None // Only support explode/explode_outer, not other generators
-    }
-
-    val isOuter = generator.nodeName == "explode_outer"
 
     // The generator should have exactly one child (the array expression)
     if (generator.children.length != 1) {
@@ -930,7 +934,7 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     val explodeBuilder = OperatorOuterClass.Explode
       .newBuilder()
       .setChild(childExprProto.get)
-      .setOuter(isOuter)
+      .setOuter(op.outer)
       .addAllProjectList(projectExprs.map(_.get).asJava)
 
     Some(builder.setExplode(explodeBuilder).build())

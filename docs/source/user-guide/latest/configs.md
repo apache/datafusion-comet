@@ -162,6 +162,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.exec.coalesce.enabled` | Whether to enable coalesce by default. | true |
 | `spark.comet.exec.collectLimit.enabled` | Whether to enable collectLimit by default. | true |
 | `spark.comet.exec.expand.enabled` | Whether to enable expand by default. | true |
+| `spark.comet.exec.explode.enabled` | Whether to enable explode by default. | true |
 | `spark.comet.exec.filter.enabled` | Whether to enable filter by default. | true |
 | `spark.comet.exec.globalLimit.enabled` | Whether to enable globalLimit by default. | true |
 | `spark.comet.exec.hashJoin.enabled` | Whether to enable hashJoin by default. | true |
