@@ -538,6 +538,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       scan: CometBatchScanExec,
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
+    // Only handle scans with native Iceberg metadata
+    // SupportsComet scans (without native metadata) should return None and fall through to other handlers
+    // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometScanRule
+    if (scan.nativeIcebergScanMetadata.isEmpty) {
+      return None
+    }
+
     val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
 
     // Get pre-extracted metadata from planning phase

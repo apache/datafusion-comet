@@ -25,7 +25,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec, CometScanWrapper}
 import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.internal.SQLConf
@@ -48,6 +48,11 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       scan: CometScanExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    // Only handle native DataFusion scans; other scan implementations return None
+    if (scan.scanImpl != CometConf.SCAN_NATIVE_DATAFUSION) {
+      return None
+    }
+
     val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
     nativeScanBuilder.setSource(scan.simpleStringWithNodeId())
 
