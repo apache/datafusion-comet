@@ -285,9 +285,13 @@ impl ExplodeStream {
             // Build a mapping from row_idx to which array it came from
             let mut row_to_array_idx = vec![None; batch.num_rows()];
             let mut array_idx = 0;
-            for row_idx in 0..batch.num_rows() {
+            for (row_idx, item) in row_to_array_idx
+                .iter_mut()
+                .enumerate()
+                .take(batch.num_rows())
+            {
                 if !list_array.is_null(row_idx) {
-                    row_to_array_idx[row_idx] = Some(array_idx);
+                    *item = Some(array_idx);
                     array_idx += 1;
                 }
             }
