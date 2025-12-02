@@ -22,7 +22,7 @@ use crate::{
     errors::ExpressionError,
     execution::{
         expressions::subquery::Subquery,
-        operators::{ExecutionError, ExpandExec, ExplodeExec, ParquetWriterExec, ScanExec},
+        operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec},
         serde::to_arrow_datatype,
         shuffle::ShuffleWriterExec,
     },
@@ -96,9 +96,11 @@ use arrow::array::{
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
+use datafusion::common::UnnestOptions;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
+use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
 use datafusion_comet_proto::spark_expression::ListLiteral;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
@@ -1548,52 +1550,85 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_expr(expr, child.schema()))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                // Build the output schema
-                // The schema consists of the projected columns followed by the exploded element
-                let mut fields = Vec::new();
+                // For UnnestExec, we need to add a projection to put the columns in the right order:
+                // 1. First add all projection columns
+                // 2. Then add the array column to be exploded
+                // Then UnnestExec will unnest the last column
 
-                // Add fields for projected columns
-                for (idx, proj_expr) in projections.iter().enumerate() {
-                    let dt = proj_expr.data_type(&child.schema())?;
-                    fields.push(Field::new(format!("col_{idx}"), dt, true));
+                let mut project_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = projections
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, expr)| (Arc::clone(expr), format!("col_{idx}")))
+                    .collect();
+
+                // Add the array column as the last column
+                let array_col_name = format!("col_{}", projections.len());
+                project_exprs.push((child_expr.clone(), array_col_name.clone()));
+
+                // Create a projection to arrange columns as needed
+                let project_exec = Arc::new(ProjectionExec::try_new(
+                    project_exprs,
+                    Arc::clone(&child.native_plan),
+                )?);
+
+                // Get the input schema from the projection
+                let project_schema = project_exec.schema();
+
+                // Build the output schema for UnnestExec
+                // The output schema replaces the list column with its element type
+                let mut output_fields: Vec<Field> = Vec::new();
+
+                // Add all projection columns (non-array columns)
+                for i in 0..projections.len() {
+                    output_fields.push(project_schema.field(i).clone());
                 }
 
-                // Add field for the exploded element
-                // Extract element type from the array type
-                let array_type = child_expr.data_type(&child.schema())?;
-                let element_type = match array_type {
+                // Add the unnested array element field
+                // Extract the element type from the list/array type
+                let array_field = project_schema.field(projections.len());
+                let element_type = match array_field.data_type() {
                     DataType::List(field) => field.data_type().clone(),
-                    DataType::LargeList(field) => field.data_type().clone(),
-                    _ => {
+                    dt => {
                         return Err(ExecutionError::GeneralError(format!(
-                            "Explode requires array type, got {:?}",
-                            array_type
+                            "Expected List type for explode, got {:?}",
+                            dt
                         )))
                     }
                 };
-                fields.push(Field::new(
-                    format!("col_{}", projections.len()),
+
+                // The output column has the same name as the input array column
+                // but with the element type instead of the list type
+                output_fields.push(Field::new(
+                    array_field.name(),
                     element_type,
-                    true,
+                    true, // Element is nullable after unnesting
                 ));
 
-                let schema = Arc::new(Schema::new(fields));
+                let output_schema = Arc::new(Schema::new(output_fields));
 
-                let input = Arc::clone(&child.native_plan);
-                let explode_exec = Arc::new(ExplodeExec::new(
-                    child_expr,
-                    explode.outer,
-                    projections,
-                    input,
-                    schema,
+                // Use UnnestExec to explode the last column (the array column)
+                // ListUnnest specifies which column to unnest and the depth (1 for single level)
+                let list_unnest = ListUnnest {
+                    index_in_input_schema: projections.len(), // Index of the array column to unnest
+                    depth: 1, // Unnest one level (explode single array)
+                };
+
+                let unnest_options = UnnestOptions {
+                    preserve_nulls: explode.outer,
+                    recursions: vec![],
+                };
+
+                let unnest_exec = Arc::new(UnnestExec::new(
+                    project_exec,
+                    vec![list_unnest],
+                    vec![], // No struct columns to unnest
+                    output_schema,
+                    unnest_options,
                 ));
+
                 Ok((
                     scans,
-                    Arc::new(SparkPlan::new(
-                        spark_plan.plan_id,
-                        explode_exec,
-                        vec![child],
-                    )),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, unnest_exec, vec![child])),
                 ))
             }
             OpStruct::SortMergeJoin(join) => {
