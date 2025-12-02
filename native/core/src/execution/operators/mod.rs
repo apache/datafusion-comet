@@ -28,6 +28,8 @@ pub use scan::*;
 mod copy;
 mod expand;
 pub use expand::ExpandExec;
+mod explode;
+pub use explode::ExplodeExec;
 mod iceberg_scan;
 mod parquet_writer;
 pub use parquet_writer::ParquetWriterExec;

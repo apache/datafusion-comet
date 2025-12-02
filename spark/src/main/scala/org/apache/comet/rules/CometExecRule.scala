@@ -62,6 +62,7 @@ object CometExecRule {
       classOf[LocalLimitExec] -> CometLocalLimitExec,
       classOf[GlobalLimitExec] -> CometGlobalLimitExec,
       classOf[ExpandExec] -> CometExpandExec,
+      classOf[GenerateExec] -> CometExplodeExec,
       classOf[HashAggregateExec] -> CometHashAggregateExec,
       classOf[ObjectHashAggregateExec] -> CometObjectHashAggregateExec,
       classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoinExec,

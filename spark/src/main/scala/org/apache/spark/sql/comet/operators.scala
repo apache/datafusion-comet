@@ -29,7 +29,7 @@ import org.apache.spark.TaskContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, NamedExpression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
@@ -879,6 +879,109 @@ case class CometExpandExec(
   override def hashCode(): Int = Objects.hashCode(output, projections, child)
 
   // TODO: support native Expand metrics
+  override lazy val metrics: Map[String, SQLMetric] = Map.empty
+}
+
+object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_EXPLODE_ENABLED)
+
+  override def convert(
+      op: GenerateExec,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    // Check if this is an explode or explode_outer operation
+    val generator = op.generator
+    val isExplode = generator.nodeName match {
+      case "explode" => true
+      case "explode_outer" => true
+      case _ => return None // Only support explode/explode_outer, not other generators
+    }
+
+    val isOuter = generator.nodeName == "explode_outer"
+
+    // The generator should have exactly one child (the array expression)
+    if (generator.children.length != 1) {
+      withInfo(op, generator)
+      return None
+    }
+
+    val childExpr = generator.children.head
+    val childExprProto = exprToProto(childExpr, op.child.output)
+
+    if (childExprProto.isEmpty) {
+      withInfo(op, childExpr)
+      return None
+    }
+
+    // Convert the projection expressions (columns to carry forward)
+    // These are the non-generator output columns
+    val generatorOutput = op.generatorOutput.toSet
+    val projectExprs = op.output.filterNot(generatorOutput.contains).map { attr =>
+      exprToProto(attr, op.child.output)
+    }
+
+    if (projectExprs.exists(_.isEmpty) || childOp.isEmpty) {
+      withInfo(op, op.output: _*)
+      return None
+    }
+
+    val explodeBuilder = OperatorOuterClass.Explode
+      .newBuilder()
+      .setChild(childExprProto.get)
+      .setOuter(isOuter)
+      .addAllProjectList(projectExprs.map(_.get).asJava)
+
+    Some(builder.setExplode(explodeBuilder).build())
+  }
+
+  override def createExec(nativeOp: Operator, op: GenerateExec): CometNativeExec = {
+    CometExplodeExec(
+      nativeOp,
+      op,
+      op.output,
+      op.generator,
+      op.generatorOutput,
+      op.child,
+      SerializedPlan(None))
+  }
+}
+
+case class CometExplodeExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    generator: Generator,
+    generatorOutput: Seq[Attribute],
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometUnaryExec {
+  override def outputPartitioning: Partitioning = child.outputPartitioning
+
+  override def producedAttributes: AttributeSet = AttributeSet(generatorOutput)
+
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
+
+  override def stringArgs: Iterator[Any] = Iterator(generator, generatorOutput, output, child)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometExplodeExec =>
+        this.output == other.output &&
+        this.generator == other.generator &&
+        this.generatorOutput == other.generatorOutput &&
+        this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int = Objects.hashCode(output, generator, generatorOutput, child)
+
+  // TODO: support native Explode metrics
   override lazy val metrics: Map[String, SQLMetric] = Map.empty
 }
 

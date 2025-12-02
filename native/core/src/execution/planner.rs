@@ -22,7 +22,7 @@ use crate::{
     errors::ExpressionError,
     execution::{
         expressions::subquery::Subquery,
-        operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec},
+        operators::{ExecutionError, ExpandExec, ExplodeExec, ParquetWriterExec, ScanExec},
         serde::to_arrow_datatype,
         shuffle::ShuffleWriterExec,
     },
@@ -1526,6 +1526,74 @@ impl PhysicalPlanner {
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, expand, vec![child])),
+                ))
+            }
+            OpStruct::Explode(explode) => {
+                assert_eq!(children.len(), 1);
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+
+                // Create the expression for the array to explode
+                let child_expr = if let Some(child_expr) = &explode.child {
+                    self.create_expr(child_expr, child.schema())?
+                } else {
+                    return Err(ExecutionError::GeneralError(
+                        "Explode operator requires a child expression".to_string(),
+                    ));
+                };
+
+                // Create projection expressions for other columns
+                let projections: Vec<Arc<dyn PhysicalExpr>> = explode
+                    .project_list
+                    .iter()
+                    .map(|expr| self.create_expr(expr, child.schema()))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // Build the output schema
+                // The schema consists of the projected columns followed by the exploded element
+                let mut fields = Vec::new();
+
+                // Add fields for projected columns
+                for (idx, proj_expr) in projections.iter().enumerate() {
+                    let dt = proj_expr.data_type(&child.schema())?;
+                    fields.push(Field::new(format!("col_{idx}"), dt, true));
+                }
+
+                // Add field for the exploded element
+                // Extract element type from the array type
+                let array_type = child_expr.data_type(&child.schema())?;
+                let element_type = match array_type {
+                    DataType::List(field) => field.data_type().clone(),
+                    DataType::LargeList(field) => field.data_type().clone(),
+                    _ => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "Explode requires array type, got {:?}",
+                            array_type
+                        )))
+                    }
+                };
+                fields.push(Field::new(
+                    format!("col_{}", projections.len()),
+                    element_type,
+                    true,
+                ));
+
+                let schema = Arc::new(Schema::new(fields));
+
+                let input = Arc::clone(&child.native_plan);
+                let explode_exec = Arc::new(ExplodeExec::new(
+                    child_expr,
+                    explode.outer,
+                    projections,
+                    input,
+                    schema,
+                ));
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        explode_exec,
+                        vec![child],
+                    )),
                 ))
             }
             OpStruct::SortMergeJoin(join) => {
