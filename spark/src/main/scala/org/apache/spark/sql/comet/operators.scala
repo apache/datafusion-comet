@@ -992,8 +992,12 @@ case class CometExplodeExec(
 
   override def hashCode(): Int = Objects.hashCode(output, generator, generatorOutput, child)
 
-  // TODO: support native Explode metrics
-  override lazy val metrics: Map[String, SQLMetric] = Map.empty
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.baselineMetrics(sparkContext) ++
+      Map(
+        "input_batches" -> SQLMetrics.createMetric(sparkContext, "number of input batches"),
+        "input_rows" -> SQLMetrics.createMetric(sparkContext, "number of input rows"),
+        "output_batches" -> SQLMetrics.createMetric(sparkContext, "number of output batches"))
 }
 
 object CometUnionExec extends CometSink[UnionExec] {
