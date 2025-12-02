@@ -74,6 +74,7 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/2838
   ignore("explode_outer with empty array") {
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
@@ -168,6 +169,7 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/2838
   ignore("explode_outer with nullable projected column") {
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
@@ -197,6 +199,7 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/2838
   ignore("explode_outer with mixed null, empty, and non-empty arrays") {
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
