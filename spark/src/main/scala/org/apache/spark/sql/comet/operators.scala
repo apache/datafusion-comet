@@ -54,7 +54,7 @@ import com.google.common.base.Objects
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
@@ -897,6 +897,9 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     }
     if (op.generator.nodeName.toLowerCase(Locale.ROOT) != "explode") {
       return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
+    }
+    if (op.outer) {
+      return Incompatible(Some("Empty arrays are not preserved as null outputs when outer=true"))
     }
     op.generator.children.head.dataType match {
       case _: ArrayType =>
