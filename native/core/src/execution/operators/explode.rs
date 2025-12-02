@@ -279,8 +279,9 @@ impl ExplodeStream {
         } else {
             let array_data_refs: Vec<_> = all_arrays.iter().map(|a| a.to_data()).collect();
             let array_data_refs_borrowed: Vec<_> = array_data_refs.iter().collect();
+            // Use `true` for nullable parameter to support extend_nulls()
             let mut element_mutable =
-                MutableArrayData::new(array_data_refs_borrowed, false, output_row_count);
+                MutableArrayData::new(array_data_refs_borrowed, true, output_row_count);
 
             // Build a mapping from row_idx to which array it came from
             let mut row_to_array_idx = vec![None; batch.num_rows()];

@@ -72,8 +72,7 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
-  // TODO fix this: fails with MutableArrayData not nullable
-  ignore("explode_outer with empty array") {
+  test("explode_outer with empty array") {
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
       CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
