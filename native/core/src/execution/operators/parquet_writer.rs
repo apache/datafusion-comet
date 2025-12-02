@@ -25,7 +25,7 @@ use std::{
     sync::Arc,
 };
 
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::{
@@ -35,6 +35,7 @@ use datafusion::{
     physical_plan::{
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
+        stream::RecordBatchStreamAdapter,
         DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
         SendableRecordBatchStream, Statistics,
     },
@@ -320,10 +321,9 @@ impl ExecutionPlan for ParquetWriterExec {
             Ok::<_, DataFusionError>(futures::stream::empty())
         };
 
-        // Execute the write task and convert to a stream
-        use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+        // Execute the write task and create a stream that does not return any batches
         Ok(Box::pin(RecordBatchStreamAdapter::new(
-            self.schema(),
+            Arc::new(Schema::empty()),
             futures::stream::once(write_task).try_flatten(),
         )))
     }
