@@ -1563,7 +1563,7 @@ impl PhysicalPlanner {
 
                 // Add the array column as the last column
                 let array_col_name = format!("col_{}", projections.len());
-                project_exprs.push((child_expr.clone(), array_col_name.clone()));
+                project_exprs.push((Arc::clone(&child_expr), array_col_name.clone()));
 
                 // Create a projection to arrange columns as needed
                 let project_exec = Arc::new(ProjectionExec::try_new(
