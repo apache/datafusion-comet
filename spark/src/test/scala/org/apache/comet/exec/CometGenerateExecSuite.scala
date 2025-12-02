@@ -141,4 +141,17 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
+  test("explode with map input falls back") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df = Seq((1, Map("a" -> 1, "b" -> 2)), (2, Map("c" -> 3)))
+        .toDF("id", "map")
+        .selectExpr("id", "explode(map) as (key, value)")
+      checkSparkAnswerAndFallbackReason(
+        df,
+        "Comet only supports explode/explode_outer for arrays, not maps")
+    }
+  }
+
 }

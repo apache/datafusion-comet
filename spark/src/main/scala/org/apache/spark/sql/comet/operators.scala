@@ -895,12 +895,15 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     if (op.generator.children.length != 1) {
       return Unsupported(Some("generators with multiple inputs are not supported"))
     }
-    if (op.generator.nodeName.toLowerCase(Locale.ROOT) != "explode") {
+    if (op.generator.nodeName.toLowerCase(Locale.ROOT) != "explode" &&
+      op.generator.nodeName.toLowerCase(Locale.ROOT) != "explode_outer") {
       return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
     }
     op.generator.children.head.dataType match {
       case _: ArrayType =>
         Compatible()
+      case _: MapType =>
+        Unsupported(Some("Comet only supports explode/explode_outer for arrays, not maps"))
       case other =>
         Unsupported(Some(s"Unsupported data type: $other"))
     }
