@@ -28,7 +28,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.ConfigEntry
 import org.apache.comet.iceberg.IcebergReflection
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
@@ -38,10 +38,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
   override def getSupportLevel(scan: CometBatchScanExec): SupportLevel = {
     if (scan.nativeIcebergScanMetadata.isEmpty) {
-      Unsupported(Some("Native Iceberg scan metadata not available"))
-    } else {
-      super.getSupportLevel(scan)
+      return Unsupported(Some("Native Iceberg scan metadata not available"))
     }
+    Compatible()
   }
 
   /**

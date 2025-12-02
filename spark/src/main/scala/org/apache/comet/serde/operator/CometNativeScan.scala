@@ -25,7 +25,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec, CometScanWrapper}
+import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.internal.SQLConf
@@ -35,7 +35,7 @@ import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
@@ -45,10 +45,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
   override def getSupportLevel(scan: CometScanExec): SupportLevel = {
-    if (scan.scanImpl != CometConf.SCAN_NATIVE_DATAFUSION) {
-      Unsupported(Some(s"Scan implementation ${scan.scanImpl} is not native DataFusion"))
-    } else {
-      super.getSupportLevel(scan)
+    scan.scanImpl match {
+      case CometConf.SCAN_NATIVE_DATAFUSION => Compatible()
+      case _ => Unsupported()
     }
   }
 

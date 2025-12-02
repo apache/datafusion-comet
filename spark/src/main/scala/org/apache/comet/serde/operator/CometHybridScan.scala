@@ -22,11 +22,10 @@ package org.apache.comet.serde.operator
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.comet.{CometNativeExec, CometScanExec, CometScanWrapper}
-import org.apache.spark.sql.execution.SparkPlan
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass, SupportLevel}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
 
@@ -39,13 +38,11 @@ object CometHybridScanForScanExec extends CometOperatorSerde[CometScanExec] {
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
   override def getSupportLevel(scan: CometScanExec): SupportLevel = {
-    // Only handle non-native DataFusion scans (native_comet, native_iceberg_compat, etc.)
-    if (scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION) {
-      // Native DataFusion scans are handled by CometNativeScan
-      return super.getSupportLevel(scan)
+    scan.scanImpl match {
+      case CometConf.SCAN_NATIVE_COMET => Compatible()
+      case CometConf.SCAN_NATIVE_ICEBERG_COMPAT => Compatible()
+      case _ => Unsupported()
     }
-    // This handles SCAN_NATIVE_COMET, SCAN_NATIVE_ICEBERG_COMPAT, etc.
-    super.getSupportLevel(scan)
   }
 
   override def convert(
@@ -111,17 +108,18 @@ object CometHybridScanForScanExec extends CometOperatorSerde[CometScanExec] {
  * Serde implementation for hybrid JVM/native scans (CometBatchScanExec without native metadata).
  * These scans run on the JVM but produce data that can be consumed by native operators.
  */
-object CometHybridScanForBatchScanExec extends CometOperatorSerde[org.apache.spark.sql.comet.CometBatchScanExec] {
+object CometHybridScanForBatchScanExec
+    extends CometOperatorSerde[org.apache.spark.sql.comet.CometBatchScanExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
-  override def getSupportLevel(scan: org.apache.spark.sql.comet.CometBatchScanExec): SupportLevel = {
+  override def getSupportLevel(
+      scan: org.apache.spark.sql.comet.CometBatchScanExec): SupportLevel = {
     // Only handle scans without native Iceberg metadata
     if (scan.nativeIcebergScanMetadata.isDefined) {
-      // Native Iceberg scans are handled by CometIcebergNativeScan
-      return super.getSupportLevel(scan)
+      return Unsupported()
     }
-    super.getSupportLevel(scan)
+    Compatible()
   }
 
   override def convert(
@@ -168,7 +166,9 @@ object CometHybridScanForBatchScanExec extends CometOperatorSerde[org.apache.spa
     }
   }
 
-  override def createExec(nativeOp: Operator, op: org.apache.spark.sql.comet.CometBatchScanExec): CometNativeExec = {
+  override def createExec(
+      nativeOp: Operator,
+      op: org.apache.spark.sql.comet.CometBatchScanExec): CometNativeExec = {
     CometScanWrapper(nativeOp, op)
   }
 }

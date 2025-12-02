@@ -79,6 +79,17 @@ object CometExecRule {
     Map(classOf[DataWritingCommandExec] -> CometDataWritingCommand)
 
   /**
+   * Scan operators that read data from various sources. Multiple implementations can handle the
+   * same scan type, with different conditions checked in getSupportLevel. Ordered by priority:
+   * native implementations first, then hybrid JVM/native implementations.
+   */
+  val scanExecsForCometScanExec: Seq[CometOperatorSerde[CometScanExec]] =
+    Seq(CometNativeScan, CometHybridScanForScanExec)
+
+  val scanExecsForCometBatchScanExec: Seq[CometOperatorSerde[CometBatchScanExec]] =
+    Seq(CometIcebergNativeScan, CometHybridScanForBatchScanExec)
+
+  /**
    * Sinks that have a native plan of ScanExec.
    */
   val sinks: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
@@ -199,27 +210,27 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
 
     def convertNode(op: SparkPlan): SparkPlan = op match {
-      // Fully native scan for V1
-      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
-        val nativeOp = operator2Proto(scan).get
-        CometNativeScan.createExec(nativeOp, scan)
+      // Handle CometScanExec by trying each handler in order
+      case scan: CometScanExec =>
+        CometExecRule.scanExecsForCometScanExec
+          .collectFirst {
+            case handler if isOperatorEnabled(handler, scan) =>
+              val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(scan.id)
+              handler.convert(scan, builder).map(handler.createExec(_, scan))
+          }
+          .flatten
+          .getOrElse(scan)
 
-      // Fully native Iceberg scan for V2 (iceberg-rust path)
-      // Only handle scans with native metadata; SupportsComet scans fall through to isCometScan
-      // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometScanRule
-      case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
-        operator2Proto(scan) match {
-          case Some(nativeOp) =>
-            CometIcebergNativeScan.createExec(nativeOp, scan)
-          case None =>
-            // Serialization failed, fall back to CometBatchScanExec
-            scan
-        }
-
-      // Comet JVM + native scan for V1 and V2
-      case op if isCometScan(op) =>
-        val nativeOp = operator2Proto(op)
-        CometScanWrapper(nativeOp.get, op)
+      // Handle CometBatchScanExec by trying each handler in order
+      case scan: CometBatchScanExec =>
+        CometExecRule.scanExecsForCometBatchScanExec
+          .collectFirst {
+            case handler if isOperatorEnabled(handler, scan) =>
+              val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(scan.id)
+              handler.convert(scan, builder).map(handler.createExec(_, scan))
+          }
+          .flatten
+          .getOrElse(scan)
 
       case op if shouldApplySparkToColumnar(conf, op) =>
         val cometOp = CometSparkToColumnarExec(op)
@@ -839,14 +850,19 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     childOp.foreach(builder.addChildren)
 
     op match {
+      // Handle CometScanExec by trying each handler in order
+      case scan: CometScanExec =>
+        CometExecRule.scanExecsForCometScanExec.collectFirst {
+          case handler if isOperatorEnabled(handler, scan) =>
+            handler.convert(scan, builder, childOp: _*)
+        }.flatten
 
-      // Fully native scan for V1
-      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
-        CometNativeScan.convert(scan, builder, childOp: _*)
-
-      // Fully native Iceberg scan for V2 (iceberg-rust path)
-      case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
-        CometIcebergNativeScan.convert(scan, builder, childOp: _*)
+      // Handle CometBatchScanExec by trying each handler in order
+      case scan: CometBatchScanExec =>
+        CometExecRule.scanExecsForCometBatchScanExec.collectFirst {
+          case handler if isOperatorEnabled(handler, scan) =>
+            handler.convert(scan, builder, childOp: _*)
+        }.flatten
 
       case op if isCometSink(op) =>
         val supportedTypes =
@@ -962,13 +978,15 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    * native execution. If it is true, we'll wrap `op` with `CometScanWrapper` or
    * `CometSinkPlaceHolder` later in `CometSparkSessionExtensions` after `operator2proto` is
    * called.
+   *
+   * Note: Scan operators (CometScanExec, CometBatchScanExec) are now handled separately via
+   * scanExecs lists and should not fall through to this method.
    */
   private def isCometSink(op: SparkPlan): Boolean = {
     if (isExchangeSink(op)) {
       return true
     }
     op match {
-      case s if isCometScan(s) => true
       case _: CometSparkToColumnarExec => true
       case _: CometSinkPlaceHolder => true
       case _ => false
