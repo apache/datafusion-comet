@@ -199,16 +199,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
     def convertNode(op: SparkPlan): SparkPlan = op match {
       case scan: CometScanExec =>
-        val handler = getScanExecHandler(scan)
-        scanToProto(scan, handler)
-          .map(nativeOp => handler.createExec(nativeOp, scan))
-          .getOrElse(scan)
+        val handler: CometOperatorSerde[SparkPlan] =
+          if (scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION) {
+            CometNativeScan.asInstanceOf[CometOperatorSerde[SparkPlan]]
+          } else {
+            CometHybridScanForScanExec.asInstanceOf[CometOperatorSerde[SparkPlan]]
+          }
+        convertToComet(scan, handler).getOrElse(scan)
 
       case scan: CometBatchScanExec =>
-        val handler = getBatchScanExecHandler(scan)
-        scanToProto(scan, handler)
-          .map(nativeOp => handler.createExec(nativeOp, scan))
-          .getOrElse(scan)
+        val handler: CometOperatorSerde[SparkPlan] =
+          if (scan.nativeIcebergScanMetadata.nonEmpty) {
+            CometIcebergNativeScan.asInstanceOf[CometOperatorSerde[SparkPlan]]
+          } else {
+            CometHybridScanForBatchScanExec.asInstanceOf[CometOperatorSerde[SparkPlan]]
+          }
+        convertToComet(scan, handler).getOrElse(scan)
 
       case op if shouldApplySparkToColumnar(conf, op) =>
         val cometOp = CometSparkToColumnarExec(op)
@@ -338,12 +344,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
       case op =>
-        val nativeExec = allExecs
+        val nativeExec: Option[SparkPlan] = allExecs
           .get(op.getClass)
           .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
-          .flatMap(handler => {
-            scanToProto(op, handler).map(nativeOp => handler.createExec(nativeOp, op))
-          })
+          .flatMap(convertToComet(op, _))
         if (nativeExec.isDefined) {
           return nativeExec.get
         }
@@ -877,33 +881,18 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
   }
 
-  private def getBatchScanExecHandler(scan: CometBatchScanExec): CometOperatorSerde[SparkPlan] = {
-    val handler = if (scan.nativeIcebergScanMetadata.nonEmpty) {
-      CometIcebergNativeScan
-    } else {
-      CometHybridScanForBatchScanExec
-    }
-    handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
-  }
-
-  private def getScanExecHandler(scan: CometScanExec): CometOperatorSerde[SparkPlan] = {
-    val handler = if (scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION) {
-      CometNativeScan
-    } else {
-      CometHybridScanForScanExec
-    }
-    handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
-  }
-
-  private def scanToProto(
+  /** Convert a Spark plan to a Comet plan using the specified serde handler */
+  private def convertToComet(
       op: SparkPlan,
-      handler: CometOperatorSerde[SparkPlan]): Option[Operator] = {
+      handler: CometOperatorSerde[SparkPlan]): Option[SparkPlan] = {
     if (op.children.forall(isCometNative)) {
       if (isOperatorEnabled(handler, op)) {
         val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
         val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
         childOp.foreach(builder.addChildren)
-        return handler.convert(op, builder, childOp: _*)
+        return handler
+          .convert(op, builder, childOp: _*)
+          .map(nativeOp => handler.createExec(nativeOp, op))
       }
     } else {
       return None
