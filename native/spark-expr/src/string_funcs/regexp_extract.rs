@@ -17,7 +17,7 @@
 
 use arrow::array::{Array, ArrayRef, GenericStringArray};
 use arrow::datatypes::DataType;
-use datafusion::common::{exec_err, internal_datafusion_err, Result, ScalarValue};
+use datafusion::common::{exec_err, DataFusionError, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
@@ -61,53 +61,21 @@ impl ScalarUDFImpl for SparkRegExpExtract {
     }
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
-        // regexp_extract always returns String
         Ok(DataType::Utf8)
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        // regexp_extract(subject, pattern, idx)
-        if args.args.len() != 3 {
-            return exec_err!(
-                "regexp_extract expects 3 arguments, got {}",
-                args.args.len()
-            );
-        }
-
-        let subject = &args.args[0];
-        let pattern = &args.args[1];
-        let idx = &args.args[2];
-
-        // Pattern must be a literal string
-        let pattern_str = match pattern {
-            ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => s.clone(),
-            _ => {
-                return exec_err!("regexp_extract pattern must be a string literal");
-            }
-        };
-
-        // idx must be a literal int
-        let idx_val = match idx {
-            ColumnarValue::Scalar(ScalarValue::Int32(Some(i))) => *i as usize,
-            _ => {
-                return exec_err!("regexp_extract idx must be an integer literal");
-            }
-        };
-
-        // Compile regex once
-        let regex = Regex::new(&pattern_str).map_err(|e| {
-            internal_datafusion_err!("Invalid regex pattern '{}': {}", pattern_str, e)
-        })?;
+        let (subject, regex, idx) = parse_args(&args, self.name())?;
 
         match subject {
             ColumnarValue::Array(array) => {
-                let result = regexp_extract_array(array, &regex, idx_val)?;
+                let result = regexp_extract_array(&array, &regex, idx)?;
                 Ok(ColumnarValue::Array(result))
             }
             ColumnarValue::Scalar(ScalarValue::Utf8(s)) => {
                 let result = match s {
-                    Some(text) => Some(extract_group(text, &regex, idx_val)?),
-                    None => None, // NULL input → NULL output
+                    Some(text) => Some(extract_group(&text, &regex, idx)?),
+                    None => None,
                 };
                 Ok(ColumnarValue::Scalar(ScalarValue::Utf8(result)))
             }
@@ -165,50 +133,18 @@ impl ScalarUDFImpl for SparkRegExpExtractAll {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        // regexp_extract_all(subject, pattern) or regexp_extract_all(subject, pattern, idx)
-        if args.args.len() < 2 || args.args.len() > 3 {
-            return exec_err!(
-                "regexp_extract_all expects 2 or 3 arguments, got {}",
-                args.args.len()
-            );
-        }
-
-        let subject = &args.args[0];
-        let pattern = &args.args[1];
-        let idx_val = if args.args.len() == 3 {
-            match &args.args[2] {
-                ColumnarValue::Scalar(ScalarValue::Int32(Some(i))) => *i as usize,
-                _ => {
-                    return exec_err!("regexp_extract_all idx must be an integer literal");
-                }
-            }
-        } else {
-            // Using 1 here to align with Spark's default behavior.
-            1
-        };
-
-        // Pattern must be a literal string
-        let pattern_str = match pattern {
-            ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => s.clone(),
-            _ => {
-                return exec_err!("regexp_extract_all pattern must be a string literal");
-            }
-        };
-
-        // Compile regex once
-        let regex = Regex::new(&pattern_str).map_err(|e| {
-            internal_datafusion_err!("Invalid regex pattern '{}': {}", pattern_str, e)
-        })?;
+        // regexp_extract_all(subject, pattern, idx)
+        let (subject, regex, idx) = parse_args(&args, self.name())?;
 
         match subject {
             ColumnarValue::Array(array) => {
-                let result = regexp_extract_all_array(array, &regex, idx_val)?;
+                let result = regexp_extract_all_array(&array, &regex, idx)?;
                 Ok(ColumnarValue::Array(result))
             }
             ColumnarValue::Scalar(ScalarValue::Utf8(s)) => {
                 match s {
                     Some(text) => {
-                        let matches = extract_all_groups(text, &regex, idx_val)?;
+                        let matches = extract_all_groups(&text, &regex, idx)?;
                         // Build a list array with a single element
                         let mut list_builder =
                             arrow::array::ListBuilder::new(arrow::array::StringBuilder::new());
@@ -223,7 +159,6 @@ impl ScalarUDFImpl for SparkRegExpExtractAll {
                         ))))
                     }
                     None => {
-                        // Return NULL list using try_into (same as planner.rs:424)
                         let null_list: ScalarValue = DataType::List(Arc::new(
                             arrow::datatypes::Field::new("item", DataType::Utf8, false),
                         ))
@@ -243,14 +178,53 @@ impl ScalarUDFImpl for SparkRegExpExtractAll {
 
 // Helper functions
 
-fn extract_group(text: &str, regex: &Regex, idx: usize) -> Result<String> {
+fn parse_args<'a>(args: &'a ScalarFunctionArgs, fn_name: &str) -> Result<(&'a ColumnarValue, Regex, i32)> {
+    if args.args.len() != 3 {
+        return exec_err!(
+                "{} expects 3 arguments, got {}",
+                fn_name,
+                args.args.len()
+            );
+    }
+
+    let subject = &args.args[0];
+    let idx = &args.args[2];
+    let pattern = &args.args[1];
+
+    let pattern_str = match pattern {
+        ColumnarValue::Scalar(ScalarValue::Utf8(Some(s))) => s.clone(),
+        _ => {
+            return exec_err!("{} pattern must be a string literal", fn_name);
+        }
+    };
+
+    let idx_val = match idx {
+        ColumnarValue::Scalar(ScalarValue::Int32(Some(i))) => *i as i32,
+        _ => {
+            return exec_err!("{} idx must be an integer literal", fn_name);
+        }
+    };
+    if idx_val < 0 {
+        return exec_err!("{fn_name} group index must be non-negative");
+    }
+
+    let regex = Regex::new(&pattern_str).map_err(|e| {
+        DataFusionError::Execution(format!("Invalid regex pattern '{}': {}", pattern_str, e))
+    })?;
+
+    Ok((subject, regex, idx_val))
+}
+
+fn extract_group(text: &str, regex: &Regex, idx: i32) -> Result<String> {
+    let idx = idx as usize;
     match regex.captures(text) {
         Some(caps) => {
             // Spark behavior: throw error if group index is out of bounds
-            if idx >= caps.len() {
+            let group_cnt = caps.len() - 1;
+            if idx > group_cnt {
                 return exec_err!(
-                    "Regex group count is {}, but the specified group index is {}",
-                    caps.len(),
+                    "Regex group index out of bounds, group count: {}, index: {}",
+                    group_cnt,
                     idx
                 );
             }
@@ -266,11 +240,11 @@ fn extract_group(text: &str, regex: &Regex, idx: usize) -> Result<String> {
     }
 }
 
-fn regexp_extract_array(array: &ArrayRef, regex: &Regex, idx: usize) -> Result<ArrayRef> {
+fn regexp_extract_array(array: &ArrayRef, regex: &Regex, idx: i32) -> Result<ArrayRef> {
     let string_array = array
         .as_any()
         .downcast_ref::<GenericStringArray<i32>>()
-        .ok_or_else(|| internal_datafusion_err!("regexp_extract expects string array input"))?;
+        .ok_or_else(|| DataFusionError::Execution("regexp_extract expects string array input".to_string()))?;
 
     let mut builder = arrow::array::StringBuilder::new();
     for s in string_array.iter() {
@@ -280,7 +254,7 @@ fn regexp_extract_array(array: &ArrayRef, regex: &Regex, idx: usize) -> Result<A
                 builder.append_value(extracted);
             }
             None => {
-                builder.append_null(); // NULL → None
+                builder.append_null();
             }
         }
     }
@@ -288,15 +262,17 @@ fn regexp_extract_array(array: &ArrayRef, regex: &Regex, idx: usize) -> Result<A
     Ok(Arc::new(builder.finish()))
 }
 
-fn extract_all_groups(text: &str, regex: &Regex, idx: usize) -> Result<Vec<String>> {
+fn extract_all_groups(text: &str, regex: &Regex, idx: i32) -> Result<Vec<String>> {
+    let idx = idx as usize;
     let mut results = Vec::new();
 
     for caps in regex.captures_iter(text) {
         // Check bounds for each capture (matches Spark behavior)
-        if idx >= caps.len() {
+        let group_num = caps.len() - 1;
+        if idx > group_num {
             return exec_err!(
-                "Regex group count is {}, but the specified group index is {}",
-                caps.len(),
+                "Regex group index out of bounds, group count: {}, index: {}",
+                group_num,
                 idx
             );
         }
@@ -311,11 +287,11 @@ fn extract_all_groups(text: &str, regex: &Regex, idx: usize) -> Result<Vec<Strin
     Ok(results)
 }
 
-fn regexp_extract_all_array(array: &ArrayRef, regex: &Regex, idx: usize) -> Result<ArrayRef> {
+fn regexp_extract_all_array(array: &ArrayRef, regex: &Regex, idx: i32) -> Result<ArrayRef> {
     let string_array = array
         .as_any()
         .downcast_ref::<GenericStringArray<i32>>()
-        .ok_or_else(|| internal_datafusion_err!("regexp_extract_all expects string array input"))?;
+        .ok_or_else(|| DataFusionError::Execution("regexp_extract_all expects string array input".to_string()))?;
 
     let mut list_builder = arrow::array::ListBuilder::new(arrow::array::StringBuilder::new());
 
@@ -355,6 +331,7 @@ mod tests {
         // Spark behavior: group index out of bounds → error
         assert!(extract_group("123-abc", &regex, 3).is_err());
         assert!(extract_group("123-abc", &regex, 99).is_err());
+        assert!(extract_group("123-abc", &regex, -1).is_err());
     }
 
     #[test]

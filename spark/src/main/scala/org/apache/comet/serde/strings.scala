@@ -309,11 +309,16 @@ object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
     expr.idx match {
       case Literal(_, DataTypes.IntegerType) =>
         Compatible()
+      case Literal(_, DataTypes.LongType) =>
+        Compatible()
+      case Literal(_, DataTypes.ShortType) =>
+        Compatible()
+      case Literal(_, DataTypes.ByteType) =>
+        Compatible()
       case _ =>
         Unsupported(Some("Only literal group index is supported"))
     }
   }
-
   override def convert(
       expr: RegExpExtract,
       inputs: Seq[Attribute],
@@ -345,9 +350,15 @@ object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
     }
 
     // Check if idx is a literal
-    // For regexp_extract_all, idx will default to 0 (group 0, entire match) if not specified
+    // For regexp_extract_all, idx will default to 1 if not specified
     expr.idx match {
       case Literal(_, DataTypes.IntegerType) =>
+        Compatible()
+      case Literal(_, DataTypes.LongType) =>
+        Compatible()
+      case Literal(_, DataTypes.ShortType) =>
+        Compatible()
+      case Literal(_, DataTypes.ByteType) =>
         Compatible()
       case _ =>
         Unsupported(Some("Only literal group index is supported"))
@@ -357,7 +368,6 @@ object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
       expr: RegExpExtractAll,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    // Check if the pattern is compatible with Spark or allow incompatible patterns
     val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
     val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
     val idxExpr = exprToProtoInternal(expr.idx, inputs, binding)
