@@ -260,12 +260,16 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         tryNativeShuffle(s).orElse(tryColumnarShuffle(s)).getOrElse(s)
 
       case op =>
-        val nativeExec: Option[SparkPlan] = allExecs
+        val handler = allExecs
           .get(op.getClass)
           .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
-          .flatMap(convertToComet(op, _))
-        if (nativeExec.isDefined) {
-          return nativeExec.get
+        handler match {
+          case Some(handler) =>
+            if (!op.children.forall(isCometNative)) {
+              return op
+            }
+            return convertToComet(op, handler).getOrElse(op)
+          case _ =>
         }
 
         op match {
@@ -815,13 +819,17 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
         val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
         childOp.foreach(builder.addChildren)
-        return serde.convert(op, builder, childOp: _*).map(nativeOp => serde.createExec(nativeOp, op))
+        return serde
+          .convert(op, builder, childOp: _*)
+          .map(nativeOp => serde.createExec(nativeOp, op))
       }
     }
     None
   }
 
-  private def isOperatorEnabled(handler: CometOperatorSerde[SparkPlan], op: SparkPlan): Boolean = {
+  private def isOperatorEnabled(
+      handler: CometOperatorSerde[SparkPlan],
+      op: SparkPlan): Boolean = {
     val opName = op.getClass.getSimpleName
     if (handler.enabledConfig.forall(_.get(op.conf))) {
       handler.getSupportLevel(op) match {
