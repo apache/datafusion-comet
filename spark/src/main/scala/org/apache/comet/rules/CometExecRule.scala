@@ -807,34 +807,24 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
   }
 
-  /** Convert a Spark plan to a serialized Comet plan using the specified serde handler */
-  private def convertToProto(
-      op: SparkPlan,
-      handler: CometOperatorSerde[SparkPlan]): Option[Operator] = {
+  /** Convert a Spark plan to a Comet plan using the specified serde handler */
+  private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] = {
+    val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
     if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
-      if (isOperatorEnabled(handler, op)) {
+      if (isOperatorEnabled(serde, op)) {
         val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
         val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
         childOp.foreach(builder.addChildren)
-        return handler.convert(op, builder, childOp: _*)
+        return serde.convert(op, builder, childOp: _*).map(nativeOp => serde.createExec(nativeOp, op))
       }
     }
     None
   }
 
-  /** Convert a Spark plan to a Comet plan using the specified serde handler */
-  private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] = {
-    val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
-    convertToProto(op, serde)
-      .map(nativeOp => serde.createExec(nativeOp, op))
-  }
-
-  private def isOperatorEnabled(handler: CometOperatorSerde[_], op: SparkPlan): Boolean = {
-    val enabled = handler.enabledConfig.forall(_.get(op.conf))
+  private def isOperatorEnabled(handler: CometOperatorSerde[SparkPlan], op: SparkPlan): Boolean = {
     val opName = op.getClass.getSimpleName
-    if (enabled) {
-      val opSerde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
-      opSerde.getSupportLevel(op) match {
+    if (handler.enabledConfig.forall(_.get(op.conf))) {
+      handler.getSupportLevel(op) match {
         case Unsupported(notes) =>
           withInfo(op, notes.getOrElse(""))
           false
