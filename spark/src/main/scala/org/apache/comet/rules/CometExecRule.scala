@@ -811,14 +811,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   private def convertToProto(
       op: SparkPlan,
       handler: CometOperatorSerde[SparkPlan]): Option[Operator] = {
-    if (isOperatorEnabled(handler, op)) {
-      val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
-      if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
+    if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
+      if (isOperatorEnabled(handler, op)) {
+        val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
         val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
         childOp.foreach(builder.addChildren)
         return handler.convert(op, builder, childOp: _*)
       }
-      return handler.convert(op, builder)
     }
     None
   }
