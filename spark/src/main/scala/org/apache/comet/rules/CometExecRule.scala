@@ -804,7 +804,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
   }
 
-  /** Convert a Spark plan to a Comet plan using the specified serde handler */
+  /**
+   * Convert a Spark plan to a Comet plan using the specified serde handler, but
+   * only if all children are native.
+   */
   private def convertToCometIfAllChildrenAreNative(
       op: SparkPlan,
       handler: CometOperatorSerde[_]): Option[SparkPlan] = {
