@@ -33,7 +33,9 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.{CometConf, DataTypeSupport}
+import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
+import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.serde.operator.CometSink
 
 case class CometSparkToColumnarExec(child: SparkPlan)
     extends RowToColumnarTransition
@@ -136,7 +138,18 @@ case class CometSparkToColumnarExec(child: SparkPlan)
 
 }
 
-object CometSparkToColumnarExec extends DataTypeSupport {
+object CometSparkToColumnarExec extends CometSink[SparkPlan] with DataTypeSupport {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_SPARK_TO_ARROW_ENABLED)
+
+  override def createExec(
+      nativeOp: OperatorOuterClass.Operator,
+      op: SparkPlan): CometNativeExec = {
+    val cometOp = CometSparkToColumnarExec(op)
+    CometScanWrapper(nativeOp, cometOp)
+  }
+
   override def isTypeSupported(
       dt: DataType,
       name: String,

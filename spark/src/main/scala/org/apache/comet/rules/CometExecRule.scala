@@ -187,13 +187,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       }
     }
 
-    /**
-     * Convert operator to proto and then apply a transformation to wrap the proto in a new plan.
-     */
-    def newPlanWithProto(op: SparkPlan, fun: Operator => SparkPlan): SparkPlan = {
-      operator2ProtoIfAllChildrenAreNative(op).map(fun).getOrElse(op)
-    }
-
     def convertNode(op: SparkPlan): SparkPlan = op match {
       case scan: CometScanExec =>
         val handler: CometOperatorSerde[SparkPlan] =
@@ -214,9 +207,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         convertToComet(scan, handler).getOrElse(scan)
 
       case op if shouldApplySparkToColumnar(conf, op) =>
-        val cometOp = CometSparkToColumnarExec(op)
-        val nativeOp = operator2Proto(cometOp)
-        CometScanWrapper(nativeOp.get, cometOp)
+        convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
 
       // Handle DataWritingCommandExec specially since it doesn't follow the standard pattern
       case exec: DataWritingCommandExec =>
@@ -237,13 +228,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
-        newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
+        convertToComet(s, CometSinkWrapperSerde).getOrElse(s)
 
       case s @ BroadcastQueryStageExec(
             _,
             ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
             _) =>
-        newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
+        convertToComet(s, CometSinkWrapperSerde).getOrElse(s)
 
       // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
       // exchange. It is only used for Comet native execution. We only transform Spark broadcast
@@ -280,13 +271,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       // For AQE shuffle stage on a Comet shuffle exchange
       case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
-        newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
+        convertToComet(s, CometSinkWrapperSerde).getOrElse(s)
 
       // For AQE shuffle stage on a reused Comet shuffle exchange
       // Note that we don't need to handle `ReusedExchangeExec` for non-AQE case, because
       // the query plan won't be re-optimized/planned in non-AQE mode.
       case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
-        newPlanWithProto(s, CometSinkPlaceHolder(_, s, s))
+        convertToComet(s, CometSinkWrapperSerde).getOrElse(s)
 
       // Native shuffle for Comet operators
       case s: ShuffleExchangeExec =>
@@ -803,23 +794,14 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   /**
-   * Convert a Spark plan operator to a protobuf Comet operator.
-   *
-   * @param op
-   *   Spark plan operator
-   * @param childOp
-   *   previously converted protobuf Comet operators, which will be consumed by the Spark plan
-   *   operator as its children
-   * @return
-   *   The converted Comet native operator for the input `op`, or `None` if the `op` cannot be
-   *   converted to a native operator.
+   * Fallback for handling sinks that have not been handled explicitly. This method should
+   * eventually be removed once CometExecRule fully uses the operator serde framework.
    */
   private def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
-    val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
-    childOp.foreach(builder.addChildren)
-
     op match {
       case op if isCometSink(op) =>
+        val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
+        childOp.foreach(builder.addChildren)
         CometSinkWrapperSerde.convert(op, builder, childOp: _*)
 
       case _ =>
