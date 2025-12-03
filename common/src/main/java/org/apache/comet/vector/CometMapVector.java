@@ -65,6 +65,7 @@ public class CometMapVector extends CometDecodedVector {
 
   @Override
   public ColumnarMap getMap(int i) {
+    if (isNullAt(i)) return null;
     int start = mapVector.getOffsetBuffer().getInt(i * MapVector.OFFSET_WIDTH);
     int end = mapVector.getOffsetBuffer().getInt((i + 1) * MapVector.OFFSET_WIDTH);
 

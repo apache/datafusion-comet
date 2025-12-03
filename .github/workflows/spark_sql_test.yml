@@ -65,7 +65,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -114,7 +114,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -163,7 +163,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:

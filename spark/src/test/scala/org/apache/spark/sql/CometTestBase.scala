@@ -394,7 +394,8 @@ abstract class CometTestBase
       excludedClasses: Class[_]*): Option[SparkPlan] = {
     val wrapped = wrapCometSparkToColumnar(plan)
     wrapped.foreach {
-      case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec =>
+      case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec |
+          _: CometIcebergNativeScanExec =>
       case _: CometSinkPlaceHolder | _: CometScanWrapper =>
       case _: CometColumnarToRowExec =>
       case _: CometSparkToColumnarExec =>

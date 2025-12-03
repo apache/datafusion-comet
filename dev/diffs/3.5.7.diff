@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index 68e2c422a24..d971894ffe6 100644
+index a0e25ce4d8d..7db86212507 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
@@ -7,7 +7,7 @@ index 68e2c422a24..d971894ffe6 100644
      <ivy.version>2.5.1</ivy.version>
      <oro.version>2.0.8</oro.version>
 +    <spark.version.short>3.5</spark.version.short>
-+    <comet.version>0.12.0-SNAPSHOT</comet.version>
++    <comet.version>0.13.0-SNAPSHOT</comet.version>
      <!--
      If you changes codahale.metrics.version, you also need to change
      the link to metrics.dropwizard.io in docs/monitoring.md.
@@ -38,7 +38,7 @@ index 68e2c422a24..d971894ffe6 100644
    </dependencyManagement>
  
 diff --git a/sql/core/pom.xml b/sql/core/pom.xml
-index f08b33575fc..424e0da32fd 100644
+index e3d324c8edb..22342150522 100644
 --- a/sql/core/pom.xml
 +++ b/sql/core/pom.xml
 @@ -77,6 +77,10 @@
@@ -216,7 +216,7 @@ index 0efe0877e9b..423d3b3d76d 100644
  -- SELECT_HAVING
  -- https://github.com/postgres/postgres/blob/REL_12_BETA2/src/test/regress/sql/select_having.sql
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
-index 9815cb816c9..95b5f9992b0 100644
+index e5494726695..00937f025c2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/CachedTableSuite.scala
 @@ -38,7 +38,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeConstants
@@ -239,7 +239,7 @@ index 9815cb816c9..95b5f9992b0 100644
  
    test("A cached table preserves the partitioning and ordering of its cached SparkPlan") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index 5a8681aed97..da9d25e2eb4 100644
+index 6f3090d8908..c08a60fb0c2 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 @@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.plans.logical.Expand
@@ -336,7 +336,7 @@ index 7ee18df3756..d09f70e5d99 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
-index 47a311c71d5..342e71cfdd4 100644
+index a1d5d579338..c201d39cc78 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 @@ -24,8 +24,9 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression
@@ -482,7 +482,7 @@ index a206e97c353..fea1149b67d 100644
  
    test("SPARK-35884: Explain Formatted") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
-index 93275487f29..01e5c601763 100644
+index 93275487f29..33b2e7ad3b1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala
 @@ -23,6 +23,7 @@ import java.nio.file.{Files, StandardOpenOption}
@@ -522,7 +522,7 @@ index 93275487f29..01e5c601763 100644
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
-+            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _), _) => f
++            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _), _, _) => f
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.nonEmpty)
@@ -530,7 +530,7 @@ index 93275487f29..01e5c601763 100644
  
            val fileScan = df.queryExecution.executedPlan collectFirst {
              case BatchScanExec(_, f: FileScan, _, _, _, _) => f
-+            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _), _) => f
++            case CometBatchScanExec(BatchScanExec(_, f: FileScan, _, _, _, _), _, _) => f
            }
            assert(fileScan.nonEmpty)
            assert(fileScan.get.partitionFilters.isEmpty)
@@ -624,7 +624,7 @@ index 7af826583bd..3c3def1eb67 100644
      assert(shuffleMergeJoins.size == 1)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
-index 4d256154c85..66a5473852d 100644
+index 44c8cb92fc3..f098beeca26 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 @@ -31,7 +31,8 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
@@ -822,7 +822,7 @@ index 4d256154c85..66a5473852d 100644
        checkAnswer(fullJoinDF, Row(100))
      }
    }
-@@ -1583,6 +1612,9 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1611,6 +1640,9 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            Seq(semiJoinDF, antiJoinDF).foreach { df =>
              assert(collect(df.queryExecution.executedPlan) {
                case j: ShuffledHashJoinExec if j.ignoreDuplicatedKey == ignoreDuplicatedKey => true
@@ -832,7 +832,7 @@ index 4d256154c85..66a5473852d 100644
              }.size == 1)
            }
        }
-@@ -1627,14 +1659,20 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1655,14 +1687,20 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
  
    test("SPARK-43113: Full outer join with duplicate stream-side references in condition (SMJ)") {
      def check(plan: SparkPlan): Unit = {
@@ -855,7 +855,7 @@ index 4d256154c85..66a5473852d 100644
      }
      dupStreamSideColTest("SHUFFLE_HASH", check)
    }
-@@ -1770,7 +1808,8 @@ class ThreadLeakInSortMergeJoinSuite
+@@ -1798,7 +1836,8 @@ class ThreadLeakInSortMergeJoinSuite
        sparkConf.set(SHUFFLE_SPILL_NUM_ELEMENTS_FORCE_SPILL_THRESHOLD, 20))
    }
  
@@ -879,7 +879,7 @@ index c26757c9cff..d55775f09d7 100644
    protected val baseResourcePath = {
      // use the same way as `SQLQueryTestSuite` to get the resource path
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
-index 793a0da6a86..181bfc16e4b 100644
+index 3cf2bfd17ab..49728c35c42 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQuerySuite.scala
 @@ -1521,7 +1521,8 @@ class SQLQuerySuite extends QueryTest with SharedSparkSession with AdaptiveSpark
@@ -2050,10 +2050,10 @@ index 8e88049f51e..8f3cf8a0f80 100644
          case _ =>
            throw new AnalysisException("Can not match ParquetTable in the query.")
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index 4f8a9e39716..fb55ac7a955 100644
+index 8ed9ef1630e..eed2a6f5ad5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -1335,7 +1335,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
+@@ -1345,7 +1345,8 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession
      }
    }
  
