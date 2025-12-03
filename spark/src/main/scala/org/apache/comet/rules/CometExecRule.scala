@@ -818,12 +818,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     childOp.foreach(builder.addChildren)
 
     op match {
-      case scan: CometScanExec =>
-        scanToProto(scan, getScanExecHandler(scan))
-
-      case scan: CometBatchScanExec =>
-        scanToProto(scan, getBatchScanExecHandler(scan))
-
       case op if isCometSink(op) =>
         val supportedTypes =
           op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
