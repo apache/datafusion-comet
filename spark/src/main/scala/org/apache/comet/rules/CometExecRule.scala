@@ -338,15 +338,14 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
       case op =>
-        allExecs
+        val nativeExec = allExecs
           .get(op.getClass)
-          .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]]) match {
-          case Some(handler) =>
-            scanToProto(op, handler) match {
-              case Some(toReturn) => return handler.createExec(toReturn, op)
-              case None =>
-            }
-          case _ =>
+          .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
+          .flatMap(handler => {
+            scanToProto(op, handler).map(nativeOp => handler.createExec(nativeOp, op))
+          })
+        if (nativeExec.isDefined) {
+          return nativeExec.get
         }
 
         op match {
