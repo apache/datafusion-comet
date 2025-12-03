@@ -19,9 +19,15 @@ use crate::utils::array_with_timezone;
 use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
-use arrow::array::{ArrayAccessor, BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray, PrimitiveBuilder, StringArray, StructArray};
+use arrow::array::{
+    ArrayAccessor, BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray,
+    PrimitiveBuilder, StringArray, StructArray,
+};
 use arrow::compute::can_cast_types;
-use arrow::datatypes::{i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, DecimalType, GenericBinaryType, Schema};
+use arrow::datatypes::{
+    i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, DecimalType,
+    GenericBinaryType, Schema,
+};
 use arrow::{
     array::{
         cast::AsArray,
