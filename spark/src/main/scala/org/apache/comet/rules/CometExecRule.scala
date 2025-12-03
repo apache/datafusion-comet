@@ -183,30 +183,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
-        val nativeOp = operator2Proto(scan).get
-        CometNativeScan.createExec(nativeOp, scan)
+        convertToComet(scan, CometNativeScan.asInstanceOf[CometOperatorSerde[SparkPlan]])
+          .getOrElse(scan)
 
       // Fully native Iceberg scan for V2 (iceberg-rust path)
       // Only handle scans with native metadata; SupportsComet scans fall through to isCometScan
       // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometScanRule
       case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
-        operator2Proto(scan) match {
-          case Some(nativeOp) =>
-            CometIcebergNativeScan.createExec(nativeOp, scan)
-          case None =>
-            // Serialization failed, fall back to CometBatchScanExec
-            scan
-        }
+        convertToComet(scan, CometIcebergNativeScan.asInstanceOf[CometOperatorSerde[SparkPlan]])
+          .getOrElse(scan)
 
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
-        val nativeOp = operator2Proto(op)
-        CometScanWrapper(nativeOp.get, op)
+        convertToComet(op, CometScanWrapper).getOrElse(op)
 
       case op if shouldApplySparkToColumnar(conf, op) =>
-        val cometOp = CometSparkToColumnarExec(op)
-        val nativeOp = operator2Proto(cometOp)
-        CometScanWrapper(nativeOp.get, cometOp)
+        convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
 
       // Handle DataWritingCommandExec specially since it doesn't follow the standard pattern
       case exec: DataWritingCommandExec =>
@@ -317,18 +309,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
   }
 
-  private def operator2ProtoIfAllChildrenAreNative(op: SparkPlan): Option[Operator] = {
-    if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
-      operator2Proto(op, op.children.map(_.asInstanceOf[CometNativeExec].nativeOp): _*)
-    } else {
-      None
-    }
-  }
-
   private def tryNativeShuffle(s: ShuffleExchangeExec): Option[SparkPlan] = {
     Some(s)
-      .filter(_ => nativeShuffleSupported(s))
-      .flatMap(_ => operator2ProtoIfAllChildrenAreNative(s))
+      .filter(nativeShuffleSupported)
+      .filter(_.children.forall(_.isInstanceOf[CometNativeExec]))
+      .flatMap(_ => operator2Proto(s))
       .map { nativeOp =>
         // Switch to use Decimal128 regardless of precision, since Arrow native execution
         // doesn't support Decimal32 and Decimal64 yet.
@@ -344,7 +329,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     // If the child of ShuffleExchangeExec is also a ShuffleExchangeExec, we should not
     // convert it to CometColumnarShuffle,
     Some(s)
-      .filter(_ => columnarShuffleSupported(s))
+      .filter(columnarShuffleSupported)
       .flatMap(_ => operator2Proto(s))
       .flatMap { nativeOp =>
         s.child match {
@@ -791,13 +776,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    */
   private def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
 
-    /**
-     * Whether the input Spark operator `op` can be considered as a Comet sink, i.e., the start of
-     * native execution.
-     */
     def isCometSink(op: SparkPlan): Boolean = {
       op match {
-        case s if isCometScan(s) => true
         case _: CometSparkToColumnarExec => true
         case _: CometSinkPlaceHolder => true
         case _ => false
