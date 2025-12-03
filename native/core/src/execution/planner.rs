@@ -1555,14 +1555,24 @@ impl PhysicalPlanner {
                 // 2. Then add the array column to be exploded
                 // Then UnnestExec will unnest the last column
 
+                // Use return_field() to get the proper column names from the expressions
+                let child_schema = child.schema();
                 let mut project_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = projections
                     .iter()
-                    .enumerate()
-                    .map(|(idx, expr)| (Arc::clone(expr), format!("col_{idx}")))
+                    .map(|expr| {
+                        let field = expr
+                            .return_field(&child_schema)
+                            .expect("Failed to get field from expression");
+                        let name = field.name().to_string();
+                        (Arc::clone(expr), name)
+                    })
                     .collect();
 
                 // Add the array column as the last column
-                let array_col_name = format!("col_{}", projections.len());
+                let array_field = child_expr
+                    .return_field(&child_schema)
+                    .expect("Failed to get field from array expression");
+                let array_col_name = array_field.name().to_string();
                 project_exprs.push((Arc::clone(&child_expr), array_col_name.clone()));
 
                 // Create a projection to arrange columns as needed
