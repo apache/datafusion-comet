@@ -85,7 +85,13 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 }
 
 object CometExchangeSink extends CometSink[SparkPlan] {
+  /**
+   * Exchange data is FFI safe because there is no use of mutable buffers involved.*
+   * Source of broadcast exchange batches is ArrowStreamReader.
+   * Source of shuffle exchange batches is NativeBatchDecoderIterator.
+   */
   override def isFfiSafe: Boolean = true
+
   override def createExec(nativeOp: Operator, op: SparkPlan): CometNativeExec =
     CometSinkPlaceHolder(nativeOp, op, op)
 }
