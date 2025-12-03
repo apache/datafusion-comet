@@ -183,15 +183,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
-        convertToComet(scan, CometNativeScan.asInstanceOf[CometOperatorSerde[SparkPlan]])
-          .getOrElse(scan)
+        convertToComet(scan, CometNativeScan).getOrElse(scan)
 
       // Fully native Iceberg scan for V2 (iceberg-rust path)
       // Only handle scans with native metadata; SupportsComet scans fall through to isCometScan
       // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometScanRule
       case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
-        convertToComet(scan, CometIcebergNativeScan.asInstanceOf[CometOperatorSerde[SparkPlan]])
-          .getOrElse(scan)
+        convertToComet(scan, CometIcebergNativeScan).getOrElse(scan)
 
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
@@ -200,22 +198,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
 
-      // Handle DataWritingCommandExec specially since it doesn't follow the standard pattern
-      case exec: DataWritingCommandExec =>
-        CometExecRule.writeExecs.get(classOf[DataWritingCommandExec]) match {
-          case Some(handler) if isOperatorEnabled(handler, exec) =>
-            val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(exec.id)
-            handler
-              .asInstanceOf[CometOperatorSerde[DataWritingCommandExec]]
-              .convert(exec, builder)
-              .map(nativeOp =>
-                handler
-                  .asInstanceOf[CometOperatorSerde[DataWritingCommandExec]]
-                  .createExec(nativeOp, exec))
-              .getOrElse(exec)
-          case _ =>
-            exec
-        }
+      case op: DataWritingCommandExec =>
+        convertToComet(op, CometDataWritingCommand).getOrElse(op)
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
@@ -827,26 +811,23 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   private def convertToProto(
       op: SparkPlan,
       handler: CometOperatorSerde[SparkPlan]): Option[Operator] = {
-    if (op.children.forall(isCometNative)) {
-      if (isOperatorEnabled(handler, op)) {
-        val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
+    if (isOperatorEnabled(handler, op)) {
+      val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
+      if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
         val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
         childOp.foreach(builder.addChildren)
-        return handler
-          .convert(op, builder, childOp: _*)
+        return handler.convert(op, builder, childOp: _*)
       }
-    } else {
-      return None
+      return handler.convert(op, builder)
     }
     None
   }
 
   /** Convert a Spark plan to a Comet plan using the specified serde handler */
-  private def convertToComet(
-      op: SparkPlan,
-      handler: CometOperatorSerde[SparkPlan]): Option[SparkPlan] = {
-    convertToProto(op, handler)
-      .map(nativeOp => handler.createExec(nativeOp, op))
+  private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] = {
+    val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
+    convertToProto(op, serde)
+      .map(nativeOp => serde.createExec(nativeOp, op))
   }
 
   private def isOperatorEnabled(handler: CometOperatorSerde[_], op: SparkPlan): Boolean = {
