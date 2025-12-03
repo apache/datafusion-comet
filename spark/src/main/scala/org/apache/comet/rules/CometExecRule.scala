@@ -258,9 +258,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
         handler match {
           case Some(handler) =>
-            if (!op.children.forall(isCometNative)) {
-              return op
-            }
             return convertToCometIfAllChildrenAreNative(op, handler).getOrElse(op)
           case _ =>
         }
