@@ -69,13 +69,6 @@ object CometExecRule {
       classOf[WindowExec] -> CometWindowExec)
 
   /**
-   * DataWritingCommandExec is handled separately in convertNode since it doesn't follow the
-   * standard pattern of having CometNativeExec children.
-   */
-  val writeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
-    Map(classOf[DataWritingCommandExec] -> CometDataWritingCommand)
-
-  /**
    * Sinks that have a native plan of ScanExec.
    */
   val sinks: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
@@ -183,7 +176,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
-        convertToComet(scan, CometNativeScan).getOrElse(scan)
+        convertToCometIfAllChildrenAreNative(scan, CometNativeScan).getOrElse(scan)
 
       // Fully native Iceberg scan for V2 (iceberg-rust path)
       // Only handle scans with native metadata; SupportsComet scans fall through to isCometScan
@@ -203,13 +196,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
-        convertToComet(s, CometExchangeSink).getOrElse(s)
+        convertToCometIfAllChildrenAreNative(s, CometExchangeSink).getOrElse(s)
 
       case s @ BroadcastQueryStageExec(
             _,
             ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
             _) =>
-        convertToComet(s, CometExchangeSink).getOrElse(s)
+        convertToCometIfAllChildrenAreNative(s, CometExchangeSink).getOrElse(s)
 
       // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
       // exchange. It is only used for Comet native execution. We only transform Spark broadcast
@@ -246,13 +239,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       // For AQE shuffle stage on a Comet shuffle exchange
       case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
-        convertToComet(s, CometExchangeSink).getOrElse(s)
+        convertToCometIfAllChildrenAreNative(s, CometExchangeSink).getOrElse(s)
 
       // For AQE shuffle stage on a reused Comet shuffle exchange
       // Note that we don't need to handle `ReusedExchangeExec` for non-AQE case, because
       // the query plan won't be re-optimized/planned in non-AQE mode.
       case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
-        convertToComet(s, CometExchangeSink).getOrElse(s)
+        convertToCometIfAllChildrenAreNative(s, CometExchangeSink).getOrElse(s)
 
       case s: ShuffleExchangeExec =>
         // try native shuffle first, then columnar shuffle, then fall back to Spark
@@ -268,7 +261,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             if (!op.children.forall(isCometNative)) {
               return op
             }
-            return convertToComet(op, handler).getOrElse(op)
+            return convertToCometIfAllChildrenAreNative(op, handler).getOrElse(op)
           case _ =>
         }
 
@@ -812,15 +805,30 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   /** Convert a Spark plan to a Comet plan using the specified serde handler */
+  private def convertToCometIfAllChildrenAreNative(
+      op: SparkPlan,
+      handler: CometOperatorSerde[_]): Option[SparkPlan] = {
+    if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
+      convertToComet(op, handler)
+    } else {
+      None
+    }
+  }
+
+  /** Convert a Spark plan to a Comet plan using the specified serde handler */
   private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] = {
     val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
-    if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
-      if (isOperatorEnabled(serde, op)) {
-        val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
+    if (isOperatorEnabled(serde, op)) {
+      val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
+      if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
         val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
         childOp.foreach(builder.addChildren)
         return serde
           .convert(op, builder, childOp: _*)
+          .map(nativeOp => serde.createExec(nativeOp, op))
+      } else {
+        return serde
+          .convert(op, builder)
           .map(nativeOp => serde.createExec(nativeOp, op))
       }
     }
