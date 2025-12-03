@@ -881,10 +881,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
   }
 
-  /** Convert a Spark plan to a Comet plan using the specified serde handler */
-  private def convertToComet(
+  /** Convert a Spark plan to a serialized Comet plan using the specified serde handler */
+  private def convertToProto(
       op: SparkPlan,
-      handler: CometOperatorSerde[SparkPlan]): Option[SparkPlan] = {
+      handler: CometOperatorSerde[SparkPlan]): Option[Operator] = {
     if (op.children.forall(isCometNative)) {
       if (isOperatorEnabled(handler, op)) {
         val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
@@ -892,12 +892,19 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         childOp.foreach(builder.addChildren)
         return handler
           .convert(op, builder, childOp: _*)
-          .map(nativeOp => handler.createExec(nativeOp, op))
       }
     } else {
       return None
     }
     None
+  }
+
+  /** Convert a Spark plan to a Comet plan using the specified serde handler */
+  private def convertToComet(
+      op: SparkPlan,
+      handler: CometOperatorSerde[SparkPlan]): Option[SparkPlan] = {
+    convertToProto(op, handler)
+      .map(nativeOp => handler.createExec(nativeOp, op))
   }
 
   private def isOperatorEnabled(handler: CometOperatorSerde[_], op: SparkPlan): Boolean = {

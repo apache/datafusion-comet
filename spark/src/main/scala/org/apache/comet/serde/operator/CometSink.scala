@@ -21,9 +21,11 @@ package org.apache.comet.serde.operator
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.sql.comet.{CometNativeExec, CometScanWrapper}
 import org.apache.spark.sql.execution.SparkPlan
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.ConfigEntry
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
@@ -36,6 +38,8 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 
   /** Whether the data produced by the Comet operator is FFI safe */
   def isFfiSafe: Boolean = false
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
   override def convert(
       op: T,
@@ -78,5 +82,10 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
       None
     }
   }
+}
 
+object CometSinkWrapperSerde extends CometSink[SparkPlan] {
+  override def createExec(nativeOp: Operator, op: SparkPlan): CometNativeExec = {
+    CometScanWrapper(nativeOp, op)
+  }
 }
