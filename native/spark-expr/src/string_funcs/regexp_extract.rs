@@ -128,7 +128,7 @@ impl ScalarUDFImpl for SparkRegExpExtractAll {
         Ok(DataType::List(Arc::new(arrow::datatypes::Field::new(
             "item",
             DataType::Utf8,
-            false,
+            true,
         ))))
     }
 
@@ -160,7 +160,7 @@ impl ScalarUDFImpl for SparkRegExpExtractAll {
                     }
                     None => {
                         let null_list: ScalarValue = DataType::List(Arc::new(
-                            arrow::datatypes::Field::new("item", DataType::Utf8, false),
+                            arrow::datatypes::Field::new("item", DataType::Utf8, true),
                         ))
                         .try_into()?;
                         Ok(ColumnarValue::Scalar(null_list))
@@ -178,13 +178,12 @@ impl ScalarUDFImpl for SparkRegExpExtractAll {
 
 // Helper functions
 
-fn parse_args<'a>(args: &'a ScalarFunctionArgs, fn_name: &str) -> Result<(&'a ColumnarValue, Regex, i32)> {
+fn parse_args<'a>(
+    args: &'a ScalarFunctionArgs,
+    fn_name: &str,
+) -> Result<(&'a ColumnarValue, Regex, i32)> {
     if args.args.len() != 3 {
-        return exec_err!(
-                "{} expects 3 arguments, got {}",
-                fn_name,
-                args.args.len()
-            );
+        return exec_err!("{} expects 3 arguments, got {}", fn_name, args.args.len());
     }
 
     let subject = &args.args[0];
@@ -244,7 +243,9 @@ fn regexp_extract_array(array: &ArrayRef, regex: &Regex, idx: i32) -> Result<Arr
     let string_array = array
         .as_any()
         .downcast_ref::<GenericStringArray<i32>>()
-        .ok_or_else(|| DataFusionError::Execution("regexp_extract expects string array input".to_string()))?;
+        .ok_or_else(|| {
+            DataFusionError::Execution("regexp_extract expects string array input".to_string())
+        })?;
 
     let mut builder = arrow::array::StringBuilder::new();
     for s in string_array.iter() {
@@ -291,7 +292,9 @@ fn regexp_extract_all_array(array: &ArrayRef, regex: &Regex, idx: i32) -> Result
     let string_array = array
         .as_any()
         .downcast_ref::<GenericStringArray<i32>>()
-        .ok_or_else(|| DataFusionError::Execution("regexp_extract_all expects string array input".to_string()))?;
+        .ok_or_else(|| {
+            DataFusionError::Execution("regexp_extract_all expects string array input".to_string())
+        })?;
 
     let mut list_builder = arrow::array::ListBuilder::new(arrow::array::StringBuilder::new());
 
