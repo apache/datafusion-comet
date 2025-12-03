@@ -156,19 +156,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("coalesce should return correct datatype") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator(
-            "SELECT coalesce(cast(_18 as date), cast(_19 as date), _20) FROM tbl")
-        }
-      }
-    }
-  }
-
   test("decimals divide by zero") {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
@@ -470,18 +457,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("test coalesce lazy eval") {
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
-      val data = Seq((9999999999999L, 0))
-      withParquetTable(data, "t1") {
-        val res = spark.sql("""
-            |SELECT coalesce(_1, CAST(_1 AS TINYINT)) from t1;
-            |  """.stripMargin)
-        checkSparkAnswerAndOperator(res)
-      }
-    }
-  }
-
   test("dictionary arithmetic") {
     // TODO: test ANSI mode
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false", "parquet.enable.dictionary" -> "true") {
@@ -519,15 +494,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndOperator(sql("select substring(col, 0) from t"))
         checkSparkAnswerAndOperator(sql("select substring(col, -1) from t"))
       }
-    }
-  }
-
-  test("string with coalesce") {
-    withParquetTable(
-      (0 until 10).map(i => (i.toString, if (i > 5) None else Some((i + 100).toString))),
-      "tbl") {
-      checkSparkAnswerAndOperator(
-        "SELECT coalesce(_1), coalesce(_1, 1), coalesce(null, _1), coalesce(null, 1), coalesce(_2, _1), coalesce(null) FROM tbl")
     }
   }
 
@@ -1348,13 +1314,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "asin",
           "atan",
           "cos",
+          "cosh",
           "exp",
           "ln",
           "log10",
           "log2",
           "sin",
+          "sinh",
           "sqrt",
           "tan",
+          "tanh",
           "cot")) {
         val (_, cometPlan) =
           checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1), $expr(_2) FROM tbl"))
@@ -1632,30 +1601,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("case_when") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(id int) using parquet")
-          sql(s"insert into $table values(1), (NULL), (2), (2), (3), (3), (4), (5), (NULL)")
-          checkSparkAnswerAndOperator(
-            s"SELECT CASE WHEN id > 2 THEN 3333 WHEN id > 1 THEN 2222 ELSE 1111 END FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT CASE WHEN id > 2 THEN NULL WHEN id > 1 THEN 2222 ELSE 1111 END FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT CASE id WHEN 1 THEN 1111 WHEN 2 THEN 2222 ELSE 3333 END FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT CASE id WHEN 1 THEN 1111 WHEN 2 THEN 2222 ELSE NULL END FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT CASE id WHEN 1 THEN 1111 WHEN 2 THEN 2222 WHEN 3 THEN 3333 WHEN 4 THEN 4444 END FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT CASE id WHEN NULL THEN 0 WHEN 1 THEN 1111 WHEN 2 THEN 2222 ELSE 3333 END FROM $table")
-        }
-      }
-    }
-  }
-
   test("not") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
@@ -1677,24 +1622,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           sql(s"create table $table(col1 int) using parquet")
           sql(s"insert into $table values(1), (2), (3), (3)")
           checkSparkAnswerAndOperator(s"SELECT negative(col1), -(col1) FROM $table")
-        }
-      }
-    }
-  }
-
-  test("conditional expressions") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test1"
-        withTable(table) {
-          sql(s"create table $table(c1 int, c2 string, c3 int) using parquet")
-          sql(
-            s"insert into $table values(1, 'comet', 1), (2, 'comet', 3), (null, 'spark', 4)," +
-              " (null, null, 4), (2, 'spark', 3), (2, 'comet', 3)")
-          checkSparkAnswerAndOperator(s"SELECT if (c1 < 2, 1111, 2222) FROM $table")
-          checkSparkAnswerAndOperator(s"SELECT if (c1 < c3, 1111, 2222) FROM $table")
-          checkSparkAnswerAndOperator(
-            s"SELECT if (c2 == 'comet', 'native execution', 'non-native execution') FROM $table")
         }
       }
     }

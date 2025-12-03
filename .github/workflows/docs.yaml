@@ -33,10 +33,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout docs sources
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Checkout asf-site branch
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           ref: asf-site
           path: asf-site

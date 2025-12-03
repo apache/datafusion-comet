@@ -1,7 +1,7 @@
 == Physical Plan ==
-TakeOrderedAndProject (24)
-+- * HashAggregate (23)
-   +- * CometColumnarToRow (22)
+* CometColumnarToRow (24)
++- CometTakeOrderedAndProject (23)
+   +- CometHashAggregate (22)
       +- CometExchange (21)
          +- CometHashAggregate (20)
             +- CometProject (19)
@@ -126,19 +126,17 @@ Functions [1]: [partial_sum(UnscaledValue(cs_sales_price#2))]
 Input [2]: [ca_zip#11, sum#15]
 Arguments: hashpartitioning(ca_zip#11, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(22) CometColumnarToRow [codegen id : 1]
-Input [2]: [ca_zip#11, sum#15]
-
-(23) HashAggregate [codegen id : 1]
+(22) CometHashAggregate
 Input [2]: [ca_zip#11, sum#15]
 Keys [1]: [ca_zip#11]
 Functions [1]: [sum(UnscaledValue(cs_sales_price#2))]
-Aggregate Attributes [1]: [sum(UnscaledValue(cs_sales_price#2))#16]
-Results [2]: [ca_zip#11, MakeDecimal(sum(UnscaledValue(cs_sales_price#2))#16,17,2) AS sum(cs_sales_price)#17]
 
-(24) TakeOrderedAndProject
-Input [2]: [ca_zip#11, sum(cs_sales_price)#17]
-Arguments: 100, [ca_zip#11 ASC NULLS FIRST], [ca_zip#11, sum(cs_sales_price)#17]
+(23) CometTakeOrderedAndProject
+Input [2]: [ca_zip#11, sum(cs_sales_price)#16]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[ca_zip#11 ASC NULLS FIRST], output=[ca_zip#11,sum(cs_sales_price)#16]), [ca_zip#11, sum(cs_sales_price)#16], 100, 0, [ca_zip#11 ASC NULLS FIRST], [ca_zip#11, sum(cs_sales_price)#16]
+
+(24) CometColumnarToRow [codegen id : 1]
+Input [2]: [ca_zip#11, sum(cs_sales_price)#16]
 
 ===== Subqueries =====
 

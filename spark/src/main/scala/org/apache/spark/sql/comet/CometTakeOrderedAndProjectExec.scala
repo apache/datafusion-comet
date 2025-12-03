@@ -22,7 +22,7 @@ package org.apache.spark.sql.comet
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.{ParallelCollectionRDD, RDD}
 import org.apache.spark.serializer.Serializer
-import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.util.truncatedString
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffledBatchRDD, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{SparkPlan, TakeOrderedAndProjectExec, UnaryExecNode, UnsafeRowSerializer}
@@ -98,10 +98,15 @@ case class CometTakeOrderedAndProjectExec(
     child: SparkPlan)
     extends CometExec
     with UnaryExecNode {
+
+  override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(projectList)
+
   private lazy val writeMetrics =
     SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
+
   private lazy val readMetrics =
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
+
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
     "numPartitions" -> SQLMetrics.createMetric(

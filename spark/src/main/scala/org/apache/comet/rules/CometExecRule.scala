@@ -32,7 +32,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
-import org.apache.spark.sql.execution.command.ExecutedCommandExec
+import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
 import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
@@ -48,6 +48,7 @@ import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, Ope
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
 import org.apache.comet.serde.operator._
+import org.apache.comet.serde.operator.CometDataWritingCommand
 
 object CometExecRule {
 
@@ -69,6 +70,13 @@ object CometExecRule {
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
       classOf[WindowExec] -> CometWindowExec)
+
+  /**
+   * DataWritingCommandExec is handled separately in convertNode since it doesn't follow the
+   * standard pattern of having CometNativeExec children.
+   */
+  val writeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
+    Map(classOf[DataWritingCommandExec] -> CometDataWritingCommand)
 
   /**
    * Sinks that have a native plan of ScanExec.
@@ -196,6 +204,18 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         val nativeOp = operator2Proto(scan).get
         CometNativeScan.createExec(nativeOp, scan)
 
+      // Fully native Iceberg scan for V2 (iceberg-rust path)
+      // Only handle scans with native metadata; SupportsComet scans fall through to isCometScan
+      // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometScanRule
+      case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
+        operator2Proto(scan) match {
+          case Some(nativeOp) =>
+            CometIcebergNativeScan.createExec(nativeOp, scan)
+          case None =>
+            // Serialization failed, fall back to CometBatchScanExec
+            scan
+        }
+
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
         val nativeOp = operator2Proto(op)
@@ -205,6 +225,23 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         val cometOp = CometSparkToColumnarExec(op)
         val nativeOp = operator2Proto(cometOp)
         CometScanWrapper(nativeOp.get, cometOp)
+
+      // Handle DataWritingCommandExec specially since it doesn't follow the standard pattern
+      case exec: DataWritingCommandExec =>
+        CometExecRule.writeExecs.get(classOf[DataWritingCommandExec]) match {
+          case Some(handler) if isOperatorEnabled(handler, exec) =>
+            val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(exec.id)
+            handler
+              .asInstanceOf[CometOperatorSerde[DataWritingCommandExec]]
+              .convert(exec, builder)
+              .map(nativeOp =>
+                handler
+                  .asInstanceOf[CometOperatorSerde[DataWritingCommandExec]]
+                  .createExec(nativeOp, exec))
+              .getOrElse(exec)
+          case _ =>
+            exec
+        }
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
@@ -806,6 +843,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
         CometNativeScan.convert(scan, builder, childOp: _*)
+
+      // Fully native Iceberg scan for V2 (iceberg-rust path)
+      case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
+        CometIcebergNativeScan.convert(scan, builder, childOp: _*)
 
       case op if isCometSink(op) =>
         val supportedTypes =

@@ -1,7 +1,7 @@
 == Physical Plan ==
-TakeOrderedAndProject (44)
-+- * HashAggregate (43)
-   +- * CometColumnarToRow (42)
+* CometColumnarToRow (44)
++- CometTakeOrderedAndProject (43)
+   +- CometHashAggregate (42)
       +- CometExchange (41)
          +- CometHashAggregate (40)
             +- CometProject (39)
@@ -240,19 +240,17 @@ Functions [3]: [partial_sum(UnscaledValue(ss_net_profit#5)), partial_sum(Unscale
 Input [7]: [i_item_id#33, i_item_desc#32, s_store_id#29, s_store_name#28, sum#34, sum#35, sum#36]
 Arguments: hashpartitioning(i_item_id#33, i_item_desc#32, s_store_id#29, s_store_name#28, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(42) CometColumnarToRow [codegen id : 1]
-Input [7]: [i_item_id#33, i_item_desc#32, s_store_id#29, s_store_name#28, sum#34, sum#35, sum#36]
-
-(43) HashAggregate [codegen id : 1]
+(42) CometHashAggregate
 Input [7]: [i_item_id#33, i_item_desc#32, s_store_id#29, s_store_name#28, sum#34, sum#35, sum#36]
 Keys [4]: [i_item_id#33, i_item_desc#32, s_store_id#29, s_store_name#28]
 Functions [3]: [sum(UnscaledValue(ss_net_profit#5)), sum(UnscaledValue(sr_net_loss#11)), sum(UnscaledValue(cs_net_profit#16))]
-Aggregate Attributes [3]: [sum(UnscaledValue(ss_net_profit#5))#37, sum(UnscaledValue(sr_net_loss#11))#38, sum(UnscaledValue(cs_net_profit#16))#39]
-Results [7]: [i_item_id#33, i_item_desc#32, s_store_id#29, s_store_name#28, MakeDecimal(sum(UnscaledValue(ss_net_profit#5))#37,17,2) AS store_sales_profit#40, MakeDecimal(sum(UnscaledValue(sr_net_loss#11))#38,17,2) AS store_returns_loss#41, MakeDecimal(sum(UnscaledValue(cs_net_profit#16))#39,17,2) AS catalog_sales_profit#42]
 
-(44) TakeOrderedAndProject
-Input [7]: [i_item_id#33, i_item_desc#32, s_store_id#29, s_store_name#28, store_sales_profit#40, store_returns_loss#41, catalog_sales_profit#42]
-Arguments: 100, [i_item_id#33 ASC NULLS FIRST, i_item_desc#32 ASC NULLS FIRST, s_store_id#29 ASC NULLS FIRST, s_store_name#28 ASC NULLS FIRST], [i_item_id#33, i_item_desc#32, s_store_id#29, s_store_name#28, store_sales_profit#40, store_returns_loss#41, catalog_sales_profit#42]
+(43) CometTakeOrderedAndProject
+Input [7]: [i_item_id#33, i_item_desc#32, s_store_id#29, s_store_name#28, store_sales_profit#37, store_returns_loss#38, catalog_sales_profit#39]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_item_id#33 ASC NULLS FIRST,i_item_desc#32 ASC NULLS FIRST,s_store_id#29 ASC NULLS FIRST,s_store_name#28 ASC NULLS FIRST], output=[i_item_id#33,i_item_desc#32,s_store_id#29,s_store_name#28,store_sales_profit#37,store_returns_loss#38,catalog_sales_profit#39]), [i_item_id#33, i_item_desc#32, s_store_id#29, s_store_name#28, store_sales_profit#37, store_returns_loss#38, catalog_sales_profit#39], 100, 0, [i_item_id#33 ASC NULLS FIRST, i_item_desc#32 ASC NULLS FIRST, s_store_id#29 ASC NULLS FIRST, s_store_name#28 ASC NULLS FIRST], [i_item_id#33, i_item_desc#32, s_store_id#29, s_store_name#28, store_sales_profit#37, store_returns_loss#38, catalog_sales_profit#39]
+
+(44) CometColumnarToRow [codegen id : 1]
+Input [7]: [i_item_id#33, i_item_desc#32, s_store_id#29, s_store_name#28, store_sales_profit#37, store_returns_loss#38, catalog_sales_profit#39]
 
 ===== Subqueries =====
 

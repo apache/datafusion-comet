@@ -125,6 +125,7 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | BRound         | `bround`  | Yes               |                                   |
 | Ceil           | `ceil`    | Yes               |                                   |
 | Cos            | `cos`     | Yes               |                                   |
+| Cosh           | `cosh`    | Yes               |                                   |
 | Cot            | `cot`     | Yes               |                                   |
 | Divide         | `/`       | Yes               |                                   |
 | Exp            | `exp`     | Yes               |                                   |
@@ -144,9 +145,11 @@ Expressions that are not Spark-compatible will fall back to Spark by default and
 | Round          | `round`   | Yes               |                                   |
 | Signum         | `signum`  | Yes               |                                   |
 | Sin            | `sin`     | Yes               |                                   |
+| Sinh           | `sinh`    | Yes               |                                   |
 | Sqrt           | `sqrt`    | Yes               |                                   |
 | Subtract       | `-`       | Yes               |                                   |
 | Tan            | `tan`     | Yes               |                                   |
+| Tanh           | `tanh`    | Yes               |                                   |
 | TryAdd         | `try_add` | Yes               | Only integer inputs are supported |
 | TryDivide      | `try_div` | Yes               | Only integer inputs are supported |
 | TryMultiply    | `try_mul` | Yes               | Only integer inputs are supported |

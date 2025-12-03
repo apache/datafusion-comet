@@ -1,9 +1,9 @@
 WholeStageCodegen (2)
   Project [promotions,total]
     BroadcastNestedLoopJoin
-      HashAggregate [sum] [sum(UnscaledValue(ss_ext_sales_price)),promotions,sum]
-        CometColumnarToRow
-          InputAdapter
+      CometColumnarToRow
+        InputAdapter
+          CometHashAggregate [sum] [promotions,sum(UnscaledValue(ss_ext_sales_price))]
             CometExchange #1
               CometHashAggregate [ss_ext_sales_price] [sum]
                 CometProject [ss_ext_sales_price]
@@ -54,9 +54,9 @@ WholeStageCodegen (2)
       InputAdapter
         BroadcastExchange #9
           WholeStageCodegen (1)
-            HashAggregate [sum] [sum(UnscaledValue(ss_ext_sales_price)),total,sum]
-              CometColumnarToRow
-                InputAdapter
+            CometColumnarToRow
+              InputAdapter
+                CometHashAggregate [sum] [total,sum(UnscaledValue(ss_ext_sales_price))]
                   CometExchange #10
                     CometHashAggregate [ss_ext_sales_price] [sum]
                       CometProject [ss_ext_sales_price]

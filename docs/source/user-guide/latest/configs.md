@@ -30,6 +30,7 @@ Comet provides the following configuration settings.
 |--------|-------------|---------------|
 | `spark.comet.scan.allowIncompatible` | Some Comet scan implementations are not currently fully compatible with Spark for all datatypes. Set this config to true to allow them anyway. For more information, refer to the [Comet Compatibility Guide](https://datafusion.apache.org/comet/user-guide/compatibility.html). | false |
 | `spark.comet.scan.enabled` | Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and `spark.comet.exec.enabled` need to be enabled. | true |
+| `spark.comet.scan.icebergNative.enabled` | Whether to enable native Iceberg table scan using iceberg-rust. When enabled, Iceberg tables are read directly through native execution, bypassing Spark's DataSource V2 API for better performance. | false |
 | `spark.comet.scan.preFetch.enabled` | Whether to enable pre-fetching feature of CometScan. | false |
 | `spark.comet.scan.preFetch.threadNum` | The number of threads running pre-fetching for CometScan. Effective if spark.comet.scan.preFetch.enabled is enabled. Note that more pre-fetching threads means more memory requirement to store pre-fetched row groups. | 2 |
 | `spark.hadoop.fs.comet.libhdfs.schemes` | Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses via libhdfs, separated by commas. Valid only when built with hdfs feature enabled. | |
@@ -141,6 +142,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.exec.onHeap.enabled` | Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests. It can be overridden by the environment variable `ENABLE_COMET_ONHEAP`. | false |
 | `spark.comet.exec.onHeap.memoryPool` | The type of memory pool to be used for Comet native execution when running Spark in on-heap mode. Available pool types are `greedy`, `fair_spill`, `greedy_task_shared`, `fair_spill_task_shared`, `greedy_global`, `fair_spill_global`, and `unbounded`. | greedy_task_shared |
 | `spark.comet.memoryOverhead` | The amount of additional memory to be allocated per executor process for Comet, in MiB, when running Spark in on-heap mode. | 1024 MiB |
+| `spark.comet.parquet.write.enabled` | Whether to enable native Parquet write through Comet. When enabled, Comet will intercept Parquet write operations and execute them natively. This feature is highly experimental and only partially implemented. It should not be used in production. | false |
 | `spark.comet.sparkToColumnar.enabled` | Whether to enable Spark to Arrow columnar conversion. When this is turned on, Comet will convert operators in `spark.comet.sparkToColumnar.supportedOperatorList` into Arrow columnar format before processing. This is an experimental feature and has known issues with non-UTC timezones. | false |
 | `spark.comet.sparkToColumnar.supportedOperatorList` | A comma-separated list of operators that will be converted to Arrow columnar format when `spark.comet.sparkToColumnar.enabled` is true. | Range,InMemoryTableScan,RDDScan |
 | `spark.comet.testing.strict` | Experimental option to enable strict testing, which will fail tests that could be more comprehensive, such as checking for a specific fallback reason. It can be overridden by the environment variable `ENABLE_COMET_STRICT_TESTING`. | false |
@@ -214,6 +216,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.BitwiseNot.enabled` | Enable Comet acceleration for `BitwiseNot` | true |
 | `spark.comet.expression.BitwiseOr.enabled` | Enable Comet acceleration for `BitwiseOr` | true |
 | `spark.comet.expression.BitwiseXor.enabled` | Enable Comet acceleration for `BitwiseXor` | true |
+| `spark.comet.expression.BloomFilterMightContain.enabled` | Enable Comet acceleration for `BloomFilterMightContain` | true |
 | `spark.comet.expression.CaseWhen.enabled` | Enable Comet acceleration for `CaseWhen` | true |
 | `spark.comet.expression.Cast.enabled` | Enable Comet acceleration for `Cast` | true |
 | `spark.comet.expression.Ceil.enabled` | Enable Comet acceleration for `Ceil` | true |
@@ -224,6 +227,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ConcatWs.enabled` | Enable Comet acceleration for `ConcatWs` | true |
 | `spark.comet.expression.Contains.enabled` | Enable Comet acceleration for `Contains` | true |
 | `spark.comet.expression.Cos.enabled` | Enable Comet acceleration for `Cos` | true |
+| `spark.comet.expression.Cosh.enabled` | Enable Comet acceleration for `Cosh` | true |
 | `spark.comet.expression.Cot.enabled` | Enable Comet acceleration for `Cot` | true |
 | `spark.comet.expression.CreateArray.enabled` | Enable Comet acceleration for `CreateArray` | true |
 | `spark.comet.expression.CreateNamedStruct.enabled` | Enable Comet acceleration for `CreateNamedStruct` | true |
@@ -258,6 +262,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.IsNaN.enabled` | Enable Comet acceleration for `IsNaN` | true |
 | `spark.comet.expression.IsNotNull.enabled` | Enable Comet acceleration for `IsNotNull` | true |
 | `spark.comet.expression.IsNull.enabled` | Enable Comet acceleration for `IsNull` | true |
+| `spark.comet.expression.KnownFloatingPointNormalized.enabled` | Enable Comet acceleration for `KnownFloatingPointNormalized` | true |
 | `spark.comet.expression.Length.enabled` | Enable Comet acceleration for `Length` | true |
 | `spark.comet.expression.LessThan.enabled` | Enable Comet acceleration for `LessThan` | true |
 | `spark.comet.expression.LessThanOrEqual.enabled` | Enable Comet acceleration for `LessThanOrEqual` | true |
@@ -267,6 +272,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Log10.enabled` | Enable Comet acceleration for `Log10` | true |
 | `spark.comet.expression.Log2.enabled` | Enable Comet acceleration for `Log2` | true |
 | `spark.comet.expression.Lower.enabled` | Enable Comet acceleration for `Lower` | true |
+| `spark.comet.expression.MakeDecimal.enabled` | Enable Comet acceleration for `MakeDecimal` | true |
 | `spark.comet.expression.MapEntries.enabled` | Enable Comet acceleration for `MapEntries` | true |
 | `spark.comet.expression.MapFromArrays.enabled` | Enable Comet acceleration for `MapFromArrays` | true |
 | `spark.comet.expression.MapKeys.enabled` | Enable Comet acceleration for `MapKeys` | true |
@@ -289,6 +295,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Remainder.enabled` | Enable Comet acceleration for `Remainder` | true |
 | `spark.comet.expression.Reverse.enabled` | Enable Comet acceleration for `Reverse` | true |
 | `spark.comet.expression.Round.enabled` | Enable Comet acceleration for `Round` | true |
+| `spark.comet.expression.ScalarSubquery.enabled` | Enable Comet acceleration for `ScalarSubquery` | true |
 | `spark.comet.expression.Second.enabled` | Enable Comet acceleration for `Second` | true |
 | `spark.comet.expression.Sha1.enabled` | Enable Comet acceleration for `Sha1` | true |
 | `spark.comet.expression.Sha2.enabled` | Enable Comet acceleration for `Sha2` | true |
@@ -296,6 +303,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ShiftRight.enabled` | Enable Comet acceleration for `ShiftRight` | true |
 | `spark.comet.expression.Signum.enabled` | Enable Comet acceleration for `Signum` | true |
 | `spark.comet.expression.Sin.enabled` | Enable Comet acceleration for `Sin` | true |
+| `spark.comet.expression.Sinh.enabled` | Enable Comet acceleration for `Sinh` | true |
 | `spark.comet.expression.SortOrder.enabled` | Enable Comet acceleration for `SortOrder` | true |
 | `spark.comet.expression.SparkPartitionID.enabled` | Enable Comet acceleration for `SparkPartitionID` | true |
 | `spark.comet.expression.Sqrt.enabled` | Enable Comet acceleration for `Sqrt` | true |
@@ -317,10 +325,12 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Substring.enabled` | Enable Comet acceleration for `Substring` | true |
 | `spark.comet.expression.Subtract.enabled` | Enable Comet acceleration for `Subtract` | true |
 | `spark.comet.expression.Tan.enabled` | Enable Comet acceleration for `Tan` | true |
+| `spark.comet.expression.Tanh.enabled` | Enable Comet acceleration for `Tanh` | true |
 | `spark.comet.expression.TruncDate.enabled` | Enable Comet acceleration for `TruncDate` | true |
 | `spark.comet.expression.TruncTimestamp.enabled` | Enable Comet acceleration for `TruncTimestamp` | true |
 | `spark.comet.expression.UnaryMinus.enabled` | Enable Comet acceleration for `UnaryMinus` | true |
 | `spark.comet.expression.Unhex.enabled` | Enable Comet acceleration for `Unhex` | true |
+| `spark.comet.expression.UnscaledValue.enabled` | Enable Comet acceleration for `UnscaledValue` | true |
 | `spark.comet.expression.Upper.enabled` | Enable Comet acceleration for `Upper` | true |
 | `spark.comet.expression.WeekDay.enabled` | Enable Comet acceleration for `WeekDay` | true |
 | `spark.comet.expression.WeekOfYear.enabled` | Enable Comet acceleration for `WeekOfYear` | true |

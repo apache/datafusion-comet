@@ -1,8 +1,8 @@
-TakeOrderedAndProject [ca_zip,sum(cs_sales_price)]
-  WholeStageCodegen (1)
-    HashAggregate [ca_zip,sum] [sum(UnscaledValue(cs_sales_price)),sum(cs_sales_price),sum]
-      CometColumnarToRow
-        InputAdapter
+WholeStageCodegen (1)
+  CometColumnarToRow
+    InputAdapter
+      CometTakeOrderedAndProject [ca_zip,sum(cs_sales_price)]
+        CometHashAggregate [sum] [ca_zip,sum(cs_sales_price),sum(UnscaledValue(cs_sales_price))]
           CometExchange [ca_zip] #1
             CometHashAggregate [cs_sales_price] [ca_zip,sum]
               CometProject [cs_sales_price,ca_zip]

@@ -30,6 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.comet.CometMetricNode
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized._
 import org.apache.spark.util.SerializableConfiguration
 
@@ -87,11 +88,7 @@ class CometExecIterator(
     val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
 
     // serialize Comet related Spark configs in protobuf format
-    val builder = ConfigMap.newBuilder()
-    conf.getAll.filter(_._1.startsWith(CometConf.COMET_PREFIX)).foreach { case (k, v) =>
-      builder.putEntries(k, v)
-    }
-    val protobufSparkConfigs = builder.build().toByteArray
+    val protobufSparkConfigs = CometExecIterator.serializeCometSQLConfs()
 
     // Create keyUnwrapper if encryption is enabled
     val keyUnwrapper = if (encryptedFilePaths.nonEmpty) {
@@ -264,6 +261,17 @@ class CometExecIterator(
 }
 
 object CometExecIterator extends Logging {
+
+  private def cometSqlConfs: Map[String, String] =
+    SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))
+
+  def serializeCometSQLConfs(): Array[Byte] = {
+    val builder = ConfigMap.newBuilder()
+    cometSqlConfs.foreach { case (k, v) =>
+      builder.putEntries(k, v)
+    }
+    builder.build().toByteArray
+  }
 
   def getMemoryConfig(conf: SparkConf): MemoryConfig = {
     val numCores = numDriverOrExecutorCores(conf)

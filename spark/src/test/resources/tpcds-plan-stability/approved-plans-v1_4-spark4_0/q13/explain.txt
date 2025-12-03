@@ -1,6 +1,6 @@
 == Physical Plan ==
-* HashAggregate (34)
-+- * CometColumnarToRow (33)
+* CometColumnarToRow (34)
++- CometHashAggregate (33)
    +- CometExchange (32)
       +- CometHashAggregate (31)
          +- CometProject (30)
@@ -188,15 +188,13 @@ Functions [4]: [partial_avg(ss_quantity#5), partial_avg(UnscaledValue(ss_ext_sal
 Input [7]: [sum#26, count#27, sum#28, count#29, sum#30, count#31, sum#32]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(33) CometColumnarToRow [codegen id : 1]
-Input [7]: [sum#26, count#27, sum#28, count#29, sum#30, count#31, sum#32]
-
-(34) HashAggregate [codegen id : 1]
+(33) CometHashAggregate
 Input [7]: [sum#26, count#27, sum#28, count#29, sum#30, count#31, sum#32]
 Keys: []
 Functions [4]: [avg(ss_quantity#5), avg(UnscaledValue(ss_ext_sales_price#7)), avg(UnscaledValue(ss_ext_wholesale_cost#8)), sum(UnscaledValue(ss_ext_wholesale_cost#8))]
-Aggregate Attributes [4]: [avg(ss_quantity#5)#33, avg(UnscaledValue(ss_ext_sales_price#7))#34, avg(UnscaledValue(ss_ext_wholesale_cost#8))#35, sum(UnscaledValue(ss_ext_wholesale_cost#8))#36]
-Results [4]: [avg(ss_quantity#5)#33 AS avg(ss_quantity)#37, cast((avg(UnscaledValue(ss_ext_sales_price#7))#34 / 100.0) as decimal(11,6)) AS avg(ss_ext_sales_price)#38, cast((avg(UnscaledValue(ss_ext_wholesale_cost#8))#35 / 100.0) as decimal(11,6)) AS avg(ss_ext_wholesale_cost)#39, MakeDecimal(sum(UnscaledValue(ss_ext_wholesale_cost#8))#36,17,2) AS sum(ss_ext_wholesale_cost)#40]
+
+(34) CometColumnarToRow [codegen id : 1]
+Input [4]: [avg(ss_quantity)#33, avg(ss_ext_sales_price)#34, avg(ss_ext_wholesale_cost)#35, sum(ss_ext_wholesale_cost)#36]
 
 ===== Subqueries =====
 

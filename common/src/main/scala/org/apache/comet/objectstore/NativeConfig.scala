@@ -56,7 +56,7 @@ object NativeConfig {
    * consistent and standardized cloud storage support across all providers.
    */
   def extractObjectStoreOptions(hadoopConf: Configuration, uri: URI): Map[String, String] = {
-    val scheme = uri.getScheme.toLowerCase(Locale.ROOT)
+    val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).getOrElse("file")
 
     import scala.jdk.CollectionConverters._
     val options = scala.collection.mutable.Map[String, String]()

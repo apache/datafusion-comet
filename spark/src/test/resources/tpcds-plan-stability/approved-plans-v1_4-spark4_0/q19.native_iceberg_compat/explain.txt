@@ -1,7 +1,7 @@
 == Physical Plan ==
-TakeOrderedAndProject (36)
-+- * HashAggregate (35)
-   +- * CometColumnarToRow (34)
+* CometColumnarToRow (36)
++- CometTakeOrderedAndProject (35)
+   +- CometHashAggregate (34)
       +- CometExchange (33)
          +- CometHashAggregate (32)
             +- CometProject (31)
@@ -194,17 +194,15 @@ Functions [1]: [partial_sum(UnscaledValue(ss_ext_sales_price#7))]
 Input [5]: [i_brand#15, i_brand_id#10, i_manufact_id#12, i_manufact#16, sum#25]
 Arguments: hashpartitioning(i_brand#15, i_brand_id#10, i_manufact_id#12, i_manufact#16, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(34) CometColumnarToRow [codegen id : 1]
-Input [5]: [i_brand#15, i_brand_id#10, i_manufact_id#12, i_manufact#16, sum#25]
-
-(35) HashAggregate [codegen id : 1]
+(34) CometHashAggregate
 Input [5]: [i_brand#15, i_brand_id#10, i_manufact_id#12, i_manufact#16, sum#25]
 Keys [4]: [i_brand#15, i_brand_id#10, i_manufact_id#12, i_manufact#16]
 Functions [1]: [sum(UnscaledValue(ss_ext_sales_price#7))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_ext_sales_price#7))#26]
-Results [5]: [i_brand_id#10 AS brand_id#27, i_brand#15 AS brand#28, i_manufact_id#12, i_manufact#16, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#7))#26,17,2) AS ext_price#29]
 
-(36) TakeOrderedAndProject
-Input [5]: [brand_id#27, brand#28, i_manufact_id#12, i_manufact#16, ext_price#29]
-Arguments: 100, [ext_price#29 DESC NULLS LAST, brand#28 ASC NULLS FIRST, brand_id#27 ASC NULLS FIRST, i_manufact_id#12 ASC NULLS FIRST, i_manufact#16 ASC NULLS FIRST], [brand_id#27, brand#28, i_manufact_id#12, i_manufact#16, ext_price#29]
+(35) CometTakeOrderedAndProject
+Input [5]: [brand_id#26, brand#27, i_manufact_id#12, i_manufact#16, ext_price#28]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[ext_price#28 DESC NULLS LAST,brand#27 ASC NULLS FIRST,brand_id#26 ASC NULLS FIRST,i_manufact_id#12 ASC NULLS FIRST,i_manufact#16 ASC NULLS FIRST], output=[brand_id#26,brand#27,i_manufact_id#12,i_manufact#16,ext_price#28]), [brand_id#26, brand#27, i_manufact_id#12, i_manufact#16, ext_price#28], 100, 0, [ext_price#28 DESC NULLS LAST, brand#27 ASC NULLS FIRST, brand_id#26 ASC NULLS FIRST, i_manufact_id#12 ASC NULLS FIRST, i_manufact#16 ASC NULLS FIRST], [brand_id#26, brand#27, i_manufact_id#12, i_manufact#16, ext_price#28]
+
+(36) CometColumnarToRow [codegen id : 1]
+Input [5]: [brand_id#26, brand#27, i_manufact_id#12, i_manufact#16, ext_price#28]
 

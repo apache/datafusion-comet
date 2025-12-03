@@ -36,8 +36,12 @@ import org.apache.spark.sql.vectorized._
 import com.google.common.base.Objects
 
 import org.apache.comet.{DataTypeSupport, MetricsSupport}
+import org.apache.comet.iceberg.CometIcebergNativeScanMetadata
 
-case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expression])
+case class CometBatchScanExec(
+    wrapped: BatchScanExec,
+    runtimeFilters: Seq[Expression],
+    nativeIcebergScanMetadata: Option[CometIcebergNativeScanMetadata] = None)
     extends DataSourceV2ScanExecBase
     with CometPlan {
   def ordering: Option[Seq[SortOrder]] = wrapped.ordering
@@ -95,14 +99,18 @@ case class CometBatchScanExec(wrapped: BatchScanExec, runtimeFilters: Seq[Expres
   override def equals(other: Any): Boolean = other match {
     case other: CometBatchScanExec =>
       // `wrapped` in `this` and `other` could reference to the same `BatchScanExec` object,
-      // therefore we need to also check `runtimeFilters` equality here.
-      this.wrappedScan == other.wrappedScan && this.runtimeFilters == other.runtimeFilters
+      // check `runtimeFilters` and `nativeIcebergScanMetadata` equality too.
+      this.wrappedScan == other.wrappedScan && this.runtimeFilters == other.runtimeFilters &&
+      this.nativeIcebergScanMetadata == other.nativeIcebergScanMetadata
     case _ =>
       false
   }
 
   override def hashCode(): Int = {
-    Objects.hashCode(wrappedScan, runtimeFilters)
+    Objects.hashCode(
+      wrappedScan,
+      runtimeFilters,
+      Integer.valueOf(nativeIcebergScanMetadata.map(_.hashCode()).getOrElse(0)))
   }
 
   override def doCanonicalize(): CometBatchScanExec = {

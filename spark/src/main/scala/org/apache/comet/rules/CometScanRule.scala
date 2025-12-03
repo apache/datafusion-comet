@@ -44,6 +44,7 @@ import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
@@ -265,8 +266,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           withInfos(scanExec, fallbackReasons.toSet)
         }
 
-      // Iceberg scan
-      case s: SupportsComet =>
+      // Iceberg scan - patched version implementing SupportsComet interface
+      case s: SupportsComet if !COMET_ICEBERG_NATIVE_ENABLED.get() =>
         val fallbackReasons = new ListBuffer[String]()
 
         if (!s.isCometEnabled) {
@@ -288,6 +289,281 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)
+        } else {
+          withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+      // Iceberg scan - detected by class name (works with unpatched Iceberg)
+      case _
+          if scanExec.scan.getClass.getName ==
+            "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
+        val fallbackReasons = new ListBuffer[String]()
+
+        // Native Iceberg scan requires both configs to be enabled
+        if (!COMET_ICEBERG_NATIVE_ENABLED.get()) {
+          fallbackReasons += "Native Iceberg scan disabled because " +
+            s"${COMET_ICEBERG_NATIVE_ENABLED.key} is not enabled"
+          return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+        if (!COMET_EXEC_ENABLED.get()) {
+          fallbackReasons += "Native Iceberg scan disabled because " +
+            s"${COMET_EXEC_ENABLED.key} is not enabled"
+          return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+        val typeChecker = CometScanTypeChecker(SCAN_NATIVE_DATAFUSION)
+        val schemaSupported =
+          typeChecker.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
+
+        if (!schemaSupported) {
+          fallbackReasons += "Comet extension is not enabled for " +
+            s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
+        }
+
+        // Extract all Iceberg metadata once using reflection.
+        // If any required reflection fails, this returns None, and we fall back to Spark.
+        // First get metadataLocation and catalogProperties which are needed by the factory.
+        val metadataLocationOpt = IcebergReflection
+          .getTable(scanExec.scan)
+          .flatMap(IcebergReflection.getMetadataLocation)
+
+        val metadataOpt = metadataLocationOpt.flatMap { metadataLocation =>
+          try {
+            val session = org.apache.spark.sql.SparkSession.active
+            val hadoopConf = session.sessionState.newHadoopConf()
+            val metadataUri = new java.net.URI(metadataLocation)
+            val hadoopS3Options = NativeConfig.extractObjectStoreOptions(hadoopConf, metadataUri)
+            val catalogProperties =
+              org.apache.comet.serde.operator.CometIcebergNativeScan
+                .hadoopToIcebergS3Properties(hadoopS3Options)
+
+            CometIcebergNativeScanMetadata
+              .extract(scanExec.scan, metadataLocation, catalogProperties)
+          } catch {
+            case e: Exception =>
+              logError(
+                s"Failed to extract catalog properties from Iceberg scan: ${e.getMessage}",
+                e)
+              None
+          }
+        }
+
+        // If metadata extraction failed, fall back to Spark
+        val metadata = metadataOpt match {
+          case Some(m) => m
+          case None =>
+            fallbackReasons += "Failed to extract Iceberg metadata via reflection"
+            return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+        // Now perform all validation using the pre-extracted metadata
+        // Check if table uses a FileIO implementation compatible with iceberg-rust
+        val fileIOCompatible = IcebergReflection.getFileIO(metadata.table) match {
+          case Some(fileIO) =>
+            val fileIOClassName = fileIO.getClass.getName
+            if (fileIOClassName == "org.apache.iceberg.inmemory.InMemoryFileIO") {
+              fallbackReasons += "Comet does not support InMemoryFileIO table locations"
+              false
+            } else {
+              true
+            }
+          case None =>
+            fallbackReasons += "Could not check FileIO compatibility"
+            false
+        }
+
+        // Check Iceberg table format version
+        val formatVersionSupported = IcebergReflection.getFormatVersion(metadata.table) match {
+          case Some(formatVersion) =>
+            if (formatVersion > 2) {
+              fallbackReasons += "Iceberg table format version " +
+                s"$formatVersion is not supported. " +
+                "Comet only supports Iceberg table format V1 and V2"
+              false
+            } else {
+              true
+            }
+          case None =>
+            fallbackReasons += "Could not verify Iceberg table format version"
+            false
+        }
+
+        // Check if all files are Parquet format and use supported filesystem schemes
+        val (allParquetFiles, unsupportedSchemes) =
+          IcebergReflection.validateFileFormatsAndSchemes(metadata.tasks)
+
+        val allSupportedFilesystems = if (unsupportedSchemes.isEmpty) {
+          true
+        } else {
+          fallbackReasons += "Iceberg scan contains files with unsupported filesystem " +
+            s"schemes: ${unsupportedSchemes.mkString(", ")}. " +
+            "Comet only supports: file, s3, s3a, gs, gcs, oss, abfss, abfs, wasbs, wasb"
+          false
+        }
+
+        if (!allParquetFiles) {
+          fallbackReasons += "Iceberg scan contains non-Parquet files (ORC or Avro). " +
+            "Comet only supports Parquet files in Iceberg tables"
+        }
+
+        // Partition values are deserialized via iceberg-rust's Literal::try_from_json()
+        // which has incomplete type support (binary/fixed unimplemented, decimals limited)
+        val partitionTypesSupported = (for {
+          partitionSpec <- IcebergReflection.getPartitionSpec(metadata.table)
+        } yield {
+          val unsupportedTypes =
+            IcebergReflection.validatePartitionTypes(partitionSpec, metadata.scanSchema)
+
+          if (unsupportedTypes.nonEmpty) {
+            unsupportedTypes.foreach { case (fieldName, typeStr, reason) =>
+              fallbackReasons +=
+                s"Partition column '$fieldName' with type $typeStr is not yet supported by " +
+                  s"iceberg-rust: $reason"
+            }
+            false
+          } else {
+            true
+          }
+        }).getOrElse {
+          // Fall back to Spark if reflection fails - cannot verify safety
+          val msg =
+            "Iceberg reflection failure: Could not verify partition types compatibility"
+          logError(msg)
+          fallbackReasons += msg
+          false
+        }
+
+        // Get filter expressions for complex predicates check
+        val filterExpressionsOpt = IcebergReflection.getFilterExpressions(scanExec.scan)
+
+        // IS NULL/NOT NULL on complex types fail because iceberg-rust's accessor creation
+        // only handles primitive fields. Nested field filters work because Iceberg Java
+        // pre-binds them to field IDs. Element/key access filters don't push down to FileScanTasks.
+        val complexTypePredicatesSupported = filterExpressionsOpt
+          .map { filters =>
+            // Empty filters can't trigger accessor issues
+            if (filters.isEmpty) {
+              true
+            } else {
+              val readSchema = scanExec.scan.readSchema()
+
+              // Identify complex type columns that would trigger accessor creation failures
+              val complexColumns = readSchema
+                .filter(field => isComplexType(field.dataType))
+                .map(_.name)
+                .toSet
+
+              // Detect IS NULL/NOT NULL on complex columns (pattern: is_null(ref(name="col")))
+              // Nested field filters use different patterns and don't trigger this issue
+              val hasComplexNullCheck = filters.asScala.exists { expr =>
+                val exprStr = expr.toString
+                val isNullCheck = exprStr.contains("is_null") || exprStr.contains("not_null")
+                if (isNullCheck) {
+                  complexColumns.exists { colName =>
+                    exprStr.contains(s"""ref(name="$colName")""")
+                  }
+                } else {
+                  false
+                }
+              }
+
+              if (hasComplexNullCheck) {
+                fallbackReasons += "IS NULL / IS NOT NULL predicates on complex type columns " +
+                  "(struct/array/map) are not yet supported by iceberg-rust " +
+                  "(nested field filters like address.city = 'NYC' are supported)"
+                false
+              } else {
+                true
+              }
+            }
+          }
+          .getOrElse {
+            // Fall back to Spark if reflection fails - cannot verify safety
+            val msg =
+              "Iceberg reflection failure: Could not check for complex type predicates"
+            logError(msg)
+            fallbackReasons += msg
+            false
+          }
+
+        // Check for unsupported transform functions in residual expressions
+        // iceberg-rust can only handle identity transforms in residuals; all other transforms
+        // (truncate, bucket, year, month, day, hour) must fall back to Spark
+        val transformFunctionsSupported =
+          try {
+            IcebergReflection.findNonIdentityTransformInResiduals(metadata.tasks) match {
+              case Some(transformType) =>
+                // Found unsupported transform
+                fallbackReasons +=
+                  s"Iceberg transform function '$transformType' in residual expression " +
+                    "is not yet supported by iceberg-rust. " +
+                    "Only identity transforms are supported."
+                false
+              case None =>
+                // No unsupported transforms found - safe to use native execution
+                true
+            }
+          } catch {
+            case e: Exception =>
+              // Reflection failure - cannot verify safety, must fall back
+              fallbackReasons += "Iceberg reflection failure: Could not check for " +
+                s"transform functions in residuals: ${e.getMessage}"
+              false
+          }
+
+        // Check for unsupported struct types in delete files
+        val deleteFileTypesSupported = {
+          var hasUnsupportedDeletes = false
+
+          try {
+            val deleteFiles = IcebergReflection.getDeleteFiles(metadata.tasks)
+
+            if (!deleteFiles.isEmpty) {
+              deleteFiles.asScala.foreach { deleteFile =>
+                val equalityFieldIds = IcebergReflection.getEqualityFieldIds(deleteFile)
+
+                if (!equalityFieldIds.isEmpty) {
+                  // Look up field types
+                  equalityFieldIds.asScala.foreach { fieldId =>
+                    val fieldInfo = IcebergReflection.getFieldInfo(
+                      metadata.scanSchema,
+                      fieldId.asInstanceOf[Int])
+                    fieldInfo match {
+                      case Some((fieldName, fieldType)) =>
+                        if (fieldType.contains("struct")) {
+                          hasUnsupportedDeletes = true
+                          fallbackReasons +=
+                            s"Equality delete on unsupported column type '$fieldName' " +
+                              s"($fieldType) is not yet supported by iceberg-rust. " +
+                              "Struct types in equality deletes " +
+                              "require datum conversion support that is not yet implemented."
+                        }
+                      case None =>
+                    }
+                  }
+                }
+              }
+            }
+          } catch {
+            case e: Exception =>
+              // Reflection failure means we cannot verify safety - must fall back
+              hasUnsupportedDeletes = true
+              fallbackReasons += "Iceberg reflection failure: Could not verify delete file " +
+                s"types for safety: ${e.getMessage}"
+          }
+
+          !hasUnsupportedDeletes
+        }
+
+        if (schemaSupported && fileIOCompatible && formatVersionSupported && allParquetFiles &&
+          allSupportedFilesystems && partitionTypesSupported &&
+          complexTypePredicatesSupported && transformFunctionsSupported &&
+          deleteFileTypesSupported) {
+          CometBatchScanExec(
+            scanExec.clone().asInstanceOf[BatchScanExec],
+            runtimeFilters = scanExec.runtimeFilters,
+            nativeIcebergScanMetadata = Some(metadata))
         } else {
           withInfos(scanExec, fallbackReasons.toSet)
         }

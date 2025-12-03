@@ -50,6 +50,10 @@ runs:
         cargo build --release
 
     - name: Cache Maven dependencies
+      # TODO: remove next line after working again
+      #  temporarily work around https://github.com/actions/runner-images/issues/13341
+      #  by disabling caching for macOS
+      if: ${{ runner.os != 'macOS' }}
       uses: actions/cache@v4
       with:
         path: |

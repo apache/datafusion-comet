@@ -56,8 +56,7 @@ git apply ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 Perform a clean build
 
 ```shell
-./gradlew clean
-./gradlew build -x test -x integrationTest
+./gradlew clean build -x test -x integrationTest
 ```
 
 ## Test
@@ -72,9 +71,8 @@ Launch Spark Shell:
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
-    --jars $COMET_JAR,$ICEBERG_JAR \
-    --conf spark.driver.extraClassPath=$COMET_JAR,$ICEBERG_JAR \
-    --conf spark.executor.extraClassPath=$COMET_JAR,$ICEBERG_JAR \
+    --driver-class-path $COMET_JAR:$ICEBERG_JAR \
+    --conf spark.executor.extraClassPath=$COMET_JAR:$ICEBERG_JAR \
     --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
     --conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkCatalog \
     --conf spark.sql.catalog.spark_catalog.type=hadoop \
