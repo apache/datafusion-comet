@@ -19,21 +19,18 @@
 
 package org.apache.comet.serde.operator
 
-import scala.jdk.CollectionConverters._
-
 import org.apache.spark.sql.comet.{CometNativeExec, CometScanExec, CometScanWrapper}
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.{Compatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
 
 /**
  * Serde implementation for hybrid JVM/native scans (CometScanExec with non-native scanImpl).
- * These scans run on the JVM but produce data that can be consumed by native operators.
+ * These scans run on the JVM but produce data that can be consumed by native operators. Extends
+ * CometSink since they follow the same pattern of creating a generic Scan protobuf.
  */
-object CometHybridScanForScanExec extends CometOperatorSerde[CometScanExec] {
+object CometHybridScanForScanExec extends CometSink[CometScanExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
@@ -45,59 +42,7 @@ object CometHybridScanForScanExec extends CometOperatorSerde[CometScanExec] {
     }
   }
 
-  override def convert(
-      scan: CometScanExec,
-      builder: Operator.Builder,
-      childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    val supportedTypes =
-      scan.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
-
-    if (!supportedTypes) {
-      withInfo(scan, "Unsupported data type")
-      return None
-    }
-
-    // These operators are source of Comet native execution chain
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder()
-    val source = scan.simpleStringWithNodeId()
-    if (source.isEmpty) {
-      scanBuilder.setSource(scan.getClass.getSimpleName)
-    } else {
-      scanBuilder.setSource(source)
-    }
-
-    val ffiSafe = scan.scanImpl match {
-      case CometConf.SCAN_NATIVE_COMET =>
-        // native_comet scan reuses mutable buffers
-        false
-      case CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
-        // native_iceberg_compat scan reuses mutable buffers for constant columns
-        // https://github.com/apache/datafusion-comet/issues/2152
-        false
-      case _ =>
-        false
-    }
-    scanBuilder.setArrowFfiSafe(ffiSafe)
-
-    val scanTypes = scan.output.flatMap { attr =>
-      serializeDataType(attr.dataType)
-    }
-
-    if (scanTypes.length == scan.output.length) {
-      scanBuilder.addAllFields(scanTypes.asJava)
-
-      // Sink operators don't have children
-      builder.clearChildren()
-
-      Some(builder.setScan(scanBuilder).build())
-    } else {
-      // There are unsupported scan type
-      withInfo(
-        scan,
-        s"unsupported Comet operator: ${scan.nodeName}, due to unsupported data types above")
-      None
-    }
-  }
+  override def isFfiSafe: Boolean = false
 
   override def createExec(nativeOp: Operator, op: CometScanExec): CometNativeExec = {
     CometScanWrapper(nativeOp, op)
@@ -106,10 +51,11 @@ object CometHybridScanForScanExec extends CometOperatorSerde[CometScanExec] {
 
 /**
  * Serde implementation for hybrid JVM/native scans (CometBatchScanExec without native metadata).
- * These scans run on the JVM but produce data that can be consumed by native operators.
+ * These scans run on the JVM but produce data that can be consumed by native operators. Extends
+ * CometSink since they follow the same pattern of creating a generic Scan protobuf.
  */
 object CometHybridScanForBatchScanExec
-    extends CometOperatorSerde[org.apache.spark.sql.comet.CometBatchScanExec] {
+    extends CometSink[org.apache.spark.sql.comet.CometBatchScanExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
@@ -122,49 +68,7 @@ object CometHybridScanForBatchScanExec
     Compatible()
   }
 
-  override def convert(
-      scan: org.apache.spark.sql.comet.CometBatchScanExec,
-      builder: Operator.Builder,
-      childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    val supportedTypes =
-      scan.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
-
-    if (!supportedTypes) {
-      withInfo(scan, "Unsupported data type")
-      return None
-    }
-
-    // These operators are source of Comet native execution chain
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder()
-    val source = scan.simpleStringWithNodeId()
-    if (source.isEmpty) {
-      scanBuilder.setSource(scan.getClass.getSimpleName)
-    } else {
-      scanBuilder.setSource(source)
-    }
-
-    // CometBatchScanExec is not FFI safe by default
-    scanBuilder.setArrowFfiSafe(false)
-
-    val scanTypes = scan.output.flatMap { attr =>
-      serializeDataType(attr.dataType)
-    }
-
-    if (scanTypes.length == scan.output.length) {
-      scanBuilder.addAllFields(scanTypes.asJava)
-
-      // Sink operators don't have children
-      builder.clearChildren()
-
-      Some(builder.setScan(scanBuilder).build())
-    } else {
-      // There are unsupported scan type
-      withInfo(
-        scan,
-        s"unsupported Comet operator: ${scan.nodeName}, due to unsupported data types above")
-      None
-    }
-  }
+  override def isFfiSafe: Boolean = false
 
   override def createExec(
       nativeOp: Operator,

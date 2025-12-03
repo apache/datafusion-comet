@@ -887,13 +887,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             // Source of broadcast exchange batches is ArrowStreamReader
             // Source of shuffle exchange batches is NativeBatchDecoderIterator
             true
-          case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_COMET =>
-            // native_comet scan reuses mutable buffers
-            false
-          case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
-            // native_iceberg_compat scan reuses mutable buffers for constant columns
-            // https://github.com/apache/datafusion-comet/issues/2152
-            false
           case _ =>
             false
         }
