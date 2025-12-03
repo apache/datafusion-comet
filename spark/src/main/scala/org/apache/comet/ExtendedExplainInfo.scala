@@ -121,7 +121,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     }
 
     val tagValue = node.getTagValue(CometExplainInfo.EXTENSION_INFO)
-    val str = if (tagValue.nonEmpty) {
+    val str = if (tagValue.exists(_.nonEmpty)) {
       s" ${node.nodeName} [COMET: ${tagValue.get.mkString(", ")}]"
     } else {
       node.nodeName
