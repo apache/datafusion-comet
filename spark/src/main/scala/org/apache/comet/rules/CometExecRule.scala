@@ -790,10 +790,45 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    * eventually be removed once CometExecRule fully uses the operator serde framework.
    */
   private def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
+
+    /**
+     * Whether the input Spark operator `op` can be considered as a Comet sink, i.e., the start of
+     * native execution.
+     */
+    def isCometSink(op: SparkPlan): Boolean = {
+      op match {
+        case s if isCometScan(s) => true
+        case _: CometSparkToColumnarExec => true
+        case _: CometSinkPlaceHolder => true
+        case _ => false
+      }
+    }
+
+    def isExchangeSink(op: SparkPlan): Boolean = {
+      op match {
+        case _: ShuffleExchangeExec => true
+        case ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) => true
+        case ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
+          true
+        case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
+        case BroadcastQueryStageExec(
+              _,
+              ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
+              _) =>
+          true
+        case _: BroadcastExchangeExec => true
+        case _ => false
+      }
+    }
+
+    val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
+    childOp.foreach(builder.addChildren)
+
     op match {
+      case op if isExchangeSink(op) =>
+        CometExchangeSink.convert(op, builder, childOp: _*)
+
       case op if isCometSink(op) =>
-        val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
-        childOp.foreach(builder.addChildren)
         CometScanWrapper.convert(op, builder, childOp: _*)
 
       case _ =>
@@ -874,37 +909,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         s"Native support for operator $opName is disabled. " +
           s"Set ${handler.enabledConfig.get.key}=true to enable it.")
       false
-    }
-  }
-
-  /**
-   * Whether the input Spark operator `op` can be considered as a Comet sink, i.e., the start of
-   * native execution. If it is true, we'll wrap `op` with `CometScanWrapper` or
-   * `CometSinkPlaceHolder` later in `CometSparkSessionExtensions` after `operator2proto` is
-   * called.
-   */
-  private def isCometSink(op: SparkPlan): Boolean = {
-    if (isExchangeSink(op)) {
-      return true
-    }
-    op match {
-      case s if isCometScan(s) => true
-      case _: CometSparkToColumnarExec => true
-      case _: CometSinkPlaceHolder => true
-      case _ => false
-    }
-  }
-
-  private def isExchangeSink(op: SparkPlan): Boolean = {
-    op match {
-      case _: ShuffleExchangeExec => true
-      case ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) => true
-      case ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) => true
-      case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
-      case BroadcastQueryStageExec(_, ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) =>
-        true
-      case _: BroadcastExchangeExec => true
-      case _ => false
     }
   }
 }
