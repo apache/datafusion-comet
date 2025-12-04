@@ -3122,7 +3122,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
         SQLConf.ANSI_ENABLED.key -> "false",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
         SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
 
         val df = sql("select * from t1")
@@ -3142,7 +3141,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
         SQLConf.ANSI_ENABLED.key -> "false",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
         SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
 
         val df = sql("select * from t1")
