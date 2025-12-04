@@ -190,20 +190,6 @@ impl PhysicalPlanner {
         &self.session_ctx
     }
 
-    /// Check if an expression is an arithmetic expression that should be handled by the registry
-    fn is_arithmetic_expression(expr_struct: &ExprStruct) -> bool {
-        matches!(
-            expr_struct,
-            ExprStruct::Add(_)
-                | ExprStruct::Subtract(_)
-                | ExprStruct::Multiply(_)
-                | ExprStruct::Divide(_)
-                | ExprStruct::IntegralDivide(_)
-                | ExprStruct::Remainder(_)
-                | ExprStruct::UnaryMinus(_)
-        )
-    }
-
     /// get DataFusion PartitionedFiles from a Spark FilePartition
     fn get_partitioned_files(
         &self,
@@ -262,13 +248,11 @@ impl PhysicalPlanner {
         spark_expr: &Expr,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        // Try to use the modular registry for arithmetic expressions first
-        if let Some(expr_struct) = spark_expr.expr_struct.as_ref() {
-            if Self::is_arithmetic_expression(expr_struct) {
-                return self
-                    .expression_registry
-                    .create_expr(spark_expr, input_schema, self);
-            }
+        // Try to use the modular registry first - this automatically handles any registered expression types
+        if self.expression_registry.can_handle(spark_expr) {
+            return self
+                .expression_registry
+                .create_expr(spark_expr, input_schema, self);
         }
 
         // Fall back to the original monolithic match for other expressions

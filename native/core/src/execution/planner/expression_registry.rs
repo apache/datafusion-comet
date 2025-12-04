@@ -43,6 +43,15 @@ impl ExpressionRegistry {
         registry
     }
 
+    /// Check if the registry can handle a given expression type
+    pub fn can_handle(&self, spark_expr: &Expr) -> bool {
+        if let Ok(expr_type) = Self::get_expression_type(spark_expr) {
+            self.builders.contains_key(&expr_type)
+        } else {
+            false
+        }
+    }
+
     /// Create a physical expression from a Spark protobuf expression
     pub fn create_expr(
         &self,
