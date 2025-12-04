@@ -1728,6 +1728,12 @@ case class CometSortMergeJoinExec(
     CometMetricNode.sortMergeJoinMetrics(sparkContext)
 }
 
+object CometScanWrapper extends CometSink[SparkPlan] {
+  override def createExec(nativeOp: Operator, op: SparkPlan): CometNativeExec = {
+    CometScanWrapper(nativeOp, op)
+  }
+}
+
 case class CometScanWrapper(override val nativeOp: Operator, override val originalPlan: SparkPlan)
     extends CometNativeExec
     with LeafExecNode {
