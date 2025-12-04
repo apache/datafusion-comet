@@ -22,17 +22,20 @@ package org.apache.spark.sql.comet
 import java.io.{File, RandomAccessFile}
 import java.nio.charset.StandardCharsets
 import java.util.Base64
+
 import org.junit.runner.RunWith
 import org.scalactic.source.Position
 import org.scalatest.Tag
 import org.scalatestplus.junit.JUnitRunner
+
 import org.apache.parquet.crypto.DecryptionPropertiesFactory
 import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFactory}
 import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
 import org.apache.spark.{DebugFilesystem, SparkConf}
-import org.apache.spark.sql.{CometTestBase, SQLContext, functions}
+import org.apache.spark.sql.{functions, CometTestBase, SQLContext}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SQLTestUtils
+
 import org.apache.comet.{CometConf, IntegrationTestSuite}
 import org.apache.comet.CometConf.{SCAN_NATIVE_COMET, SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT}
 
