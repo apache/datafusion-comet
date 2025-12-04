@@ -25,9 +25,12 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_proto::spark_expression::{expr::ExprStruct, Expr};
 use datafusion_comet_spark_expr::{create_modulo_expr, create_negate_expr, EvalMode};
 
-use crate::execution::operators::ExecutionError;
-use crate::execution::planner::traits::ExpressionBuilder;
-use crate::execution::planner::{from_protobuf_eval_mode, BinaryExprOptions};
+use crate::execution::{
+    operators::ExecutionError,
+    planner::{
+        from_protobuf_eval_mode, traits::ExpressionBuilder, BinaryExprOptions, PhysicalPlanner,
+    },
+};
 
 /// Builder for Add expressions
 pub struct AddBuilder;
@@ -37,7 +40,7 @@ impl ExpressionBuilder for AddBuilder {
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,
-        planner: &crate::execution::planner::PhysicalPlanner,
+        planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         if let Some(ExprStruct::Add(expr)) = &spark_expr.expr_struct {
             let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
@@ -65,7 +68,7 @@ impl ExpressionBuilder for SubtractBuilder {
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,
-        planner: &crate::execution::planner::PhysicalPlanner,
+        planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         if let Some(ExprStruct::Subtract(expr)) = &spark_expr.expr_struct {
             let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
@@ -93,7 +96,7 @@ impl ExpressionBuilder for MultiplyBuilder {
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,
-        planner: &crate::execution::planner::PhysicalPlanner,
+        planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         if let Some(ExprStruct::Multiply(expr)) = &spark_expr.expr_struct {
             let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
@@ -121,7 +124,7 @@ impl ExpressionBuilder for DivideBuilder {
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,
-        planner: &crate::execution::planner::PhysicalPlanner,
+        planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         if let Some(ExprStruct::Divide(expr)) = &spark_expr.expr_struct {
             let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
@@ -149,7 +152,7 @@ impl ExpressionBuilder for IntegralDivideBuilder {
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,
-        planner: &crate::execution::planner::PhysicalPlanner,
+        planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         if let Some(ExprStruct::IntegralDivide(expr)) = &spark_expr.expr_struct {
             let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
@@ -180,7 +183,7 @@ impl ExpressionBuilder for RemainderBuilder {
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,
-        planner: &crate::execution::planner::PhysicalPlanner,
+        planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         if let Some(ExprStruct::Remainder(expr)) = &spark_expr.expr_struct {
             let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
@@ -217,7 +220,7 @@ impl ExpressionBuilder for UnaryMinusBuilder {
         &self,
         spark_expr: &Expr,
         input_schema: SchemaRef,
-        planner: &crate::execution::planner::PhysicalPlanner,
+        planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         if let Some(ExprStruct::UnaryMinus(expr)) = &spark_expr.expr_struct {
             let child = planner.create_expr(expr.child.as_ref().unwrap(), input_schema)?;

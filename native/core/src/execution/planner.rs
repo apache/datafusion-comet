@@ -66,9 +66,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode,
-    BinaryOutputStyle, BloomFilterAgg, BloomFilterMightContain, EvalMode,
-    SparkHour, SparkMinute, SparkSecond,
+    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
+    BloomFilterAgg, BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
 };
 use iceberg::expr::Bind;
 

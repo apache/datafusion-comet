@@ -39,6 +39,7 @@ pub trait ExpressionBuilder: Send + Sync {
 }
 
 /// Trait for building physical operators from Spark protobuf operators
+#[allow(dead_code)]
 pub trait OperatorBuilder: Send + Sync {
     /// Build a Spark plan from a protobuf operator
     fn build(
@@ -125,6 +126,7 @@ pub enum ExpressionType {
 
 /// Enum to identify different operator types for registry dispatch
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
 pub enum OperatorType {
     Scan,
     NativeScan,
