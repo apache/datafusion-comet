@@ -217,7 +217,7 @@ abstract class CometNativeExec extends CometExec {
         // TODO: support native metrics for all operators.
         val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
-        // Go over all all the native scans, in order to see if they need encryption options.
+        // Go over all the native scans, in order to see if they need encryption options.
         // For each relation in a CometNativeScan generate a hadoopConf,
         // for each file path in a relation associate with hadoopConf
         // This is done per native plan, so only count scans until a comet input is reached.

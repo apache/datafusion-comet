@@ -408,54 +408,52 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
         }
       }
     }
+  }
 
-    test("Test different key lengths") {
-      import testImplicits._
+  test("Test different key lengths") {
+    import testImplicits._
 
-      withTempDir { dir =>
-        withSQLConf(
-          DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
-          KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
-            "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
-          KeyToolkit.DATA_KEY_LENGTH_PROPERTY_NAME -> "256",
-          KeyToolkit.KEK_LENGTH_PROPERTY_NAME -> "256",
-          InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
-            s"footerKey: ${footerKey}, key1: ${key1}, key2: ${key2}") {
+    withTempDir { dir =>
+      withSQLConf(
+        DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
+        KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
+          "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
+        KeyToolkit.DATA_KEY_LENGTH_PROPERTY_NAME -> "256",
+        KeyToolkit.KEK_LENGTH_PROPERTY_NAME -> "256",
+        InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
+          s"footerKey: ${footerKey}, key1: ${key1}, key2: ${key2}") {
 
-          val inputDF = spark
-            .range(0, 1000)
-            .map(i => (i, i.toString, i.toFloat))
-            .repartition(5)
-            .toDF("a", "b", "c")
-          val parquetDir = new File(dir, "parquet").getCanonicalPath
-          inputDF.write
-            .option(
-              PropertiesDrivenCryptoFactory.COLUMN_KEYS_PROPERTY_NAME,
-              "key1: a, b; key2: c")
-            .option(PropertiesDrivenCryptoFactory.FOOTER_KEY_PROPERTY_NAME, "footerKey")
-            .parquet(parquetDir)
+        val inputDF = spark
+          .range(0, 1000)
+          .map(i => (i, i.toString, i.toFloat))
+          .repartition(5)
+          .toDF("a", "b", "c")
+        val parquetDir = new File(dir, "parquet").getCanonicalPath
+        inputDF.write
+          .option(PropertiesDrivenCryptoFactory.COLUMN_KEYS_PROPERTY_NAME, "key1: a, b; key2: c")
+          .option(PropertiesDrivenCryptoFactory.FOOTER_KEY_PROPERTY_NAME, "footerKey")
+          .parquet(parquetDir)
 
-          verifyParquetEncrypted(parquetDir)
+        verifyParquetEncrypted(parquetDir)
 
-          val parquetDF = spark.read.parquet(parquetDir)
-          assert(parquetDF.inputFiles.nonEmpty)
-          val readDataset = parquetDF.select("a", "b", "c")
+        val parquetDF = spark.read.parquet(parquetDir)
+        assert(parquetDF.inputFiles.nonEmpty)
+        val readDataset = parquetDF.select("a", "b", "c")
 
-          // native_datafusion and native_iceberg_compat fall back due to Arrow-rs not
-          // supporting other key lengths
-          if (CometConf.COMET_ENABLED.get(conf) && CometConf.COMET_NATIVE_SCAN_IMPL.get(
-              conf) == SCAN_NATIVE_COMET) {
-            checkSparkAnswerAndOperator(readDataset)
-          } else {
-            checkAnswer(readDataset, inputDF)
-          }
+        // native_datafusion and native_iceberg_compat fall back due to Arrow-rs not
+        // supporting other key lengths
+        if (CometConf.COMET_ENABLED.get(conf) && CometConf.COMET_NATIVE_SCAN_IMPL.get(
+            conf) == SCAN_NATIVE_COMET) {
+          checkSparkAnswerAndOperator(readDataset)
+        } else {
+          checkAnswer(readDataset, inputDF)
         }
       }
     }
   }
 
   protected override def sparkConf: SparkConf = {
-    val conf = new SparkConf()
+    val conf = super.sparkConf
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
     conf
   }
