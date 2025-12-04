@@ -205,7 +205,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
         val newChildren = plan.children.map {
           case b: BroadcastExchangeExec =>
-            convertToComet(b, CometBroadcastExchangeExec).getOrElse(b)
+            convertToCometIfAllChildrenAreNative(b, CometBroadcastExchangeExec).getOrElse(b)
           case other => other
         }
         if (!newChildren.exists(_.isInstanceOf[BroadcastExchangeExec])) {

@@ -46,7 +46,7 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometRuntimeException, ConfigEntry}
-import org.apache.comet.serde.{Compatible, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.ShimCometBroadcastExchangeExec
 
@@ -268,14 +268,6 @@ object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED)
-
-  override def getSupportLevel(b: BroadcastExchangeExec): SupportLevel = {
-    if (b.child.isInstanceOf[CometNativeExec]) {
-      Compatible()
-    } else {
-      Unsupported(Some("Child is not native"))
-    }
-  }
 
   override def createExec(
       nativeOp: OperatorOuterClass.Operator,
