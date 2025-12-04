@@ -398,12 +398,12 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
         // If we add another comet aggregate after the union, we see the need for the
         // foreachUntilCometInput() in operator.scala
         // as we would error on multiple native scan execs despite no longer being in the same plan at all
-        val aggDf = unionDF.agg(functions.sum("id"))
+        val filterDf = unionDF.filter(functions.col("id") % 2 === 0)
 
         if (CometConf.COMET_ENABLED.get(conf)) {
-          checkSparkAnswerAndOperator(aggDf)
+          checkSparkAnswerAndOperator(filterDf)
         } else {
-          checkSparkAnswer(aggDf)
+          checkSparkAnswer(filterDf)
         }
       }
     }
