@@ -359,7 +359,8 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
         KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
           "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
         InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
-          s"footerKey: ${footerKey}, key1: ${key1}, key2: ${key2}") {
+          s"footerKey: ${footerKey}, key1: ${key1}, key2: ${key2}",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
 
         // Write first file with key1
         val inputDF1 = spark
@@ -398,54 +399,56 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
         // If we add another comet aggregate after the union, we see the need for the
         // foreachUntilCometInput() in operator.scala
         // as we would error on multiple native scan execs despite no longer being in the same plan at all
-        val filterDf = unionDF.filter(functions.col("id") % 2 === 0)
+        val aggDf = unionDF.agg(functions.sum("id"))
 
         if (CometConf.COMET_ENABLED.get(conf)) {
-          checkSparkAnswerAndOperator(filterDf)
+          checkSparkAnswerAndOperator(aggDf)
         } else {
-          checkSparkAnswer(filterDf)
+          checkSparkAnswer(aggDf)
         }
       }
     }
-  }
 
-  test("Test different key lengths") {
-    import testImplicits._
+    test("Test different key lengths") {
+      import testImplicits._
 
-    withTempDir { dir =>
-      withSQLConf(
-        DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
-        KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
-          "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
-        KeyToolkit.DATA_KEY_LENGTH_PROPERTY_NAME -> "256",
-        KeyToolkit.KEK_LENGTH_PROPERTY_NAME -> "256",
-        InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
-          s"footerKey: ${footerKey}, key1: ${key1}, key2: ${key2}") {
+      withTempDir { dir =>
+        withSQLConf(
+          DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
+          KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
+            "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
+          KeyToolkit.DATA_KEY_LENGTH_PROPERTY_NAME -> "256",
+          KeyToolkit.KEK_LENGTH_PROPERTY_NAME -> "256",
+          InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
+            s"footerKey: ${footerKey}, key1: ${key1}, key2: ${key2}") {
 
-        val inputDF = spark
-          .range(0, 1000)
-          .map(i => (i, i.toString, i.toFloat))
-          .repartition(5)
-          .toDF("a", "b", "c")
-        val parquetDir = new File(dir, "parquet").getCanonicalPath
-        inputDF.write
-          .option(PropertiesDrivenCryptoFactory.COLUMN_KEYS_PROPERTY_NAME, "key1: a, b; key2: c")
-          .option(PropertiesDrivenCryptoFactory.FOOTER_KEY_PROPERTY_NAME, "footerKey")
-          .parquet(parquetDir)
+          val inputDF = spark
+            .range(0, 1000)
+            .map(i => (i, i.toString, i.toFloat))
+            .repartition(5)
+            .toDF("a", "b", "c")
+          val parquetDir = new File(dir, "parquet").getCanonicalPath
+          inputDF.write
+            .option(
+              PropertiesDrivenCryptoFactory.COLUMN_KEYS_PROPERTY_NAME,
+              "key1: a, b; key2: c")
+            .option(PropertiesDrivenCryptoFactory.FOOTER_KEY_PROPERTY_NAME, "footerKey")
+            .parquet(parquetDir)
 
-        verifyParquetEncrypted(parquetDir)
+          verifyParquetEncrypted(parquetDir)
 
-        val parquetDF = spark.read.parquet(parquetDir)
-        assert(parquetDF.inputFiles.nonEmpty)
-        val readDataset = parquetDF.select("a", "b", "c")
+          val parquetDF = spark.read.parquet(parquetDir)
+          assert(parquetDF.inputFiles.nonEmpty)
+          val readDataset = parquetDF.select("a", "b", "c")
 
-        // native_datafusion and native_iceberg_compat fall back due to Arrow-rs not
-        // supporting other key lengths
-        if (CometConf.COMET_ENABLED.get(conf) && CometConf.COMET_NATIVE_SCAN_IMPL.get(
-            conf) == SCAN_NATIVE_COMET) {
-          checkSparkAnswerAndOperator(readDataset)
-        } else {
-          checkAnswer(readDataset, inputDF)
+          // native_datafusion and native_iceberg_compat fall back due to Arrow-rs not
+          // supporting other key lengths
+          if (CometConf.COMET_ENABLED.get(conf) && CometConf.COMET_NATIVE_SCAN_IMPL.get(
+              conf) == SCAN_NATIVE_COMET) {
+            checkSparkAnswerAndOperator(readDataset)
+          } else {
+            checkAnswer(readDataset, inputDF)
+          }
         }
       }
     }
