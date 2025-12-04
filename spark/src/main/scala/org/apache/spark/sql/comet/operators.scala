@@ -219,10 +219,12 @@ abstract class CometNativeExec extends CometExec {
 
         // For each relation in a CometNativeScan generate a hadoopConf,
         // for each file path in a relation associate with hadoopConf
-        val cometNativeScans: Seq[CometNativeScanExec] = this
-          .collectLeaves()
-          .filter(_.isInstanceOf[CometNativeScanExec])
-          .map(_.asInstanceOf[CometNativeScanExec])
+        // This is done per native plan, so only count scans until a comet input is reached.
+        val cometNativeScans = mutable.ArrayBuffer.empty[CometNativeScanExec]
+        foreachUntilCometInput(this) {
+          case scan: CometNativeScanExec => cometNativeScans += scan
+          case _ => // no-op
+        }
         assert(
           cometNativeScans.size <= 1,
           "We expect one native scan in a Comet plan since we will broadcast one hadoopConf.")
