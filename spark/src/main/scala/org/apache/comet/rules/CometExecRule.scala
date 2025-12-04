@@ -40,7 +40,6 @@ import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, Unsupported}
-import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator._
 import org.apache.comet.serde.operator.CometDataWritingCommand
 
@@ -205,15 +204,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // broadcast exchange is forced to be enabled by Comet config.
       case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
         val newChildren = plan.children.map {
-          case b: BroadcastExchangeExec
-              if isCometNative(b.child) &&
-                CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) =>
-            operator2Proto(b) match {
-              case Some(nativeOp) =>
-                val cometOp = CometBroadcastExchangeExec(b, b.output, b.mode, b.child)
-                CometSinkPlaceHolder(nativeOp, b, cometOp)
-              case None => b
-            }
+          case b: BroadcastExchangeExec =>
+            convertToComet(b, CometBroadcastExchangeExec).getOrElse(b)
           case other => other
         }
         if (!newChildren.exists(_.isInstanceOf[BroadcastExchangeExec])) {
@@ -453,59 +445,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           firstNativeOp = true
           op
       }
-    }
-  }
-
-  /**
-   * Fallback for handling sinks that have not been handled explicitly. This method should
-   * eventually be removed once CometExecRule fully uses the operator serde framework.
-   */
-  private def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
-
-    def isCometSink(op: SparkPlan): Boolean = {
-      op match {
-        case _: CometSparkToColumnarExec => true
-        case _: CometSinkPlaceHolder => true
-        case _ => false
-      }
-    }
-
-    def isExchangeSink(op: SparkPlan): Boolean = {
-      op match {
-        case _: ShuffleExchangeExec => true
-        case ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) => true
-        case ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
-          true
-        case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
-        case BroadcastQueryStageExec(
-              _,
-              ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
-              _) =>
-          true
-        case _: BroadcastExchangeExec => true
-        case _ => false
-      }
-    }
-
-    val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
-    childOp.foreach(builder.addChildren)
-
-    op match {
-      case op if isExchangeSink(op) =>
-        CometExchangeSink.convert(op, builder, childOp: _*)
-
-      case op if isCometSink(op) =>
-        CometScanWrapper.convert(op, builder, childOp: _*)
-
-      case _ =>
-        // Emit warning if:
-        //  1. it is not Spark shuffle operator, which is handled separately
-        //  2. it is not a Comet operator
-        if (!op.nodeName.contains("Comet") &&
-          !op.isInstanceOf[ShuffleExchangeExec]) {
-          withInfo(op, s"unsupported Spark operator: ${op.nodeName}")
-        }
-        None
     }
   }
 
