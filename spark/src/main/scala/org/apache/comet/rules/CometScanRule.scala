@@ -265,6 +265,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         }
 
       case scan: CSVScan =>
+
         CometBatchScanExec(scanExec, Seq.empty)
 
       // Iceberg scan - patched version implementing SupportsComet interface
