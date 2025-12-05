@@ -102,6 +102,17 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
   private def isCometNative(op: SparkPlan): Boolean = op.isInstanceOf[CometNativeExec]
 
+  /**
+   * Check if a SparkPlan is a Comet exchange (including reused exchanges).
+   */
+  private def isCometExchange(exchange: SparkPlan): Boolean = exchange match {
+    case _: CometBroadcastExchangeExec => true
+    case _: CometShuffleExchangeExec => true
+    case ReusedExchangeExec(_, _: CometBroadcastExchangeExec) => true
+    case ReusedExchangeExec(_, _: CometShuffleExchangeExec) => true
+    case _ => false
+  }
+
   // spotless:off
 
   /**
@@ -189,13 +200,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         tryConvert(op, CometDataWritingCommand)
 
       // For AQE broadcast stage on a Comet broadcast exchange
-      case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
-        tryConvert(s, CometExchangeSink)
-
-      case s @ BroadcastQueryStageExec(
-            _,
-            ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
-            _) =>
+      case s @ BroadcastQueryStageExec(_, exchange, _) if isCometExchange(exchange) =>
         tryConvert(s, CometExchangeSink)
 
       // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
@@ -222,13 +227,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
 
       // For AQE shuffle stage on a Comet shuffle exchange
-      case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
-        tryConvert(s, CometExchangeSink)
-
-      // For AQE shuffle stage on a reused Comet shuffle exchange
       // Note that we don't need to handle `ReusedExchangeExec` for non-AQE case, because
       // the query plan won't be re-optimized/planned in non-AQE mode.
-      case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
+      case s @ ShuffleQueryStageExec(_, exchange, _) if isCometExchange(exchange) =>
         tryConvert(s, CometExchangeSink)
 
       case s: ShuffleExchangeExec =>
