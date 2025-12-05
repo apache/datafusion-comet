@@ -49,6 +49,8 @@ message Operator {
     Window window = 110;
     NativeScan native_scan = 111;
     IcebergScan iceberg_scan = 112;
+    ParquetWriter parquet_writer = 113;
+    Explode explode = 114;
   }
 }
 
@@ -236,6 +238,19 @@ message ShuffleWriter {
   bool tracing_enabled = 7;
 }
 
+message ParquetWriter {
+  string output_path = 1;
+  CompressionCodec compression = 2;
+  repeated string column_names = 4;
+  // Working directory for temporary files (used by FileCommitProtocol)
+  // If not set, files are written directly to output_path
+  optional string work_dir = 5;
+  // Job ID for tracking this write operation
+  optional string job_id = 6;
+  // Task attempt ID for this specific task
+  optional int32 task_attempt_id = 7;
+}
+
 enum AggregateMode {
   Partial = 0;
   Final = 1;
@@ -244,6 +259,15 @@ enum AggregateMode {
 message Expand {
   repeated spark.spark_expression.Expr project_list = 1;
   int32 num_expr_per_project = 3;
+}
+
+message Explode {
+  // The array expression to explode into multiple rows
+  spark.spark_expression.Expr child = 1;
+  // Whether this is explode_outer (produces null row for empty/null arrays)
+  bool outer = 2;
+  // Expressions for other columns to project alongside the exploded values
+  repeated spark.spark_expression.Expr project_list = 3;
 }
 
 message HashJoin {

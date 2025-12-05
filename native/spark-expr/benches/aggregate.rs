@@ -31,8 +31,8 @@ use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_comet_spark_expr::AvgDecimal;
 use datafusion_comet_spark_expr::SumDecimal;
+use datafusion_comet_spark_expr::{AvgDecimal, EvalMode};
 use futures::StreamExt;
 use std::hint::black_box;
 use std::sync::Arc;
@@ -97,7 +97,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     group.bench_function("sum_decimal_comet", |b| {
         let comet_sum_decimal = Arc::new(AggregateUDF::new_from_impl(
-            SumDecimal::try_new(DataType::Decimal128(38, 10)).unwrap(),
+            SumDecimal::try_new(DataType::Decimal128(38, 10), EvalMode::Legacy).unwrap(),
         ));
         b.to_async(&rt).iter(|| {
             black_box(agg_test(
