@@ -18,6 +18,7 @@
 //! Native DataFusion expressions
 
 pub mod arithmetic;
+pub mod comparison;
 pub mod subquery;
 
 pub use datafusion_comet_spark_expr::EvalMode;

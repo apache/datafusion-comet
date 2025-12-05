@@ -252,48 +252,6 @@ impl PhysicalPlanner {
 
         // Fall back to the original monolithic match for other expressions
         match spark_expr.expr_struct.as_ref().unwrap() {
-            ExprStruct::Eq(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::Eq;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::Neq(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::NotEq;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::Gt(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::Gt;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::GtEq(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::GtEq;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::Lt(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::Lt;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::LtEq(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::LtEq;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
             ExprStruct::Bound(bound) => {
                 let idx = bound.index as usize;
                 if idx >= input_schema.fields().len() {
@@ -558,20 +516,6 @@ impl PhysicalPlanner {
                     ))),
                     _ => func,
                 }
-            }
-            ExprStruct::EqNullSafe(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::IsNotDistinctFrom;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::NeqNullSafe(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::IsDistinctFrom;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
             }
             ExprStruct::BitwiseAnd(expr) => {
                 let left =

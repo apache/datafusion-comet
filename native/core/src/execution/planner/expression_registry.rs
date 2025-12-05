@@ -82,8 +82,10 @@ impl ExpressionRegistry {
         // Register arithmetic expressions
         self.register_arithmetic_expressions();
 
+        // Register comparison expressions
+        self.register_comparison_expressions();
+
         // TODO: Register other expression categories in future phases
-        // self.register_comparison_expressions();
         // self.register_string_expressions();
         // self.register_temporal_expressions();
         // etc.
@@ -109,6 +111,28 @@ impl ExpressionRegistry {
             .insert(ExpressionType::Remainder, Box::new(RemainderBuilder));
         self.builders
             .insert(ExpressionType::UnaryMinus, Box::new(UnaryMinusBuilder));
+    }
+
+    /// Register comparison expression builders
+    fn register_comparison_expressions(&mut self) {
+        use crate::execution::expressions::comparison::*;
+
+        self.builders
+            .insert(ExpressionType::Eq, Box::new(EqBuilder));
+        self.builders
+            .insert(ExpressionType::Neq, Box::new(NeqBuilder));
+        self.builders
+            .insert(ExpressionType::Lt, Box::new(LtBuilder));
+        self.builders
+            .insert(ExpressionType::LtEq, Box::new(LtEqBuilder));
+        self.builders
+            .insert(ExpressionType::Gt, Box::new(GtBuilder));
+        self.builders
+            .insert(ExpressionType::GtEq, Box::new(GtEqBuilder));
+        self.builders
+            .insert(ExpressionType::EqNullSafe, Box::new(EqNullSafeBuilder));
+        self.builders
+            .insert(ExpressionType::NeqNullSafe, Box::new(NeqNullSafeBuilder));
     }
 
     /// Extract expression type from Spark protobuf expression
