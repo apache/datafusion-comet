@@ -50,31 +50,31 @@ object CometExecRule {
    */
   val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
     Map(
-      classOf[ProjectExec] -> CometProjectExec,
-      classOf[FilterExec] -> CometFilterExec,
-      classOf[LocalLimitExec] -> CometLocalLimitExec,
-      classOf[GlobalLimitExec] -> CometGlobalLimitExec,
+      classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoinExec,
+      classOf[DataWritingCommandExec] -> CometDataWritingCommand,
       classOf[ExpandExec] -> CometExpandExec,
+      classOf[FilterExec] -> CometFilterExec,
+      classOf[ProjectExec] -> CometProjectExec,
+      classOf[GlobalLimitExec] -> CometGlobalLimitExec,
+      classOf[LocalLimitExec] -> CometLocalLimitExec,
+      classOf[LocalTableScanExec] -> CometLocalTableScanExec,
       classOf[HashAggregateExec] -> CometHashAggregateExec,
       classOf[ObjectHashAggregateExec] -> CometObjectHashAggregateExec,
-      classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoinExec,
       classOf[ShuffledHashJoinExec] -> CometHashJoinExec,
-      classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
+      classOf[ShuffleExchangeExec] -> CometShuffleExchangeExec,
       classOf[SortExec] -> CometSortExec,
-      classOf[LocalTableScanExec] -> CometLocalTableScanExec,
+      classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[WindowExec] -> CometWindowExec)
 
   /**
    * Sinks that have a native plan of ScanExec.
    */
-  val sinks: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
+  val sinks: Map[Class[_ <: SparkPlan], CometSink[_]] =
     Map(
       classOf[CoalesceExec] -> CometCoalesceExec,
       classOf[CollectLimitExec] -> CometCollectLimitExec,
       classOf[TakeOrderedAndProjectExec] -> CometTakeOrderedAndProjectExec,
-      classOf[UnionExec] -> CometUnionExec,
-      classOf[DataWritingCommandExec] -> CometDataWritingCommand,
-      classOf[ShuffleExchangeExec] -> CometShuffleExchangeExec)
+      classOf[UnionExec] -> CometUnionExec)
 
   val allExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] = nativeExecs ++ sinks
 
