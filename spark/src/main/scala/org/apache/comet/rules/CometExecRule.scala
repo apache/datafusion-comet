@@ -244,9 +244,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         convertToCometIfAllChildrenAreNative(s, CometExchangeSink).getOrElse(s)
 
       case s: ShuffleExchangeExec =>
-        // try native shuffle first, then columnar shuffle, then fall back to Spark
-        // if neither are supported
-        tryNativeShuffle(s).orElse(tryColumnarShuffle(s)).getOrElse(s)
+        convertToComet(s, CometShuffleExchangeExec).getOrElse(s)
 
       case op =>
         val handler = allExecs
@@ -281,39 +279,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     plan.transformUp { case op =>
       convertNode(op)
     }
-  }
-
-  private def tryNativeShuffle(s: ShuffleExchangeExec): Option[SparkPlan] = {
-    Some(s)
-      .filter(CometShuffleExchangeExec.nativeShuffleSupported)
-      .filter(_.children.forall(_.isInstanceOf[CometNativeExec]))
-      .flatMap(_ => operator2Proto(s))
-      .map { nativeOp =>
-        // Switch to use Decimal128 regardless of precision, since Arrow native execution
-        // doesn't support Decimal32 and Decimal64 yet.
-        conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
-        val cometOp = CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
-        CometSinkPlaceHolder(nativeOp, s, cometOp)
-      }
-  }
-
-  private def tryColumnarShuffle(s: ShuffleExchangeExec): Option[SparkPlan] = {
-    // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
-    // (if configured).
-    // If the child of ShuffleExchangeExec is also a ShuffleExchangeExec, we should not
-    // convert it to CometColumnarShuffle,
-    Some(s)
-      .filter(CometShuffleExchangeExec.columnarShuffleSupported)
-      .flatMap(_ => operator2Proto(s))
-      .flatMap { nativeOp =>
-        s.child match {
-          case n if n.isInstanceOf[CometNativeExec] || !n.supportsColumnar =>
-            val cometOp = CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
-            Some(CometSinkPlaceHolder(nativeOp, s, cometOp))
-          case _ =>
-            None
-        }
-      }
   }
 
   private def normalizePlan(plan: SparkPlan): SparkPlan = {

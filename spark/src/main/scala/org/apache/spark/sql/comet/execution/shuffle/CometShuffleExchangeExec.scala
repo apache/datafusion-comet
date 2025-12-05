@@ -29,12 +29,12 @@ import org.apache.spark.internal.config
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.shuffle.sort.SortShuffleManager
-import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.{InternalRow, SQLConfHelper}
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
-import org.apache.spark.sql.comet.{CometMetricNode, CometPlan, CometSinkPlaceHolder}
+import org.apache.spark.sql.comet.{CometMetricNode, CometNativeExec, CometPlan, CometSinkPlaceHolder}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
@@ -51,7 +51,8 @@ import com.google.common.base.Objects
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.{COMET_EXEC_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleManagerEnabled, withInfo}
-import org.apache.comet.serde.QueryPlanSerde
+import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
+import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.ShimCometShuffleExchangeExec
 
 /**
@@ -215,7 +216,40 @@ case class CometShuffleExchangeExec(
     Iterator(outputPartitioning, shuffleOrigin, shuffleType, child) ++ Iterator(s"[plan_id=$id]")
 }
 
-object CometShuffleExchangeExec extends ShimCometShuffleExchangeExec {
+object CometShuffleExchangeExec
+    extends CometSink[ShuffleExchangeExec]
+    with ShimCometShuffleExchangeExec
+    with SQLConfHelper {
+
+  override def getSupportLevel(op: ShuffleExchangeExec): SupportLevel = {
+    if (nativeShuffleSupported(op) || columnarShuffleSupported(op)) {
+      Compatible()
+    } else {
+      Unsupported()
+    }
+  }
+
+  override def createExec(
+      nativeOp: OperatorOuterClass.Operator,
+      op: ShuffleExchangeExec): CometNativeExec = {
+    if (nativeShuffleSupported(op) && op.children.forall(_.isInstanceOf[CometNativeExec])) {
+      // Switch to use Decimal128 regardless of precision, since Arrow native execution
+      // doesn't support Decimal32 and Decimal64 yet.
+      conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
+      CometSinkPlaceHolder(
+        nativeOp,
+        op,
+        CometShuffleExchangeExec(op, shuffleType = CometNativeShuffle))
+
+    } else if (columnarShuffleSupported(op)) {
+      CometSinkPlaceHolder(
+        nativeOp,
+        op,
+        CometShuffleExchangeExec(op, shuffleType = CometColumnarShuffle))
+    } else {
+      throw new IllegalStateException()
+    }
+  }
 
   /**
    * Whether the given Spark partitioning is supported by Comet native shuffle.
