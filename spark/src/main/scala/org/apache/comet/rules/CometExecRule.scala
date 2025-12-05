@@ -38,7 +38,7 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometConf.COMET_EXEC_SHUFFLE_ENABLED
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
@@ -211,15 +211,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // broadcast exchange is forced to be enabled by Comet config.
       case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
         val newChildren = plan.children.map {
-          case b: BroadcastExchangeExec
-              if isCometNative(b.child) &&
-                CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) =>
-            operator2Proto(b) match {
-              case Some(nativeOp) =>
-                val cometOp = CometBroadcastExchangeExec(b, b.output, b.mode, b.child)
-                CometSinkPlaceHolder(nativeOp, b, cometOp)
-              case None => b
-            }
+          case b: BroadcastExchangeExec =>
+            convertToCometIfAllChildrenAreNative(b, CometBroadcastExchangeExec).getOrElse(b)
           case other => other
         }
         if (!newChildren.exists(_.isInstanceOf[BroadcastExchangeExec])) {
@@ -227,11 +220,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           if (isCometNative(newPlan) || isCometBroadCastForceEnabled(conf)) {
             newPlan
           } else {
-            if (isCometNative(newPlan)) {
-              val reason =
-                getCometBroadcastNotEnabledReason(conf).getOrElse("no reason available")
-              withInfo(plan, s"Broadcast is not enabled: $reason")
-            }
+            newPlan
+              .getTagValue(CometExplainInfo.EXTENSION_INFO)
+              .foreach(reasons => withInfos(plan, reasons))
             plan
           }
         } else {

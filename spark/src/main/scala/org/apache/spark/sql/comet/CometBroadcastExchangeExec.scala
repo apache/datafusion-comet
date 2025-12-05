@@ -36,7 +36,7 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ReusedExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -45,7 +45,9 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
 
-import org.apache.comet.CometRuntimeException
+import org.apache.comet.{CometConf, CometRuntimeException, ConfigEntry}
+import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.ShimCometBroadcastExchangeExec
 
 /**
@@ -262,7 +264,24 @@ case class CometBroadcastExchangeExec(
     copy(child = newChild)
 }
 
-object CometBroadcastExchangeExec {
+object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
+
+  /**
+   * Exchange data is FFI safe because there is no use of mutable buffers involved.
+   *
+   * Source of broadcast exchange batches is ArrowStreamReader.
+   */
+  override def isFfiSafe: Boolean = true
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED)
+
+  override def createExec(
+      nativeOp: OperatorOuterClass.Operator,
+      b: BroadcastExchangeExec): CometNativeExec = {
+    CometSinkPlaceHolder(nativeOp, b, CometBroadcastExchangeExec(b, b.output, b.mode, b.child))
+  }
+
   private[comet] val executionContext = ExecutionContext.fromExecutorService(
     ThreadUtils.newDaemonCachedThreadPool(
       "comet-broadcast-exchange",
