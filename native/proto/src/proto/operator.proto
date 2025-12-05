@@ -50,6 +50,7 @@ message Operator {
     NativeScan native_scan = 111;
     IcebergScan iceberg_scan = 112;
     ParquetWriter parquet_writer = 113;
+    Explode explode = 114;
   }
 }
 
@@ -258,6 +259,15 @@ enum AggregateMode {
 message Expand {
   repeated spark.spark_expression.Expr project_list = 1;
   int32 num_expr_per_project = 3;
+}
+
+message Explode {
+  // The array expression to explode into multiple rows
+  spark.spark_expression.Expr child = 1;
+  // Whether this is explode_outer (produces null row for empty/null arrays)
+  bool outer = 2;
+  // Expressions for other columns to project alongside the exploded values
+  repeated spark.spark_expression.Expr project_list = 3;
 }
 
 message HashJoin {
