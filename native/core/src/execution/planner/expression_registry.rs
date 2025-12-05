@@ -34,13 +34,19 @@ pub struct ExpressionRegistry {
 
 impl ExpressionRegistry {
     /// Create a new expression registry with all builders registered
-    pub fn new() -> Self {
+    fn new() -> Self {
         let mut registry = Self {
             builders: HashMap::new(),
         };
 
         registry.register_all_expressions();
         registry
+    }
+
+    /// Get the global shared registry instance
+    pub fn global() -> &'static ExpressionRegistry {
+        static REGISTRY: std::sync::OnceLock<ExpressionRegistry> = std::sync::OnceLock::new();
+        REGISTRY.get_or_init(ExpressionRegistry::new)
     }
 
     /// Check if the registry can handle a given expression type
@@ -182,11 +188,5 @@ impl ExpressionRegistry {
                 "Expression struct is None".to_string(),
             )),
         }
-    }
-}
-
-impl Default for ExpressionRegistry {
-    fn default() -> Self {
-        Self::new()
     }
 }

@@ -157,7 +157,6 @@ pub struct PhysicalPlanner {
     exec_context_id: i64,
     partition: i32,
     session_ctx: Arc<SessionContext>,
-    expression_registry: ExpressionRegistry,
 }
 
 impl Default for PhysicalPlanner {
@@ -172,7 +171,6 @@ impl PhysicalPlanner {
             exec_context_id: TEST_EXEC_CONTEXT_ID,
             session_ctx,
             partition,
-            expression_registry: ExpressionRegistry::new(),
         }
     }
 
@@ -181,7 +179,6 @@ impl PhysicalPlanner {
             exec_context_id,
             partition: self.partition,
             session_ctx: Arc::clone(&self.session_ctx),
-            expression_registry: self.expression_registry,
         }
     }
 
@@ -249,10 +246,8 @@ impl PhysicalPlanner {
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         // Try to use the modular registry first - this automatically handles any registered expression types
-        if self.expression_registry.can_handle(spark_expr) {
-            return self
-                .expression_registry
-                .create_expr(spark_expr, input_schema, self);
+        if ExpressionRegistry::global().can_handle(spark_expr) {
+            return ExpressionRegistry::global().create_expr(spark_expr, input_schema, self);
         }
 
         // Fall back to the original monolithic match for other expressions
