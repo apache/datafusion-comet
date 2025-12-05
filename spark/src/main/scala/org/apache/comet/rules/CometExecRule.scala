@@ -22,11 +22,10 @@ package org.apache.comet.rules
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
-import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec, CometShuffleManager}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
@@ -35,14 +34,12 @@ import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
-import org.apache.comet.CometConf.COMET_EXEC_SHUFFLE_ENABLED
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, QueryPlanSerde, Unsupported}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator._
 import org.apache.comet.serde.operator.CometDataWritingCommand
@@ -92,20 +89,18 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
     plan.transformUp {
-      case s: ShuffleExchangeExec if nativeShuffleSupported(s) =>
+      case s: ShuffleExchangeExec if CometShuffleExchangeExec.nativeShuffleSupported(s) =>
         // Switch to use Decimal128 regardless of precision, since Arrow native execution
         // doesn't support Decimal32 and Decimal64 yet.
         conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
         CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
 
-      case s: ShuffleExchangeExec if columnarShuffleSupported(s) =>
+      case s: ShuffleExchangeExec if CometShuffleExchangeExec.columnarShuffleSupported(s) =>
         // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
         // (if configured)
         CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
     }
   }
-
-  private def isCometPlan(op: SparkPlan): Boolean = op.isInstanceOf[CometPlan]
 
   private def isCometNative(op: SparkPlan): Boolean = op.isInstanceOf[CometNativeExec]
 
@@ -249,9 +244,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         convertToCometIfAllChildrenAreNative(s, CometExchangeSink).getOrElse(s)
 
       case s: ShuffleExchangeExec =>
-        // try native shuffle first, then columnar shuffle, then fall back to Spark
-        // if neither are supported
-        tryNativeShuffle(s).orElse(tryColumnarShuffle(s)).getOrElse(s)
+        convertToComet(s, CometShuffleExchangeExec).getOrElse(s)
 
       case op =>
         val handler = allExecs
@@ -286,39 +279,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     plan.transformUp { case op =>
       convertNode(op)
     }
-  }
-
-  private def tryNativeShuffle(s: ShuffleExchangeExec): Option[SparkPlan] = {
-    Some(s)
-      .filter(nativeShuffleSupported)
-      .filter(_.children.forall(_.isInstanceOf[CometNativeExec]))
-      .flatMap(_ => operator2Proto(s))
-      .map { nativeOp =>
-        // Switch to use Decimal128 regardless of precision, since Arrow native execution
-        // doesn't support Decimal32 and Decimal64 yet.
-        conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
-        val cometOp = CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
-        CometSinkPlaceHolder(nativeOp, s, cometOp)
-      }
-  }
-
-  private def tryColumnarShuffle(s: ShuffleExchangeExec): Option[SparkPlan] = {
-    // Columnar shuffle for regular Spark operators (not Comet) and Comet operators
-    // (if configured).
-    // If the child of ShuffleExchangeExec is also a ShuffleExchangeExec, we should not
-    // convert it to CometColumnarShuffle,
-    Some(s)
-      .filter(columnarShuffleSupported)
-      .flatMap(_ => operator2Proto(s))
-      .flatMap { nativeOp =>
-        s.child match {
-          case n if n.isInstanceOf[CometNativeExec] || !n.supportsColumnar =>
-            val cometOp = CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
-            Some(CometSinkPlaceHolder(nativeOp, s, cometOp))
-          case _ =>
-            None
-        }
-      }
   }
 
   private def normalizePlan(plan: SparkPlan): SparkPlan = {
@@ -494,269 +454,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           firstNativeOp = true
           op
       }
-    }
-  }
-
-  /**
-   * Returns true if a given spark plan is Comet shuffle operator.
-   */
-  private def isShuffleOperator(op: SparkPlan): Boolean = {
-    op match {
-      case op: ShuffleQueryStageExec if op.plan.isInstanceOf[CometShuffleExchangeExec] => true
-      case _: CometShuffleExchangeExec => true
-      case op: CometSinkPlaceHolder => isShuffleOperator(op.child)
-      case _ => false
-    }
-  }
-
-  def isCometShuffleEnabledWithInfo(op: SparkPlan): Boolean = {
-    if (!COMET_EXEC_SHUFFLE_ENABLED.get(op.conf)) {
-      withInfo(
-        op,
-        s"Comet shuffle is not enabled: ${COMET_EXEC_SHUFFLE_ENABLED.key} is not enabled")
-      false
-    } else if (!isCometShuffleManagerEnabled(op.conf)) {
-      withInfo(op, s"spark.shuffle.manager is not set to ${classOf[CometShuffleManager].getName}")
-      false
-    } else {
-      true
-    }
-  }
-
-  /**
-   * Whether the given Spark partitioning is supported by Comet native shuffle.
-   */
-  private def nativeShuffleSupported(s: ShuffleExchangeExec): Boolean = {
-
-    /**
-     * Determine which data types are supported as partition columns in native shuffle.
-     *
-     * For HashPartitioning this defines the key that determines how data should be collocated for
-     * operations like `groupByKey`, `reduceByKey`, or `join`. Native code does not support
-     * hashing complex types, see hash_funcs/utils.rs
-     */
-    def supportedHashPartitioningDataType(dt: DataType): Boolean = dt match {
-      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType =>
-        true
-      case _ =>
-        false
-    }
-
-    /**
-     * Determine which data types are supported as partition columns in native shuffle.
-     *
-     * For RangePartitioning this defines the key that determines how data should be collocated
-     * for operations like `orderBy`, `repartitionByRange`. Native code does not support sorting
-     * complex types.
-     */
-    def supportedRangePartitioningDataType(dt: DataType): Boolean = dt match {
-      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType =>
-        true
-      case _ =>
-        false
-    }
-
-    /**
-     * Determine which data types are supported as data columns in native shuffle.
-     *
-     * Native shuffle relies on the Arrow IPC writer to serialize batches to disk, so it should
-     * support all types that Comet supports.
-     */
-    def supportedSerializableDataType(dt: DataType): Boolean = dt match {
-      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType =>
-        true
-      case StructType(fields) =>
-        fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType))
-      case ArrayType(elementType, _) =>
-        supportedSerializableDataType(elementType)
-      case MapType(keyType, valueType, _) =>
-        supportedSerializableDataType(keyType) && supportedSerializableDataType(valueType)
-      case _ =>
-        false
-    }
-
-    if (!isCometShuffleEnabledWithInfo(s)) {
-      return false
-    }
-
-    if (!isCometNativeShuffleMode(s.conf)) {
-      withInfo(s, "Comet native shuffle not enabled")
-      return false
-    }
-
-    if (!isCometPlan(s.child)) {
-      // we do not need to report a fallback reason if the child plan is not a Comet plan
-      return false
-    }
-
-    val inputs = s.child.output
-
-    for (input <- inputs) {
-      if (!supportedSerializableDataType(input.dataType)) {
-        withInfo(s, s"unsupported shuffle data type ${input.dataType} for input $input")
-        return false
-      }
-    }
-
-    val partitioning = s.outputPartitioning
-    val conf = SQLConf.get
-    partitioning match {
-      case HashPartitioning(expressions, _) =>
-        var supported = true
-        if (!CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.get(conf)) {
-          withInfo(
-            s,
-            s"${CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.key} is disabled")
-          supported = false
-        }
-        for (expr <- expressions) {
-          if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
-            withInfo(s, s"unsupported hash partitioning expression: $expr")
-            supported = false
-            // We don't short-circuit in case there is more than one unsupported expression
-            // to provide info for.
-          }
-        }
-        for (dt <- expressions.map(_.dataType).distinct) {
-          if (!supportedHashPartitioningDataType(dt)) {
-            withInfo(s, s"unsupported hash partitioning data type for native shuffle: $dt")
-            supported = false
-          }
-        }
-        supported
-      case SinglePartition =>
-        // we already checked that the input types are supported
-        true
-      case RangePartitioning(orderings, _) =>
-        if (!CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)) {
-          withInfo(
-            s,
-            s"${CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key} is disabled")
-          return false
-        }
-        var supported = true
-        for (o <- orderings) {
-          if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
-            withInfo(s, s"unsupported range partitioning sort order: $o", o)
-            supported = false
-            // We don't short-circuit in case there is more than one unsupported expression
-            // to provide info for.
-          }
-        }
-        for (dt <- orderings.map(_.dataType).distinct) {
-          if (!supportedRangePartitioningDataType(dt)) {
-            withInfo(s, s"unsupported range partitioning data type for native shuffle: $dt")
-            supported = false
-          }
-        }
-        supported
-      case _ =>
-        withInfo(
-          s,
-          s"unsupported Spark partitioning for native shuffle: ${partitioning.getClass.getName}")
-        false
-    }
-  }
-
-  /**
-   * Check if the datatypes of shuffle input are supported. This is used for Columnar shuffle
-   * which supports struct/array.
-   */
-  private def columnarShuffleSupported(s: ShuffleExchangeExec): Boolean = {
-
-    /**
-     * Determine which data types are supported as data columns in columnar shuffle.
-     *
-     * Comet columnar shuffle used native code to convert Spark unsafe rows to Arrow batches, see
-     * shuffle/row.rs
-     */
-    def supportedSerializableDataType(dt: DataType): Boolean = dt match {
-      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
-          _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType =>
-        true
-      case StructType(fields) =>
-        fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
-        // Java Arrow stream reader cannot work on duplicate field name
-        fields.map(f => f.name).distinct.length == fields.length &&
-        fields.nonEmpty
-      case ArrayType(elementType, _) =>
-        supportedSerializableDataType(elementType)
-      case MapType(keyType, valueType, _) =>
-        supportedSerializableDataType(keyType) && supportedSerializableDataType(valueType)
-      case _ =>
-        false
-    }
-
-    if (!isCometShuffleEnabledWithInfo(s)) {
-      return false
-    }
-
-    if (!isCometJVMShuffleMode(s.conf)) {
-      withInfo(s, "Comet columnar shuffle not enabled")
-      return false
-    }
-
-    if (isShuffleOperator(s.child)) {
-      withInfo(s, s"Child ${s.child.getClass.getName} is a shuffle operator")
-      return false
-    }
-
-    if (!(!s.child.supportsColumnar || isCometPlan(s.child))) {
-      withInfo(s, s"Child ${s.child.getClass.getName} is a neither row-based or a Comet operator")
-      return false
-    }
-
-    val inputs = s.child.output
-
-    for (input <- inputs) {
-      if (!supportedSerializableDataType(input.dataType)) {
-        withInfo(s, s"unsupported shuffle data type ${input.dataType} for input $input")
-        return false
-      }
-    }
-
-    val partitioning = s.outputPartitioning
-    partitioning match {
-      case HashPartitioning(expressions, _) =>
-        var supported = true
-        for (expr <- expressions) {
-          if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
-            withInfo(s, s"unsupported hash partitioning expression: $expr")
-            supported = false
-            // We don't short-circuit in case there is more than one unsupported expression
-            // to provide info for.
-          }
-        }
-        supported
-      case SinglePartition =>
-        // we already checked that the input types are supported
-        true
-      case RoundRobinPartitioning(_) =>
-        // we already checked that the input types are supported
-        true
-      case RangePartitioning(orderings, _) =>
-        var supported = true
-        for (o <- orderings) {
-          if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
-            withInfo(s, s"unsupported range partitioning sort order: $o")
-            supported = false
-            // We don't short-circuit in case there is more than one unsupported expression
-            // to provide info for.
-          }
-        }
-        supported
-      case _ =>
-        withInfo(
-          s,
-          s"unsupported Spark partitioning for columnar shuffle: ${partitioning.getClass.getName}")
-        false
     }
   }
 
