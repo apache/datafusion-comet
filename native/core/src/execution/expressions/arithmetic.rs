@@ -17,6 +17,38 @@
 
 //! Arithmetic expression builders
 
+/// Macro to generate arithmetic expression builders that need eval_mode handling
+#[macro_export]
+macro_rules! arithmetic_expr_builder {
+    ($builder_name:ident, $expr_type:ident, $operator:expr) => {
+        pub struct $builder_name;
+
+        impl $crate::execution::planner::traits::ExpressionBuilder for $builder_name {
+            fn build(
+                &self,
+                spark_expr: &datafusion_comet_proto::spark_expression::Expr,
+                input_schema: arrow::datatypes::SchemaRef,
+                planner: &$crate::execution::planner::PhysicalPlanner,
+            ) -> Result<
+                std::sync::Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+                $crate::execution::operators::ExecutionError,
+            > {
+                let expr = $crate::extract_expr!(spark_expr, $expr_type);
+                let eval_mode =
+                    $crate::execution::planner::from_protobuf_eval_mode(expr.eval_mode)?;
+                planner.create_binary_expr(
+                    expr.left.as_ref().unwrap(),
+                    expr.right.as_ref().unwrap(),
+                    expr.return_type.as_ref(),
+                    $operator,
+                    input_schema,
+                    eval_mode,
+                )
+            }
+        }
+    };
+}
+
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
@@ -32,8 +64,6 @@ use crate::execution::{
         from_protobuf_eval_mode, traits::ExpressionBuilder, BinaryExprOptions, PhysicalPlanner,
     },
 };
-
-use crate::arithmetic_expr_builder;
 
 /// Macro to define basic arithmetic builders that use eval_mode
 macro_rules! define_basic_arithmetic_builders {
