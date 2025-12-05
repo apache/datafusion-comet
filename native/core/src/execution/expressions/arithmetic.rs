@@ -1,20 +1,3 @@
-// Licensed to the Apache Software Foundation (ASF) under one
-// or more contributor license agreements.  See the NOTICE file
-// distributed with this work for additional information
-// regarding copyright ownership.  The ASF licenses this file
-// to you under the Apache License, Version 2.0 (the
-// "License"); you may not use this file except in compliance
-// with the License.  You may obtain a copy of the License at
-//
-//   http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing,
-// software distributed under the License is distributed on an
-// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-// KIND, either express or implied.  See the License for the
-// specific language governing permissions and limitations
-// under the License.
-
 //! Arithmetic expression builders
 
 use std::sync::Arc;
@@ -33,99 +16,25 @@ use crate::execution::{
     },
 };
 
-/// Builder for Add expressions
-pub struct AddBuilder;
+use crate::arithmetic_expr_builder;
 
-impl ExpressionBuilder for AddBuilder {
-    fn build(
-        &self,
-        spark_expr: &Expr,
-        input_schema: SchemaRef,
-        planner: &PhysicalPlanner,
-    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        let expr = extract_expr!(spark_expr, Add);
-        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-        planner.create_binary_expr(
-            expr.left.as_ref().unwrap(),
-            expr.right.as_ref().unwrap(),
-            expr.return_type.as_ref(),
-            DataFusionOperator::Plus,
-            input_schema,
-            eval_mode,
-        )
-    }
+/// Macro to define basic arithmetic builders that use eval_mode
+macro_rules! define_basic_arithmetic_builders {
+    ($(($builder:ident, $expr_type:ident, $op:expr)),* $(,)?) => {
+        $(
+            arithmetic_expr_builder!($builder, $expr_type, $op);
+        )*
+    };
 }
 
-/// Builder for Subtract expressions
-pub struct SubtractBuilder;
+define_basic_arithmetic_builders![
+    (AddBuilder, Add, DataFusionOperator::Plus),
+    (SubtractBuilder, Subtract, DataFusionOperator::Minus),
+    (MultiplyBuilder, Multiply, DataFusionOperator::Multiply),
+    (DivideBuilder, Divide, DataFusionOperator::Divide),
+];
 
-impl ExpressionBuilder for SubtractBuilder {
-    fn build(
-        &self,
-        spark_expr: &Expr,
-        input_schema: SchemaRef,
-        planner: &PhysicalPlanner,
-    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        let expr = extract_expr!(spark_expr, Subtract);
-        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-        planner.create_binary_expr(
-            expr.left.as_ref().unwrap(),
-            expr.right.as_ref().unwrap(),
-            expr.return_type.as_ref(),
-            DataFusionOperator::Minus,
-            input_schema,
-            eval_mode,
-        )
-    }
-}
-
-/// Builder for Multiply expressions
-pub struct MultiplyBuilder;
-
-impl ExpressionBuilder for MultiplyBuilder {
-    fn build(
-        &self,
-        spark_expr: &Expr,
-        input_schema: SchemaRef,
-        planner: &PhysicalPlanner,
-    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        let expr = extract_expr!(spark_expr, Multiply);
-        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-        planner.create_binary_expr(
-            expr.left.as_ref().unwrap(),
-            expr.right.as_ref().unwrap(),
-            expr.return_type.as_ref(),
-            DataFusionOperator::Multiply,
-            input_schema,
-            eval_mode,
-        )
-    }
-}
-
-/// Builder for Divide expressions
-pub struct DivideBuilder;
-
-impl ExpressionBuilder for DivideBuilder {
-    fn build(
-        &self,
-        spark_expr: &Expr,
-        input_schema: SchemaRef,
-        planner: &PhysicalPlanner,
-    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        let expr = extract_expr!(spark_expr, Divide);
-        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-        planner.create_binary_expr(
-            expr.left.as_ref().unwrap(),
-            expr.right.as_ref().unwrap(),
-            expr.return_type.as_ref(),
-            DataFusionOperator::Divide,
-            input_schema,
-            eval_mode,
-        )
-    }
-}
-
-/// Builder for IntegralDivide expressions
+/// Builder for IntegralDivide expressions (requires special options)
 pub struct IntegralDivideBuilder;
 
 impl ExpressionBuilder for IntegralDivideBuilder {
@@ -151,7 +60,7 @@ impl ExpressionBuilder for IntegralDivideBuilder {
     }
 }
 
-/// Builder for Remainder expressions
+/// Builder for Remainder expressions (uses special modulo function)
 pub struct RemainderBuilder;
 
 impl ExpressionBuilder for RemainderBuilder {
@@ -181,7 +90,7 @@ impl ExpressionBuilder for RemainderBuilder {
     }
 }
 
-/// Builder for UnaryMinus expressions
+/// Builder for UnaryMinus expressions (uses special negate function)
 pub struct UnaryMinusBuilder;
 
 impl ExpressionBuilder for UnaryMinusBuilder {
