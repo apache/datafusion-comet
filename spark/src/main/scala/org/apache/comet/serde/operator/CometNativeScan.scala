@@ -44,6 +44,8 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
+  override def requiresNativeChildren: Boolean = false
+
   override def convert(
       scan: CometScanExec,
       builder: Operator.Builder,

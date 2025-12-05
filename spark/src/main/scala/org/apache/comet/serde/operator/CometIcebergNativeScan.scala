@@ -36,6 +36,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
+  override def requiresNativeChildren: Boolean = false
+
   /**
    * Constants specific to Iceberg expression conversion (not in shared IcebergReflection).
    */

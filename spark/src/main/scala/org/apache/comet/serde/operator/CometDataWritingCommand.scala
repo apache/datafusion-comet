@@ -47,6 +47,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED)
 
+  override def requiresNativeChildren: Boolean = false
+
   override def getSupportLevel(op: DataWritingCommandExec): SupportLevel = {
     op.cmd match {
       case cmd: InsertIntoHadoopFsRelationCommand =>

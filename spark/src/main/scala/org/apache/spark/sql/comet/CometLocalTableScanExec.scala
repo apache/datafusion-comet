@@ -111,6 +111,8 @@ object CometLocalTableScanExec extends CometOperatorSerde[LocalTableScanExec] {
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED)
 
+  override def requiresNativeChildren: Boolean = false
+
   override def convert(
       op: LocalTableScanExec,
       builder: Operator.Builder,

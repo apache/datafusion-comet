@@ -47,6 +47,16 @@ trait CometOperatorSerde[T <: SparkPlan] {
   def getSupportLevel(operator: T): SupportLevel = Compatible(None)
 
   /**
+   * Determine whether this operator requires all its children to be native before it can be
+   * converted. Most operators require native children, but some operators like scans and
+   * exchanges can be converted regardless of their children.
+   *
+   * @return
+   *   true if all children must be native for this operator to be converted, false otherwise.
+   */
+  def requiresNativeChildren: Boolean = true
+
+  /**
    * Convert a Spark operator into a protocol buffer representation that can be passed into native
    * code.
    *

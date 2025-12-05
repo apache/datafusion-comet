@@ -210,7 +210,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
         val newChildren = plan.children.map {
           case b: BroadcastExchangeExec =>
-            tryConvertIfAllChildrenNative(b, CometBroadcastExchangeExec)
+            tryConvert(b, CometBroadcastExchangeExec)
           case other => other
         }
         if (!newChildren.exists(_.isInstanceOf[BroadcastExchangeExec])) {
@@ -239,7 +239,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         // Try to convert using registered handlers first
         allExecs.get(op.getClass) match {
           case Some(handler) =>
-            tryConvertIfAllChildrenNative(op, handler.asInstanceOf[CometOperatorSerde[SparkPlan]])
+            tryConvert(op, handler.asInstanceOf[CometOperatorSerde[SparkPlan]])
           case None =>
             op match {
               case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
@@ -439,31 +439,14 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
   /**
    * Helper method to try converting a Spark plan to Comet and return the original if conversion
-   * fails.
+   * fails. Uses the serde handler's requiresNativeChildren property to determine conversion
+   * strategy.
    */
-  private def tryConvert(op: SparkPlan, handler: CometOperatorSerde[_]): SparkPlan =
-    convertToComet(op, handler).getOrElse(op)
-
-  /**
-   * Helper method to try converting a Spark plan to Comet only if all children are native, and
-   * return the original if conversion fails.
-   */
-  private def tryConvertIfAllChildrenNative(
-      op: SparkPlan,
-      handler: CometOperatorSerde[_]): SparkPlan =
-    convertToCometIfAllChildrenAreNative(op, handler).getOrElse(op)
-
-  /**
-   * Convert a Spark plan to a Comet plan using the specified serde handler, but only if all
-   * children are native.
-   */
-  private def convertToCometIfAllChildrenAreNative(
-      op: SparkPlan,
-      handler: CometOperatorSerde[_]): Option[SparkPlan] = {
-    if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
-      convertToComet(op, handler)
+  private def tryConvert(op: SparkPlan, handler: CometOperatorSerde[_]): SparkPlan = {
+    if (handler.requiresNativeChildren && !op.children.forall(_.isInstanceOf[CometNativeExec])) {
+      op // Don't convert if native children required but not available
     } else {
-      None
+      convertToComet(op, handler).getOrElse(op)
     }
   }
 
