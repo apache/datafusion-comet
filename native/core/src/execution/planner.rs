@@ -517,41 +517,6 @@ impl PhysicalPlanner {
                     _ => func,
                 }
             }
-            ExprStruct::BitwiseAnd(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::BitwiseAnd;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::BitwiseOr(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::BitwiseOr;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::BitwiseXor(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::BitwiseXor;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::BitwiseShiftRight(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::BitwiseShiftRight;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::BitwiseShiftLeft(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::BitwiseShiftLeft;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
             ExprStruct::CaseWhen(case_when) => {
                 let when_then_pairs = case_when
                     .when

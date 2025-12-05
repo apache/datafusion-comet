@@ -27,6 +27,27 @@ use jni::objects::GlobalRef;
 use crate::execution::operators::ScanExec;
 use crate::execution::{operators::ExecutionError, spark_plan::SparkPlan};
 
+/// Macro to extract a specific expression variant, panicking if called with wrong type.
+/// This should be used in expression builders where the registry guarantees the correct
+/// expression type has been routed to the builder.
+#[macro_export]
+macro_rules! extract_expr {
+    ($spark_expr:expr, $variant:ident) => {
+        match $spark_expr
+            .expr_struct
+            .as_ref()
+            .expect("expression struct must be present")
+        {
+            datafusion_comet_proto::spark_expression::expr::ExprStruct::$variant(expr) => expr,
+            other => panic!(
+                "{} builder called with wrong expression type: {:?}",
+                stringify!($variant),
+                other
+            ),
+        }
+    };
+}
+
 /// Trait for building physical expressions from Spark protobuf expressions
 pub trait ExpressionBuilder: Send + Sync {
     /// Build a DataFusion physical expression from a Spark protobuf expression

@@ -22,10 +22,11 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use datafusion::logical_expr::Operator as DataFusionOperator;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion_comet_proto::spark_expression::{expr::ExprStruct, Expr};
+use datafusion_comet_proto::spark_expression::Expr;
 use datafusion_comet_spark_expr::{create_modulo_expr, create_negate_expr, EvalMode};
 
 use crate::execution::{
+    expressions::extract_expr,
     operators::ExecutionError,
     planner::{
         from_protobuf_eval_mode, traits::ExpressionBuilder, BinaryExprOptions, PhysicalPlanner,
@@ -42,21 +43,16 @@ impl ExpressionBuilder for AddBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::Add(expr)) = &spark_expr.expr_struct {
-            let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-            planner.create_binary_expr(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Plus,
-                input_schema,
-                eval_mode,
-            )
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected Add expression".to_string(),
-            ))
-        }
+        let expr = extract_expr!(spark_expr, Add);
+        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+        planner.create_binary_expr(
+            expr.left.as_ref().unwrap(),
+            expr.right.as_ref().unwrap(),
+            expr.return_type.as_ref(),
+            DataFusionOperator::Plus,
+            input_schema,
+            eval_mode,
+        )
     }
 }
 
@@ -70,21 +66,16 @@ impl ExpressionBuilder for SubtractBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::Subtract(expr)) = &spark_expr.expr_struct {
-            let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-            planner.create_binary_expr(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Minus,
-                input_schema,
-                eval_mode,
-            )
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected Subtract expression".to_string(),
-            ))
-        }
+        let expr = extract_expr!(spark_expr, Subtract);
+        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+        planner.create_binary_expr(
+            expr.left.as_ref().unwrap(),
+            expr.right.as_ref().unwrap(),
+            expr.return_type.as_ref(),
+            DataFusionOperator::Minus,
+            input_schema,
+            eval_mode,
+        )
     }
 }
 
@@ -98,21 +89,16 @@ impl ExpressionBuilder for MultiplyBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::Multiply(expr)) = &spark_expr.expr_struct {
-            let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-            planner.create_binary_expr(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Multiply,
-                input_schema,
-                eval_mode,
-            )
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected Multiply expression".to_string(),
-            ))
-        }
+        let expr = extract_expr!(spark_expr, Multiply);
+        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+        planner.create_binary_expr(
+            expr.left.as_ref().unwrap(),
+            expr.right.as_ref().unwrap(),
+            expr.return_type.as_ref(),
+            DataFusionOperator::Multiply,
+            input_schema,
+            eval_mode,
+        )
     }
 }
 
@@ -126,21 +112,16 @@ impl ExpressionBuilder for DivideBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::Divide(expr)) = &spark_expr.expr_struct {
-            let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-            planner.create_binary_expr(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Divide,
-                input_schema,
-                eval_mode,
-            )
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected Divide expression".to_string(),
-            ))
-        }
+        let expr = extract_expr!(spark_expr, Divide);
+        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+        planner.create_binary_expr(
+            expr.left.as_ref().unwrap(),
+            expr.right.as_ref().unwrap(),
+            expr.return_type.as_ref(),
+            DataFusionOperator::Divide,
+            input_schema,
+            eval_mode,
+        )
     }
 }
 
@@ -154,24 +135,19 @@ impl ExpressionBuilder for IntegralDivideBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::IntegralDivide(expr)) = &spark_expr.expr_struct {
-            let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-            planner.create_binary_expr_with_options(
-                expr.left.as_ref().unwrap(),
-                expr.right.as_ref().unwrap(),
-                expr.return_type.as_ref(),
-                DataFusionOperator::Divide,
-                input_schema,
-                BinaryExprOptions {
-                    is_integral_div: true,
-                },
-                eval_mode,
-            )
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected IntegralDivide expression".to_string(),
-            ))
-        }
+        let expr = extract_expr!(spark_expr, IntegralDivide);
+        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+        planner.create_binary_expr_with_options(
+            expr.left.as_ref().unwrap(),
+            expr.right.as_ref().unwrap(),
+            expr.return_type.as_ref(),
+            DataFusionOperator::Divide,
+            input_schema,
+            BinaryExprOptions {
+                is_integral_div: true,
+            },
+            eval_mode,
+        )
     }
 }
 
@@ -185,30 +161,23 @@ impl ExpressionBuilder for RemainderBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::Remainder(expr)) = &spark_expr.expr_struct {
-            let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-            let left =
-                planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-            let right =
-                planner.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let expr = extract_expr!(spark_expr, Remainder);
+        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
 
-            let result = create_modulo_expr(
-                left,
-                right,
-                expr.return_type
-                    .as_ref()
-                    .map(crate::execution::serde::to_arrow_datatype)
-                    .unwrap(),
-                input_schema,
-                eval_mode == EvalMode::Ansi,
-                &planner.session_ctx().state(),
-            );
-            result.map_err(|e| ExecutionError::GeneralError(e.to_string()))
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected Remainder expression".to_string(),
-            ))
-        }
+        let result = create_modulo_expr(
+            left,
+            right,
+            expr.return_type
+                .as_ref()
+                .map(crate::execution::serde::to_arrow_datatype)
+                .unwrap(),
+            input_schema,
+            eval_mode == EvalMode::Ansi,
+            &planner.session_ctx().state(),
+        );
+        result.map_err(|e| ExecutionError::GeneralError(e.to_string()))
     }
 }
 
@@ -222,14 +191,9 @@ impl ExpressionBuilder for UnaryMinusBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::UnaryMinus(expr)) = &spark_expr.expr_struct {
-            let child = planner.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-            let result = create_negate_expr(child, expr.fail_on_error);
-            result.map_err(|e| ExecutionError::GeneralError(e.to_string()))
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected UnaryMinus expression".to_string(),
-            ))
-        }
+        let expr = extract_expr!(spark_expr, UnaryMinus);
+        let child = planner.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+        let result = create_negate_expr(child, expr.fail_on_error);
+        result.map_err(|e| ExecutionError::GeneralError(e.to_string()))
     }
 }

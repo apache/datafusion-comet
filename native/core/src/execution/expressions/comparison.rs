@@ -30,9 +30,7 @@ fn create_binary_comparison_expr(
         Some(ExprStruct::EqNullSafe(expr)) => (expr.left.as_ref(), expr.right.as_ref()),
         Some(ExprStruct::NeqNullSafe(expr)) => (expr.left.as_ref(), expr.right.as_ref()),
         _ => {
-            return Err(ExecutionError::GeneralError(
-                "Expected comparison expression".to_string(),
-            ))
+            panic!("create_binary_comparison_expr called with non-comparison expression");
         }
     };
 
@@ -51,13 +49,7 @@ impl ExpressionBuilder for EqBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::Eq(_)) = &spark_expr.expr_struct {
-            create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::Eq)
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected Eq expression".to_string(),
-            ))
-        }
+        create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::Eq)
     }
 }
 
@@ -71,18 +63,7 @@ impl ExpressionBuilder for NeqBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::Neq(_)) = &spark_expr.expr_struct {
-            create_binary_comparison_expr(
-                spark_expr,
-                input_schema,
-                planner,
-                DataFusionOperator::NotEq,
-            )
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected Neq expression".to_string(),
-            ))
-        }
+        create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::NotEq)
     }
 }
 
@@ -96,13 +77,7 @@ impl ExpressionBuilder for LtBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::Lt(_)) = &spark_expr.expr_struct {
-            create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::Lt)
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected Lt expression".to_string(),
-            ))
-        }
+        create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::Lt)
     }
 }
 
@@ -116,18 +91,7 @@ impl ExpressionBuilder for LtEqBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::LtEq(_)) = &spark_expr.expr_struct {
-            create_binary_comparison_expr(
-                spark_expr,
-                input_schema,
-                planner,
-                DataFusionOperator::LtEq,
-            )
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected LtEq expression".to_string(),
-            ))
-        }
+        create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::LtEq)
     }
 }
 
@@ -141,13 +105,7 @@ impl ExpressionBuilder for GtBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::Gt(_)) = &spark_expr.expr_struct {
-            create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::Gt)
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected Gt expression".to_string(),
-            ))
-        }
+        create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::Gt)
     }
 }
 
@@ -161,18 +119,7 @@ impl ExpressionBuilder for GtEqBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::GtEq(_)) = &spark_expr.expr_struct {
-            create_binary_comparison_expr(
-                spark_expr,
-                input_schema,
-                planner,
-                DataFusionOperator::GtEq,
-            )
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected GtEq expression".to_string(),
-            ))
-        }
+        create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::GtEq)
     }
 }
 
@@ -186,18 +133,12 @@ impl ExpressionBuilder for EqNullSafeBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::EqNullSafe(_)) = &spark_expr.expr_struct {
-            create_binary_comparison_expr(
-                spark_expr,
-                input_schema,
-                planner,
-                DataFusionOperator::IsNotDistinctFrom,
-            )
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected EqNullSafe expression".to_string(),
-            ))
-        }
+        create_binary_comparison_expr(
+            spark_expr,
+            input_schema,
+            planner,
+            DataFusionOperator::IsNotDistinctFrom,
+        )
     }
 }
 
@@ -211,17 +152,11 @@ impl ExpressionBuilder for NeqNullSafeBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        if let Some(ExprStruct::NeqNullSafe(_)) = &spark_expr.expr_struct {
-            create_binary_comparison_expr(
-                spark_expr,
-                input_schema,
-                planner,
-                DataFusionOperator::IsDistinctFrom,
-            )
-        } else {
-            Err(ExecutionError::GeneralError(
-                "Expected NeqNullSafe expression".to_string(),
-            ))
-        }
+        create_binary_comparison_expr(
+            spark_expr,
+            input_schema,
+            planner,
+            DataFusionOperator::IsDistinctFrom,
+        )
     }
 }
