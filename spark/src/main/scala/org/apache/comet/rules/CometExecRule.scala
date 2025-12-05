@@ -190,13 +190,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
-        convertToCometIfAllChildrenAreNative(s, CometExchangeSink).getOrElse(s)
+        convertToComet(s, CometExchangeSink).getOrElse(s)
 
       case s @ BroadcastQueryStageExec(
             _,
             ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
             _) =>
-        convertToCometIfAllChildrenAreNative(s, CometExchangeSink).getOrElse(s)
+        convertToComet(s, CometExchangeSink).getOrElse(s)
 
       // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
       // exchange. It is only used for Comet native execution. We only transform Spark broadcast
