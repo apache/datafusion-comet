@@ -37,6 +37,7 @@ import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, Unsupported}
@@ -51,7 +52,6 @@ object CometExecRule {
   val nativeExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] =
     Map(
       classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoinExec,
-      classOf[DataWritingCommandExec] -> CometDataWritingCommand,
       classOf[ExpandExec] -> CometExpandExec,
       classOf[FilterExec] -> CometFilterExec,
       classOf[ProjectExec] -> CometProjectExec,
@@ -61,7 +61,6 @@ object CometExecRule {
       classOf[HashAggregateExec] -> CometHashAggregateExec,
       classOf[ObjectHashAggregateExec] -> CometObjectHashAggregateExec,
       classOf[ShuffledHashJoinExec] -> CometHashJoinExec,
-      classOf[ShuffleExchangeExec] -> CometShuffleExchangeExec,
       classOf[SortExec] -> CometSortExec,
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[WindowExec] -> CometWindowExec)
@@ -103,17 +102,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   private def isCometNative(op: SparkPlan): Boolean = op.isInstanceOf[CometNativeExec]
-
-  /**
-   * Check if a SparkPlan is a Comet exchange (including reused exchanges).
-   */
-  private def isCometExchange(exchange: SparkPlan): Boolean = exchange match {
-    case _: CometBroadcastExchangeExec => true
-    case _: CometShuffleExchangeExec => true
-    case ReusedExchangeExec(_, _: CometBroadcastExchangeExec) => true
-    case ReusedExchangeExec(_, _: CometShuffleExchangeExec) => true
-    case _ => false
-  }
 
   // spotless:off
 
@@ -198,8 +186,17 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case op if shouldApplySparkToColumnar(conf, op) =>
         tryConvert(op, CometSparkToColumnarExec)
 
+      case op: DataWritingCommandExec =>
+        tryConvert(op, CometDataWritingCommand)
+
       // For AQE broadcast stage on a Comet broadcast exchange
-      case s @ BroadcastQueryStageExec(_, exchange, _) if isCometExchange(exchange) =>
+      case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
+        tryConvert(s, CometExchangeSink)
+
+      case s @ BroadcastQueryStageExec(
+            _,
+            ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
+            _) =>
         tryConvert(s, CometExchangeSink)
 
       // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
@@ -213,23 +210,37 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           case other => other
         }
         if (!newChildren.exists(_.isInstanceOf[BroadcastExchangeExec])) {
+          // BroadcastExchangeExec was converted to CometBroadcastExchangeExec
           val newPlan = convertNode(plan.withNewChildren(newChildren))
-          if (isCometNative(newPlan) || isCometBroadCastForceEnabled(conf)) {
+          if (isCometNative(newPlan)) {
             newPlan
           } else {
-            val reason = getCometBroadcastNotEnabledReason(conf).getOrElse("no reason available")
-            withInfo(plan, s"Broadcast is not enabled: $reason")
-            plan
+            if (COMET_EXEC_BROADCAST_FORCE_ENABLED.get(conf)) {
+              newPlan
+            } else {
+              withInfo(
+                plan,
+                s"Could not convert ${plan.getClass} with BroadcastExchangeExec " +
+                  s"child to native and ${COMET_EXEC_BROADCAST_FORCE_ENABLED.key} is not enabled")
+              plan
+            }
           }
         } else {
           plan
         }
 
       // For AQE shuffle stage on a Comet shuffle exchange
+      case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
+        tryConvert(s, CometExchangeSink)
+
+      // For AQE shuffle stage on a reused Comet shuffle exchange
       // Note that we don't need to handle `ReusedExchangeExec` for non-AQE case, because
       // the query plan won't be re-optimized/planned in non-AQE mode.
-      case s @ ShuffleQueryStageExec(_, exchange, _) if isCometExchange(exchange) =>
+      case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
         tryConvert(s, CometExchangeSink)
+
+      case s: ShuffleExchangeExec =>
+        tryConvert(s, CometShuffleExchangeExec)
 
       case op =>
         // Try to convert using registered handlers first

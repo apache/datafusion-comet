@@ -41,8 +41,6 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
-  override def requiresNativeChildren: Boolean = false
-
   override def convert(
       op: T,
       builder: Operator.Builder,

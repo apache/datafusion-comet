@@ -122,21 +122,6 @@ object CometSparkSessionExtensions extends Logging {
     }
   }
 
-  private[comet] def isCometBroadCastForceEnabled(conf: SQLConf): Boolean = {
-    COMET_EXEC_BROADCAST_FORCE_ENABLED.get(conf)
-  }
-
-  private[comet] def getCometBroadcastNotEnabledReason(conf: SQLConf): Option[String] = {
-    if (!CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) &&
-      !isCometBroadCastForceEnabled(conf)) {
-      Some(
-        s"${COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.key}.enabled is not specified and " +
-          s"${COMET_EXEC_BROADCAST_FORCE_ENABLED.key} is not specified")
-    } else {
-      None
-    }
-  }
-
   // Check whether Comet shuffle is enabled:
   // 1. `COMET_EXEC_SHUFFLE_ENABLED` is true
   // 2. `spark.shuffle.manager` is set to `CometShuffleManager`

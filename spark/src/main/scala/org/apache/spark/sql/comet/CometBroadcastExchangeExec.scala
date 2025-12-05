@@ -112,7 +112,7 @@ case class CometBroadcastExchangeExec(
   override lazy val relationFuture: Future[broadcast.Broadcast[Any]] = {
     SQLExecution.withThreadLocalCaptured[broadcast.Broadcast[Any]](
       session,
-      CometBroadcastExchangeExec.executionContext) {
+      CometBroadcastExchangeExecHelper.executionContext) {
       try {
         setJobGroupOrTag(sparkContext, this)
         val beforeCollect = System.nanoTime()
@@ -274,7 +274,9 @@ object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
       b: BroadcastExchangeExec): CometNativeExec = {
     CometSinkPlaceHolder(nativeOp, b, CometBroadcastExchangeExec(b, b.output, b.mode, b.child))
   }
+}
 
+object CometBroadcastExchangeExecHelper {
   private[comet] val executionContext = ExecutionContext.fromExecutorService(
     ThreadUtils.newDaemonCachedThreadPool(
       "comet-broadcast-exchange",

@@ -102,7 +102,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
   lazy val relationFuture: Future[broadcast.Broadcast[Any]] = {
     SQLExecution.withThreadLocalCaptured[broadcast.Broadcast[Any]](
       session,
-      CometBroadcastExchangeExec.executionContext) {
+      CometBroadcastExchangeExecHelper.executionContext) {
       try {
         // Setup a job group here so later it may get cancelled by groupId if necessary.
         sparkContext.setJobGroup(
