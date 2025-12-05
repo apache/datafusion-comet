@@ -217,22 +217,14 @@ abstract class CometNativeExec extends CometExec {
         // TODO: support native metrics for all operators.
         val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
+        // Go over all the native scans, in order to see if they need encryption options.
         // For each relation in a CometNativeScan generate a hadoopConf,
         // for each file path in a relation associate with hadoopConf
-        val cometNativeScans: Seq[CometNativeScanExec] = this
-          .collectLeaves()
-          .filter(_.isInstanceOf[CometNativeScanExec])
-          .map(_.asInstanceOf[CometNativeScanExec])
-        assert(
-          cometNativeScans.size <= 1,
-          "We expect one native scan in a Comet plan since we will broadcast one hadoopConf.")
-        // If this assumption changes in the future, you can look at the commit history of #2447
-        // to see how there used to be a map of relations to broadcasted confs in case multiple
-        // relations in a single plan. The example that came up was UNION. See discussion at:
-        // https://github.com/apache/datafusion-comet/pull/2447#discussion_r2406118264
-        val (broadcastedHadoopConfForEncryption, encryptedFilePaths) =
-          cometNativeScans.headOption.fold(
-            (None: Option[Broadcast[SerializableConfiguration]], Seq.empty[String])) { scan =>
+        // This is done per native plan, so only count scans until a comet input is reached.
+        val encryptionOptions =
+          mutable.ArrayBuffer.empty[(Broadcast[SerializableConfiguration], Seq[String])]
+        foreachUntilCometInput(this) {
+          case scan: CometNativeScanExec =>
             // This creates a hadoopConf that brings in any SQLConf "spark.hadoop.*" configs and
             // per-relation configs since different tables might have different decryption
             // properties.
@@ -244,10 +236,25 @@ abstract class CometNativeExec extends CometExec {
               val broadcastedConf =
                 scan.relation.sparkSession.sparkContext
                   .broadcast(new SerializableConfiguration(hadoopConf))
-              (Some(broadcastedConf), scan.relation.inputFiles.toSeq)
-            } else {
-              (None, Seq.empty)
+
+              val optsTuple: (Broadcast[SerializableConfiguration], Seq[String]) =
+                (broadcastedConf, scan.relation.inputFiles.toSeq)
+              encryptionOptions += optsTuple
             }
+          case _ => // no-op
+        }
+        assert(
+          encryptionOptions.size <= 1,
+          "We expect one native scan that requires encryption reading in a Comet plan," +
+            " since we will broadcast one hadoopConf.")
+        // If this assumption changes in the future, you can look at the commit history of #2447
+        // to see how there used to be a map of relations to broadcasted confs in case multiple
+        // relations in a single plan. The example that came up was UNION. See discussion at:
+        // https://github.com/apache/datafusion-comet/pull/2447#discussion_r2406118264
+        val (broadcastedHadoopConfForEncryption, encryptedFilePaths) =
+          encryptionOptions.headOption match {
+            case Some((conf, paths)) => (Some(conf), paths)
+            case None => (None, Seq.empty)
           }
 
         def createCometExecIter(
@@ -1726,6 +1733,12 @@ case class CometSortMergeJoinExec(
 
   override lazy val metrics: Map[String, SQLMetric] =
     CometMetricNode.sortMergeJoinMetrics(sparkContext)
+}
+
+object CometScanWrapper extends CometSink[SparkPlan] {
+  override def createExec(nativeOp: Operator, op: SparkPlan): CometNativeExec = {
+    CometScanWrapper(nativeOp, op)
+  }
 }
 
 case class CometScanWrapper(override val nativeOp: Operator, override val originalPlan: SparkPlan)
