@@ -72,7 +72,9 @@ object CometExecRule {
       classOf[CoalesceExec] -> CometCoalesceExec,
       classOf[CollectLimitExec] -> CometCollectLimitExec,
       classOf[TakeOrderedAndProjectExec] -> CometTakeOrderedAndProjectExec,
-      classOf[UnionExec] -> CometUnionExec)
+      classOf[UnionExec] -> CometUnionExec,
+      classOf[DataWritingCommandExec] -> CometDataWritingCommand,
+      classOf[ShuffleExchangeExec] -> CometShuffleExchangeExec)
 
   val allExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] = nativeExecs ++ sinks
 
@@ -196,9 +198,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case op if shouldApplySparkToColumnar(conf, op) =>
         tryConvert(op, CometSparkToColumnarExec)
 
-      case op: DataWritingCommandExec =>
-        tryConvert(op, CometDataWritingCommand)
-
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, exchange, _) if isCometExchange(exchange) =>
         tryConvert(s, CometExchangeSink)
@@ -231,9 +230,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // the query plan won't be re-optimized/planned in non-AQE mode.
       case s @ ShuffleQueryStageExec(_, exchange, _) if isCometExchange(exchange) =>
         tryConvert(s, CometExchangeSink)
-
-      case s: ShuffleExchangeExec =>
-        tryConvert(s, CometShuffleExchangeExec)
 
       case op =>
         // Try to convert using registered handlers first
