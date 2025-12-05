@@ -22,13 +22,13 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProtoWithReturnType}
 
 /** Serde for scalar function. */
 case class CometScalarFunction[T <: Expression](name: String) extends CometExpressionSerde[T] {
   override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
-    val optExpr = scalarFunctionExprToProto(name, childExpr: _*)
+    val optExpr = scalarFunctionExprToProtoWithReturnType(name, expr.dataType, false, childExpr: _*)
     optExprWithInfo(optExpr, expr, expr.children: _*)
   }
 }

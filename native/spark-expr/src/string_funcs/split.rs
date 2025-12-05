@@ -120,7 +120,7 @@ fn split_array(
         DataType::LargeUtf8 => {
             // Convert LargeUtf8 to Utf8 for processing
             let large_array = as_generic_string_array::<i64>(string_array)?;
-            return split_large_string_array(&large_array, &regex, limit);
+            return split_large_string_array(large_array, &regex, limit);
         }
         _ => {
             return exec_err!(
@@ -204,7 +204,7 @@ fn split_with_regex(string: &str, regex: &Regex, limit: i32) -> Vec<String> {
         // limit = 0: split as many times as possible, discard trailing empty strings
         let mut parts: Vec<String> = regex.split(string).map(|s| s.to_string()).collect();
         // Remove trailing empty strings
-        while parts.last().map_or(false, |s| s.is_empty()) {
+        while parts.last().is_some_and(|s| s.is_empty()) {
             parts.pop();
         }
         if parts.is_empty() {
@@ -216,15 +216,13 @@ fn split_with_regex(string: &str, regex: &Regex, limit: i32) -> Vec<String> {
         // limit > 0: at most limit-1 splits (array length <= limit)
         let mut parts: Vec<String> = Vec::new();
         let mut last_end = 0;
-        let mut count = 0;
 
-        for mat in regex.find_iter(string) {
-            if count >= limit - 1 {
+        for (count, mat) in regex.find_iter(string).enumerate() {
+            if count >= (limit - 1) as usize {
                 break;
             }
             parts.push(string[last_end..mat.start()].to_string());
             last_end = mat.end();
-            count += 1;
         }
         // Add the remaining string
         parts.push(string[last_end..].to_string());
