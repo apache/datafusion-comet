@@ -88,6 +88,12 @@ impl ExpressionRegistry {
         // Register bitwise expressions
         self.register_bitwise_expressions();
 
+        // Register logical expressions
+        self.register_logical_expressions();
+
+        // Register null check expressions
+        self.register_null_check_expressions();
+
         // TODO: Register other expression categories in future phases
         // self.register_string_expressions();
         // self.register_temporal_expressions();
@@ -156,6 +162,28 @@ impl ExpressionRegistry {
             ExpressionType::BitwiseShiftRight,
             Box::new(BitwiseShiftRightBuilder),
         );
+    }
+
+    /// Register logical expression builders
+    fn register_logical_expressions(&mut self) {
+        use crate::execution::expressions::logical::*;
+
+        self.builders
+            .insert(ExpressionType::And, Box::new(AndBuilder));
+        self.builders
+            .insert(ExpressionType::Or, Box::new(OrBuilder));
+        self.builders
+            .insert(ExpressionType::Not, Box::new(NotBuilder));
+    }
+
+    /// Register null check expression builders
+    fn register_null_check_expressions(&mut self) {
+        use crate::execution::expressions::nullcheck::*;
+
+        self.builders
+            .insert(ExpressionType::IsNull, Box::new(IsNullBuilder));
+        self.builders
+            .insert(ExpressionType::IsNotNull, Box::new(IsNotNullBuilder));
     }
 
     /// Extract expression type from Spark protobuf expression

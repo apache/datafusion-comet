@@ -50,8 +50,8 @@ use datafusion::{
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr, LikeExpr,
-            Literal as DataFusionLiteral, NotExpr,
+            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr, LikeExpr,
+            Literal as DataFusionLiteral,
         },
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
@@ -268,28 +268,6 @@ impl PhysicalPlanner {
                     unbound.name.as_str(),
                     data_type,
                 )))
-            }
-            ExprStruct::IsNotNull(is_notnull) => {
-                let child = self.create_expr(is_notnull.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(IsNotNullExpr::new(child)))
-            }
-            ExprStruct::IsNull(is_null) => {
-                let child = self.create_expr(is_null.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(IsNullExpr::new(child)))
-            }
-            ExprStruct::And(and) => {
-                let left =
-                    self.create_expr(and.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(and.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::And;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::Or(or) => {
-                let left =
-                    self.create_expr(or.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(or.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::Or;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
             }
             ExprStruct::Literal(literal) => {
                 let data_type = to_arrow_datatype(literal.datatype.as_ref().unwrap());
@@ -564,10 +542,6 @@ impl PhysicalPlanner {
                 let false_expr =
                     self.create_expr(expr.false_expr.as_ref().unwrap(), input_schema)?;
                 Ok(Arc::new(IfExpr::new(if_expr, true_expr, false_expr)))
-            }
-            ExprStruct::Not(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(NotExpr::new(child)))
             }
             ExprStruct::NormalizeNanAndZero(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
