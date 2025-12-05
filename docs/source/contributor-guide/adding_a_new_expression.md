@@ -25,7 +25,7 @@ Before you start, have a look through [these slides](https://docs.google.com/pre
 
 ## Finding an Expression to Add
 
-You may have a specific expression in mind that you'd like to add, but if not, you can review the [expression coverage document](https://github.com/apache/datafusion-comet/blob/f08fcadd5fbdb5b04293d33e654f6c16f81b70c4/doc/spark_builtin_expr_coverage.txt) to see which expressions are not yet supported.
+You may have a specific expression in mind that you'd like to add, but if not, you can review the [expression coverage document](https://github.com/apache/datafusion-comet/blob/main/docs/spark_expressions_support.md) to see which expressions are not yet supported.
 
 ## Implementing the Expression
 
