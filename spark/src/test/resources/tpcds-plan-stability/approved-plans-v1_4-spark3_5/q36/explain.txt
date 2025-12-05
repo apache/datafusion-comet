@@ -1,34 +1,36 @@
 == Physical Plan ==
-TakeOrderedAndProject (30)
-+- * Project (29)
-   +- Window (28)
-      +- * CometColumnarToRow (27)
-         +- CometSort (26)
-            +- CometExchange (25)
-               +- CometHashAggregate (24)
-                  +- CometExchange (23)
-                     +- CometHashAggregate (22)
-                        +- CometExpand (21)
-                           +- CometProject (20)
-                              +- CometBroadcastHashJoin (19)
-                                 :- CometProject (14)
-                                 :  +- CometBroadcastHashJoin (13)
-                                 :     :- CometProject (8)
-                                 :     :  +- CometBroadcastHashJoin (7)
-                                 :     :     :- CometFilter (2)
-                                 :     :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (1)
-                                 :     :     +- CometBroadcastExchange (6)
-                                 :     :        +- CometProject (5)
-                                 :     :           +- CometFilter (4)
-                                 :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (3)
-                                 :     +- CometBroadcastExchange (12)
-                                 :        +- CometProject (11)
-                                 :           +- CometFilter (10)
-                                 :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item (9)
-                                 +- CometBroadcastExchange (18)
-                                    +- CometProject (17)
-                                       +- CometFilter (16)
-                                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store (15)
+* CometColumnarToRow (32)
++- CometTakeOrderedAndProject (31)
+   +- RowToColumnar (30)
+      +- * Project (29)
+         +- Window (28)
+            +- * CometColumnarToRow (27)
+               +- CometSort (26)
+                  +- CometExchange (25)
+                     +- CometHashAggregate (24)
+                        +- CometExchange (23)
+                           +- CometHashAggregate (22)
+                              +- CometExpand (21)
+                                 +- CometProject (20)
+                                    +- CometBroadcastHashJoin (19)
+                                       :- CometProject (14)
+                                       :  +- CometBroadcastHashJoin (13)
+                                       :     :- CometProject (8)
+                                       :     :  +- CometBroadcastHashJoin (7)
+                                       :     :     :- CometFilter (2)
+                                       :     :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (1)
+                                       :     :     +- CometBroadcastExchange (6)
+                                       :     :        +- CometProject (5)
+                                       :     :           +- CometFilter (4)
+                                       :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (3)
+                                       :     +- CometBroadcastExchange (12)
+                                       :        +- CometProject (11)
+                                       :           +- CometFilter (10)
+                                       :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item (9)
+                                       +- CometBroadcastExchange (18)
+                                          +- CometProject (17)
+                                             +- CometFilter (16)
+                                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store (15)
 
 
 (1) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
@@ -164,39 +166,45 @@ Arguments: [rank(_w0#23) windowspecdefinition(_w1#24, _w2#25, _w0#23 ASC NULLS F
 Output [5]: [gross_margin#21, i_category#16, i_class#17, lochierarchy#22, rank_within_parent#26]
 Input [8]: [gross_margin#21, i_category#16, i_class#17, lochierarchy#22, _w0#23, _w1#24, _w2#25, rank_within_parent#26]
 
-(30) TakeOrderedAndProject
+(30) RowToColumnar
 Input [5]: [gross_margin#21, i_category#16, i_class#17, lochierarchy#22, rank_within_parent#26]
-Arguments: 100, [lochierarchy#22 DESC NULLS LAST, CASE WHEN (lochierarchy#22 = 0) THEN i_category#16 END ASC NULLS FIRST, rank_within_parent#26 ASC NULLS FIRST], [gross_margin#21, i_category#16, i_class#17, lochierarchy#22, rank_within_parent#26]
+
+(31) CometTakeOrderedAndProject
+Input [5]: [gross_margin#21, i_category#16, i_class#17, lochierarchy#22, rank_within_parent#26]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[lochierarchy#22 DESC NULLS LAST,CASE WHEN (lochierarchy#22 = 0) THEN i_category#16 END ASC NULLS FIRST,rank_within_parent#26 ASC NULLS FIRST], output=[gross_margin#21,i_category#16,i_class#17,lochierarchy#22,rank_within_parent#26]), [gross_margin#21, i_category#16, i_class#17, lochierarchy#22, rank_within_parent#26], 100, 0, [lochierarchy#22 DESC NULLS LAST, CASE WHEN (lochierarchy#22 = 0) THEN i_category#16 END ASC NULLS FIRST, rank_within_parent#26 ASC NULLS FIRST], [gross_margin#21, i_category#16, i_class#17, lochierarchy#22, rank_within_parent#26]
+
+(32) CometColumnarToRow [codegen id : 3]
+Input [5]: [gross_margin#21, i_category#16, i_class#17, lochierarchy#22, rank_within_parent#26]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
-BroadcastExchange (35)
-+- * CometColumnarToRow (34)
-   +- CometProject (33)
-      +- CometFilter (32)
-         +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (31)
+BroadcastExchange (37)
++- * CometColumnarToRow (36)
+   +- CometProject (35)
+      +- CometFilter (34)
+         +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (33)
 
 
-(31) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+(33) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#7, d_year#8]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), EqualTo(d_year,2001), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int>
 
-(32) CometFilter
+(34) CometFilter
 Input [2]: [d_date_sk#7, d_year#8]
 Condition : ((isnotnull(d_year#8) AND (d_year#8 = 2001)) AND isnotnull(d_date_sk#7))
 
-(33) CometProject
+(35) CometProject
 Input [2]: [d_date_sk#7, d_year#8]
 Arguments: [d_date_sk#7], [d_date_sk#7]
 
-(34) CometColumnarToRow [codegen id : 1]
+(36) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#7]
 
-(35) BroadcastExchange
+(37) BroadcastExchange
 Input [1]: [d_date_sk#7]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=3]
 

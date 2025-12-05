@@ -1,10 +1,10 @@
-BroadcastNestedLoopJoin
-:- BroadcastNestedLoopJoin
-:  :- BroadcastNestedLoopJoin
-:  :  :- BroadcastNestedLoopJoin
-:  :  :  :- BroadcastNestedLoopJoin
-:  :  :  :  :- BroadcastNestedLoopJoin
-:  :  :  :  :  :- BroadcastNestedLoopJoin
+ BroadcastNestedLoopJoin [COMET: Could not convert class org.apache.spark.sql.execution.joins.BroadcastNestedLoopJoinExec with BroadcastExchangeExec child to native and spark.comet.exec.broadcast.enabled is not enabled: Set(BroadcastNestedLoopJoin is not supported)]
+:-  BroadcastNestedLoopJoin [COMET: Could not convert class org.apache.spark.sql.execution.joins.BroadcastNestedLoopJoinExec with BroadcastExchangeExec child to native and spark.comet.exec.broadcast.enabled is not enabled: Set(BroadcastNestedLoopJoin is not supported)]
+:  :-  BroadcastNestedLoopJoin [COMET: Could not convert class org.apache.spark.sql.execution.joins.BroadcastNestedLoopJoinExec with BroadcastExchangeExec child to native and spark.comet.exec.broadcast.enabled is not enabled: Set(BroadcastNestedLoopJoin is not supported)]
+:  :  :-  BroadcastNestedLoopJoin [COMET: Could not convert class org.apache.spark.sql.execution.joins.BroadcastNestedLoopJoinExec with BroadcastExchangeExec child to native and spark.comet.exec.broadcast.enabled is not enabled: Set(BroadcastNestedLoopJoin is not supported)]
+:  :  :  :-  BroadcastNestedLoopJoin [COMET: Could not convert class org.apache.spark.sql.execution.joins.BroadcastNestedLoopJoinExec with BroadcastExchangeExec child to native and spark.comet.exec.broadcast.enabled is not enabled: Set(BroadcastNestedLoopJoin is not supported)]
+:  :  :  :  :-  BroadcastNestedLoopJoin [COMET: Could not convert class org.apache.spark.sql.execution.joins.BroadcastNestedLoopJoinExec with BroadcastExchangeExec child to native and spark.comet.exec.broadcast.enabled is not enabled: Set(BroadcastNestedLoopJoin is not supported)]
+:  :  :  :  :  :-  BroadcastNestedLoopJoin [COMET: Could not convert class org.apache.spark.sql.execution.joins.BroadcastNestedLoopJoinExec with BroadcastExchangeExec child to native and spark.comet.exec.broadcast.enabled is not enabled: Set(BroadcastNestedLoopJoin is not supported)]
 :  :  :  :  :  :  :- CometColumnarToRow
 :  :  :  :  :  :  :  +- CometHashAggregate
 :  :  :  :  :  :  :     +- CometExchange

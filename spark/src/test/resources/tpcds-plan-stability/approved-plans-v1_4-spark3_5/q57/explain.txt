@@ -1,52 +1,54 @@
 == Physical Plan ==
-TakeOrderedAndProject (48)
-+- * Project (47)
-   +- * BroadcastHashJoin Inner BuildRight (46)
-      :- * Project (39)
-      :  +- * BroadcastHashJoin Inner BuildRight (38)
-      :     :- * Project (29)
-      :     :  +- * Filter (28)
-      :     :     +- Window (27)
-      :     :        +- * Filter (26)
-      :     :           +- Window (25)
-      :     :              +- * CometColumnarToRow (24)
-      :     :                 +- CometSort (23)
-      :     :                    +- CometExchange (22)
-      :     :                       +- CometHashAggregate (21)
-      :     :                          +- CometExchange (20)
-      :     :                             +- CometHashAggregate (19)
-      :     :                                +- CometProject (18)
-      :     :                                   +- CometBroadcastHashJoin (17)
-      :     :                                      :- CometProject (13)
-      :     :                                      :  +- CometBroadcastHashJoin (12)
-      :     :                                      :     :- CometProject (8)
-      :     :                                      :     :  +- CometBroadcastHashJoin (7)
-      :     :                                      :     :     :- CometProject (3)
-      :     :                                      :     :     :  +- CometFilter (2)
-      :     :                                      :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item (1)
-      :     :                                      :     :     +- CometBroadcastExchange (6)
-      :     :                                      :     :        +- CometFilter (5)
-      :     :                                      :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales (4)
-      :     :                                      :     +- CometBroadcastExchange (11)
-      :     :                                      :        +- CometFilter (10)
-      :     :                                      :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (9)
-      :     :                                      +- CometBroadcastExchange (16)
-      :     :                                         +- CometFilter (15)
-      :     :                                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.call_center (14)
-      :     +- BroadcastExchange (37)
-      :        +- * Project (36)
-      :           +- Window (35)
-      :              +- * CometColumnarToRow (34)
-      :                 +- CometSort (33)
-      :                    +- CometExchange (32)
-      :                       +- CometHashAggregate (31)
-      :                          +- ReusedExchange (30)
-      +- BroadcastExchange (45)
-         +- * Project (44)
-            +- Window (43)
-               +- * CometColumnarToRow (42)
-                  +- CometSort (41)
-                     +- ReusedExchange (40)
+* CometColumnarToRow (50)
++- CometTakeOrderedAndProject (49)
+   +- RowToColumnar (48)
+      +- * Project (47)
+         +- * BroadcastHashJoin Inner BuildRight (46)
+            :- * Project (39)
+            :  +- * BroadcastHashJoin Inner BuildRight (38)
+            :     :- * Project (29)
+            :     :  +- * Filter (28)
+            :     :     +- Window (27)
+            :     :        +- * Filter (26)
+            :     :           +- Window (25)
+            :     :              +- * CometColumnarToRow (24)
+            :     :                 +- CometSort (23)
+            :     :                    +- CometExchange (22)
+            :     :                       +- CometHashAggregate (21)
+            :     :                          +- CometExchange (20)
+            :     :                             +- CometHashAggregate (19)
+            :     :                                +- CometProject (18)
+            :     :                                   +- CometBroadcastHashJoin (17)
+            :     :                                      :- CometProject (13)
+            :     :                                      :  +- CometBroadcastHashJoin (12)
+            :     :                                      :     :- CometProject (8)
+            :     :                                      :     :  +- CometBroadcastHashJoin (7)
+            :     :                                      :     :     :- CometProject (3)
+            :     :                                      :     :     :  +- CometFilter (2)
+            :     :                                      :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item (1)
+            :     :                                      :     :     +- CometBroadcastExchange (6)
+            :     :                                      :     :        +- CometFilter (5)
+            :     :                                      :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales (4)
+            :     :                                      :     +- CometBroadcastExchange (11)
+            :     :                                      :        +- CometFilter (10)
+            :     :                                      :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (9)
+            :     :                                      +- CometBroadcastExchange (16)
+            :     :                                         +- CometFilter (15)
+            :     :                                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.call_center (14)
+            :     +- BroadcastExchange (37)
+            :        +- * Project (36)
+            :           +- Window (35)
+            :              +- * CometColumnarToRow (34)
+            :                 +- CometSort (33)
+            :                    +- CometExchange (32)
+            :                       +- CometHashAggregate (31)
+            :                          +- ReusedExchange (30)
+            +- BroadcastExchange (45)
+               +- * Project (44)
+                  +- Window (43)
+                     +- * CometColumnarToRow (42)
+                        +- CometSort (41)
+                           +- ReusedExchange (40)
 
 
 (1) CometScan [native_iceberg_compat] parquet spark_catalog.default.item
@@ -255,34 +257,40 @@ Join condition: None
 Output [9]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, avg_monthly_sales#20, sum_sales#17, sum_sales#29 AS psum#37, sum_sales#36 AS nsum#38]
 Input [14]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, sum_sales#17, avg_monthly_sales#20, rn#19, sum_sales#29, i_category#34, i_brand#35, cc_name#30, sum_sales#36, rn#33]
 
-(48) TakeOrderedAndProject
+(48) RowToColumnar
 Input [9]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, avg_monthly_sales#20, sum_sales#17, psum#37, nsum#38]
-Arguments: 100, [(sum_sales#17 - avg_monthly_sales#20) ASC NULLS FIRST, cc_name#15 ASC NULLS FIRST], [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, avg_monthly_sales#20, sum_sales#17, psum#37, nsum#38]
+
+(49) CometTakeOrderedAndProject
+Input [9]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, avg_monthly_sales#20, sum_sales#17, psum#37, nsum#38]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[(sum_sales#17 - avg_monthly_sales#20) ASC NULLS FIRST,cc_name#15 ASC NULLS FIRST], output=[i_category#5,i_brand#4,cc_name#15,d_year#12,d_moy#13,avg_monthly_sales#20,sum_sales#17,psum#37,nsum#38]), [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, avg_monthly_sales#20, sum_sales#17, psum#37, nsum#38], 100, 0, [(sum_sales#17 - avg_monthly_sales#20) ASC NULLS FIRST, cc_name#15 ASC NULLS FIRST], [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, avg_monthly_sales#20, sum_sales#17, psum#37, nsum#38]
+
+(50) CometColumnarToRow [codegen id : 8]
+Input [9]: [i_category#5, i_brand#4, cc_name#15, d_year#12, d_moy#13, avg_monthly_sales#20, sum_sales#17, psum#37, nsum#38]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 4 Hosting Expression = cs_sold_date_sk#9 IN dynamicpruning#10
-BroadcastExchange (52)
-+- * CometColumnarToRow (51)
-   +- CometFilter (50)
-      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (49)
+BroadcastExchange (54)
++- * CometColumnarToRow (53)
+   +- CometFilter (52)
+      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (51)
 
 
-(49) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+(51) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#11, d_year#12, d_moy#13]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [Or(Or(EqualTo(d_year,1999),And(EqualTo(d_year,1998),EqualTo(d_moy,12))),And(EqualTo(d_year,2000),EqualTo(d_moy,1))), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
-(50) CometFilter
+(52) CometFilter
 Input [3]: [d_date_sk#11, d_year#12, d_moy#13]
 Condition : ((((d_year#12 = 1999) OR ((d_year#12 = 1998) AND (d_moy#13 = 12))) OR ((d_year#12 = 2000) AND (d_moy#13 = 1))) AND isnotnull(d_date_sk#11))
 
-(51) CometColumnarToRow [codegen id : 1]
+(53) CometColumnarToRow [codegen id : 1]
 Input [3]: [d_date_sk#11, d_year#12, d_moy#13]
 
-(52) BroadcastExchange
+(54) BroadcastExchange
 Input [3]: [d_date_sk#11, d_year#12, d_moy#13]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=6]
 

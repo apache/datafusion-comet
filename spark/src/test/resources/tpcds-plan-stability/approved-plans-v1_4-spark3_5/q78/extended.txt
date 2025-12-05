@@ -1,4 +1,4 @@
-TakeOrderedAndProject
+ TakeOrderedAndProject [COMET: unsupported sort order: round((cast(ss_qty#1 as double) / cast(coalesce((ws_qty#2 + cs_qty#3), 1) as double)), 2) ASC NULLS FIRST]
 +-  Project [COMET: Comet does not support Spark's BigDecimal rounding]
    +- CometColumnarToRow
       +- CometSortMergeJoin

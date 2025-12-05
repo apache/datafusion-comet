@@ -3,8 +3,8 @@ HashAggregate
    +- CometColumnarExchange
       +- HashAggregate
          +- Project
-            +- BroadcastHashJoin
-               :- BroadcastHashJoin
+            +-  BroadcastHashJoin [COMET: Could not convert class org.apache.spark.sql.execution.joins.BroadcastHashJoinExec with BroadcastExchangeExec child to native and spark.comet.exec.broadcast.enabled is not enabled: ]
+               :-  BroadcastHashJoin [COMET: Could not convert class org.apache.spark.sql.execution.joins.BroadcastHashJoinExec with BroadcastExchangeExec child to native and spark.comet.exec.broadcast.enabled is not enabled: Set(BuildRight with LeftAnti is not supported)]
                :  :- CometColumnarToRow
                :  :  +- CometHashAggregate
                :  :     +- CometExchange

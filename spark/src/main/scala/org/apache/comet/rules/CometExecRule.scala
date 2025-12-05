@@ -36,7 +36,7 @@ import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHash
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
@@ -218,10 +218,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             if (COMET_EXEC_BROADCAST_FORCE_ENABLED.get(conf)) {
               newPlan
             } else {
-              withInfo(
-                plan,
-                s"Could not convert ${plan.getClass} with BroadcastExchangeExec " +
-                  s"child to native and ${COMET_EXEC_BROADCAST_FORCE_ENABLED.key} is not enabled")
+              newPlan.getTagValue(CometExplainInfo.EXTENSION_INFO) match {
+                case Some(reasons) =>
+                  withInfos(plan, reasons)
+                case _ =>
+              }
               plan
             }
           }
@@ -257,8 +258,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
               case _ =>
                 if (!hasExplainInfo(op)) {
                   withInfo(op, s"${op.nodeName} is not supported")
+                } else {
+                  op
                 }
-                op
             }
         }
     }
