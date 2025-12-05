@@ -8,43 +8,10 @@ use datafusion::physical_expr::{expressions::BinaryExpr, PhysicalExpr};
 use datafusion_comet_proto::spark_expression::Expr;
 
 use crate::execution::{
+    expressions::extract_expr,
     operators::ExecutionError,
     planner::{traits::ExpressionBuilder, PhysicalPlanner},
 };
-
-/// Helper function to create binary bitwise expressions
-fn create_binary_bitwise_expr(
-    spark_expr: &Expr,
-    input_schema: SchemaRef,
-    planner: &PhysicalPlanner,
-    operator: DataFusionOperator,
-) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-    // Extract left and right from the appropriate bitwise expression
-    let (left_expr, right_expr) = match &spark_expr.expr_struct {
-        Some(datafusion_comet_proto::spark_expression::expr::ExprStruct::BitwiseAnd(expr)) => {
-            (expr.left.as_ref(), expr.right.as_ref())
-        }
-        Some(datafusion_comet_proto::spark_expression::expr::ExprStruct::BitwiseOr(expr)) => {
-            (expr.left.as_ref(), expr.right.as_ref())
-        }
-        Some(datafusion_comet_proto::spark_expression::expr::ExprStruct::BitwiseXor(expr)) => {
-            (expr.left.as_ref(), expr.right.as_ref())
-        }
-        Some(datafusion_comet_proto::spark_expression::expr::ExprStruct::BitwiseShiftLeft(
-            expr,
-        )) => (expr.left.as_ref(), expr.right.as_ref()),
-        Some(datafusion_comet_proto::spark_expression::expr::ExprStruct::BitwiseShiftRight(
-            expr,
-        )) => (expr.left.as_ref(), expr.right.as_ref()),
-        _ => {
-            panic!("create_binary_bitwise_expr called with non-bitwise expression");
-        }
-    };
-
-    let left = planner.create_expr(left_expr.unwrap(), Arc::clone(&input_schema))?;
-    let right = planner.create_expr(right_expr.unwrap(), input_schema)?;
-    Ok(Arc::new(BinaryExpr::new(left, operator, right)))
-}
 
 /// Builder for BitwiseAnd expressions
 pub struct BitwiseAndBuilder;
@@ -56,12 +23,11 @@ impl ExpressionBuilder for BitwiseAndBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        create_binary_bitwise_expr(
-            spark_expr,
-            input_schema,
-            planner,
-            DataFusionOperator::BitwiseAnd,
-        )
+        let expr = extract_expr!(spark_expr, BitwiseAnd);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+        let op = DataFusionOperator::BitwiseAnd;
+        Ok(Arc::new(BinaryExpr::new(left, op, right)))
     }
 }
 
@@ -75,12 +41,11 @@ impl ExpressionBuilder for BitwiseOrBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        create_binary_bitwise_expr(
-            spark_expr,
-            input_schema,
-            planner,
-            DataFusionOperator::BitwiseOr,
-        )
+        let expr = extract_expr!(spark_expr, BitwiseOr);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+        let op = DataFusionOperator::BitwiseOr;
+        Ok(Arc::new(BinaryExpr::new(left, op, right)))
     }
 }
 
@@ -94,12 +59,11 @@ impl ExpressionBuilder for BitwiseXorBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        create_binary_bitwise_expr(
-            spark_expr,
-            input_schema,
-            planner,
-            DataFusionOperator::BitwiseXor,
-        )
+        let expr = extract_expr!(spark_expr, BitwiseXor);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+        let op = DataFusionOperator::BitwiseXor;
+        Ok(Arc::new(BinaryExpr::new(left, op, right)))
     }
 }
 
@@ -113,12 +77,11 @@ impl ExpressionBuilder for BitwiseShiftLeftBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        create_binary_bitwise_expr(
-            spark_expr,
-            input_schema,
-            planner,
-            DataFusionOperator::BitwiseShiftLeft,
-        )
+        let expr = extract_expr!(spark_expr, BitwiseShiftLeft);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+        let op = DataFusionOperator::BitwiseShiftLeft;
+        Ok(Arc::new(BinaryExpr::new(left, op, right)))
     }
 }
 
@@ -132,11 +95,10 @@ impl ExpressionBuilder for BitwiseShiftRightBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        create_binary_bitwise_expr(
-            spark_expr,
-            input_schema,
-            planner,
-            DataFusionOperator::BitwiseShiftRight,
-        )
+        let expr = extract_expr!(spark_expr, BitwiseShiftRight);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+        let op = DataFusionOperator::BitwiseShiftRight;
+        Ok(Arc::new(BinaryExpr::new(left, op, right)))
     }
 }

@@ -5,39 +5,13 @@ use std::sync::Arc;
 use arrow::datatypes::SchemaRef;
 use datafusion::logical_expr::Operator as DataFusionOperator;
 use datafusion::physical_expr::{expressions::BinaryExpr, PhysicalExpr};
-use datafusion_comet_proto::spark_expression::{expr::ExprStruct, Expr};
+use datafusion_comet_proto::spark_expression::Expr;
 
 use crate::execution::{
+    expressions::extract_expr,
     operators::ExecutionError,
     planner::{traits::ExpressionBuilder, PhysicalPlanner},
 };
-
-/// Helper function to create binary comparison expressions
-fn create_binary_comparison_expr(
-    spark_expr: &Expr,
-    input_schema: SchemaRef,
-    planner: &PhysicalPlanner,
-    operator: DataFusionOperator,
-) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-    // Extract left and right from the appropriate comparison expression
-    let (left_expr, right_expr) = match &spark_expr.expr_struct {
-        Some(ExprStruct::Eq(expr)) => (expr.left.as_ref(), expr.right.as_ref()),
-        Some(ExprStruct::Neq(expr)) => (expr.left.as_ref(), expr.right.as_ref()),
-        Some(ExprStruct::Lt(expr)) => (expr.left.as_ref(), expr.right.as_ref()),
-        Some(ExprStruct::LtEq(expr)) => (expr.left.as_ref(), expr.right.as_ref()),
-        Some(ExprStruct::Gt(expr)) => (expr.left.as_ref(), expr.right.as_ref()),
-        Some(ExprStruct::GtEq(expr)) => (expr.left.as_ref(), expr.right.as_ref()),
-        Some(ExprStruct::EqNullSafe(expr)) => (expr.left.as_ref(), expr.right.as_ref()),
-        Some(ExprStruct::NeqNullSafe(expr)) => (expr.left.as_ref(), expr.right.as_ref()),
-        _ => {
-            panic!("create_binary_comparison_expr called with non-comparison expression");
-        }
-    };
-
-    let left = planner.create_expr(left_expr.unwrap(), Arc::clone(&input_schema))?;
-    let right = planner.create_expr(right_expr.unwrap(), input_schema)?;
-    Ok(Arc::new(BinaryExpr::new(left, operator, right)))
-}
 
 /// Builder for Eq expressions
 pub struct EqBuilder;
@@ -49,7 +23,14 @@ impl ExpressionBuilder for EqBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::Eq)
+        let expr = extract_expr!(spark_expr, Eq);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+        Ok(Arc::new(BinaryExpr::new(
+            left,
+            DataFusionOperator::Eq,
+            right,
+        )))
     }
 }
 
@@ -63,7 +44,14 @@ impl ExpressionBuilder for NeqBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::NotEq)
+        let expr = extract_expr!(spark_expr, Neq);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+        Ok(Arc::new(BinaryExpr::new(
+            left,
+            DataFusionOperator::NotEq,
+            right,
+        )))
     }
 }
 
@@ -77,7 +65,14 @@ impl ExpressionBuilder for LtBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::Lt)
+        let expr = extract_expr!(spark_expr, Lt);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+        Ok(Arc::new(BinaryExpr::new(
+            left,
+            DataFusionOperator::Lt,
+            right,
+        )))
     }
 }
 
@@ -91,7 +86,14 @@ impl ExpressionBuilder for LtEqBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::LtEq)
+        let expr = extract_expr!(spark_expr, LtEq);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+        Ok(Arc::new(BinaryExpr::new(
+            left,
+            DataFusionOperator::LtEq,
+            right,
+        )))
     }
 }
 
@@ -105,7 +107,14 @@ impl ExpressionBuilder for GtBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::Gt)
+        let expr = extract_expr!(spark_expr, Gt);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+        Ok(Arc::new(BinaryExpr::new(
+            left,
+            DataFusionOperator::Gt,
+            right,
+        )))
     }
 }
 
@@ -119,7 +128,14 @@ impl ExpressionBuilder for GtEqBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        create_binary_comparison_expr(spark_expr, input_schema, planner, DataFusionOperator::GtEq)
+        let expr = extract_expr!(spark_expr, GtEq);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+        Ok(Arc::new(BinaryExpr::new(
+            left,
+            DataFusionOperator::GtEq,
+            right,
+        )))
     }
 }
 
@@ -133,12 +149,14 @@ impl ExpressionBuilder for EqNullSafeBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        create_binary_comparison_expr(
-            spark_expr,
-            input_schema,
-            planner,
+        let expr = extract_expr!(spark_expr, EqNullSafe);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+        Ok(Arc::new(BinaryExpr::new(
+            left,
             DataFusionOperator::IsNotDistinctFrom,
-        )
+            right,
+        )))
     }
 }
 
@@ -152,11 +170,13 @@ impl ExpressionBuilder for NeqNullSafeBuilder {
         input_schema: SchemaRef,
         planner: &PhysicalPlanner,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        create_binary_comparison_expr(
-            spark_expr,
-            input_schema,
-            planner,
+        let expr = extract_expr!(spark_expr, NeqNullSafe);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+        Ok(Arc::new(BinaryExpr::new(
+            left,
             DataFusionOperator::IsDistinctFrom,
-        )
+            right,
+        )))
     }
 }
