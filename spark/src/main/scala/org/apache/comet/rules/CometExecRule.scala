@@ -170,33 +170,33 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Fully native scan for V1
       case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
-        convertToComet(scan, CometNativeScan).getOrElse(scan)
+        tryConvert(scan, CometNativeScan)
 
       // Fully native Iceberg scan for V2 (iceberg-rust path)
       // Only handle scans with native metadata; SupportsComet scans fall through to isCometScan
       // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometScanRule
       case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
-        convertToComet(scan, CometIcebergNativeScan).getOrElse(scan)
+        tryConvert(scan, CometIcebergNativeScan)
 
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
-        convertToComet(op, CometScanWrapper).getOrElse(op)
+        tryConvert(op, CometScanWrapper)
 
       case op if shouldApplySparkToColumnar(conf, op) =>
-        convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
+        tryConvert(op, CometSparkToColumnarExec)
 
       case op: DataWritingCommandExec =>
-        convertToComet(op, CometDataWritingCommand).getOrElse(op)
+        tryConvert(op, CometDataWritingCommand)
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
-        convertToComet(s, CometExchangeSink).getOrElse(s)
+        tryConvert(s, CometExchangeSink)
 
       case s @ BroadcastQueryStageExec(
             _,
             ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
             _) =>
-        convertToComet(s, CometExchangeSink).getOrElse(s)
+        tryConvert(s, CometExchangeSink)
 
       // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
       // exchange. It is only used for Comet native execution. We only transform Spark broadcast
@@ -205,7 +205,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
         val newChildren = plan.children.map {
           case b: BroadcastExchangeExec =>
-            convertToCometIfAllChildrenAreNative(b, CometBroadcastExchangeExec).getOrElse(b)
+            tryConvertIfAllChildrenNative(b, CometBroadcastExchangeExec)
           case other => other
         }
         if (!newChildren.exists(_.isInstanceOf[BroadcastExchangeExec])) {
@@ -213,11 +213,8 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           if (isCometNative(newPlan) || isCometBroadCastForceEnabled(conf)) {
             newPlan
           } else {
-            if (isCometNative(newPlan)) {
-              val reason =
-                getCometBroadcastNotEnabledReason(conf).getOrElse("no reason available")
-              withInfo(plan, s"Broadcast is not enabled: $reason")
-            }
+            val reason = getCometBroadcastNotEnabledReason(conf).getOrElse("no reason available")
+            withInfo(plan, s"Broadcast is not enabled: $reason")
             plan
           }
         } else {
@@ -226,43 +223,34 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       // For AQE shuffle stage on a Comet shuffle exchange
       case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
-        convertToComet(s, CometExchangeSink).getOrElse(s)
+        tryConvert(s, CometExchangeSink)
 
       // For AQE shuffle stage on a reused Comet shuffle exchange
       // Note that we don't need to handle `ReusedExchangeExec` for non-AQE case, because
       // the query plan won't be re-optimized/planned in non-AQE mode.
       case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
-        convertToComet(s, CometExchangeSink).getOrElse(s)
+        tryConvert(s, CometExchangeSink)
 
       case s: ShuffleExchangeExec =>
-        convertToComet(s, CometShuffleExchangeExec).getOrElse(s)
+        tryConvert(s, CometShuffleExchangeExec)
 
       case op =>
-        val handler = allExecs
-          .get(op.getClass)
-          .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
-        handler match {
+        // Try to convert using registered handlers first
+        allExecs.get(op.getClass) match {
           case Some(handler) =>
-            return convertToCometIfAllChildrenAreNative(op, handler).getOrElse(op)
-          case _ =>
-        }
-
-        op match {
-          case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
-              _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec =>
-            // Some execs should never be replaced. We include
-            // these cases specially here so we do not add a misleading 'info' message
-            op
-          case _: ExecutedCommandExec | _: V2CommandExec =>
-            // Some execs that comet will not accelerate, such as command execs.
-            op
-          case _ =>
-            if (!hasExplainInfo(op)) {
-              // An operator that is not supported by Comet
-              withInfo(op, s"${op.nodeName} is not supported")
-            } else {
-              // Already has fallback reason, do not override it
-              op
+            tryConvertIfAllChildrenNative(op, handler.asInstanceOf[CometOperatorSerde[SparkPlan]])
+          case None =>
+            op match {
+              case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
+                  _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec | _: ExecutedCommandExec |
+                  _: V2CommandExec =>
+                // Some execs should never be replaced or that comet will not accelerate
+                op
+              case _ =>
+                if (!hasExplainInfo(op)) {
+                  withInfo(op, s"${op.nodeName} is not supported")
+                }
+                op
             }
         }
     }
@@ -449,6 +437,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   /**
+   * Helper method to try converting a Spark plan to Comet and return the original if conversion
+   * fails.
+   */
+  private def tryConvert(op: SparkPlan, handler: CometOperatorSerde[_]): SparkPlan =
+    convertToComet(op, handler).getOrElse(op)
+
+  /**
+   * Helper method to try converting a Spark plan to Comet only if all children are native, and
+   * return the original if conversion fails.
+   */
+  private def tryConvertIfAllChildrenNative(
+      op: SparkPlan,
+      handler: CometOperatorSerde[_]): SparkPlan =
+    convertToCometIfAllChildrenAreNative(op, handler).getOrElse(op)
+
+  /**
    * Convert a Spark plan to a Comet plan using the specified serde handler, but only if all
    * children are native.
    */
@@ -465,63 +469,57 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   /** Convert a Spark plan to a Comet plan using the specified serde handler */
   private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] = {
     val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
-    if (isOperatorEnabled(serde, op)) {
-      val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
-      if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
-        val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
-        childOp.foreach(builder.addChildren)
-        return serde
-          .convert(op, builder, childOp: _*)
-          .map(nativeOp => serde.createExec(nativeOp, op))
-      } else {
-        return serde
-          .convert(op, builder)
-          .map(nativeOp => serde.createExec(nativeOp, op))
-      }
+    if (!isOperatorEnabled(serde, op)) return None
+
+    val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
+    val result = if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
+      val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
+      childOp.foreach(builder.addChildren)
+      serde.convert(op, builder, childOp: _*)
+    } else {
+      serde.convert(op, builder)
     }
-    None
+    result.map(nativeOp => serde.createExec(nativeOp, op))
   }
 
   private def isOperatorEnabled(
       handler: CometOperatorSerde[SparkPlan],
       op: SparkPlan): Boolean = {
     val opName = op.getClass.getSimpleName
-    if (handler.enabledConfig.forall(_.get(op.conf))) {
-      handler.getSupportLevel(op) match {
-        case Unsupported(notes) =>
-          withInfo(op, notes.getOrElse(""))
-          false
-        case Incompatible(notes) =>
-          val allowIncompat = CometConf.isOperatorAllowIncompat(opName)
-          val incompatConf = CometConf.getOperatorAllowIncompatConfigKey(opName)
-          if (allowIncompat) {
-            if (notes.isDefined) {
-              logWarning(
-                s"Comet supports $opName when $incompatConf=true " +
-                  s"but has notes: ${notes.get}")
-            }
-            true
-          } else {
-            val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
-            withInfo(
-              op,
-              s"$opName is not fully compatible with Spark$optionalNotes. " +
-                s"To enable it anyway, set $incompatConf=true. " +
-                s"${CometConf.COMPAT_GUIDE}.")
-            false
-          }
-        case Compatible(notes) =>
-          if (notes.isDefined) {
-            logWarning(s"Comet supports $opName but has notes: ${notes.get}")
-          }
-          true
-      }
-    } else {
+
+    if (!handler.enabledConfig.forall(_.get(op.conf))) {
       withInfo(
         op,
         s"Native support for operator $opName is disabled. " +
           s"Set ${handler.enabledConfig.get.key}=true to enable it.")
-      false
+      return false
+    }
+
+    handler.getSupportLevel(op) match {
+      case Unsupported(notes) =>
+        withInfo(op, notes.getOrElse(""))
+        false
+
+      case Incompatible(notes) =>
+        val allowIncompat = CometConf.isOperatorAllowIncompat(opName)
+        if (allowIncompat) {
+          val incompatConf = CometConf.getOperatorAllowIncompatConfigKey(opName)
+          notes.foreach(n =>
+            logWarning(s"Comet supports $opName when $incompatConf=true but has notes: $n"))
+          true
+        } else {
+          val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
+          val incompatConf = CometConf.getOperatorAllowIncompatConfigKey(opName)
+          withInfo(
+            op,
+            s"$opName is not fully compatible with Spark$optionalNotes. " +
+              s"To enable it anyway, set $incompatConf=true. ${CometConf.COMPAT_GUIDE}.")
+          false
+        }
+
+      case Compatible(notes) =>
+        notes.foreach(n => logWarning(s"Comet supports $opName but has notes: $n"))
+        true
     }
   }
 }
