@@ -687,7 +687,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast StringType to DoubleType") {
     Seq(true, false).foreach { v =>
-      castTest(specialValues.toDF("a"), DataTypes.FloatType, testAnsi = v)
+      castTest(specialValues.toDF("a"), DataTypes.DoubleType, testAnsi = v)
     }
   }
 

@@ -19,10 +19,7 @@ use crate::utils::array_with_timezone;
 use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
-use arrow::array::{
-    ArrayAccessor, BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray,
-    PrimitiveBuilder, StringArray, StructArray,
-};
+use arrow::array::{ArrayAccessor, BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, LargeStringArray, ListArray, PrimitiveBuilder, StringArray, StructArray};
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{
     i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, DecimalType,
@@ -1085,7 +1082,7 @@ fn cast_string_to_decimal128_impl(
 ) -> SparkResult<ArrayRef> {
     let string_array = array
         .as_any()
-        .downcast_ref::<StringArray>()
+        .downcast_ref::<LargeStringArray>()
         .ok_or_else(|| SparkError::Internal("Expected string array".to_string()))?;
 
     let mut decimal_builder = Decimal128Builder::with_capacity(string_array.len());
@@ -1310,6 +1307,7 @@ fn cast_string_to_float(
     eval_mode: EvalMode,
 ) -> SparkResult<ArrayRef> {
     match to_type {
+        DataType::Float16 => cast_string_to_float_impl::<Float32Type>(array, eval_mode, "FLOAT"),
         DataType::Float32 => cast_string_to_float_impl::<Float32Type>(array, eval_mode, "FLOAT"),
         DataType::Float64 => cast_string_to_float_impl::<Float64Type>(array, eval_mode, "DOUBLE"),
         _ => Err(SparkError::Internal(format!(
