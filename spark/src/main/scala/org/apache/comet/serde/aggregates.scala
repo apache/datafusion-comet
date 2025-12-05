@@ -213,7 +213,7 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 object CometSum extends CometAggregateExpressionSerde[Sum] {
 
   override def getSupportLevel(sum: Sum): SupportLevel = {
-    sum.evalMode match {
+    sum.evalContext.evalMode match {
       case EvalMode.ANSI =>
         Incompatible(Some("ANSI mode is not supported"))
       case EvalMode.TRY =>
@@ -242,7 +242,7 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
       val builder = ExprOuterClass.Sum.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
-      builder.setFailOnError(sum.evalMode == EvalMode.ANSI)
+      builder.setFailOnError(sum.evalContext.evalMode == EvalMode.ANSI)
 
       Some(
         ExprOuterClass.AggExpr

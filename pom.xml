@@ -652,6 +652,33 @@ under the License.
     </profile>
 
     <profile>
+      <!-- FIXME: this is WIP. Tests may fail https://github.com/apache/datafusion-comet/issues/551 -->
+      <id>spark-4.1</id>
+      <properties>
+        <!-- Use Scala 2.13 by default -->
+        <scala.version>2.13.17</scala.version>
+        <scala.binary.version>2.13</scala.binary.version>
+        <spark.version>4.1.0</spark.version>
+        <spark.version.short>4.1</spark.version.short>
+        <parquet.version>1.16.0</parquet.version>
+        <semanticdb.version>4.13.9</semanticdb.version>
+        <slf4j.version>2.0.17</slf4j.version>
+        <shims.majorVerSrc>spark-4.1</shims.majorVerSrc>
+        <shims.minorVerSrc>not-needed-yet</shims.minorVerSrc>
+        <!-- Use jdk17 by default -->
+        <java.version>17</java.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
+      </properties>
+      <repositories>
+        <repository>
+          <id>apache-staging</id>
+          <url>https://repository.apache.org/content/repositories/orgapachespark-1506/</url>
+        </repository>
+      </repositories>
+    </profile>
+
+    <profile>
       <id>scala-2.12</id>
     </profile>
 
