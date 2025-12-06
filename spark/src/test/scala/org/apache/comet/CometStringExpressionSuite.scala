@@ -391,4 +391,118 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("regexp_extract basic") {
+    import org.apache.comet.CometConf
+
+    withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+      val data = Seq(
+        ("100-200", 1),
+        ("300-400", 1),
+        (null, 1), // NULL input
+        ("no-match", 1), // no match → should return ""
+        ("abc123def456", 1),
+        ("", 1) // empty string
+      )
+
+      withParquetTable(data, "tbl") {
+        // Test basic extraction: group 0 (full match)
+        checkSparkAnswerAndOperator("SELECT regexp_extract(_1, '(\\d+)-(\\d+)', 0) FROM tbl")
+        // Test group 1
+        checkSparkAnswerAndOperator("SELECT regexp_extract(_1, '(\\d+)-(\\d+)', 1) FROM tbl")
+        // Test group 2
+        checkSparkAnswerAndOperator("SELECT regexp_extract(_1, '(\\d+)-(\\d+)', 2) FROM tbl")
+        // Test non-existent group → should return ""
+        checkSparkAnswerAndOperator("SELECT regexp_extract(_1, '(\\d+)-(\\d+)', 3) FROM tbl")
+        // Test empty pattern
+        checkSparkAnswerAndOperator("SELECT regexp_extract(_1, '', 0) FROM tbl")
+        // Test null pattern
+        checkSparkAnswerAndOperator("SELECT regexp_extract(_1, NULL, 0) FROM tbl")
+      }
+    }
+  }
+
+  test("regexp_extract edge cases") {
+    import org.apache.comet.CometConf
+
+    withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+      val data =
+        Seq(("email@example.com", 1), ("phone: 123-456-7890", 1), ("price: $99.99", 1), (null, 1))
+
+      withParquetTable(data, "tbl") {
+        // Extract email domain
+        checkSparkAnswerAndOperator("SELECT regexp_extract(_1, '@([^.]+)', 1) FROM tbl")
+        // Extract phone number
+        checkSparkAnswerAndOperator(
+          "SELECT regexp_extract(_1, '(\\d{3}-\\d{3}-\\d{4})', 1) FROM tbl")
+        // Extract price
+        checkSparkAnswerAndOperator("SELECT regexp_extract(_1, '\\$(\\d+\\.\\d+)', 1) FROM tbl")
+      }
+    }
+  }
+
+  test("regexp_extract_all basic") {
+    import org.apache.comet.CometConf
+
+    withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+      val data = Seq(
+        ("a1b2c3", 1),
+        ("test123test456", 1),
+        (null, 1), // NULL input
+        ("no digits", 1), // no match → should return []
+        ("", 1) // empty string
+      )
+
+      withParquetTable(data, "tbl") {
+        // Test with explicit group 0 (full match on no-group pattern)
+        checkSparkAnswerAndOperator("SELECT regexp_extract_all(_1, '\\d+', 0) FROM tbl")
+        // Test with explicit group 0
+        checkSparkAnswerAndOperator("SELECT regexp_extract_all(_1, '(\\d+)', 0) FROM tbl")
+        // Test group 1
+        checkSparkAnswerAndOperator("SELECT regexp_extract_all(_1, '(\\d+)', 1) FROM tbl")
+        // Test empty pattern
+        checkSparkAnswerAndOperator("SELECT regexp_extract_all(_1, '', 0) FROM tbl")
+        // Test null pattern
+        checkSparkAnswerAndOperator("SELECT regexp_extract_all(_1, NULL, 0) FROM tbl")
+      }
+    }
+  }
+
+  test("regexp_extract_all multiple matches") {
+    import org.apache.comet.CometConf
+
+    withSQLConf(CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true") {
+      val data = Seq(
+        ("The prices are $10, $20, and $30", 1),
+        ("colors: red, green, blue", 1),
+        ("words: hello world", 1),
+        (null, 1))
+
+      withParquetTable(data, "tbl") {
+        // Extract all prices
+        checkSparkAnswerAndOperator("SELECT regexp_extract_all(_1, '\\$(\\d+)', 1) FROM tbl")
+        // Extract all words
+        checkSparkAnswerAndOperator("SELECT regexp_extract_all(_1, '([a-z]+)', 1) FROM tbl")
+      }
+    }
+  }
+
+  test("regexp_extract_all with dictionary encoding") {
+    import org.apache.comet.CometConf
+
+    withSQLConf(
+      CometConf.COMET_REGEXP_ALLOW_INCOMPATIBLE.key -> "true",
+      "parquet.enable.dictionary" -> "true") {
+      // Use repeated values to trigger dictionary encoding
+      val data = (0 until 1000).map(i => {
+        val text = if (i % 3 == 0) "a1b2c3" else if (i % 3 == 1) "x5y6" else "no-match"
+        (text, 1)
+      })
+
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator("SELECT regexp_extract_all(_1, '\\d+') FROM tbl")
+        checkSparkAnswerAndOperator("SELECT regexp_extract_all(_1, '\\d+', 0) FROM tbl")
+      }
+    }
+  }
+
 }
