@@ -3111,4 +3111,44 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConcat.unsupportedReason)
     }
   }
+
+  // https://github.com/apache/datafusion-comet/issues/2813
+  test("make decimal using DataFrame API - integer") {
+    withTable("t1") {
+      sql("create table t1 using parquet as select 123456 as c1 from range(1)")
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ANSI_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+
+        val df = sql("select * from t1")
+        val makeDecimalColumn = createMakeDecimalColumn(df.col("c1").expr, 3, 0)
+        val df1 = df.withColumn("result", makeDecimalColumn)
+
+        checkSparkAnswerAndFallbackReason(df1, "Unsupported input data type: IntegerType")
+      }
+    }
+  }
+
+  test("make decimal using DataFrame API - long") {
+    withTable("t1") {
+      sql("create table t1 using parquet as select cast(123456 as long) as c1 from range(1)")
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ANSI_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+
+        val df = sql("select * from t1")
+        val makeDecimalColumn = createMakeDecimalColumn(df.col("c1").expr, 3, 0)
+        val df1 = df.withColumn("result", makeDecimalColumn)
+
+        checkSparkAnswerAndOperator(df1)
+      }
+    }
+  }
+
 }
