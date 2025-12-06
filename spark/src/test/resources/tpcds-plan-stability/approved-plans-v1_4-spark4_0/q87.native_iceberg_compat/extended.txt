@@ -4,7 +4,7 @@ HashAggregate
       +- HashAggregate
          +- Project
             +- BroadcastHashJoin
-               :- BroadcastHashJoin
+               :-  BroadcastHashJoin [COMET: BuildRight with LeftAnti is not supported]
                :  :- CometColumnarToRow
                :  :  +- CometHashAggregate
                :  :     +- CometExchange
