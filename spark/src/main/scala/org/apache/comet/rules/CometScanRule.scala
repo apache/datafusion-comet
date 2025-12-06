@@ -20,33 +20,37 @@
 package org.apache.comet.rules
 
 import java.net.URI
+
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
+
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData, MetadataColumnHelper, sideBySide}
+import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+
 import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.csv.CometCsvScan
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.shims.CometTypeShim
-import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 
 /**
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
@@ -264,9 +268,26 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           withInfos(scanExec, fallbackReasons.toSet)
         }
 
-      case scan: CSVScan =>
-
-        CometBatchScanExec(scanExec, Seq.empty)
+      case scan: CSVScan if COMET_CSV_V2_NATIVE_ENABLED.get() =>
+        val fallbackReasons = new ListBuffer[String]()
+        val schemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
+        if (!schemaSupported) {
+          fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
+        }
+        val partitionSchemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema, fallbackReasons)
+        if (!partitionSchemaSupported) {
+          fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
+        }
+        if (schemaSupported && partitionSchemaSupported) {
+          val cometCsvScan = CometCsvScan(session, scan)
+          CometBatchScanExec(
+            scanExec.copy(scan = cometCsvScan),
+            runtimeFilters = scanExec.runtimeFilters)
+        } else {
+          withInfos(scanExec, fallbackReasons.toSet)
+        }
 
       // Iceberg scan - patched version implementing SupportsComet interface
       case s: SupportsComet if !COMET_ICEBERG_NATIVE_ENABLED.get() =>

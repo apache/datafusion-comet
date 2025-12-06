@@ -143,6 +143,16 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_CSV_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.csv.v2.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether to use the native Comet V2 CSV reader for improved performance. " +
+          "Default: false (uses standard Spark CSV reader) " +
+          "Experimental: Performance benefits are workload-dependent.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.respectFilterPushdown")
       .category(CATEGORY_PARQUET)

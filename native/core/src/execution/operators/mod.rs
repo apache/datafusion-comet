@@ -32,6 +32,7 @@ mod iceberg_scan;
 mod parquet_writer;
 pub use parquet_writer::ParquetWriterExec;
 mod scan;
+mod csv_scan;
 
 /// Error returned during executing operators.
 #[derive(thiserror::Error, Debug)]
