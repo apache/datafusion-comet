@@ -74,7 +74,7 @@ case class CometBatchScanExec(
 
         override def next(): ColumnarBatch = {
           val batch = batches.next()
-          numOutputRows += batch.numRows()
+          numOutputRows += batch.numRows().toLong
           batch
         }
       }

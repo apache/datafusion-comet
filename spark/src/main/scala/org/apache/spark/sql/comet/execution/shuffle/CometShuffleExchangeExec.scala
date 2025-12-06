@@ -143,7 +143,7 @@ case class CometShuffleExchangeExec(
         outputPartitioning,
         serializer,
         metrics)
-      metrics("numPartitions").set(dep.partitioner.numPartitions)
+      metrics("numPartitions").set(dep.partitioner.numPartitions.toLong)
       val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       SQLMetrics.postDriverMetricUpdates(
         sparkContext,
@@ -157,7 +157,7 @@ case class CometShuffleExchangeExec(
         outputPartitioning,
         serializer,
         metrics)
-      metrics("numPartitions").set(dep.partitioner.numPartitions)
+      metrics("numPartitions").set(dep.partitioner.numPartitions.toLong)
       val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
       SQLMetrics.postDriverMetricUpdates(
         sparkContext,
@@ -705,7 +705,7 @@ object CometShuffleExchangeExec
         // end up being almost the same regardless of the index. substantially scrambling the
         // seed by hashing will help. Refer to SPARK-21782 for more details.
         val partitionId = TaskContext.get().partitionId()
-        var position = new XORShiftRandom(partitionId).nextInt(numPartitions)
+        var position = new XORShiftRandom(partitionId.toLong).nextInt(numPartitions)
         (_: InternalRow) => {
           // The HashPartitioner will handle the `mod` by the number of partitions
           position += 1
@@ -752,7 +752,7 @@ object CometShuffleExchangeExec
                 row: InternalRow): UnsafeExternalRowSorter.PrefixComputer.Prefix = {
               // The hashcode generated from the binary form of a [[UnsafeRow]] should not be null.
               result.isNull = false
-              result.value = row.hashCode()
+              result.value = row.hashCode().toLong
               result
             }
           }

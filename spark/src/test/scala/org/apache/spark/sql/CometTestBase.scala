@@ -21,6 +21,7 @@ package org.apache.spark.sql
 
 import java.util.concurrent.atomic.AtomicInteger
 
+import scala.annotation.nowarn
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
@@ -575,6 +576,7 @@ abstract class CometTestBase
     case None => f(spark.read.format("parquet").load(path))
   }
 
+  @nowarn("cat=deprecation")
   protected def createParquetWriter(
       schema: MessageType,
       path: Path,
@@ -583,8 +585,8 @@ abstract class CometTestBase
       dictionaryPageSize: Int = 1024,
       pageRowCountLimit: Int = ParquetProperties.DEFAULT_PAGE_ROW_COUNT_LIMIT,
       rowGroupSize: Long = 1024 * 1024L): ParquetWriter[Group] = {
-    val hadoopConf = spark.sessionState.newHadoopConf()
 
+    val hadoopConf = spark.sessionState.newHadoopConf()
     ExampleParquetWriter
       .builder(path)
       .withDictionaryEncoding(dictionaryEnabled)
@@ -672,6 +674,7 @@ abstract class CometTestBase
     }
   }
 
+  @nowarn("cat=w-flag-numeric-widen")
   def makeParquetFileAllPrimitiveTypes(
       path: Path,
       dictionaryEnabled: Boolean,
@@ -793,7 +796,7 @@ abstract class CometTestBase
       if (rand.nextBoolean()) {
         None
       } else {
-        Some(getValue(i, div))
+        Some(getValue(i.toLong, div.toLong))
       }
     }
     expected.foreach { opt =>
@@ -847,7 +850,7 @@ abstract class CometTestBase
       if (rand.nextBoolean()) {
         None
       } else {
-        Some(getValue(i, div))
+        Some(getValue(i.toLong, div.toLong))
       }
     }
     expected.foreach { opt =>
@@ -1025,7 +1028,7 @@ abstract class CometTestBase
     val div = if (dictionaryEnabled) 10 else n // maps value to a small range for dict to kick in
 
     val expected = (0 until n).map { i =>
-      Some(getValue(i, div))
+      Some(getValue(i.toLong, div.toLong))
     }
     expected.foreach { opt =>
       val timestampFormats = List(
@@ -1073,7 +1076,7 @@ abstract class CometTestBase
   def makeDecimalRDD(num: Int, decimal: DecimalType, useDictionary: Boolean): DataFrame = {
     val div = if (useDictionary) 5 else num // narrow the space to make it dictionary encoded
     spark
-      .range(num)
+      .range(num.toLong)
       .map(_ % div)
       // Parquet doesn't allow column names with spaces, have to add an alias here.
       // Minus 500 here so that negative decimals are also tested.
@@ -1200,6 +1203,7 @@ abstract class CometTestBase
     df.showString(_numRows, truncate, vertical)
   }
 
+  @nowarn("cat=w-flag-numeric-widen")
   def makeParquetFile(
       path: Path,
       total: Int,
