@@ -215,9 +215,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           if (isCometNative(newPlan) || isCometBroadCastForceEnabled(conf)) {
             newPlan
           } else {
+            // copy fallback reasons to the original plan
             newPlan
               .getTagValue(CometExplainInfo.EXTENSION_INFO)
               .foreach(reasons => withInfos(plan, reasons))
+            // return the original plan
             plan
           }
         } else {
