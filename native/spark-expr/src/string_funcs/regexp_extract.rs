@@ -357,7 +357,7 @@ fn regexp_extract_all_array<T: OffsetSizeTrait>(
 
     let string_builder = GenericStringBuilder::<T>::new();
     let mut list_builder =
-        arrow::array::ListBuilder::new(string_builder).with_field(item_field.clone());
+        arrow::array::ListBuilder::new(string_builder).with_field(Arc::clone(&item_field));
 
     for s in string_array.iter() {
         match s {
@@ -379,9 +379,9 @@ fn regexp_extract_all_array<T: OffsetSizeTrait>(
     // Manually create a new ListArray with the correct field schema to ensure nullable is false
     // This ensures the schema matches what we declared in return_type
     Ok(Arc::new(ListArray::new(
-        FieldRef::from(item_field.clone()),
+        FieldRef::from(Arc::clone(&item_field)),
         list_array.offsets().clone(),
-        list_array.values().clone(),
+        Arc::clone(list_array.values()),
         list_array.nulls().cloned(),
     )))
 }
