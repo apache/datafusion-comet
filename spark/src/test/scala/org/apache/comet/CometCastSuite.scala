@@ -678,22 +678,32 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "xyz",
     null)
 
-  test("cast StringType to FloatType") {
+  test("cast StringType to FloatType special values") {
     Seq(true, false).foreach { v =>
       castTest(specialValues.toDF("a"), DataTypes.FloatType, testAnsi = v)
     }
-
   }
 
-  test("cast StringType to DoubleType") {
+  test("cast StringType to DoubleType special values") {
     Seq(true, false).foreach { v =>
       castTest(specialValues.toDF("a"), DataTypes.DoubleType, testAnsi = v)
     }
   }
 
-  test("cast StringType to DecimalType(10,2) fuzz") {
-    // https://github.com/apache/datafusion-comet/issues/325
-    val values = gen.generateStrings(dataSize, numericPattern, 8).toDF("a")
+  test("cast StringType to DoubleType") {
+    Seq(true, false).foreach { v =>
+      castTest(gen.generateStrings(dataSize, numericPattern, 10).toDF("a"), DataTypes.DoubleType, testAnsi = v)
+    }
+  }
+
+  test("cast StringType to FloatType") {
+    Seq(true, false).foreach { v =>
+      castTest(gen.generateStrings(dataSize, numericPattern, 10).toDF("a"), DataTypes.FloatType, testAnsi = v)
+    }
+  }
+
+  test("cast StringType to DecimalType(10,2)") {
+    val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
     castTest(values, DataTypes.createDecimalType(10, 2))
   }
 
@@ -766,17 +776,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       null).toDF("a")
     Seq(true, false).foreach(k =>
       castTest(values, DataTypes.createDecimalType(23, 8), testAnsi = k))
-  }
-
-  test("cast StringType to DecimalType(10,2)") {
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
-      val values = gen
-        .generateStrings(dataSize, "0123456789.", 8)
-        .filter(_.exists(_.isDigit))
-        .toDF("a")
-      Seq(true, false).foreach(k =>
-        castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = k))
-    }
   }
 
   test("cast StringType to BinaryType") {
