@@ -691,7 +691,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  ignore("cast StringType to DecimalType(10,2)") {
+  test("cast StringType to DecimalType(10,2) fuzz") {
     // https://github.com/apache/datafusion-comet/issues/325
     val values = gen.generateStrings(dataSize, numericPattern, 8).toDF("a")
     castTest(values, DataTypes.createDecimalType(10, 2))
@@ -713,7 +713,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "",
       "abc",
       null).toDF("a")
-    castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = false)
+    Seq(true, false).foreach(k => castTest(values, DataTypes.createDecimalType(10, 2), k))
   }
 
   test("cast StringType to DecimalType(38,10) high precision") {
@@ -729,18 +729,53 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "",
       "abc",
       null).toDF("a")
-    castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = false)
+    Seq(true, false).foreach(k =>
+      castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = k))
   }
 
-  test("cast StringType to DecimalType(10,2) (partial support)") {
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
-      SQLConf.ANSI_ENABLED.key -> "false") {
+  test("cast StringType to Float type scientific notation") {
+    val values = Seq(
+      "1.23E-5",
+      "1.23e10",
+      "1.23E+10",
+      "-1.23e-5",
+      "1e5",
+      "1E-2",
+      "-1.5e3",
+      "1.23E0",
+      "0e0",
+      "1.23e",
+      "e5",
+      null).toDF("a")
+    Seq(true, false).foreach(k => castTest(values, DataTypes.FloatType, testAnsi = k))
+  }
+
+  test("cast StringType to Decimal type scientific notation") {
+    val values = Seq(
+      "1.23E-5",
+      "1.23e10",
+      "1.23E+10",
+      "-1.23e-5",
+      "1e5",
+      "1E-2",
+      "-1.5e3",
+      "1.23E0",
+      "0e0",
+      "1.23e",
+      "e5",
+      null).toDF("a")
+    Seq(true, false).foreach(k =>
+      castTest(values, DataTypes.createDecimalType(23, 8), testAnsi = k))
+  }
+
+  test("cast StringType to DecimalType(10,2)") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
       val values = gen
         .generateStrings(dataSize, "0123456789.", 8)
         .filter(_.exists(_.isDigit))
         .toDF("a")
-      castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = false)
+      Seq(true, false).foreach(k =>
+        castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = k))
     }
   }
 

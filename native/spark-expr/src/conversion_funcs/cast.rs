@@ -19,11 +19,14 @@ use crate::utils::array_with_timezone;
 use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
-use arrow::array::{ArrayAccessor, BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, LargeStringArray, ListArray, PrimitiveBuilder, StringArray, StructArray};
+use arrow::array::{
+    ArrayAccessor, BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray,
+    PrimitiveBuilder, StringArray, StructArray,
+};
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{
-    i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, DecimalType,
-    GenericBinaryType, Schema,
+    i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, GenericBinaryType,
+    Schema,
 };
 use arrow::{
     array::{
@@ -55,7 +58,6 @@ use num::{
     ToPrimitive, Zero,
 };
 use regex::Regex;
-use std::num::ParseFloatError;
 use std::str::FromStr;
 use std::{
     any::Any,
@@ -1082,7 +1084,7 @@ fn cast_string_to_decimal128_impl(
 ) -> SparkResult<ArrayRef> {
     let string_array = array
         .as_any()
-        .downcast_ref::<LargeStringArray>()
+        .downcast_ref::<StringArray>()
         .ok_or_else(|| SparkError::Internal("Expected string array".to_string()))?;
 
     let mut decimal_builder = Decimal128Builder::with_capacity(string_array.len());
@@ -1195,8 +1197,7 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
     }
 
     // Parse the string as a decimal number
-    // Note: We do NOT strip 'D' or 'F' suffixes - let parsing fail naturally
-    // This matches Spark's behavior which uses JavaBigDecimal(string)
+    // Note: We do NOT strip 'D' or 'F' suffixes - let rust's parsing fail naturally for invalid input
     match parse_decimal_str(s) {
         Ok((mantissa, exponent)) => {
             // Convert to target scale
@@ -1246,7 +1247,7 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
     }
 }
 
-/// Parse a decimal string into (mantissa, scale)
+/// Parse a decimal string into mantissa and scale
 /// e.g., "123.45" -> (12345, 2), "-0.001" -> (-1, 3)
 fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
     let s = s.trim();
@@ -1254,22 +1255,40 @@ fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
         return Err("Empty string".to_string());
     }
 
-    let negative = s.starts_with('-');
-    let s = if negative || s.starts_with('+') {
-        &s[1..]
+    // Check if input is scientific notation (e.g., "1.23E-5", "1e10")
+    let (mantissa_str, exponent) = if let Some(e_pos) = s.find(|c| ['e', 'E'].contains(&c)) {
+        let mantissa_part = &s[..e_pos];
+        let exponent_part = &s[e_pos + 1..];
+
+        // Parse exponent part
+        let exp: i32 = exponent_part
+            .parse()
+            .map_err(|_| "Invalid exponent".to_string())?;
+
+        (mantissa_part, exp)
     } else {
-        s
+        (s, 0)
     };
 
-    // Split by decimal point
-    let parts: Vec<&str> = s.split('.').collect();
+    let negative = mantissa_str.starts_with('-');
+    let mantissa_str = if negative || mantissa_str.starts_with('+') {
+        &mantissa_str[1..]
+    } else {
+        mantissa_str
+    };
 
-    if parts.len() > 2 {
+    let split_by_dot: Vec<&str> = mantissa_str.split('.').collect();
+
+    if split_by_dot.len() > 2 {
         return Err("Multiple decimal points".to_string());
     }
 
-    let integral_part = parts[0];
-    let fractional_part = if parts.len() == 2 { parts[1] } else { "" };
+    let integral_part = split_by_dot[0];
+    let fractional_part = if split_by_dot.len() == 2 {
+        split_by_dot[1]
+    } else {
+        ""
+    };
 
     // Parse integral part
     let integral_value: i128 = if integral_part.is_empty() {
@@ -1281,7 +1300,7 @@ fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
     };
 
     // Parse fractional part
-    let scale = fractional_part.len() as i32;
+    let fractional_scale = fractional_part.len() as i32;
     let fractional_value: i128 = if fractional_part.is_empty() {
         0
     } else {
@@ -1290,15 +1309,17 @@ fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
             .map_err(|_| "Invalid fractional part".to_string())?
     };
 
-    // Combine: value = integral * 10^scale + fractional
+    // Combine: value = integral * 10^fractional_scale + fractional
     let mantissa = integral_value
-        .checked_mul(10_i128.pow(scale as u32))
+        .checked_mul(10_i128.pow(fractional_scale as u32))
         .and_then(|v| v.checked_add(fractional_value))
         .ok_or("Overflow in mantissa calculation")?;
 
     let final_mantissa = if negative { -mantissa } else { mantissa };
-
-    Ok((final_mantissa, scale))
+    // final scale = fractional_scale - exponent
+    // For example : "1.23E-5" has fractional_scale=2, exponent=-5, so scale = 2 - (-5) = 7
+    let final_scale = fractional_scale - exponent;
+    Ok((final_mantissa, final_scale))
 }
 
 fn cast_string_to_float(
@@ -1307,8 +1328,9 @@ fn cast_string_to_float(
     eval_mode: EvalMode,
 ) -> SparkResult<ArrayRef> {
     match to_type {
-        DataType::Float16 => cast_string_to_float_impl::<Float32Type>(array, eval_mode, "FLOAT"),
-        DataType::Float32 => cast_string_to_float_impl::<Float32Type>(array, eval_mode, "FLOAT"),
+        DataType::Float16 | DataType::Float32 => {
+            cast_string_to_float_impl::<Float32Type>(array, eval_mode, "FLOAT")
+        }
         DataType::Float64 => cast_string_to_float_impl::<Float64Type>(array, eval_mode, "DOUBLE"),
         _ => Err(SparkError::Internal(format!(
             "Unsupported cast to float type: {:?}",
@@ -1323,92 +1345,59 @@ fn cast_string_to_float_impl<T: ArrowPrimitiveType>(
     type_name: &str,
 ) -> SparkResult<ArrayRef>
 where
-    T::Native: FloatParse,
+    T::Native: FromStr + num::Float,
 {
     let arr = array
         .as_any()
         .downcast_ref::<StringArray>()
-        .ok_or_else(|| SparkError::Internal("could not parse input as string type".to_string()))?;
+        .ok_or_else(|| SparkError::Internal("Expected string array".to_string()))?;
 
-    let mut cast_array = PrimitiveArray::<T>::builder(arr.len());
+    let mut builder = PrimitiveBuilder::<T>::with_capacity(arr.len());
 
     for i in 0..arr.len() {
         if arr.is_null(i) {
-            cast_array.append_null();
+            builder.append_null();
         } else {
             let str_value = arr.value(i).trim();
-            match T::Native::parse_spark_float(str_value) {
-                Ok(v) => {
-                    cast_array.append_value(v);
-                }
-                Err(_) => {
+            match parse_string_to_float(str_value) {
+                Some(v) => builder.append_value(v),
+                None => {
                     if eval_mode == EvalMode::Ansi {
                         return Err(invalid_value(arr.value(i), "STRING", type_name));
-                    } else {
-                        cast_array.append_null();
                     }
+                    builder.append_null();
                 }
             }
         }
     }
-    Ok(Arc::new(cast_array.finish()))
+
+    Ok(Arc::new(builder.finish()))
 }
 
-/// Trait for parsing float from str
-trait FloatParse: Sized {
-    fn parse_spark_float(s: &str) -> Result<Self, ParseFloatError>;
-}
-
-impl FloatParse for f32 {
-    fn parse_spark_float(s: &str) -> Result<Self, ParseFloatError> {
-        let s_lower = s.to_lowercase();
-
-        if s_lower == "inf" || s_lower == "+inf" || s_lower == "infinity" || s_lower == "+infinity"
-        {
-            return Ok(f32::INFINITY);
-        }
-
-        if s_lower == "-inf" || s_lower == "-infinity" {
-            return Ok(f32::NEG_INFINITY);
-        }
-
-        if s_lower == "nan" {
-            return Ok(f32::NAN);
-        }
-
-        let pruned = if s_lower.ends_with('d') || s_lower.ends_with('f') {
-            &s[..s.len() - 1]
-        } else {
-            s
-        };
-        pruned.parse::<f32>()
+/// helper to parse floats from string inputs
+fn parse_string_to_float<F>(s: &str) -> Option<F>
+where
+    F: FromStr + num::Float,
+{
+    let s_lower = s.to_lowercase();
+    // Handle +inf / -inf
+    if s_lower == "inf" || s_lower == "+inf" || s_lower == "infinity" || s_lower == "+infinity" {
+        return Some(F::infinity());
     }
-}
-
-impl FloatParse for f64 {
-    fn parse_spark_float(s: &str) -> Result<Self, ParseFloatError> {
-        let s_lower = s.to_lowercase();
-
-        if s_lower == "inf" || s_lower == "+inf" || s_lower == "infinity" || s_lower == "+infinity"
-        {
-            return Ok(f64::INFINITY);
-        }
-
-        if s_lower == "-inf" || s_lower == "-infinity" {
-            return Ok(f64::NEG_INFINITY);
-        }
-
-        if s_lower == "nan" {
-            return Ok(f64::NAN);
-        }
-
-        let cleaned = if s_lower.ends_with('d') || s_lower.ends_with('f') {
-            &s[..s.len() - 1]
-        } else {
-            s
-        };
-        cleaned.parse::<f64>()
+    if s_lower == "-inf" || s_lower == "-infinity" {
+        return Some(F::neg_infinity());
     }
+    if s_lower == "nan" {
+        return Some(F::nan());
+    }
+    // Remove D/F suffix if present
+    let pruned_float_str = if s_lower.ends_with('d') || s_lower.ends_with('f') {
+        &s[..s.len() - 1]
+    } else {
+        s
+    };
+    // Rust's parse logic already handles scientific notations so we just rely on it
+    pruned_float_str.parse::<F>().ok()
 }
 
 fn cast_binary_to_string<O: OffsetSizeTrait>(
