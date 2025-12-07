@@ -409,7 +409,7 @@ class CometStringExpressionSuite extends CometTestBase {
         checkSparkAnswerAndOperator("SELECT regexp_extract(_1, '(\\d+)-(\\d+)', 1) FROM tbl")
         // Test group 2
         checkSparkAnswerAndOperator("SELECT regexp_extract(_1, '(\\d+)-(\\d+)', 2) FROM tbl")
-        // Test non-existent group → should return ""
+        // Test non-existent group → should error
         checkSparkAnswerAndOperator("SELECT regexp_extract(_1, '(\\d+)-(\\d+)', 3) FROM tbl")
         // Test empty pattern
         checkSparkAnswerAndOperator("SELECT regexp_extract(_1, '', 0) FROM tbl")
@@ -617,7 +617,7 @@ class CometStringExpressionSuite extends CometTestBase {
       val data = Seq(("a1b2c3", 1), ("test123", 1), (null, 1))
 
       withParquetTable(data, "tbl") {
-        // Group index out of bounds - should match Spark's behavior (error or empty)
+        // Group index out of bounds - should match Spark's behavior (error)
         // Pattern has only 1 group, asking for group 2
         checkSparkAnswerAndOperator("SELECT regexp_extract_all(_1, '(\\d+)', 2) FROM tbl")
 

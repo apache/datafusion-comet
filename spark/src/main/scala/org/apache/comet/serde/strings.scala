@@ -309,12 +309,6 @@ object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
     expr.idx match {
       case Literal(_, DataTypes.IntegerType) =>
         Compatible()
-      case Literal(_, DataTypes.LongType) =>
-        Compatible()
-      case Literal(_, DataTypes.ShortType) =>
-        Compatible()
-      case Literal(_, DataTypes.ByteType) =>
-        Compatible()
       case _ =>
         Unsupported(Some("Only literal group index is supported"))
     }
@@ -353,12 +347,6 @@ object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
     // For regexp_extract_all, idx will default to 1 if not specified
     expr.idx match {
       case Literal(_, DataTypes.IntegerType) =>
-        Compatible()
-      case Literal(_, DataTypes.LongType) =>
-        Compatible()
-      case Literal(_, DataTypes.ShortType) =>
-        Compatible()
-      case Literal(_, DataTypes.ByteType) =>
         Compatible()
       case _ =>
         Unsupported(Some("Only literal group index is supported"))
