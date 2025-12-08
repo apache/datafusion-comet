@@ -154,7 +154,7 @@ fn spark_size_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
                 if map_array.is_null(i) {
                     builder.append_value(-1); // Spark behavior: return -1 for null
                 } else {
-                    let map_len = map_array.value_length(i) as i32;
+                    let map_len = map_array.value_length(i);
                     builder.append_value(map_len);
                 }
             }
