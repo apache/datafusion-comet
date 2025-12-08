@@ -9,7 +9,7 @@ Filter
 :                       +- CometColumnarExchange
 :                          +- HashAggregate
 :                             +- Project
-:                                +- BroadcastHashJoin
+:                                +-  BroadcastHashJoin [COMET: Comet is not compatible with Spark for case conversion in locale-specific cases. Set spark.comet.caseConversion.enabled=true to enable it anyway.]
 :                                   :- CometColumnarToRow
 :                                   :  +- CometProject
 :                                   :     +- CometBroadcastHashJoin
@@ -55,7 +55,7 @@ Filter
                   +- CometColumnarExchange
                      +- HashAggregate
                         +- Project
-                           +- BroadcastHashJoin
+                           +-  BroadcastHashJoin [COMET: Comet is not compatible with Spark for case conversion in locale-specific cases. Set spark.comet.caseConversion.enabled=true to enable it anyway.]
                               :- CometColumnarToRow
                               :  +- CometProject
                               :     +- CometBroadcastHashJoin
