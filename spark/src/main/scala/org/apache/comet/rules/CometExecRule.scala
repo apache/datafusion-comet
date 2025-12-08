@@ -262,11 +262,12 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             // Some execs that comet will not accelerate, such as command execs.
             op
           case _ =>
-            if (!hasExplainInfo(op)) {
+            if (op.children.forall(_.isInstanceOf[CometNativeExec]) && !hasExplainInfo(op)) {
               // An operator that is not supported by Comet
               withInfo(op, s"${op.nodeName} is not supported")
             } else {
-              // Already has fallback reason, do not override it
+              // Already has fallback reason, or previous operator already fell back to
+              // Spark, so do not override it
               op
             }
         }
