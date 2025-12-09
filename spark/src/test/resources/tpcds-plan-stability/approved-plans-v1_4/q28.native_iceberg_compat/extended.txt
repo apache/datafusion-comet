@@ -1,7 +1,7 @@
- BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
-:-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
-:  :-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
-:  :  :-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
+BroadcastNestedLoopJoin
+:- BroadcastNestedLoopJoin
+:  :- BroadcastNestedLoopJoin
+:  :  :- BroadcastNestedLoopJoin
 :  :  :  :-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
 :  :  :  :  :- CometColumnarToRow
 :  :  :  :  :  +- CometHashAggregate
