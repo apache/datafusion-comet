@@ -140,7 +140,8 @@ class CometExecRuleSuite extends CometTestBase {
         "SELECT /*+ BROADCAST(b) */ a.id, b.name FROM test_data a JOIN test_data b ON a.id = b.id")
 
       // Count original Spark operators
-      val originalBroadcastExchangeCount = countOperators(sparkPlan, classOf[BroadcastExchangeExec])
+      val originalBroadcastExchangeCount =
+        countOperators(sparkPlan, classOf[BroadcastExchangeExec])
       assert(originalBroadcastExchangeCount == 1)
 
       withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
@@ -159,9 +160,8 @@ class CometExecRuleSuite extends CometTestBase {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
-      val sparkPlan = createSparkPlan(
-        spark,
-        "SELECT id, COUNT(*) FROM test_data GROUP BY id ORDER BY id")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT id, COUNT(*) FROM test_data GROUP BY id ORDER BY id")
 
       // Count original Spark operators
       val originalShuffleExchangeCount = countOperators(sparkPlan, classOf[ShuffleExchangeExec])
