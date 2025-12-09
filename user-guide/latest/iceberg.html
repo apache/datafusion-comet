@@ -461,10 +461,15 @@ under the License.
 -->
 <section id="accelerating-apache-iceberg-parquet-scans-using-comet-experimental">
 <h1>Accelerating Apache Iceberg Parquet Scans using Comet (Experimental)<a class="headerlink" href="#accelerating-apache-iceberg-parquet-scans-using-comet-experimental" title="Link to this heading">#</a></h1>
-<p><strong>Note: Iceberg integration is a work-in-progress. It is currently necessary to build Iceberg from
-source rather than using available artifacts in Maven</strong></p>
+<p><strong>Note: Iceberg integration is a work-in-progress. Comet currently has two distinct Iceberg
+code paths: 1) a hybrid reader (native Parquet decoding, JVM otherwise) that requires
+building Iceberg from source rather than using available artifacts in Maven, and 2) fully-native
+reader (based on <a class="reference external" href="https://github.com/apache/iceberg-rust">iceberg-rust</a>). Directions for both
+designs are provided below.</strong></p>
+<section id="hybrid-reader">
+<h2>Hybrid Reader<a class="headerlink" href="#hybrid-reader" title="Link to this heading">#</a></h2>
 <section id="build-comet">
-<h2>Build Comet<a class="headerlink" href="#build-comet" title="Link to this heading">#</a></h2>
+<h3>Build Comet<a class="headerlink" href="#build-comet" title="Link to this heading">#</a></h3>
 <p>Run a Maven install so that we can compile Iceberg against latest Comet:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>mvn<span class="w"> </span>install<span class="w"> </span>-DskipTests
 </pre></div>
@@ -479,7 +484,7 @@ source rather than using available artifacts in Maven</strong></p>
 </div>
 </section>
 <section id="build-iceberg">
-<h2>Build Iceberg<a class="headerlink" href="#build-iceberg" title="Link to this heading">#</a></h2>
+<h3>Build Iceberg<a class="headerlink" href="#build-iceberg" title="Link to this heading">#</a></h3>
 <p>Clone the Iceberg repository and apply code changes needed by Comet</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>git@github.com:apache/iceberg.git
 <span class="nb">cd</span><span class="w"> </span>iceberg
@@ -493,7 +498,7 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </div>
 </section>
 <section id="test">
-<h2>Test<a class="headerlink" href="#test" title="Link to this heading">#</a></h2>
+<h3>Test<a class="headerlink" href="#test" title="Link to this heading">#</a></h3>
 <p>Set <code class="docutils literal notranslate"><span class="pre">ICEBERG_JAR</span></code> environment variable.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">ICEBERG_JAR</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>/spark/v3.5/spark-runtime/build/libs/iceberg-spark-runtime-3.5_2.12-1.9.0-SNAPSHOT.jar
 </pre></div>
@@ -563,7 +568,7 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </div>
 </section>
 <section id="known-issues">
-<h2>Known issues<a class="headerlink" href="#known-issues" title="Link to this heading">#</a></h2>
+<h3>Known issues<a class="headerlink" href="#known-issues" title="Link to this heading">#</a></h3>
 <ul class="simple">
 <li><p>Spark Runtime Filtering isn’t <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2116">working</a></p>
 <ul>
@@ -571,6 +576,50 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </ul>
 </li>
 </ul>
+</section>
+</section>
+<section id="native-reader">
+<h2>Native Reader<a class="headerlink" href="#native-reader" title="Link to this heading">#</a></h2>
+<p>Comet’s fully-native Iceberg integration does not require modifying Iceberg source
+code. Instead, Comet relies on reflection to extract <code class="docutils literal notranslate"><span class="pre">FileScanTask</span></code>s from Iceberg, which are
+then serialized to Comet’s native execution engine (see
+<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2528">PR #2528</a>).</p>
+<p>The example below uses Spark’s package downloader to retrieve Comet 0.12.0 and Iceberg
+1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, and 1.10. The key configuration
+to enable fully-native Iceberg is <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled=true</span></code>. This
+configuration should <strong>not</strong> be used with the hybrid Iceberg configuration
+<code class="docutils literal notranslate"><span class="pre">spark.sql.iceberg.parquet.reader-type=COMET</span></code> from above.</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--packages<span class="w"> </span>org.apache.datafusion:comet-spark-spark3.5_2.12:0.12.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--repositories<span class="w"> </span>https://repo1.maven.org/maven2/<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.extensions<span class="o">=</span>org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.spark_catalog<span class="o">=</span>org.apache.iceberg.spark.SparkCatalog<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.spark_catalog.type<span class="o">=</span>hadoop<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.spark_catalog.warehouse<span class="o">=</span>/tmp/warehouse<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.extensions<span class="o">=</span>org.apache.comet.CometSparkSessionExtensions<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.scan.icebergNative.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>2g
+</pre></div>
+</div>
+<p>The same sample queries from above can be used to test Comet’s fully-native Iceberg integration,
+however the scan node to look for is <code class="docutils literal notranslate"><span class="pre">CometIcebergNativeScan</span></code>.</p>
+<section id="current-limitations">
+<h3>Current limitations<a class="headerlink" href="#current-limitations" title="Link to this heading">#</a></h3>
+<p>The following scenarios are not yet supported, but are work in progress:</p>
+<ul class="simple">
+<li><p>Iceberg table spec v3 scans will fall back.</p></li>
+<li><p>Iceberg writes will fall back.</p></li>
+<li><p>Iceberg table scans backed by Avro or ORC data files will fall back.</p></li>
+<li><p>Iceberg table scans partitioned on <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> (with precision &gt;28) columns will fall back.</p></li>
+<li><p>Iceberg scans with residual filters (<em>i.e.</em>, filter expressions that are not partition values,
+and are evaluated on the column values at scan time) of <code class="docutils literal notranslate"><span class="pre">truncate</span></code>, <code class="docutils literal notranslate"><span class="pre">bucket</span></code>, <code class="docutils literal notranslate"><span class="pre">year</span></code>, <code class="docutils literal notranslate"><span class="pre">month</span></code>,
+<code class="docutils literal notranslate"><span class="pre">day</span></code>, <code class="docutils literal notranslate"><span class="pre">hour</span></code> will fall back.</p></li>
+</ul>
+</section>
 </section>
 </section>
 
