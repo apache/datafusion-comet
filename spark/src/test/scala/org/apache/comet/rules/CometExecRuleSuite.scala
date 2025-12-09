@@ -40,10 +40,7 @@ class CometExecRuleSuite extends CometTestBase {
 
   /** Helper method to apply CometExecRule and return the transformed plan */
   private def applyCometExecRule(plan: SparkPlan): SparkPlan = {
-    logInfo(s"CometExecRule INPUT: $plan")
-    val transformed = CometExecRule(spark).apply(stripAQEPlan(plan))
-    logInfo(s"CometExecRule OUTPUT: $transformed")
-    transformed
+    CometExecRule(spark).apply(stripAQEPlan(plan))
   }
 
   /** Create a test data frame that is used in all tests */
@@ -58,13 +55,10 @@ class CometExecRuleSuite extends CometTestBase {
   /** Create a SparkPlan from the specified SQL with Comet disabled */
   private def createSparkPlan(spark: SparkSession, sql: String): SparkPlan = {
     var sparkPlan: SparkPlan = null
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false",
-      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false") {
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       val df = spark.sql(sql)
       sparkPlan = df.queryExecution.executedPlan
     }
-    // scalastyle:off
-    println(sparkPlan)
     sparkPlan
   }
 
@@ -82,7 +76,8 @@ class CometExecRuleSuite extends CometTestBase {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
-      val sparkPlan = createSparkPlan(spark, "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
 
       // Count original Spark operators
       assert(countOperators(sparkPlan, classOf[ProjectExec]) == 1)
@@ -115,20 +110,14 @@ class CometExecRuleSuite extends CometTestBase {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
-      val sparkPlan = createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
 
       // Count original Spark operators
       val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
       assert(originalHashAggCount == 2)
 
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_AGGREGATE_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
-        CometConf.COMET_LOG_FALLBACK_REASONS.key -> "true",
-        CometConf.COMET_EXPLAIN_TRANSFORMATIONS.key -> "true") {
-
+      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
         assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 0)
