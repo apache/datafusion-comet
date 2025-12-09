@@ -55,6 +55,19 @@ class CometExecRuleSuite extends CometTestBase {
     FuzzDataGenerator.generateDataFrame(new Random(42), spark, testSchema, 100, DataGenOptions())
   }
 
+  /** Create a SparkPlan from the specified SQL with Comet disabled */
+  private def createSparkPlan(spark: SparkSession, sql: String): SparkPlan = {
+    var sparkPlan: SparkPlan = null
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false",
+      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false") {
+      val df = spark.sql(sql)
+      sparkPlan = df.queryExecution.executedPlan
+    }
+    // scalastyle:off
+    println(sparkPlan)
+    sparkPlan
+  }
+
   /** Count the number of the specified operator in the plan */
   private def countOperators(plan: SparkPlan, opClass: Class[_]): Int = {
     stripAQEPlan(plan).collect {
@@ -69,12 +82,7 @@ class CometExecRuleSuite extends CometTestBase {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
-      var df: DataFrame = null
-      var sparkPlan: SparkPlan = null
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        df = spark.sql("SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
-        sparkPlan = df.queryExecution.executedPlan
-      }
+      val sparkPlan = createSparkPlan(spark, "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
 
       // Count original Spark operators
       assert(countOperators(sparkPlan, classOf[ProjectExec]) == 1)
@@ -107,12 +115,7 @@ class CometExecRuleSuite extends CometTestBase {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
-      var df: DataFrame = null
-      var sparkPlan: SparkPlan = null
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        df = spark.sql("SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
-        sparkPlan = df.queryExecution.executedPlan
-      }
+      val sparkPlan = createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
 
       // Count original Spark operators
       val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
