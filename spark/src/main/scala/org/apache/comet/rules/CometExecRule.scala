@@ -84,7 +84,7 @@ object CometExecRule {
  */
 case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
-  private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
+  private def showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
     plan.transformUp {
@@ -345,7 +345,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
   private def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
-    if (!isCometLoaded(conf)) return plan
+    if (!isCometLoaded(conf)) {
+      logWarning("Comet is not loaded")
+      return plan
+    }
 
     if (!isCometExecEnabled(conf)) {
       // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle

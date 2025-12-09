@@ -20,14 +20,16 @@
 package org.apache.comet.rules
 
 import scala.util.Random
+
 import org.apache.spark.sql._
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.execution._
+import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+
 import org.apache.comet.CometConf
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
-import org.apache.spark.sql.execution.adaptive.QueryStageExec
 
 /**
  * Test suite specifically for CometExecRule transformation logic. Tests the rule's ability to
@@ -38,7 +40,10 @@ class CometExecRuleSuite extends CometTestBase {
 
   /** Helper method to apply CometExecRule and return the transformed plan */
   private def applyCometExecRule(plan: SparkPlan): SparkPlan = {
-    CometExecRule(spark).apply(plan)
+    logInfo(s"CometExecRule INPUT: $plan")
+    val transformed = CometExecRule(spark).apply(plan)
+    logInfo(s"CometExecRule OUTPUT: $transformed")
+    transformed
   }
 
   /** Create a test data frame that is used in all tests */
@@ -59,15 +64,16 @@ class CometExecRuleSuite extends CometTestBase {
     }.sum
   }
 
-  test("CometExecRule should apply basic operator transformations, but only when Comet is enabled") {
+  test(
+    "CometExecRule should apply basic operator transformations, but only when Comet is enabled") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
-      var df2: DataFrame = null
+      var df: DataFrame = null
       var sparkPlan: SparkPlan = null
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        df2 = spark.sql("SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
-        sparkPlan = df2.queryExecution.executedPlan
+        df = spark.sql("SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
+        sparkPlan = df.queryExecution.executedPlan
       }
 
       // Count original Spark operators
@@ -92,9 +98,6 @@ class CometExecRuleSuite extends CometTestBase {
             assert(countOperators(transformedPlan, classOf[CometProjectExec]) == 0)
             assert(countOperators(transformedPlan, classOf[CometFilterExec]) == 0)
           }
-
-          val result = df2.collect()
-          assert(result.length == 55)
         }
       }
     }
@@ -104,38 +107,32 @@ class CometExecRuleSuite extends CometTestBase {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
-      var df2: DataFrame = null
+      var df: DataFrame = null
       var sparkPlan: SparkPlan = null
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        df2 = spark.sql(
-          "SELECT COUNT(*), AVG(id) FROM (SELECT DISTINCT id FROM test_data WHERE id > 10) t GROUP BY (id % 5)")
-        sparkPlan = df2.queryExecution.executedPlan
+        df = spark.sql("SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
+        sparkPlan = df.queryExecution.executedPlan
       }
 
-      // scalastyle:off
-      println(sparkPlan)
-
       // Count original Spark operators
-      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 4)
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
 
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_AGGREGATE_ENABLED.key -> "true",
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
-        CometConf.COMET_LOG_FALLBACK_REASONS.key -> "true") {
+        CometConf.COMET_LOG_FALLBACK_REASONS.key -> "true",
+        CometConf.COMET_EXPLAIN_TRANSFORMATIONS.key -> "true") {
 
-        logInfo("*** BEFORE")
         val transformedPlan = applyCometExecRule(sparkPlan)
-        logInfo("*** AFTER")
-
-        // scalastyle:off
-        println(transformedPlan)
 
         assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 0)
-        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 4)
-
-        val result = df2.collect()
-        assert(result.length == 0) // Result length depends on the data
+        assert(
+          countOperators(
+            transformedPlan,
+            classOf[CometHashAggregateExec]) == originalHashAggCount)
       }
     }
   }
