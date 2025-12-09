@@ -133,7 +133,7 @@ class CometExecRuleSuite extends CometTestBase {
 
   // TODO this test exposes the bug described in
   // https://github.com/apache/datafusion-comet/issues/1389
-  ignore("CometExecRule should not allow mixed Spark/Comet hash aggregate") {
+  ignore("CometExecRule should not allow Comet partial and Spark final hash aggregate") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
@@ -150,6 +150,30 @@ class CometExecRuleSuite extends CometTestBase {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
         // if the final aggregate cannot be converted to Comet, then neither should be
+        assert(
+          countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  test("CometExecRule should not allow Spark partial and Comet final hash aggregate") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
+
+      // Count original Spark operators
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // if the partial aggregate cannot be converted to Comet, then neither should be
         assert(
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
