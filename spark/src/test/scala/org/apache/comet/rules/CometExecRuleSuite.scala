@@ -41,7 +41,7 @@ class CometExecRuleSuite extends CometTestBase {
   /** Helper method to apply CometExecRule and return the transformed plan */
   private def applyCometExecRule(plan: SparkPlan): SparkPlan = {
     logInfo(s"CometExecRule INPUT: $plan")
-    val transformed = CometExecRule(spark).apply(plan)
+    val transformed = CometExecRule(spark).apply(stripAQEPlan(plan))
     logInfo(s"CometExecRule OUTPUT: $transformed")
     transformed
   }
