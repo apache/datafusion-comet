@@ -157,22 +157,6 @@ object CometSparkSessionExtensions extends Logging {
     COMET_EXEC_ENABLED.get(conf)
   }
 
-  private[comet] def isCometNativeShuffleMode(conf: SQLConf): Boolean = {
-    COMET_SHUFFLE_MODE.get(conf) match {
-      case "native" => true
-      case "auto" => true
-      case _ => false
-    }
-  }
-
-  private[comet] def isCometJVMShuffleMode(conf: SQLConf): Boolean = {
-    COMET_SHUFFLE_MODE.get(conf) match {
-      case "jvm" => true
-      case "auto" => true
-      case _ => false
-    }
-  }
-
   def isCometScan(op: SparkPlan): Boolean = {
     op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec]
   }

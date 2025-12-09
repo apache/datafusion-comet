@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet
 
 import java.io.ByteArrayOutputStream
+import java.util.Locale
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
@@ -29,7 +30,7 @@ import org.apache.spark.TaskContext
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, NamedExpression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Final, Partial}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
@@ -43,7 +44,7 @@ import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType}
+import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -53,7 +54,7 @@ import com.google.common.base.Objects
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
@@ -217,22 +218,14 @@ abstract class CometNativeExec extends CometExec {
         // TODO: support native metrics for all operators.
         val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
+        // Go over all the native scans, in order to see if they need encryption options.
         // For each relation in a CometNativeScan generate a hadoopConf,
         // for each file path in a relation associate with hadoopConf
-        val cometNativeScans: Seq[CometNativeScanExec] = this
-          .collectLeaves()
-          .filter(_.isInstanceOf[CometNativeScanExec])
-          .map(_.asInstanceOf[CometNativeScanExec])
-        assert(
-          cometNativeScans.size <= 1,
-          "We expect one native scan in a Comet plan since we will broadcast one hadoopConf.")
-        // If this assumption changes in the future, you can look at the commit history of #2447
-        // to see how there used to be a map of relations to broadcasted confs in case multiple
-        // relations in a single plan. The example that came up was UNION. See discussion at:
-        // https://github.com/apache/datafusion-comet/pull/2447#discussion_r2406118264
-        val (broadcastedHadoopConfForEncryption, encryptedFilePaths) =
-          cometNativeScans.headOption.fold(
-            (None: Option[Broadcast[SerializableConfiguration]], Seq.empty[String])) { scan =>
+        // This is done per native plan, so only count scans until a comet input is reached.
+        val encryptionOptions =
+          mutable.ArrayBuffer.empty[(Broadcast[SerializableConfiguration], Seq[String])]
+        foreachUntilCometInput(this) {
+          case scan: CometNativeScanExec =>
             // This creates a hadoopConf that brings in any SQLConf "spark.hadoop.*" configs and
             // per-relation configs since different tables might have different decryption
             // properties.
@@ -244,10 +237,25 @@ abstract class CometNativeExec extends CometExec {
               val broadcastedConf =
                 scan.relation.sparkSession.sparkContext
                   .broadcast(new SerializableConfiguration(hadoopConf))
-              (Some(broadcastedConf), scan.relation.inputFiles.toSeq)
-            } else {
-              (None, Seq.empty)
+
+              val optsTuple: (Broadcast[SerializableConfiguration], Seq[String]) =
+                (broadcastedConf, scan.relation.inputFiles.toSeq)
+              encryptionOptions += optsTuple
             }
+          case _ => // no-op
+        }
+        assert(
+          encryptionOptions.size <= 1,
+          "We expect one native scan that requires encryption reading in a Comet plan," +
+            " since we will broadcast one hadoopConf.")
+        // If this assumption changes in the future, you can look at the commit history of #2447
+        // to see how there used to be a map of relations to broadcasted confs in case multiple
+        // relations in a single plan. The example that came up was UNION. See discussion at:
+        // https://github.com/apache/datafusion-comet/pull/2447#discussion_r2406118264
+        val (broadcastedHadoopConfForEncryption, encryptedFilePaths) =
+          encryptionOptions.headOption match {
+            case Some((conf, paths)) => (Some(conf), paths)
+            case None => (None, Seq.empty)
           }
 
         def createCometExecIter(
@@ -880,6 +888,124 @@ case class CometExpandExec(
 
   // TODO: support native Expand metrics
   override lazy val metrics: Map[String, SQLMetric] = Map.empty
+}
+
+object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_EXPLODE_ENABLED)
+
+  override def getSupportLevel(op: GenerateExec): SupportLevel = {
+    if (!op.generator.deterministic) {
+      return Unsupported(Some("Only deterministic generators are supported"))
+    }
+    if (op.generator.children.length != 1) {
+      return Unsupported(Some("generators with multiple inputs are not supported"))
+    }
+    if (op.generator.nodeName.toLowerCase(Locale.ROOT) != "explode") {
+      return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
+    }
+    if (op.outer) {
+      // DataFusion UnnestExec has different semantics to Spark for this case
+      // https://github.com/apache/datafusion/issues/19053
+      return Incompatible(Some("Empty arrays are not preserved as null outputs when outer=true"))
+    }
+    op.generator.children.head.dataType match {
+      case _: ArrayType =>
+        Compatible()
+      case _: MapType =>
+        // TODO add support for map types
+        // https://github.com/apache/datafusion-comet/issues/2837
+        Unsupported(Some("Comet only supports explode/explode_outer for arrays, not maps"))
+      case other =>
+        Unsupported(Some(s"Unsupported data type: $other"))
+    }
+  }
+
+  override def convert(
+      op: GenerateExec,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+    val childExpr = op.generator.children.head
+    val childExprProto = exprToProto(childExpr, op.child.output)
+
+    if (childExprProto.isEmpty) {
+      withInfo(op, childExpr)
+      return None
+    }
+
+    // Convert the projection expressions (columns to carry forward)
+    // These are the non-generator output columns
+    val generatorOutput = op.generatorOutput.toSet
+    val projectExprs = op.output.filterNot(generatorOutput.contains).map { attr =>
+      exprToProto(attr, op.child.output)
+    }
+
+    if (projectExprs.exists(_.isEmpty) || childOp.isEmpty) {
+      withInfo(op, op.output: _*)
+      return None
+    }
+
+    val explodeBuilder = OperatorOuterClass.Explode
+      .newBuilder()
+      .setChild(childExprProto.get)
+      .setOuter(op.outer)
+      .addAllProjectList(projectExprs.map(_.get).asJava)
+
+    Some(builder.setExplode(explodeBuilder).build())
+  }
+
+  override def createExec(nativeOp: Operator, op: GenerateExec): CometNativeExec = {
+    CometExplodeExec(
+      nativeOp,
+      op,
+      op.output,
+      op.generator,
+      op.generatorOutput,
+      op.child,
+      SerializedPlan(None))
+  }
+}
+
+case class CometExplodeExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    generator: Generator,
+    generatorOutput: Seq[Attribute],
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometUnaryExec {
+  override def outputPartitioning: Partitioning = child.outputPartitioning
+
+  override def producedAttributes: AttributeSet = AttributeSet(generatorOutput)
+
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
+
+  override def stringArgs: Iterator[Any] = Iterator(generator, generatorOutput, output, child)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometExplodeExec =>
+        this.output == other.output &&
+        this.generator == other.generator &&
+        this.generatorOutput == other.generatorOutput &&
+        this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int = Objects.hashCode(output, generator, generatorOutput, child)
+
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.baselineMetrics(sparkContext) ++
+      Map(
+        "input_batches" -> SQLMetrics.createMetric(sparkContext, "number of input batches"),
+        "input_rows" -> SQLMetrics.createMetric(sparkContext, "number of input rows"),
+        "output_batches" -> SQLMetrics.createMetric(sparkContext, "number of output batches"))
 }
 
 object CometUnionExec extends CometSink[UnionExec] {

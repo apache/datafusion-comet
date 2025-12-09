@@ -124,7 +124,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.batchSize` | The columnar batch size, i.e., the maximum number of rows that a batch can contain. | 8192 |
 | `spark.comet.exec.memoryPool` | The type of memory pool to be used for Comet native execution when running Spark in off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/tuning.html). | fair_unified |
 | `spark.comet.exec.memoryPool.fraction` | Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/tuning.html). | 1.0 |
-| `spark.comet.tracing.enabled` | Enable fine-grained tracing of events and memory usage. For more information, refer to the [Comet Tracing Guide](https://datafusion.apache.org/comet/user-guide/tracing.html). | false |
+| `spark.comet.tracing.enabled` | Enable fine-grained tracing of events and memory usage. For more information, refer to the [Comet Tracing Guide](https://datafusion.apache.org/comet/contributor-guide/tracing.html). | false |
 <!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
@@ -162,6 +162,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.exec.coalesce.enabled` | Whether to enable coalesce by default. | true |
 | `spark.comet.exec.collectLimit.enabled` | Whether to enable collectLimit by default. | true |
 | `spark.comet.exec.expand.enabled` | Whether to enable expand by default. | true |
+| `spark.comet.exec.explode.enabled` | Whether to enable explode by default. | true |
 | `spark.comet.exec.filter.enabled` | Whether to enable filter by default. | true |
 | `spark.comet.exec.globalLimit.enabled` | Whether to enable globalLimit by default. | true |
 | `spark.comet.exec.hashJoin.enabled` | Whether to enable hashJoin by default. | true |

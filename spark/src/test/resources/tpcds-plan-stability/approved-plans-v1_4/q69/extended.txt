@@ -9,7 +9,7 @@ TakeOrderedAndProject
                   :  +- BroadcastHashJoin
                   :     :- Project
                   :     :  +- BroadcastHashJoin
-                  :     :     :- BroadcastHashJoin
+                  :     :     :-  BroadcastHashJoin [COMET: BuildRight with LeftAnti is not supported]
                   :     :     :  :- CometColumnarToRow
                   :     :     :  :  +- CometBroadcastHashJoin
                   :     :     :  :     :- CometFilter
