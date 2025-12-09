@@ -254,20 +254,22 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
         op match {
           case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
-              _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec =>
+              _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec | _: ExecutedCommandExec |
+              _: V2CommandExec =>
             // Some execs should never be replaced. We include
             // these cases specially here so we do not add a misleading 'info' message
             op
-          case _: ExecutedCommandExec | _: V2CommandExec =>
-            // Some execs that comet will not accelerate, such as command execs.
-            op
           case _ =>
+            // The operator was not converted to a Comet plan. Possible reasons for this happening:
+            // 1. Comet does not support this operator.
+            // 2. The operator could not be supported based on query context and current
+            //    configs. In this case, it should have already been tagged with fallback
+            //    reasons.
+            // 3. The operator has children that could not be converted, so execution
+            //    has already fallen back to Spark.
             if (op.children.forall(_.isInstanceOf[CometNativeExec]) && !hasExplainInfo(op)) {
-              // An operator that is not supported by Comet
               withInfo(op, s"${op.nodeName} is not supported")
             } else {
-              // Already has fallback reason, or previous operator already fell back to
-              // Spark, so do not override it
               op
             }
         }
