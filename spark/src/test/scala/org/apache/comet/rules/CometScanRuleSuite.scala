@@ -107,8 +107,8 @@ class CometScanRuleSuite extends CometTestBase {
     withTempPath { path =>
       createTestDataFrame.write.parquet(path.toString)
       withTempView("test_data") {
-        spark.read.parquet(path.toString).createOrReplaceTempView("test_data")
         withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+          spark.read.parquet(path.toString).createOrReplaceTempView("test_data")
 
           val sparkPlan =
             createSparkPlan(
@@ -131,6 +131,88 @@ class CometScanRuleSuite extends CometTestBase {
                 assert(countOperators(transformedPlan, classOf[CometBatchScanExec]) == 0)
               }
             }
+          }
+        }
+      }
+    }
+  }
+
+  test("CometScanRule should fallback to Spark for unsupported data types in v1 scan") {
+    withTempPath { path =>
+      // Create test data with unsupported types (e.g., BinaryType, CalendarIntervalType)
+      import org.apache.spark.sql.types._
+      val unsupportedSchema = new StructType(
+        Array(
+          StructField("id", DataTypes.IntegerType, nullable = true),
+          StructField(
+            "value",
+            DataTypes.ByteType,
+            nullable = true
+          ), // Unsupported in some scan modes
+          StructField("name", DataTypes.StringType, nullable = true)))
+
+      val testData = Seq(Row(1, 1.toByte, "test1"), Row(2, -1.toByte, "test2"))
+
+      val df = spark.createDataFrame(spark.sparkContext.parallelize(testData), unsupportedSchema)
+      df.write.parquet(path.toString)
+
+      withTempView("unsupported_data") {
+        spark.read.parquet(path.toString).createOrReplaceTempView("unsupported_data")
+
+        val sparkPlan =
+          createSparkPlan(spark, "SELECT id, value FROM unsupported_data WHERE id = 1")
+
+        withSQLConf(
+          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
+          CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
+          val transformedPlan = applyCometScanRule(sparkPlan)
+
+          // scalastyle:off
+          println(transformedPlan)
+
+          // Should fallback to Spark due to unsupported BinaryType in schema
+          assert(countOperators(transformedPlan, classOf[FileSourceScanExec]) == 1)
+          assert(countOperators(transformedPlan, classOf[CometScanExec]) == 0)
+        }
+      }
+    }
+  }
+
+  // TODO should we fallback on byte/short for v2 scan or is the issue specific to v1 scan?
+  ignore("CometScanRule should fallback to Spark for unsupported data types in v2 scan") {
+    withTempPath { path =>
+      // Create test data with unsupported types (e.g., BinaryType, CalendarIntervalType)
+      import org.apache.spark.sql.types._
+      val unsupportedSchema = new StructType(
+        Array(
+          StructField("id", DataTypes.IntegerType, nullable = true),
+          StructField("value", DataTypes.ByteType, nullable = true),
+          StructField("name", DataTypes.StringType, nullable = true)))
+
+      val testData = Seq(Row(1, 1.toByte, "test1"), Row(2, -1.toByte, "test2"))
+
+      val df = spark.createDataFrame(spark.sparkContext.parallelize(testData), unsupportedSchema)
+      df.write.parquet(path.toString)
+
+      withTempView("unsupported_data") {
+
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+          spark.read.parquet(path.toString).createOrReplaceTempView("unsupported_data")
+
+          val sparkPlan =
+            createSparkPlan(spark, "SELECT id, value FROM unsupported_data WHERE id = 1")
+
+          withSQLConf(
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
+            CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
+            val transformedPlan = applyCometScanRule(sparkPlan)
+
+            // scalastyle:off
+            println(transformedPlan)
+
+            // Should fallback to Spark due to unsupported BinaryType in schema
+            assert(countOperators(transformedPlan, classOf[FileSourceScanExec]) == 1)
+            assert(countOperators(transformedPlan, classOf[CometScanExec]) == 0)
           }
         }
       }
