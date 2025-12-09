@@ -23,9 +23,11 @@ import scala.util.Random
 
 import org.apache.spark.sql._
 import org.apache.spark.sql.comet._
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
@@ -125,6 +127,54 @@ class CometExecRuleSuite extends CometTestBase {
           countOperators(
             transformedPlan,
             classOf[CometHashAggregateExec]) == originalHashAggCount)
+      }
+    }
+  }
+
+  test("CometExecRule should apply broadcast exchange transformations") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(
+        spark,
+        "SELECT /*+ BROADCAST(b) */ a.id, b.name FROM test_data a JOIN test_data b ON a.id = b.id")
+
+      // Count original Spark operators
+      val originalBroadcastExchangeCount = countOperators(sparkPlan, classOf[BroadcastExchangeExec])
+      assert(originalBroadcastExchangeCount == 1)
+
+      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        assert(countOperators(transformedPlan, classOf[BroadcastExchangeExec]) == 0)
+        assert(
+          countOperators(
+            transformedPlan,
+            classOf[CometBroadcastExchangeExec]) == originalBroadcastExchangeCount)
+      }
+    }
+  }
+
+  test("CometExecRule should apply shuffle exchange transformations") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(
+        spark,
+        "SELECT id, COUNT(*) FROM test_data GROUP BY id ORDER BY id")
+
+      // Count original Spark operators
+      val originalShuffleExchangeCount = countOperators(sparkPlan, classOf[ShuffleExchangeExec])
+      assert(originalShuffleExchangeCount == 2)
+
+      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        assert(countOperators(transformedPlan, classOf[ShuffleExchangeExec]) == 0)
+        assert(
+          countOperators(
+            transformedPlan,
+            classOf[CometShuffleExchangeExec]) == originalShuffleExchangeCount)
       }
     }
   }
