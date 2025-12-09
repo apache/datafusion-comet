@@ -737,12 +737,42 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                         IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
                       val hasDeletes = !deletes.isEmpty
 
-                      // Use pre-extracted scanSchema for schema evolution support
+                      // Schema to pass to iceberg-rust's FileScanTask.
+                      // This is used by RecordBatchTransformer for field type lookups (e.g., in constants_map)
+                      // and default value generation. The actual projection is controlled by project_field_ids.
+                      //
+                      // Schema selection logic:
+                      // 1. If hasDeletes=true: Use taskSchema (file-specific schema) because delete files
+                      //    reference specific schema versions and we need exact schema matching for MOR.
+                      // 2. Else if scanSchema contains columns not in tableSchema: Use scanSchema because
+                      //    this is a VERSION AS OF query reading a historical snapshot with different schema
+                      //    (e.g., after column drop, scanSchema has old columns that tableSchema doesn't)
+                      // 3. Else: Use tableSchema because scanSchema is the query OUTPUT schema
+                      //    (e.g., for aggregates like "SELECT count(*)", scanSchema only has aggregate fields
+                      //    and doesn't contain partition columns needed by constants_map)
                       val schema: AnyRef =
                         if (hasDeletes) {
                           taskSchema
                         } else {
-                          metadata.scanSchema.asInstanceOf[AnyRef]
+                          // Check if scanSchema has columns that tableSchema doesn't have (VERSION AS OF case)
+                          val scanSchemaFieldIds = IcebergReflection
+                            .buildFieldIdMapping(metadata.scanSchema)
+                            .values
+                            .toSet
+                          val tableSchemaFieldIds = IcebergReflection
+                            .buildFieldIdMapping(metadata.tableSchema)
+                            .values
+                            .toSet
+                          val hasHistoricalColumns =
+                            scanSchemaFieldIds.exists(id => !tableSchemaFieldIds.contains(id))
+
+                          if (hasHistoricalColumns) {
+                            // VERSION AS OF: scanSchema has columns that current table doesn't have
+                            metadata.scanSchema.asInstanceOf[AnyRef]
+                          } else {
+                            // Regular query: use tableSchema for partition field lookups
+                            metadata.tableSchema.asInstanceOf[AnyRef]
+                          }
                         }
 
                       // scalastyle:off classforname

@@ -2101,6 +2101,50 @@ class CometIcebergNativeSuite extends CometTestBase {
     }
   }
 
+  // Test to reproduce "Field X not found in schema" errors
+  // Mimics TestAggregatePushDown.testNaN() where aggregate output schema differs from table schema
+  test("partitioned table with aggregates - reproduces Field not found error") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table partitioned by id, like TestAggregatePushDown.testNaN
+        spark.sql("""
+          CREATE TABLE test_cat.db.agg_test (
+            id INT,
+            data FLOAT
+          ) USING iceberg
+          PARTITIONED BY (id)
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.agg_test VALUES
+          (1, CAST('NaN' AS FLOAT)),
+          (1, CAST('NaN' AS FLOAT)),
+          (2, 2.0),
+          (2, CAST('NaN' AS FLOAT)),
+          (3, CAST('NaN' AS FLOAT)),
+          (3, 1.0)
+        """)
+
+        // This aggregate query's output schema is completely different from table schema
+        // When iceberg-rust tries to look up partition field 'id' (field 1 in table schema),
+        // it needs to find it in the full table schema, not the aggregate output schema
+        checkIcebergNativeScan(
+          "SELECT count(*), max(data), min(data), count(data) FROM test_cat.db.agg_test")
+
+        spark.sql("DROP TABLE test_cat.db.agg_test")
+      }
+    }
+  }
+
   // Helper to create temp directory
   def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile
