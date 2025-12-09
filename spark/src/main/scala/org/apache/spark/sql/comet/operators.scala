@@ -1234,6 +1234,20 @@ object CometHashAggregateExec
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_AGGREGATE_ENABLED)
 
+  override def getSupportLevel(op: HashAggregateExec): SupportLevel = {
+
+    // some unit tests need to disable final hash aggregate support to test that
+    // CometExecRule does not allow mixed Spark/Comet aggregates
+    if (!CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf) &&
+      op.aggregateExpressions
+        .map(_.mode)
+        .contains(org.apache.spark.sql.catalyst.expressions.aggregate.Final)) {
+      return Unsupported(Some("Final aggregates disabled via test config"))
+    }
+
+    Compatible()
+  }
+
   override def convert(
       aggregate: HashAggregateExec,
       builder: Operator.Builder,
