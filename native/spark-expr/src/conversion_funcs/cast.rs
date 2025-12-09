@@ -1076,8 +1076,22 @@ fn cast_array(
             cast_options,
         )?),
         (List(_), Utf8) => Ok(cast_array_to_string(array.as_list(), cast_options)?),
-        (List(_), List(_)) if can_cast_types(from_type, to_type) => {
-            Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
+        (List(from), List(to))
+            if can_cast_types(from_type, to_type)
+                || (matches!(from.data_type(), Decimal128(_, _))
+                    && matches!(to.data_type(), Boolean)) =>
+        {
+            let list_array = array.as_list::<i32>();
+            Ok(Arc::new(ListArray::new(
+                Arc::clone(to),
+                list_array.offsets().clone(),
+                cast_array(
+                    Arc::clone(list_array.values()),
+                    to.data_type(),
+                    cast_options,
+                )?,
+                list_array.nulls().cloned(),
+            )) as ArrayRef)
         }
         (UInt8 | UInt16 | UInt32 | UInt64, Int8 | Int16 | Int32 | Int64)
             if cast_options.allow_cast_unsigned_ints =>
