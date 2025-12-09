@@ -24,10 +24,11 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
+import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{avg, count_distinct, sum}
+import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
@@ -1467,6 +1468,168 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             }
           }
         }
+      }
+    }
+  }
+
+  test("ANSI support for decimal sum - null test") {
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        CometConf.getExprAllowIncompatConfigKey(classOf[Sum]) -> "true") {
+        withParquetTable(
+          Seq(
+            (null.asInstanceOf[java.math.BigDecimal], "a"),
+            (null.asInstanceOf[java.math.BigDecimal], "b")),
+          "null_tbl") {
+          val res = sql("SELECT sum(_1) FROM null_tbl")
+          checkSparkAnswerAndOperator(res)
+          assert(res.collect() === Array(Row(null)))
+        }
+      }
+    }
+  }
+
+  test("ANSI support for try_sum decimal - null test") {
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        CometConf.getExprAllowIncompatConfigKey(classOf[Sum]) -> "true") {
+        withParquetTable(
+          Seq(
+            (null.asInstanceOf[java.math.BigDecimal], "a"),
+            (null.asInstanceOf[java.math.BigDecimal], "b")),
+          "null_tbl") {
+          val res = sql("SELECT try_sum(_1) FROM null_tbl")
+          checkSparkAnswerAndOperator(res)
+          assert(res.collect() === Array(Row(null)))
+        }
+      }
+    }
+  }
+
+  test("ANSI support for decimal sum - null test (group by)") {
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        CometConf.getExprAllowIncompatConfigKey(classOf[Sum]) -> "true") {
+        withParquetTable(
+          Seq(
+            (null.asInstanceOf[java.math.BigDecimal], "a"),
+            (null.asInstanceOf[java.math.BigDecimal], "a"),
+            (null.asInstanceOf[java.math.BigDecimal], "b"),
+            (null.asInstanceOf[java.math.BigDecimal], "b"),
+            (null.asInstanceOf[java.math.BigDecimal], "b")),
+          "tbl") {
+          val res = sql("SELECT _2, sum(_1) FROM tbl group by 1")
+          checkSparkAnswerAndOperator(res)
+          assert(res.orderBy(col("_2")).collect() === Array(Row("a", null), Row("b", null)))
+        }
+      }
+    }
+  }
+
+  test("ANSI support for try_sum decimal - null test (group by)") {
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        CometConf.getExprAllowIncompatConfigKey(classOf[Sum]) -> "true") {
+        withParquetTable(
+          Seq(
+            (null.asInstanceOf[java.math.BigDecimal], "a"),
+            (null.asInstanceOf[java.math.BigDecimal], "a"),
+            (null.asInstanceOf[java.math.BigDecimal], "b"),
+            (null.asInstanceOf[java.math.BigDecimal], "b"),
+            (null.asInstanceOf[java.math.BigDecimal], "b")),
+          "tbl") {
+          val res = sql("SELECT _2, try_sum(_1) FROM tbl group by 1")
+          checkSparkAnswerAndOperator(res)
+          assert(res.orderBy(col("_2")).collect() === Array(Row("a", null), Row("b", null)))
+        }
+      }
+    }
+  }
+
+  protected def generateOverflowDecimalInputs: Seq[(java.math.BigDecimal, Int)] = {
+    val maxDec38_0 = new java.math.BigDecimal("99999999999999999999")
+    (1 to 50).flatMap(_ => Seq((maxDec38_0, 1)))
+  }
+
+  test("ANSI support for decimal SUM function") {
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        CometConf.getExprAllowIncompatConfigKey(classOf[Sum]) -> "true") {
+        withParquetTable(generateOverflowDecimalInputs, "tbl") {
+          val res = sql("SELECT SUM(_1) FROM tbl")
+          if (ansiEnabled) {
+            checkSparkAnswerMaybeThrows(res) match {
+              case (Some(sparkExc), Some(cometExc)) =>
+                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+              case _ =>
+                fail("Exception should be thrown for decimal overflow in ANSI mode")
+            }
+          } else {
+            checkSparkAnswerAndOperator(res)
+          }
+        }
+      }
+    }
+  }
+
+  test("ANSI support for decimal SUM - GROUP BY") {
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        CometConf.getExprAllowIncompatConfigKey(classOf[Sum]) -> "true") {
+        withParquetTable(generateOverflowDecimalInputs, "tbl") {
+          val res =
+            sql("SELECT _2, SUM(_1) FROM tbl GROUP BY _2").repartition(2)
+          if (ansiEnabled) {
+            checkSparkAnswerMaybeThrows(res) match {
+              case (Some(sparkExc), Some(cometExc)) =>
+                assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
+              case _ =>
+                fail("Exception should be thrown for decimal overflow with GROUP BY in ANSI mode")
+            }
+          } else {
+            checkSparkAnswerAndOperator(res)
+          }
+        }
+      }
+    }
+  }
+
+  test("try_sum decimal overflow") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Sum]) -> "true") {
+      withParquetTable(generateOverflowDecimalInputs, "tbl") {
+        val res = sql("SELECT try_sum(_1) FROM tbl")
+        checkSparkAnswerAndOperator(res)
+      }
+    }
+  }
+
+  test("try_sum decimal overflow - with GROUP BY") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Sum]) -> "true") {
+      withParquetTable(generateOverflowDecimalInputs, "tbl") {
+        val res = sql("SELECT _2, try_sum(_1) FROM tbl GROUP BY _2").repartition(2, col("_2"))
+        checkSparkAnswerAndOperator(res)
+      }
+    }
+  }
+
+  test("try_sum decimal partial overflow - with GROUP BY") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Sum]) -> "true") {
+      // Group 1 overflows, Group 2 succeeds
+      val data: Seq[(java.math.BigDecimal, Int)] = generateOverflowDecimalInputs ++ Seq(
+        (new java.math.BigDecimal(300), 2),
+        (new java.math.BigDecimal(200), 2))
+      withParquetTable(data, "tbl") {
+        val res = sql("SELECT _2, try_sum(_1) FROM tbl GROUP BY _2")
+        // Group 1 should be NULL, Group 2 should be 500
+        checkSparkAnswerAndOperator(res)
       }
     }
   }

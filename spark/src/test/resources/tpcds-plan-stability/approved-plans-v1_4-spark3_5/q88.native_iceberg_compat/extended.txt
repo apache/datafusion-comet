@@ -4,7 +4,7 @@ BroadcastNestedLoopJoin
 :  :  :- BroadcastNestedLoopJoin
 :  :  :  :- BroadcastNestedLoopJoin
 :  :  :  :  :- BroadcastNestedLoopJoin
-:  :  :  :  :  :- BroadcastNestedLoopJoin
+:  :  :  :  :  :-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
 :  :  :  :  :  :  :- CometColumnarToRow
 :  :  :  :  :  :  :  +- CometHashAggregate
 :  :  :  :  :  :  :     +- CometExchange
