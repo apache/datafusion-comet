@@ -41,18 +41,18 @@ class CometExecRuleSuite extends CometTestBase {
     CometExecRule(spark).apply(plan)
   }
 
-  test("CometExecRule should apply basic operator transformations") {
+  /** Create a test data frame that is used in all tests */
+  private def createTestDataFrame = {
+    val testSchema = new StructType(
+      Array(
+        StructField("id", DataTypes.IntegerType, nullable = true),
+        StructField("name", DataTypes.StringType, nullable = true)))
+    FuzzDataGenerator.generateDataFrame(new Random(42), spark, testSchema, 100, DataGenOptions())
+  }
 
-    val testSchema =
-      new StructType(Array(StructField("id", DataTypes.IntegerType, nullable = true)))
-    val df = FuzzDataGenerator.generateDataFrame(
-      new Random(42),
-      spark,
-      testSchema,
-      100,
-      DataGenOptions())
+  test("CometExecRule should apply basic operator transformations") {
     withTempView("test_data") {
-      df.createOrReplaceTempView("test_data")
+      createTestDataFrame.createOrReplaceTempView("test_data")
 
       var df2: DataFrame = null
       var sparkPlan: SparkPlan = null
@@ -60,9 +60,6 @@ class CometExecRuleSuite extends CometTestBase {
         df2 = spark.sql("SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
         sparkPlan = df2.queryExecution.executedPlan
       }
-
-      // scalastyle:off
-      println(sparkPlan)
 
       // Count original Spark operators
       val projectOpsOriginal = sparkPlan.collect { case _: ProjectExec => 1 }.sum
@@ -105,4 +102,5 @@ class CometExecRuleSuite extends CometTestBase {
       }
     }
   }
+
 }
