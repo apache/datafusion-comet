@@ -84,7 +84,7 @@ object CometExecRule {
  */
 case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
-  private def showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
+  private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
     plan.transformUp {
