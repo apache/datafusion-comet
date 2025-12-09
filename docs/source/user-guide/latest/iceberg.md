@@ -20,12 +20,12 @@
 # Accelerating Apache Iceberg Parquet Scans using Comet (Experimental)
 
 **Note: Iceberg integration is a work-in-progress. Comet currently has two distinct Iceberg
-code paths: 1) hybrid execution (native Parquet decoding, JVM otherwise) that requires
+code paths: 1) a hybrid reader (native Parquet decoding, JVM otherwise) that requires
 building Iceberg from source rather than using available artifacts in Maven, and 2) fully-native
-execution (based on [iceberg-rust](https://github.com/apache/iceberg-rust)). Directions for both
+reader (based on [iceberg-rust](https://github.com/apache/iceberg-rust)). Directions for both
 designs are provided below.**
 
-## Hybrid Execution
+## Hybrid Reader
 
 ### Build Comet
 
@@ -150,7 +150,7 @@ scala> spark.sql(s"SELECT * from t1").explain()
 - Spark Runtime Filtering isn't [working](https://github.com/apache/datafusion-comet/issues/2116)
   - You can bypass the issue by either setting `spark.sql.adaptive.enabled=false` or `spark.comet.exec.broadcastExchange.enabled=false`
 
-## Fully-Native Execution
+## Native Reader
 
 Comet's fully-native Iceberg integration does not require modifying Iceberg source
 code. Instead, Comet relies on reflection to extract `FileScanTask`s from Iceberg, which are
@@ -184,6 +184,8 @@ The same sample queries from above can be used to test Comet's fully-native Iceb
 however the scan node to look for is `CometIcebergNativeScan`.
 
 ### Current limitations
+
+The following scenarios are not yet supported, but are work in progress:
 
 - Iceberg table spec v3 scans will fall back.
 - Iceberg writes will fall back.
