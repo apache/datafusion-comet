@@ -50,6 +50,11 @@ class CometExecRuleSuite extends CometTestBase {
     FuzzDataGenerator.generateDataFrame(new Random(42), spark, testSchema, 100, DataGenOptions())
   }
 
+  /** Count the number of the specified operator in the plan */
+  private def countOperators(plan: SparkPlan, opClass: Class[_]): Int = {
+    plan.collect { case op if op.getClass.isAssignableFrom(opClass) => 1 }.sum
+  }
+
   test("CometExecRule should apply basic operator transformations") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
@@ -62,38 +67,26 @@ class CometExecRuleSuite extends CometTestBase {
       }
 
       // Count original Spark operators
-      val projectOpsOriginal = sparkPlan.collect { case _: ProjectExec => 1 }.sum
-      val filterOpsOriginal = sparkPlan.collect { case _: FilterExec => 1 }.sum
-      assert(projectOpsOriginal == 1)
-      assert(filterOpsOriginal == 1)
+      assert(countOperators(sparkPlan, classOf[ProjectExec]) == 1)
+      assert(countOperators(sparkPlan, classOf[FilterExec]) == 1)
 
       for (cometEnabled <- Seq(true, false)) {
         withSQLConf(
           CometConf.COMET_ENABLED.key -> cometEnabled.toString,
           CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
 
-          // transform plan
           val transformedPlan = applyCometExecRule(sparkPlan)
 
-          // Count Spark operators after transformation
-          val projectOps = transformedPlan.collect { case _: ProjectExec => 1 }.sum
-          val filterOps = transformedPlan.collect { case _: FilterExec => 1 }.sum
-
-          // Count Comet operators after transformation
-          val cometProjectOps = transformedPlan.collect { case _: CometProjectExec => 1 }.sum
-          val cometFilterOps = transformedPlan.collect { case _: CometFilterExec => 1 }.sum
-
-          // Basic sanity checks
           if (cometEnabled) {
-            assert(projectOps == 0)
-            assert(filterOps == 0)
-            assert(cometProjectOps == 1)
-            assert(cometFilterOps == 1)
+            assert(countOperators(transformedPlan, classOf[ProjectExec]) == 0)
+            assert(countOperators(transformedPlan, classOf[FilterExec]) == 0)
+            assert(countOperators(transformedPlan, classOf[CometProjectExec]) == 1)
+            assert(countOperators(transformedPlan, classOf[CometFilterExec]) == 1)
           } else {
-            assert(projectOps == 1)
-            assert(filterOps == 1)
-            assert(cometProjectOps == 0)
-            assert(cometFilterOps == 0)
+            assert(countOperators(transformedPlan, classOf[ProjectExec]) == 1)
+            assert(countOperators(transformedPlan, classOf[FilterExec]) == 1)
+            assert(countOperators(transformedPlan, classOf[CometProjectExec]) == 0)
+            assert(countOperators(transformedPlan, classOf[CometFilterExec]) == 0)
           }
 
           val result = df2.collect()
