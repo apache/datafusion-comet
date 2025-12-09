@@ -305,10 +305,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   partitionData.getClass.getMethod("get", classOf[Int], classOf[Class[_]])
                 val value = getMethod.invoke(partitionData, Integer.valueOf(idx), classOf[Object])
 
-                val jsonValue: JValue = if (value == null) {
-                  JNull
+                // Skip NULL partition values to work around iceberg-rust issue #1914
+                // (Datum does not support null values). NULL partition fields will be
+                // correctly resolved as NULL through Iceberg spec rule #4.
+                if (value == null) {
+                  None
                 } else {
-                  value match {
+                  val jsonValue: JValue = value match {
                     case s: String => JString(s)
                     // NaN/Infinity are not valid JSON number literals per the
                     // JSON spec. Serialize as strings (e.g., "NaN", "Infinity")
@@ -323,9 +326,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       JBool(b.booleanValue())
                     case other => JString(other.toString)
                   }
-                }
 
-                Some(fieldId.toString -> jsonValue)
+                  Some(fieldId.toString -> jsonValue)
+                }
               }
             }.toMap
 
