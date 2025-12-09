@@ -758,7 +758,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                         if (hasDeletes) {
                           taskSchema
                         } else {
-                          // Check if scanSchema has columns that tableSchema doesn't have (VERSION AS OF case)
+                          // Check if scanSchema has columns that tableSchema doesn't have
+                          // (VERSION AS OF case)
                           val scanSchemaFieldIds = IcebergReflection
                             .buildFieldIdMapping(metadata.scanSchema)
                             .values
