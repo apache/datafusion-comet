@@ -112,21 +112,30 @@ class CometExecRuleSuite extends CometTestBase {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
-      val sparkPlan =
-        createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
+      for (aqeEnabled <- Seq(true, false)) {
+        withSQLConf(
+          "spark.sql.adaptive.enabled" -> aqeEnabled.toString,
+          CometConf.COMET_LOG_FALLBACK_REASONS.key -> "true",
+          CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
 
-      // Count original Spark operators
-      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
-      assert(originalHashAggCount == 2)
+          // scalastyle:off
+          val sparkPlan =
+            createSparkPlan(spark, "SELECT COUNT(*), SUM(id) FROM test_data GROUP BY (id % 3)")
+          println(sparkPlan)
 
-      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-        val transformedPlan = applyCometExecRule(sparkPlan)
+          // Count original Spark operators
+          val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+          assert(originalHashAggCount == 2)
 
-        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 0)
-        assert(
-          countOperators(
-            transformedPlan,
-            classOf[CometHashAggregateExec]) == originalHashAggCount)
+          val transformedPlan = applyCometExecRule(sparkPlan)
+          println(transformedPlan)
+
+          assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 0)
+          assert(
+            countOperators(
+              transformedPlan,
+              classOf[CometHashAggregateExec]) == originalHashAggCount)
+        }
       }
     }
   }
@@ -135,23 +144,28 @@ class CometExecRuleSuite extends CometTestBase {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
-      val sparkPlan = createSparkPlan(
-        spark,
-        "SELECT /*+ BROADCAST(b) */ a.id, b.name FROM test_data a JOIN test_data b ON a.id = b.id")
+      for (aqeEnabled <- Seq(true, false)) {
+        withSQLConf(
+          "spark.sql.adaptive.enabled" -> aqeEnabled.toString,
+          CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
 
-      // Count original Spark operators
-      val originalBroadcastExchangeCount =
-        countOperators(sparkPlan, classOf[BroadcastExchangeExec])
-      assert(originalBroadcastExchangeCount == 1)
+          val sparkPlan = createSparkPlan(
+            spark,
+            "SELECT /*+ BROADCAST(b) */ a.id, b.name FROM test_data a JOIN test_data b ON a.id = b.id")
 
-      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-        val transformedPlan = applyCometExecRule(sparkPlan)
+          // Count original Spark operators
+          val originalBroadcastExchangeCount =
+            countOperators(sparkPlan, classOf[BroadcastExchangeExec])
+          assert(originalBroadcastExchangeCount == 1)
 
-        assert(countOperators(transformedPlan, classOf[BroadcastExchangeExec]) == 0)
-        assert(
-          countOperators(
-            transformedPlan,
-            classOf[CometBroadcastExchangeExec]) == originalBroadcastExchangeCount)
+          val transformedPlan = applyCometExecRule(sparkPlan)
+
+          assert(countOperators(transformedPlan, classOf[BroadcastExchangeExec]) == 0)
+          assert(
+            countOperators(
+              transformedPlan,
+              classOf[CometBroadcastExchangeExec]) == originalBroadcastExchangeCount)
+        }
       }
     }
   }
@@ -160,21 +174,26 @@ class CometExecRuleSuite extends CometTestBase {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
-      val sparkPlan =
-        createSparkPlan(spark, "SELECT id, COUNT(*) FROM test_data GROUP BY id ORDER BY id")
+      for (aqeEnabled <- Seq(true, false)) {
+        withSQLConf(
+          "spark.sql.adaptive.enabled" -> aqeEnabled.toString,
+          CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
 
-      // Count original Spark operators
-      val originalShuffleExchangeCount = countOperators(sparkPlan, classOf[ShuffleExchangeExec])
-      assert(originalShuffleExchangeCount == 2)
+          val sparkPlan =
+            createSparkPlan(spark, "SELECT id, COUNT(*) FROM test_data GROUP BY id ORDER BY id")
 
-      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
-        val transformedPlan = applyCometExecRule(sparkPlan)
+          // Count original Spark operators
+          val originalShuffleExchangeCount = countOperators(sparkPlan, classOf[ShuffleExchangeExec])
+          assert(originalShuffleExchangeCount == 2)
 
-        assert(countOperators(transformedPlan, classOf[ShuffleExchangeExec]) == 0)
-        assert(
-          countOperators(
-            transformedPlan,
-            classOf[CometShuffleExchangeExec]) == originalShuffleExchangeCount)
+          val transformedPlan = applyCometExecRule(sparkPlan)
+
+          assert(countOperators(transformedPlan, classOf[ShuffleExchangeExec]) == 0)
+          assert(
+            countOperators(
+              transformedPlan,
+              classOf[CometShuffleExchangeExec]) == originalShuffleExchangeCount)
+        }
       }
     }
   }
