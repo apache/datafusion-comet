@@ -152,11 +152,12 @@ scala> spark.sql(s"SELECT * from t1").explain()
 
 ## Fully-Native Execution
 
-Comet's fully-native Iceberg integration does not require downloading Comet or Iceberg source
-code, and instead relies
-on reflection to extract `FileScanTask`s from Iceberg, which are then serialized them to Comet
-for native execution(see [PR #2528](https://github.com/apache/datafusion-comet/pull/2528)). The
-example below uses Spark's package downloader to retrieve Comet 0.12.0 and Iceberg
+Comet's fully-native Iceberg integration does not require modifying Iceberg source
+code. Instead, Comet relies on reflection to extract `FileScanTask`s from Iceberg, which are
+then serialized to Comet's native execution engine (see
+[PR #2528](https://github.com/apache/datafusion-comet/pull/2528)).
+
+The example below uses Spark's package downloader to retrieve Comet 0.12.0 and Iceberg
 1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, and 1.10. The key configuration
 to enable fully-native Iceberg is `spark.comet.scan.icebergNative.enabled=true`. This
 configuration should **not** be used with the hybrid Iceberg configuration
@@ -188,5 +189,6 @@ however the scan node to look for is `CometIcebergNativeScan`.
 - Iceberg writes will fall back.
 - Iceberg table scans backed by Avro or ORC data files will fall back.
 - Iceberg table scans partitioned on `BINARY` or `DECIMAL` (with precision >28) columns will fall back.
-- Iceberg scans with residual filters (_i.e._, not partition expressions and evaluated on the
-  column values at scan time) of `truncate`, `bucket`, `year`, `month`, `day`, `hour` will fall back.
+- Iceberg scans with residual filters (_i.e._, filter expressions that are not partition values,
+  and are evaluated on the column values at scan time) of `truncate`, `bucket`, `year`, `month`,
+  `day`, `hour` will fall back.
