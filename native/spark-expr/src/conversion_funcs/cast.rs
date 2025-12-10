@@ -1177,27 +1177,24 @@ fn cast_string_to_decimal256_impl(
 }
 
 /// Parse a string to decimal following Spark's behavior
-/// Returns Ok(Some(value)) if successful, Ok(None) if null, Err if invalid in ANSI mode
 fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Option<i128>> {
     if s.is_empty() {
         return Ok(None);
     }
-
     // Handle special values (inf, nan, etc.)
-    let s_lower = s.to_lowercase();
-    if s_lower == "inf"
-        || s_lower == "+inf"
-        || s_lower == "infinity"
-        || s_lower == "+infinity"
-        || s_lower == "-inf"
-        || s_lower == "-infinity"
-        || s_lower == "nan"
+    if s.eq_ignore_ascii_case( "inf")
+        || s.eq_ignore_ascii_case("+inf")
+        || s.eq_ignore_ascii_case("infinity")
+        || s.eq_ignore_ascii_case("+infinity")
+        || s.eq_ignore_ascii_case("-inf")
+        || s.eq_ignore_ascii_case("-infinity")
+        || s.eq_ignore_ascii_case("nan")
     {
         return Ok(None);
     }
-
     // Parse the string as a decimal number
-    // Note: We do NOT strip 'D' or 'F' suffixes - let rust's parsing fail naturally for invalid input
+    // Note: We do NOT strip 'D' or 'F' suffixes - let rust's parsing fail naturally
+    println!("parsing string {} ", s);
     match parse_decimal_str(s) {
         Ok((mantissa, exponent)) => {
             // Convert to target scale
@@ -1210,7 +1207,12 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
             } else {
                 // Need to divide (decrease scale) - use rounding half up
                 let divisor = 10_i128.pow((-scale_adjustment) as u32);
-                let quotient = mantissa / divisor;
+                let quotient_opt =  mantissa.checked_div(divisor);
+                // value too small too in given scale
+                if quotient_opt.is_none(){
+                    return Ok(Some(0));
+                }
+                let quotient = quotient_opt.unwrap();
                 let remainder = mantissa % divisor;
 
                 // Round half up: if abs(remainder) >= divisor/2, round away from zero
@@ -1233,12 +1235,11 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
                     if is_validate_decimal_precision(value, precision) {
                         Ok(Some(value))
                     } else {
-                        // Overflow
                         Ok(None)
                     }
                 }
                 None => {
-                    // Overflow during scaling
+                    // Overflow while scaling
                     Ok(None)
                 }
             }
@@ -1256,11 +1257,12 @@ fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
     }
 
     // Check if input is scientific notation (e.g., "1.23E-5", "1e10")
+    let mut is_scientific = false;
     let (mantissa_str, exponent) = if let Some(e_pos) = s.find(|c| ['e', 'E'].contains(&c)) {
         let mantissa_part = &s[..e_pos];
         let exponent_part = &s[e_pos + 1..];
-
-        // Parse exponent part
+        is_scientific = true;
+        // Parse exponent
         let exp: i32 = exponent_part
             .parse()
             .map_err(|_| "Invalid exponent".to_string())?;
@@ -1292,7 +1294,12 @@ fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
 
     // Parse integral part
     let integral_value: i128 = if integral_part.is_empty() {
-        0
+        if is_scientific{
+            return Err("scientific notation without mantissa".to_string())
+        }
+        else{
+            0
+        }
     } else {
         integral_part
             .parse()
