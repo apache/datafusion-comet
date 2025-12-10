@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import scala.util.Random
 
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
+import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.expressions.ExpressionInfo
 import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
