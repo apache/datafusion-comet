@@ -145,14 +145,28 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   /**
-   * Tags related partial aggregates in the subtree with fallback reasons.
+   * Tags the first related partial aggregate in the subtree with fallback reasons. Stops
+   * transforming after finding and tagging the first partial aggregate to avoid affecting
+   * unrelated aggregates elsewhere in the tree.
    */
   private def tagRelatedPartialAggregates(plan: SparkPlan, reason: String): SparkPlan = {
-    plan.transformDown {
-      case partialAgg: HashAggregateExec if hasPartialMode(partialAgg) =>
-        withInfo(partialAgg, reason)
-      case other => other
+    var found = false
+
+    def transformOnce(node: SparkPlan): SparkPlan = {
+      if (found) {
+        node
+      } else {
+        node match {
+          case partialAgg: HashAggregateExec if hasPartialMode(partialAgg) =>
+            found = true
+            withInfo(partialAgg, reason)
+          case other =>
+            other.withNewChildren(other.children.map(transformOnce))
+        }
+      }
     }
+
+    transformOnce(plan)
   }
 
   /**
