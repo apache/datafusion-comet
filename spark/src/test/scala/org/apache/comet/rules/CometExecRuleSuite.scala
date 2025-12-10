@@ -311,61 +311,78 @@ class CometExecRuleSuite extends CometTestBase {
         })
 
     try {
-      withTempView("test_data1", "test_data2") {
-        // Create smaller datasets to avoid memory issues
+      withTempView("test_data1", "test_data2", "test_data3") {
+        // Create datasets large enough to force AQE stage creation
         val testSchema = new StructType(
           Array(
             StructField("id", DataTypes.IntegerType, nullable = true),
             StructField("group_key", DataTypes.IntegerType, nullable = true),
             StructField("value", DataTypes.StringType, nullable = true)))
 
-        // Create two smaller tables for join to encourage AQE stage creation
+        // Create multiple tables with larger datasets to force shuffle stages
         val data1 = FuzzDataGenerator.generateDataFrame(
           new Random(42),
           spark,
           testSchema,
-          200,
+          1000,
           DataGenOptions())
         val data2 = FuzzDataGenerator.generateDataFrame(
           new Random(43),
           spark,
           testSchema,
-          200,
+          1000,
+          DataGenOptions())
+        val data3 = FuzzDataGenerator.generateDataFrame(
+          new Random(44),
+          spark,
+          testSchema,
+          1000,
           DataGenOptions())
 
         data1.createOrReplaceTempView("test_data1")
         data2.createOrReplaceTempView("test_data2")
+        data3.createOrReplaceTempView("test_data3")
 
-        // Use moderate AQE settings to avoid memory issues while encouraging stage creation
+        // More aggressive AQE settings to force stage creation
         withSQLConf(
           "spark.sql.adaptive.enabled" -> "true",
           "spark.sql.adaptive.coalescePartitions.enabled" -> "true",
-          "spark.sql.adaptive.advisoryPartitionSizeInBytes" -> "64KB", // Less aggressive
+          "spark.sql.adaptive.advisoryPartitionSizeInBytes" -> "4KB", // Very small to force stages
           "spark.sql.adaptive.skewJoin.enabled" -> "true",
-          "spark.default.parallelism" -> "4", // Fewer partitions
-          "spark.sql.shuffle.partitions" -> "4",
+          "spark.default.parallelism" -> "8",
+          "spark.sql.shuffle.partitions" -> "8",
           CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
           CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
 
-          // Use a join + aggregation to encourage AQE stage boundaries
-          // Join often creates natural stage boundaries in AQE
+          // Use a complex query with multiple joins and subqueries to force stage boundaries
+          // This pattern is more likely to create distinct partial/final aggregate stages
           val df = spark.sql("""
+              |WITH combined_data AS (
+              |  SELECT t1.id, t1.group_key, t1.value
+              |  FROM test_data1 t1
+              |  JOIN test_data2 t2 ON t1.group_key = t2.group_key
+              |  WHERE t1.id % 3 = 0
+              |  UNION ALL
+              |  SELECT t3.id, t3.group_key, t3.value
+              |  FROM test_data3 t3
+              |  WHERE t3.id % 5 = 0
+              |)
               |SELECT
-              |  t1.group_key,
-              |  bloom_filter_agg(cast(t1.id as long)) as bloom_result,
+              |  group_key,
+              |  bloom_filter_agg(cast(id as long)) as bloom_result,
               |  count(*) as cnt
-              |FROM test_data1 t1
-              |JOIN test_data2 t2 ON t1.group_key = t2.group_key
-              |WHERE t1.id % 2 = 0
-              |GROUP BY t1.group_key
+              |FROM combined_data
+              |GROUP BY group_key
+              |HAVING count(*) > 1
+              |ORDER BY group_key
               |""".stripMargin)
 
           // Execute the plan to trigger AQE stage creation
           val result = df.collect()
           logInfo(s"Query executed successfully, returned ${result.length} rows")
 
-          // Get the executed plan which might have AQE stages
+          // Get the executed plan which should have AQE stages
           val executedPlan = df.queryExecution.executedPlan
 
           // Check if we have QueryStageExec nodes (indicating AQE created stages)
@@ -405,15 +422,16 @@ class CometExecRuleSuite extends CometTestBase {
 
             logInfo(s"AQE cross-stage coordination test passed with ${queryStages.length} stages")
           } else {
-            // AQE didn't create stages - fall back to testing single-stage coordination
+            // AQE didn't create stages - test that single-stage coordination still works
             logInfo(
-              "AQE did not create separate stages - testing single-stage coordination instead")
+              "AQE did not create separate stages - verifying single-stage coordination works")
 
             // scalastyle:off
             println(executedPlan)
             // Verify that we have ObjectHashAggregateExec operators
-            val objectHashAggs = stripAQEPlan(executedPlan).collect { case agg: ObjectHashAggregateExec =>
-              agg
+            val objectHashAggs = stripAQEPlan(executedPlan).collect {
+              case agg: ObjectHashAggregateExec =>
+                agg
             }
             assert(objectHashAggs.nonEmpty, "Should have ObjectHashAggregateExec operators")
 
@@ -425,7 +443,19 @@ class CometExecRuleSuite extends CometTestBase {
               cometHashAggs.isEmpty,
               "Should have no CometHashAggregateExec - coordination should prevent mixed execution")
 
-            logInfo("Single-stage coordination test passed")
+            // Verify partial aggregates have fallback messages even in single-stage case
+            val partialAggregates = findPartialAggregates(stripAQEPlan(executedPlan))
+            if (partialAggregates.nonEmpty) {
+              val expectedMessage =
+                "Cannot convert final aggregate to Comet (Final aggregates disabled via test config), " +
+                  "so partial aggregates must also use Spark to avoid mixed execution"
+              assert(
+                partialAggregates.exists(hasFallbackMessage(_, expectedMessage)),
+                s"Partial aggregate should have fallback message even in single-stage: $expectedMessage")
+            }
+
+            logInfo(
+              "Single-stage coordination test passed - coordination works within single stage")
           }
         }
       }
