@@ -387,15 +387,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   partitionData.getClass.getMethod("get", classOf[Int], classOf[Class[_]])
                 val value = getMethod.invoke(partitionData, Integer.valueOf(idx), classOf[Object])
 
-                // Skip NULL partition values to work around iceberg-rust issue #1914
-                // (Datum does not support null values). NULL partition fields will be
-                // correctly resolved as NULL through Iceberg spec rule #4.
-                if (value == null) {
-                  None
+                val jsonValue = if (value == null) {
+                  JNull
                 } else {
-                  val jsonValue = partitionValueToJson(fieldTypeStr, value)
-                  Some(fieldId.toString -> jsonValue)
+                  partitionValueToJson(fieldTypeStr, value)
                 }
+                Some(fieldId.toString -> jsonValue)
               }
             }.toMap
 
@@ -750,11 +747,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                                 val sourceFieldId =
                                   sourceIdMethod.invoke(partitionField).asInstanceOf[Int]
 
-                                // Skip NULL partition values to work around
-                                // iceberg-rust issue #1914 (Datum does not support null values).
-                                // NULL partition fields will be correctly resolved as NULL
-                                // through Iceberg spec rule #4.
-                                if (value != null) {
+                                val jsonValue = if (value == null) {
+                                  JNull
+                                } else {
                                   // Get field type from schema to serialize correctly
                                   val fieldTypeStr =
                                     try {
@@ -774,9 +769,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                                       case _: Exception => "unknown"
                                     }
 
-                                  val jsonValue = partitionValueToJson(fieldTypeStr, value)
-                                  partitionMap(sourceFieldId.toString) = jsonValue
+                                  partitionValueToJson(fieldTypeStr, value)
                                 }
+                                partitionMap(sourceFieldId.toString) = jsonValue
                               }
                             }
                           }
