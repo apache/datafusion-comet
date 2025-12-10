@@ -685,7 +685,8 @@ under the License.
 <p>If you’re adding a new expression that requires custom protobuf serialization, you may need to:</p>
 <ol class="arabic simple">
 <li><p>Add a new message to the protobuf definition in <code class="docutils literal notranslate"><span class="pre">native/proto/src/proto/expr.proto</span></code></p></li>
-<li><p>Update the Rust deserialization code to handle the new protobuf message type</p></li>
+<li><p>Add a native expression handler in <code class="docutils literal notranslate"><span class="pre">expression_registry.rs</span></code> to deserialize the new protobuf message type and
+create a native expression</p></li>
 </ol>
 <p>For most expressions, you can skip this step if you’re using the existing scalar function infrastructure.</p>
 </section>
