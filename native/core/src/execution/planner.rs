@@ -18,8 +18,8 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 pub mod expression_registry;
+pub mod macros;
 pub mod operator_registry;
-pub mod traits;
 
 use crate::execution::operators::IcebergScanExec;
 use crate::{
