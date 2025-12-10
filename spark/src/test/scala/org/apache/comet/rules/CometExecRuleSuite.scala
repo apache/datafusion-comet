@@ -385,7 +385,6 @@ class CometExecRuleSuite extends CometTestBase {
 
           // Execute the plan to trigger AQE stage creation
           val result = df.collect()
-          logInfo(s"Query executed successfully, returned ${result.length} rows")
 
           // Get the executed plan which should have AQE stages
           val executedPlan = df.queryExecution.executedPlan
@@ -394,8 +393,6 @@ class CometExecRuleSuite extends CometTestBase {
           val queryStages = stripAQEPlan(executedPlan).collect { case qs: QueryStageExec => qs }
 
           assert(queryStages.nonEmpty)
-          // We have AQE stages - test the cross-stage coordination
-          logInfo(s"AQE created ${queryStages.length} stages - testing cross-stage coordination")
 
           // Verify that we have ObjectHashAggregateExec operators in the plan
           // Need to recursively search through AQE stages
@@ -460,8 +457,6 @@ class CometExecRuleSuite extends CometTestBase {
               partialAggregates.exists(hasFallbackMessage(_, expectedMessage)),
               s"Partial aggregate should have fallback message: $expectedMessage")
           }
-
-          logInfo(s"AQE cross-stage coordination test passed with ${queryStages.length} stages")
         }
       }
     } finally {
