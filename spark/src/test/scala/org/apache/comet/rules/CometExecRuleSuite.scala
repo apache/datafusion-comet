@@ -25,16 +25,16 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.expressions.ExpressionInfo
-import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
+import org.apache.spark.sql.catalyst.expressions.aggregate.{BloomFilterAggregate, Partial, PartialMerge}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
-import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -75,6 +75,22 @@ class CometExecRuleSuite extends CometTestBase {
         countOperators(stage.plan, opClass)
       case op if op.getClass.isAssignableFrom(opClass) => 1
     }.sum
+  }
+
+  /** Helper method to find all partial aggregates in a plan */
+  private def findPartialAggregates(plan: SparkPlan): Seq[BaseAggregateExec] = {
+    plan.collect {
+      case agg: BaseAggregateExec
+          if agg.aggregateExpressions.exists(expr =>
+            expr.mode == Partial || expr.mode == PartialMerge) =>
+        agg
+    }
+  }
+
+  /** Helper method to check if an operator has a specific fallback message */
+  private def hasFallbackMessage(op: SparkPlan, expectedMessage: String): Boolean = {
+    op.getTagValue(CometExplainInfo.EXTENSION_INFO)
+      .exists(_.contains(expectedMessage))
   }
 
   test(
@@ -220,6 +236,15 @@ class CometExecRuleSuite extends CometTestBase {
               transformedPlan,
               classOf[ObjectHashAggregateExec]) == originalObjectHashAggCount)
           assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+
+          // Verify that the partial aggregate has the expected fallback message
+          val partialAggregates = findPartialAggregates(transformedPlan)
+          assert(partialAggregates.nonEmpty, "Should have found at least one partial aggregate")
+          val expectedMessage = "Cannot convert final aggregate to Comet, " +
+            "so partial aggregates must also use Spark to avoid mixed execution"
+          assert(
+            partialAggregates.exists(hasFallbackMessage(_, expectedMessage)),
+            s"Partial aggregate should have fallback message: $expectedMessage")
         }
       }
     } finally {
