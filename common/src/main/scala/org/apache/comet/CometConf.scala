@@ -654,6 +654,22 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT)
 
+  val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
+    conf("spark.comet.testing.aggregate.partialMode.enabled")
+      .internal()
+      .category(CATEGORY_TESTING)
+      .doc("This setting is used in unit tests")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_ENABLE_FINAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
+    conf("spark.comet.testing.aggregate.finalMode.enabled")
+      .internal()
+      .category(CATEGORY_TESTING)
+      .doc("This setting is used in unit tests")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")
       .category(CATEGORY_TESTING)
