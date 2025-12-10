@@ -29,7 +29,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{BloomFilterAggregate
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -91,6 +91,11 @@ class CometExecRuleSuite extends CometTestBase {
   private def hasFallbackMessage(op: SparkPlan, expectedMessage: String): Boolean = {
     op.getTagValue(CometExplainInfo.EXTENSION_INFO)
       .exists(_.contains(expectedMessage))
+  }
+
+  /** Helper method to check if an aggregate has Partial or PartialMerge mode expressions */
+  private def hasPartialMode(agg: BaseAggregateExec): Boolean = {
+    agg.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)
   }
 
   test(
@@ -386,77 +391,78 @@ class CometExecRuleSuite extends CometTestBase {
           val executedPlan = df.queryExecution.executedPlan
 
           // Check if we have QueryStageExec nodes (indicating AQE created stages)
-          val queryStages = executedPlan.collect { case qs: QueryStageExec => qs }
+          val queryStages = stripAQEPlan(executedPlan).collect { case qs: QueryStageExec => qs }
 
-          if (queryStages.nonEmpty) {
-            // We have AQE stages - test the cross-stage coordination
-            logInfo(
-              s"AQE created ${queryStages.length} stages - testing cross-stage coordination")
+          assert (queryStages.nonEmpty)
+          // We have AQE stages - test the cross-stage coordination
+          logInfo(
+            s"AQE created ${queryStages.length} stages - testing cross-stage coordination")
 
-            // Verify that we have ObjectHashAggregateExec operators in the plan
-            val objectHashAggs = stripAQEPlan(executedPlan).collect {
-              case agg: ObjectHashAggregateExec => agg
+          // Verify that we have ObjectHashAggregateExec operators in the plan
+          // Need to recursively search through AQE stages
+          def findObjectHashAggs(plan: SparkPlan): Seq[ObjectHashAggregateExec] = {
+            val buffer = scala.collection.mutable.ListBuffer[ObjectHashAggregateExec]()
+            def collect(p: SparkPlan): Unit = {
+              p match {
+                case agg: ObjectHashAggregateExec => buffer += agg
+                case stage: ShuffleQueryStageExec => collect(stage.plan)
+                case stage: BroadcastQueryStageExec => collect(stage.plan)
+                case _ => p.children.foreach(collect)
+              }
             }
-            assert(objectHashAggs.nonEmpty, "Should have ObjectHashAggregateExec operators")
-
-            // Verify coordination worked - no mixed Comet/Spark aggregation
-            val cometHashAggs = stripAQEPlan(executedPlan).collect {
-              case agg: CometHashAggregateExec => agg
-            }
-            assert(
-              cometHashAggs.isEmpty,
-              "Should have no CometHashAggregateExec - coordination should prevent mixed execution")
-
-            // Verify that partial aggregates have the expected fallback message
-            val partialAggregates = queryStages.flatMap { stage =>
-              findPartialAggregates(stage.plan)
-            }
-            if (partialAggregates.nonEmpty) {
-              val expectedMessage =
-                "Cannot convert final aggregate to Comet (Final aggregates disabled via test config), " +
-                  "so partial aggregates must also use Spark to avoid mixed execution"
-              assert(
-                partialAggregates.exists(hasFallbackMessage(_, expectedMessage)),
-                s"Partial aggregate should have fallback message: $expectedMessage")
-            }
-
-            logInfo(s"AQE cross-stage coordination test passed with ${queryStages.length} stages")
-          } else {
-            // AQE didn't create stages - test that single-stage coordination still works
-            logInfo(
-              "AQE did not create separate stages - verifying single-stage coordination works")
-
-            // scalastyle:off
-            println(executedPlan)
-            // Verify that we have ObjectHashAggregateExec operators
-            val objectHashAggs = stripAQEPlan(executedPlan).collect {
-              case agg: ObjectHashAggregateExec =>
-                agg
-            }
-            assert(objectHashAggs.nonEmpty, "Should have ObjectHashAggregateExec operators")
-
-            // Verify coordination worked - no mixed Comet/Spark aggregation
-            val cometHashAggs = executedPlan.collect { case agg: CometHashAggregateExec =>
-              agg
-            }
-            assert(
-              cometHashAggs.isEmpty,
-              "Should have no CometHashAggregateExec - coordination should prevent mixed execution")
-
-            // Verify partial aggregates have fallback messages even in single-stage case
-            val partialAggregates = findPartialAggregates(stripAQEPlan(executedPlan))
-            if (partialAggregates.nonEmpty) {
-              val expectedMessage =
-                "Cannot convert final aggregate to Comet (Final aggregates disabled via test config), " +
-                  "so partial aggregates must also use Spark to avoid mixed execution"
-              assert(
-                partialAggregates.exists(hasFallbackMessage(_, expectedMessage)),
-                s"Partial aggregate should have fallback message even in single-stage: $expectedMessage")
-            }
-
-            logInfo(
-              "Single-stage coordination test passed - coordination works within single stage")
+            collect(plan)
+            buffer.toSeq
           }
+
+          val objectHashAggs = findObjectHashAggs(stripAQEPlan(executedPlan))
+          assert(objectHashAggs.nonEmpty, "Should have ObjectHashAggregateExec operators")
+
+          // Verify coordination worked - no mixed Comet/Spark aggregation
+          def findCometHashAggs(plan: SparkPlan): Seq[CometHashAggregateExec] = {
+            val buffer = scala.collection.mutable.ListBuffer[CometHashAggregateExec]()
+            def collect(p: SparkPlan): Unit = {
+              p match {
+                case agg: CometHashAggregateExec => buffer += agg
+                case stage: ShuffleQueryStageExec => collect(stage.plan)
+                case stage: BroadcastQueryStageExec => collect(stage.plan)
+                case _ => p.children.foreach(collect)
+              }
+            }
+            collect(plan)
+            buffer.toSeq
+          }
+
+          val cometHashAggs = findCometHashAggs(executedPlan)
+          assert(
+            cometHashAggs.isEmpty,
+            "Should have no CometHashAggregateExec - coordination should prevent mixed execution")
+
+          // Verify that partial aggregates have the expected fallback message
+          def findPartialAggsInAQE(plan: SparkPlan): Seq[BaseAggregateExec] = {
+            val buffer = scala.collection.mutable.ListBuffer[BaseAggregateExec]()
+            def collect(p: SparkPlan): Unit = {
+              p match {
+                case agg: BaseAggregateExec if hasPartialMode(agg) => buffer += agg
+                case stage: ShuffleQueryStageExec => collect(stage.plan)
+                case stage: BroadcastQueryStageExec => collect(stage.plan)
+                case _ => p.children.foreach(collect)
+              }
+            }
+            collect(plan)
+            buffer.toSeq
+          }
+
+          val partialAggregates = findPartialAggsInAQE(executedPlan)
+          if (partialAggregates.nonEmpty) {
+            val expectedMessage =
+              "Cannot convert final aggregate to Comet (Final aggregates disabled via test config), " +
+                "so partial aggregates must also use Spark to avoid mixed execution"
+            assert(
+              partialAggregates.exists(hasFallbackMessage(_, expectedMessage)),
+              s"Partial aggregate should have fallback message: $expectedMessage")
+          }
+
+          logInfo(s"AQE cross-stage coordination test passed with ${queryStages.length} stages")
         }
       }
     } finally {
