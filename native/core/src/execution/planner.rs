@@ -18,6 +18,7 @@
 //! Converts Spark physical plan to DataFusion physical plan
 
 pub mod expression_registry;
+pub mod operator_registry;
 pub mod traits;
 
 use crate::execution::operators::IcebergScanExec;
@@ -27,6 +28,7 @@ use crate::{
         expressions::subquery::Subquery,
         operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec},
         planner::expression_registry::ExpressionRegistry,
+        planner::operator_registry::OperatorRegistry,
         serde::to_arrow_datatype,
         shuffle::ShuffleWriterExec,
     },
@@ -861,29 +863,19 @@ impl PhysicalPlanner {
         inputs: &mut Vec<Arc<GlobalRef>>,
         partition_count: usize,
     ) -> Result<(Vec<ScanExec>, Arc<SparkPlan>), ExecutionError> {
+        // Try to use the modular registry first - this automatically handles any registered operator types
+        if OperatorRegistry::global().can_handle(spark_plan) {
+            return OperatorRegistry::global().create_plan(
+                spark_plan,
+                inputs,
+                partition_count,
+                self,
+            );
+        }
+
+        // Fall back to the original monolithic match for other operators
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
-            OpStruct::Projection(project) => {
-                assert_eq!(children.len(), 1);
-                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
-                let exprs: PhyExprResult = project
-                    .project_list
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, expr)| {
-                        self.create_expr(expr, child.schema())
-                            .map(|r| (r, format!("col_{idx}")))
-                    })
-                    .collect();
-                let projection = Arc::new(ProjectionExec::try_new(
-                    exprs?,
-                    Arc::clone(&child.native_plan),
-                )?);
-                Ok((
-                    scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, projection, vec![child])),
-                ))
-            }
             OpStruct::Filter(filter) => {
                 assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
@@ -1634,6 +1626,10 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
                 ))
             }
+            _ => Err(GeneralError(format!(
+                "Unsupported or unregistered operator type: {:?}",
+                spark_plan.op_struct
+            ))),
         }
     }
 

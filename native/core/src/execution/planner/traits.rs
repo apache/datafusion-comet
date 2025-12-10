@@ -48,6 +48,27 @@ macro_rules! extract_expr {
     };
 }
 
+/// Macro to extract a specific operator variant, panicking if called with wrong type.
+/// This should be used in operator builders where the registry guarantees the correct
+/// operator type has been routed to the builder.
+#[macro_export]
+macro_rules! extract_op {
+    ($spark_operator:expr, $variant:ident) => {
+        match $spark_operator
+            .op_struct
+            .as_ref()
+            .expect("operator struct must be present")
+        {
+            datafusion_comet_proto::spark_operator::operator::OpStruct::$variant(op) => op,
+            other => panic!(
+                "{} builder called with wrong operator type: {:?}",
+                stringify!($variant),
+                other
+            ),
+        }
+    };
+}
+
 /// Macro to generate binary expression builders with minimal boilerplate
 #[macro_export]
 macro_rules! binary_expr_builder {
@@ -114,7 +135,6 @@ pub trait ExpressionBuilder: Send + Sync {
 }
 
 /// Trait for building physical operators from Spark protobuf operators
-#[allow(dead_code)]
 pub trait OperatorBuilder: Send + Sync {
     /// Build a Spark plan from a protobuf operator
     fn build(
@@ -201,7 +221,6 @@ pub enum ExpressionType {
 
 /// Enum to identify different operator types for registry dispatch
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub enum OperatorType {
     Scan,
     NativeScan,
