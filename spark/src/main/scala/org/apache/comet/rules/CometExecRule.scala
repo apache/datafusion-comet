@@ -125,11 +125,24 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
 
         handler match {
-          case Some(serde) if !isOperatorEnabled(serde, finalAgg) =>
-            // Final aggregate cannot be converted, so tag corresponding partial aggregates
-            val reason = "Cannot convert final aggregate to Comet, " +
-              "so partial aggregates must also use Spark to avoid mixed execution"
-            tagRelatedPartialAggregates(finalAgg, reason)
+          case Some(serde) =>
+            // Get the actual support level and reason for the final aggregate
+            serde.getSupportLevel(finalAgg) match {
+              case Unsupported(reasonOpt) =>
+                // Final aggregate cannot be converted, extract the actual reason
+                val actualReason = reasonOpt.getOrElse("Final aggregate not supported by Comet")
+                val reason = s"Cannot convert final aggregate to Comet ($actualReason), " +
+                  "so partial aggregates must also use Spark to avoid mixed execution"
+                tagRelatedPartialAggregates(finalAgg, reason)
+              case Incompatible(reasonOpt) =>
+                // Final aggregate cannot be converted, extract the actual reason
+                val actualReason = reasonOpt.getOrElse("Final aggregate incompatible with Comet")
+                val reason = s"Cannot convert final aggregate to Comet ($actualReason), " +
+                  "so partial aggregates must also use Spark to avoid mixed execution"
+                tagRelatedPartialAggregates(finalAgg, reason)
+              case Compatible(_) =>
+                finalAgg
+            }
           case _ =>
             finalAgg
         }
