@@ -262,151 +262,19 @@ message Add2 {
 
 ### Adding the Expression in Rust
 
-With the serialization complete, the next step is to implement the expression in Rust. Comet now uses a modular expression registry pattern that provides better organization and type safety compared to monolithic match statements.
+With the serialization complete, the next step is to implement the expression in Rust and ensure that the incoming plan can make use of it.
 
-#### File Organization
+How this works is somewhat dependent on the type of expression you're adding. Expression implementations live in the `native/spark-expr/src/` directory, organized by category (e.g., `math_funcs/`, `string_funcs/`, `array_funcs/`).
 
-The expression-related code is organized as follows:
+#### Generally Adding a New Expression
 
-- `native/core/src/execution/planner/expression_registry.rs` - Contains `ExpressionBuilder` trait, `ExpressionType` enum, and `ExpressionRegistry`
-- `native/core/src/execution/planner/macros.rs` - Contains shared macros (`extract_expr!`, `binary_expr_builder!`, `unary_expr_builder!`)
-- `native/core/src/execution/expressions/` - Individual expression builder implementations organized by category
-- `native/spark-expr/src/` - Scalar function implementations organized by category (e.g., `math_funcs/`, `string_funcs/`)
+If you're adding a new expression that requires custom protobuf serialization, you may need to:
 
-#### Option A: Using the Expression Registry (Recommended for Complex Expressions)
+1. Add a new message to the protobuf definition in `native/proto/src/proto/expr.proto`
+2. Add a native expression handler in `expression_registry.rs` to deserialize the new protobuf message type and
+   create a native expression
 
-For expressions that need custom protobuf handling or complex logic, use the modular registry pattern.
-
-##### Create an ExpressionBuilder
-
-Create or update a file in `native/core/src/execution/expressions/` (e.g., `comparison.rs`, `arithmetic.rs`):
-
-```rust
-use std::sync::Arc;
-
-use arrow::datatypes::SchemaRef;
-use datafusion::physical_expr::PhysicalExpr;
-use datafusion_comet_proto::spark_expression::Expr;
-
-use crate::execution::{
-    operators::ExecutionError,
-    planner::{expression_registry::ExpressionBuilder, PhysicalPlanner},
-};
-use crate::extract_expr;
-
-/// Builder for YourNewExpression expressions
-pub struct YourExpressionBuilder;
-
-impl ExpressionBuilder for YourExpressionBuilder {
-    fn build(
-        &self,
-        spark_expr: &Expr,
-        input_schema: SchemaRef,
-        planner: &PhysicalPlanner,
-    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        // Use extract_expr! macro for type-safe extraction
-        let expr = extract_expr!(spark_expr, YourNewExpression);
-
-        // Convert child expressions
-        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-        // Create and return the DataFusion physical expression
-        Ok(Arc::new(YourDataFusionExpr::new(left, right)))
-    }
-}
-```
-
-For simple binary expressions, you can use the `binary_expr_builder!` macro:
-
-```rust
-use datafusion::logical_expr::Operator as DataFusionOperator;
-use crate::binary_expr_builder;
-
-// This generates a complete ExpressionBuilder implementation
-binary_expr_builder!(YourBinaryExprBuilder, YourBinaryExpr, DataFusionOperator::Plus);
-```
-
-##### Register the ExpressionBuilder
-
-Add the ExpressionType to the enum in `native/core/src/execution/planner/expression_registry.rs`:
-
-```rust
-/// Enum to identify different expression types for registry dispatch
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ExpressionType {
-    // Arithmetic expressions
-    Add,
-    Subtract,
-    // ... existing expressions ...
-    YourNewExpression, // Add your expression type here
-}
-```
-
-Register your builder in the `ExpressionRegistry` implementation:
-
-```rust
-/// Register all expression builders
-fn register_all_expressions(&mut self) {
-    self.register_arithmetic_expressions();
-    self.register_comparison_expressions();
-    self.register_your_expressions(); // Add this line
-}
-
-/// Register your new expressions
-fn register_your_expressions(&mut self) {
-    use crate::execution::expressions::your_category::YourExpressionBuilder;
-
-    self.builders
-        .insert(ExpressionType::YourNewExpression, Box::new(YourExpressionBuilder));
-}
-```
-
-Update the `get_expression_type` function to map your protobuf expression:
-
-```rust
-fn get_expression_type(spark_expr: &Expr) -> Option<ExpressionType> {
-    use datafusion_comet_proto::spark_expression::expr::ExprStruct;
-
-    match spark_expr.expr_struct.as_ref()? {
-        ExprStruct::Add(_) => Some(ExpressionType::Add),
-        ExprStruct::Subtract(_) => Some(ExpressionType::Subtract),
-        // ... existing expressions ...
-        ExprStruct::YourNewExpression(_) => Some(ExpressionType::YourNewExpression),
-    }
-}
-```
-
-**Note**: See existing implementations in `native/core/src/execution/expressions/` for working examples, such as `arithmetic.rs`, `comparison.rs`, etc.
-
-#### Option B: Using Scalar Functions (Recommended for Simple Functions)
-
-For expressions that map directly to scalar functions, use the existing scalar function infrastructure. This approach is simpler for basic functions but less flexible than the registry pattern.
-
-**When to use the Registry Pattern (Option A):**
-
-- Complex expressions that need custom deserialization logic
-- Expressions with multiple variants or complex parameter handling
-- Binary/unary expressions that benefit from type-safe extraction
-- Expressions that need custom DataFusion physical expression implementations
-
-**When to use Scalar Functions (Option B):**
-
-- Simple functions that map directly to DataFusion scalar functions
-- Functions that don't need complex parameter handling
-- Functions where the existing `CometScalarFunction` pattern is sufficient
-
-**Benefits of the Registry Pattern:**
-
-- **Better Organization**: Each expression's logic is isolated
-- **Type Safety**: The `extract_expr!` macro ensures compile-time correctness
-- **Extensibility**: New expressions can be added without modifying core planner logic
-- **Code Reuse**: Macros like `binary_expr_builder!` reduce boilerplate
-- **Graceful Fallback**: Unregistered expressions automatically fall back to the monolithic match
-
-#### Option C: Fallback to Monolithic Match (Legacy)
-
-If you need to add an expression but prefer not to use the registry pattern, expressions that aren't registered will automatically fall back to the legacy monolithic match statement in `create_expr()`. However, the registry pattern (Option A) is strongly recommended for new expressions.
+For most expressions, you can skip this step if you're using the existing scalar function infrastructure.
 
 #### Adding a New Scalar Function Expression
 
