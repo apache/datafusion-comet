@@ -21,6 +21,7 @@ package org.apache.comet.rules
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
@@ -102,6 +103,64 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   private def isCometNative(op: SparkPlan): Boolean = op.isInstanceOf[CometNativeExec]
+
+  /**
+   * Pre-processes the plan to ensure coordination between partial and final hash aggregates.
+   *
+   * This method walks the plan top-down to identify final hash aggregates that cannot be
+   * converted to Comet. For such cases, it finds and tags any corresponding partial aggregates
+   * with fallback reasons to prevent mixed Comet partial + Spark final aggregation.
+   *
+   * @param plan
+   *   The input plan to pre-process
+   * @return
+   *   The plan with appropriate fallback tags added
+   */
+  private def tagUnsupportedPartialAggregates(plan: SparkPlan): SparkPlan = {
+    plan.transformDown {
+      case finalAgg: HashAggregateExec if hasFinalMode(finalAgg) =>
+        // Check if this final aggregate can be converted to Comet
+        val handler = allExecs
+          .get(finalAgg.getClass)
+          .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
+
+        handler match {
+          case Some(serde) if !isOperatorEnabled(serde, finalAgg) =>
+            // Final aggregate cannot be converted, so tag corresponding partial aggregates
+            val reason = "Cannot convert final hash aggregate to Comet, " +
+              "so partial aggregates must also use Spark to avoid mixed execution"
+            tagRelatedPartialAggregates(finalAgg, reason)
+          case _ =>
+            finalAgg
+        }
+      case other => other
+    }
+  }
+
+  /**
+   * Helper method to check if a hash aggregate has Final mode expressions.
+   */
+  private def hasFinalMode(agg: HashAggregateExec): Boolean = {
+    agg.aggregateExpressions.exists(_.mode == Final)
+  }
+
+  /**
+   * Tags related partial aggregates in the subtree with fallback reasons.
+   */
+  private def tagRelatedPartialAggregates(plan: SparkPlan, reason: String): SparkPlan = {
+    plan.transformDown {
+      case partialAgg: HashAggregateExec if hasPartialMode(partialAgg) =>
+        withInfo(partialAgg, reason)
+      case other => other
+    }
+  }
+
+  /**
+   * Helper method to check if a hash aggregate has Partial or PartialMerge mode expressions.
+   */
+  private def hasPartialMode(agg: HashAggregateExec): Boolean = {
+    agg.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)
+  }
 
   // spotless:off
 
@@ -239,6 +298,11 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         convertToComet(s, CometShuffleExchangeExec).getOrElse(s)
 
       case op =>
+        // Check if this operator has already been tagged with fallback reasons
+        if (hasExplainInfo(op)) {
+          return op
+        }
+
         // if all children are native (or if this is a leaf node) then see if there is a
         // registered handler for creating a fully native plan
         if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
@@ -365,7 +429,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         normalizedPlan
       }
 
-      var newPlan = transform(planWithJoinRewritten)
+      // Pre-process the plan to ensure coordination between partial and final hash aggregates
+      val planWithAggregateCoordination = tagUnsupportedPartialAggregates(planWithJoinRewritten)
+
+      var newPlan = transform(planWithAggregateCoordination)
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
