@@ -1276,6 +1276,20 @@ object CometObjectHashAggregateExec
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_AGGREGATE_ENABLED)
 
+  override def getSupportLevel(op: ObjectHashAggregateExec): SupportLevel = {
+    // some unit tests need to disable partial or final hash aggregate support to test that
+    // CometExecRule does not allow mixed Spark/Comet aggregates
+    if (!CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf) &&
+      op.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)) {
+      return Unsupported(Some("Partial aggregates disabled via test config"))
+    }
+    if (!CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf) &&
+      op.aggregateExpressions.exists(_.mode == Final)) {
+      return Unsupported(Some("Final aggregates disabled via test config"))
+    }
+    Compatible()
+  }
+
   override def convert(
       aggregate: ObjectHashAggregateExec,
       builder: Operator.Builder,

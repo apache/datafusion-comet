@@ -22,11 +22,15 @@ package org.apache.comet.rules
 import scala.util.Random
 
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
+import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.catalyst.expressions.ExpressionInfo
+import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
-import org.apache.spark.sql.execution.aggregate.HashAggregateExec
+import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
@@ -176,6 +180,95 @@ class CometExecRuleSuite extends CometTestBase {
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
       }
+    }
+  }
+
+  test("CometExecRule should not allow Comet partial and Spark final object hash aggregate") {
+    val funcId_bloom_filter_agg = new FunctionIdentifier("bloom_filter_agg")
+    spark.sessionState.functionRegistry.registerFunction(
+      funcId_bloom_filter_agg,
+      new ExpressionInfo(classOf[BloomFilterAggregate].getName, "bloom_filter_agg"),
+      (children: Seq[Expression]) =>
+        children.size match {
+          case 1 => new BloomFilterAggregate(children.head)
+          case 2 => new BloomFilterAggregate(children.head, children(1))
+          case 3 => new BloomFilterAggregate(children.head, children(1), children(2))
+        })
+
+    try {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+
+        val sparkPlan =
+          createSparkPlan(
+            spark,
+            "SELECT bloom_filter_agg(cast(id as long)) FROM test_data GROUP BY (id % 3)")
+
+        // Count original Spark operators - bloom filter should generate ObjectHashAggregateExec
+        val originalObjectHashAggCount =
+          countOperators(sparkPlan, classOf[ObjectHashAggregateExec])
+        assert(originalObjectHashAggCount == 2)
+
+        withSQLConf(
+          CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+          CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+          val transformedPlan = applyCometExecRule(sparkPlan)
+
+          // if the final object aggregate cannot be converted to Comet, then neither should be
+          assert(
+            countOperators(
+              transformedPlan,
+              classOf[ObjectHashAggregateExec]) == originalObjectHashAggCount)
+          assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+        }
+      }
+    } finally {
+      spark.sessionState.functionRegistry.dropFunction(funcId_bloom_filter_agg)
+    }
+  }
+
+  test("CometExecRule should not allow Spark partial and Comet final object hash aggregate") {
+    val funcId_bloom_filter_agg = new FunctionIdentifier("bloom_filter_agg")
+    spark.sessionState.functionRegistry.registerFunction(
+      funcId_bloom_filter_agg,
+      new ExpressionInfo(classOf[BloomFilterAggregate].getName, "bloom_filter_agg"),
+      (children: Seq[Expression]) =>
+        children.size match {
+          case 1 => new BloomFilterAggregate(children.head)
+          case 2 => new BloomFilterAggregate(children.head, children(1))
+          case 3 => new BloomFilterAggregate(children.head, children(1), children(2))
+        })
+
+    try {
+      withTempView("test_data") {
+        createTestDataFrame.createOrReplaceTempView("test_data")
+
+        val sparkPlan =
+          createSparkPlan(
+            spark,
+            "SELECT bloom_filter_agg(cast(id as long)) FROM test_data GROUP BY (id % 3)")
+
+        // Count original Spark operators - bloom filter should generate ObjectHashAggregateExec
+        val originalObjectHashAggCount =
+          countOperators(sparkPlan, classOf[ObjectHashAggregateExec])
+        assert(originalObjectHashAggCount == 2)
+
+        withSQLConf(
+          CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true", // ObjectHashAggregateExec requires shuffle
+          CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+          val transformedPlan = applyCometExecRule(sparkPlan)
+
+          // if the partial object aggregate cannot be converted to Comet, then neither should be
+          assert(
+            countOperators(
+              transformedPlan,
+              classOf[ObjectHashAggregateExec]) == originalObjectHashAggCount)
+          assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+        }
+      }
+    } finally {
+      spark.sessionState.functionRegistry.dropFunction(funcId_bloom_filter_agg)
     }
   }
 

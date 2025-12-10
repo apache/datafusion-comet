@@ -29,7 +29,7 @@ import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
 import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
@@ -118,7 +118,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    */
   private def tagUnsupportedPartialAggregates(plan: SparkPlan): SparkPlan = {
     plan.transformDown {
-      case finalAgg: HashAggregateExec if hasFinalMode(finalAgg) =>
+      case finalAgg: BaseAggregateExec if hasFinalMode(finalAgg) =>
         // Check if this final aggregate can be converted to Comet
         val handler = allExecs
           .get(finalAgg.getClass)
@@ -127,7 +127,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         handler match {
           case Some(serde) if !isOperatorEnabled(serde, finalAgg) =>
             // Final aggregate cannot be converted, so tag corresponding partial aggregates
-            val reason = "Cannot convert final hash aggregate to Comet, " +
+            val reason = "Cannot convert final aggregate to Comet, " +
               "so partial aggregates must also use Spark to avoid mixed execution"
             tagRelatedPartialAggregates(finalAgg, reason)
           case _ =>
@@ -138,9 +138,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   /**
-   * Helper method to check if a hash aggregate has Final mode expressions.
+   * Helper method to check if an aggregate has Final mode expressions.
    */
-  private def hasFinalMode(agg: HashAggregateExec): Boolean = {
+  private def hasFinalMode(agg: BaseAggregateExec): Boolean = {
     agg.aggregateExpressions.exists(_.mode == Final)
   }
 
@@ -157,7 +157,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         node
       } else {
         node match {
-          case partialAgg: HashAggregateExec if hasPartialMode(partialAgg) =>
+          case partialAgg: BaseAggregateExec if hasPartialMode(partialAgg) =>
             found = true
             withInfo(partialAgg, reason)
           case other =>
@@ -170,9 +170,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   /**
-   * Helper method to check if a hash aggregate has Partial or PartialMerge mode expressions.
+   * Helper method to check if an aggregate has Partial or PartialMerge mode expressions.
    */
-  private def hasPartialMode(agg: HashAggregateExec): Boolean = {
+  private def hasPartialMode(agg: BaseAggregateExec): Boolean = {
     agg.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)
   }
 
