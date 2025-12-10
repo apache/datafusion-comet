@@ -21,6 +21,10 @@ package org.apache.comet.serde.operator
 
 import scala.jdk.CollectionConverters._
 
+import org.json4s._
+import org.json4s.JsonDSL._
+import org.json4s.jackson.JsonMethods._
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
@@ -61,6 +65,84 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val AND = "And"
       val OR = "Or"
       val NOT = "Not"
+    }
+  }
+
+  /**
+   * Converts an Iceberg partition value to JSON format expected by iceberg-rust.
+   *
+   * iceberg-rust's Literal::try_from_json() expects specific formats for certain types:
+   *   - Timestamps: ISO string format "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+   *   - Dates: ISO string format "YYYY-MM-DD"
+   *   - Decimals: String representation
+   *
+   * See: iceberg-rust/crates/iceberg/src/spec/values/literal.rs
+   */
+  private def partitionValueToJson(fieldTypeStr: String, value: Any): JValue = {
+    fieldTypeStr match {
+      case t if t.startsWith("timestamp") =>
+        val micros = value match {
+          case l: java.lang.Long => l.longValue()
+          case i: java.lang.Integer => i.longValue()
+          case _ => value.toString.toLong
+        }
+        val instant = java.time.Instant.ofEpochSecond(micros / 1000000, (micros % 1000000) * 1000)
+        val formatted = java.time.format.DateTimeFormatter
+          .ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS")
+          .withZone(java.time.ZoneOffset.UTC)
+          .format(instant)
+        JString(formatted)
+
+      case "date" =>
+        val days = value.asInstanceOf[java.lang.Integer].intValue()
+        val localDate = java.time.LocalDate.ofEpochDay(days.toLong)
+        JString(localDate.toString)
+
+      case d if d.startsWith("decimal(") =>
+        JString(value.toString)
+
+      case "string" =>
+        JString(value.toString)
+
+      case "int" | "long" =>
+        value match {
+          case i: java.lang.Integer => JInt(BigInt(i.intValue()))
+          case l: java.lang.Long => JInt(BigInt(l.longValue()))
+          case _ => JDecimal(BigDecimal(value.toString))
+        }
+
+      case "float" | "double" =>
+        value match {
+          // NaN/Infinity are not valid JSON numbers - serialize as strings
+          case f: java.lang.Float if f.isNaN || f.isInfinite =>
+            JString(f.toString)
+          case d: java.lang.Double if d.isNaN || d.isInfinite =>
+            JString(d.toString)
+          case f: java.lang.Float => JDouble(f.doubleValue())
+          case d: java.lang.Double => JDouble(d.doubleValue())
+          case _ => JDecimal(BigDecimal(value.toString))
+        }
+
+      case "boolean" =>
+        value match {
+          case b: java.lang.Boolean => JBool(b.booleanValue())
+          case _ => JBool(value.toString.toBoolean)
+        }
+
+      case "uuid" =>
+        JString(value.toString)
+
+      // Fallback: infer JSON type from Java type
+      case _ =>
+        value match {
+          case s: String => JString(s)
+          case i: java.lang.Integer => JInt(BigInt(i.intValue()))
+          case l: java.lang.Long => JInt(BigInt(l.longValue()))
+          case d: java.lang.Double => JDouble(d.doubleValue())
+          case f: java.lang.Float => JDouble(f.doubleValue())
+          case b: java.lang.Boolean => JBool(b.booleanValue())
+          case other => JString(other.toString)
+        }
     }
   }
 
@@ -230,8 +312,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               // metadata (e.g., "schema-id") that iceberg-rust's StructType
               // deserializer rejects. We need pure StructType format:
               // {"type":"struct","fields":[...]}
-              import org.json4s.JsonDSL._
-              import org.json4s.jackson.JsonMethods._
 
               // Filter out fields with unknown types (dropped partition fields).
               // Unknown type fields represent partition columns that have been dropped
@@ -286,8 +366,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           // mechanism for providing partition values to identity-transformed
           // partition columns. Non-identity transforms (bucket, truncate, days,
           // etc.) read values from data files.
-          import org.json4s._
-          import org.json4s.jackson.JsonMethods._
+          //
+          // IMPORTANT: Use the same field IDs as partition_type_json (partition field IDs,
+          // not source field IDs) so that JSON deserialization matches correctly.
 
           // Filter out fields with unknown type (same as partition type filtering)
           val partitionDataMap: Map[String, JValue] =
@@ -298,6 +379,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               if (fieldTypeStr == IcebergReflection.TypeNames.UNKNOWN) {
                 None
               } else {
+                // Use the partition type's field ID (same as in partition_type_json)
                 val fieldIdMethod = field.getClass.getMethod("fieldId")
                 val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
 
@@ -311,22 +393,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 if (value == null) {
                   None
                 } else {
-                  val jsonValue: JValue = value match {
-                    case s: String => JString(s)
-                    // NaN/Infinity are not valid JSON number literals per the
-                    // JSON spec. Serialize as strings (e.g., "NaN", "Infinity")
-                    // which are valid JSON and can be parsed by Rust's
-                    // f32/f64::from_str().
-                    case f: java.lang.Float if f.isNaN || f.isInfinite =>
-                      JString(f.toString)
-                    case d: java.lang.Double if d.isNaN || d.isInfinite =>
-                      JString(d.toString)
-                    case n: Number => JDecimal(BigDecimal(n.toString))
-                    case b: java.lang.Boolean =>
-                      JBool(b.booleanValue())
-                    case other => JString(other.toString)
-                  }
-
+                  val jsonValue = partitionValueToJson(fieldTypeStr, value)
                   Some(fieldId.toString -> jsonValue)
                 }
               }
@@ -652,8 +719,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                           val partitionSpec = specMethod.invoke(task)
 
                           // Build JSON representation of partition values using json4s
-                          import org.json4s._
-                          import org.json4s.jackson.JsonMethods._
 
                           val partitionMap = scala.collection.mutable.Map[String, JValue]()
 
@@ -685,23 +750,33 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                                 val sourceFieldId =
                                   sourceIdMethod.invoke(partitionField).asInstanceOf[Int]
 
-                                // Convert value to appropriate JValue type
-                                val jsonValue: JValue = if (value == null) {
-                                  JNull
-                                } else {
-                                  value match {
-                                    case s: String => JString(s)
-                                    case i: java.lang.Integer => JInt(BigInt(i.intValue()))
-                                    case l: java.lang.Long => JInt(BigInt(l.longValue()))
-                                    case d: java.lang.Double => JDouble(d.doubleValue())
-                                    case f: java.lang.Float => JDouble(f.doubleValue())
-                                    case b: java.lang.Boolean => JBool(b.booleanValue())
-                                    case n: Number => JDecimal(BigDecimal(n.toString))
-                                    case other => JString(other.toString)
-                                  }
-                                }
+                                // Skip NULL partition values to work around
+                                // iceberg-rust issue #1914 (Datum does not support null values).
+                                // NULL partition fields will be correctly resolved as NULL
+                                // through Iceberg spec rule #4.
+                                if (value != null) {
+                                  // Get field type from schema to serialize correctly
+                                  val fieldTypeStr =
+                                    try {
+                                      val findFieldMethod =
+                                        metadata.tableSchema.getClass
+                                          .getMethod("findField", classOf[Int])
+                                      val field = findFieldMethod.invoke(
+                                        metadata.tableSchema,
+                                        sourceFieldId.asInstanceOf[Object])
+                                      if (field != null) {
+                                        val typeMethod = field.getClass.getMethod("type")
+                                        typeMethod.invoke(field).toString
+                                      } else {
+                                        "unknown"
+                                      }
+                                    } catch {
+                                      case _: Exception => "unknown"
+                                    }
 
-                                partitionMap(sourceFieldId.toString) = jsonValue
+                                  val jsonValue = partitionValueToJson(fieldTypeStr, value)
+                                  partitionMap(sourceFieldId.toString) = jsonValue
+                                }
                               }
                             }
                           }

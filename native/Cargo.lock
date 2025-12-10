@@ -3219,7 +3219,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.7.0"
-source = "git+https://github.com/apache/iceberg-rust?rev=bdb44ae#bdb44ae58a45ec12a34af28037901900d6020e08"
+source = "git+https://github.com/mbutrovich/iceberg-rust?branch=decimal128_fix#cb6ec968c9d2e5eb47d35fbb0429a53fb2a52035"
 dependencies = [
  "anyhow",
  "apache-avro",

@@ -2145,6 +2145,103 @@ class CometIcebergNativeSuite extends CometTestBase {
     }
   }
 
+  test("MOR partitioned table with timestamp_ntz - reproduces NULL partition issue") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create partitioned table like TestRewritePositionDeleteFiles.testTimestampNtz
+        spark.sql("""
+          CREATE TABLE test_cat.db.timestamp_ntz_partition_test (
+            id LONG,
+            ts TIMESTAMP_NTZ,
+            c1 STRING,
+            c2 STRING
+          ) USING iceberg
+          PARTITIONED BY (ts)
+          TBLPROPERTIES (
+            'format-version' = '2',
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
+
+        // Insert data into multiple partitions
+        spark.sql("""
+          INSERT INTO test_cat.db.timestamp_ntz_partition_test
+          VALUES
+            (1, TIMESTAMP_NTZ '2023-01-01 15:30:00', 'a', 'b'),
+            (2, TIMESTAMP_NTZ '2023-01-02 15:30:00', 'c', 'd'),
+            (3, TIMESTAMP_NTZ '2023-01-03 15:30:00', 'e', 'f')
+        """)
+
+        // Delete some rows to create position delete files
+        spark.sql("DELETE FROM test_cat.db.timestamp_ntz_partition_test WHERE id = 2")
+
+        // Query should work with NULL partition handling
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.timestamp_ntz_partition_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.timestamp_ntz_partition_test")
+      }
+    }
+  }
+
+  test("MOR partitioned table with decimal - reproduces NULL partition issue") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create partitioned table like TestRewritePositionDeleteFiles.testDecimalPartition
+        spark.sql("""
+          CREATE TABLE test_cat.db.decimal_partition_test (
+            id LONG,
+            dec DECIMAL(18, 10),
+            c1 STRING,
+            c2 STRING
+          ) USING iceberg
+          PARTITIONED BY (dec)
+          TBLPROPERTIES (
+            'format-version' = '2',
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
+
+        // Insert data into multiple partitions
+        spark.sql("""
+          INSERT INTO test_cat.db.decimal_partition_test
+          VALUES
+            (1, 1.0, 'a', 'b'),
+            (2, 2.0, 'c', 'd'),
+            (3, 3.0, 'e', 'f')
+        """)
+
+        // Delete some rows to create position delete files
+        spark.sql("DELETE FROM test_cat.db.decimal_partition_test WHERE id = 2")
+
+        // Query should work with NULL partition handling
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.decimal_partition_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.decimal_partition_test")
+      }
+    }
+  }
+
   // Helper to create temp directory
   def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile
