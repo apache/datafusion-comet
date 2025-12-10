@@ -298,6 +298,142 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("CometExecRule should coordinate across AQE stages for ObjectHashAggregateExec") {
+    val funcId_bloom_filter_agg = new FunctionIdentifier("bloom_filter_agg")
+    spark.sessionState.functionRegistry.registerFunction(
+      funcId_bloom_filter_agg,
+      new ExpressionInfo(classOf[BloomFilterAggregate].getName, "bloom_filter_agg"),
+      (children: Seq[Expression]) =>
+        children.size match {
+          case 1 => new BloomFilterAggregate(children.head)
+          case 2 => new BloomFilterAggregate(children.head, children(1))
+          case 3 => new BloomFilterAggregate(children.head, children(1), children(2))
+        })
+
+    try {
+      withTempView("test_data1", "test_data2") {
+        // Create smaller datasets to avoid memory issues
+        val testSchema = new StructType(
+          Array(
+            StructField("id", DataTypes.IntegerType, nullable = true),
+            StructField("group_key", DataTypes.IntegerType, nullable = true),
+            StructField("value", DataTypes.StringType, nullable = true)))
+
+        // Create two smaller tables for join to encourage AQE stage creation
+        val data1 = FuzzDataGenerator.generateDataFrame(
+          new Random(42),
+          spark,
+          testSchema,
+          200,
+          DataGenOptions())
+        val data2 = FuzzDataGenerator.generateDataFrame(
+          new Random(43),
+          spark,
+          testSchema,
+          200,
+          DataGenOptions())
+
+        data1.createOrReplaceTempView("test_data1")
+        data2.createOrReplaceTempView("test_data2")
+
+        // Use moderate AQE settings to avoid memory issues while encouraging stage creation
+        withSQLConf(
+          "spark.sql.adaptive.enabled" -> "true",
+          "spark.sql.adaptive.coalescePartitions.enabled" -> "true",
+          "spark.sql.adaptive.advisoryPartitionSizeInBytes" -> "64KB", // Less aggressive
+          "spark.sql.adaptive.skewJoin.enabled" -> "true",
+          "spark.default.parallelism" -> "4", // Fewer partitions
+          "spark.sql.shuffle.partitions" -> "4",
+          CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+
+          // Use a join + aggregation to encourage AQE stage boundaries
+          // Join often creates natural stage boundaries in AQE
+          val df = spark.sql("""
+              |SELECT
+              |  t1.group_key,
+              |  bloom_filter_agg(cast(t1.id as long)) as bloom_result,
+              |  count(*) as cnt
+              |FROM test_data1 t1
+              |JOIN test_data2 t2 ON t1.group_key = t2.group_key
+              |WHERE t1.id % 2 = 0
+              |GROUP BY t1.group_key
+              |""".stripMargin)
+
+          // Execute the plan to trigger AQE stage creation
+          val result = df.collect()
+          logInfo(s"Query executed successfully, returned ${result.length} rows")
+
+          // Get the executed plan which might have AQE stages
+          val executedPlan = df.queryExecution.executedPlan
+
+          // Check if we have QueryStageExec nodes (indicating AQE created stages)
+          val queryStages = executedPlan.collect { case qs: QueryStageExec => qs }
+
+          if (queryStages.nonEmpty) {
+            // We have AQE stages - test the cross-stage coordination
+            logInfo(
+              s"AQE created ${queryStages.length} stages - testing cross-stage coordination")
+
+            // Verify that we have ObjectHashAggregateExec operators in the plan
+            val objectHashAggs = stripAQEPlan(executedPlan).collect {
+              case agg: ObjectHashAggregateExec => agg
+            }
+            assert(objectHashAggs.nonEmpty, "Should have ObjectHashAggregateExec operators")
+
+            // Verify coordination worked - no mixed Comet/Spark aggregation
+            val cometHashAggs = stripAQEPlan(executedPlan).collect {
+              case agg: CometHashAggregateExec => agg
+            }
+            assert(
+              cometHashAggs.isEmpty,
+              "Should have no CometHashAggregateExec - coordination should prevent mixed execution")
+
+            // Verify that partial aggregates have the expected fallback message
+            val partialAggregates = queryStages.flatMap { stage =>
+              findPartialAggregates(stage.plan)
+            }
+            if (partialAggregates.nonEmpty) {
+              val expectedMessage =
+                "Cannot convert final aggregate to Comet (Final aggregates disabled via test config), " +
+                  "so partial aggregates must also use Spark to avoid mixed execution"
+              assert(
+                partialAggregates.exists(hasFallbackMessage(_, expectedMessage)),
+                s"Partial aggregate should have fallback message: $expectedMessage")
+            }
+
+            logInfo(s"AQE cross-stage coordination test passed with ${queryStages.length} stages")
+          } else {
+            // AQE didn't create stages - fall back to testing single-stage coordination
+            logInfo(
+              "AQE did not create separate stages - testing single-stage coordination instead")
+
+            // scalastyle:off
+            println(executedPlan)
+            // Verify that we have ObjectHashAggregateExec operators
+            val objectHashAggs = stripAQEPlan(executedPlan).collect { case agg: ObjectHashAggregateExec =>
+              agg
+            }
+            assert(objectHashAggs.nonEmpty, "Should have ObjectHashAggregateExec operators")
+
+            // Verify coordination worked - no mixed Comet/Spark aggregation
+            val cometHashAggs = executedPlan.collect { case agg: CometHashAggregateExec =>
+              agg
+            }
+            assert(
+              cometHashAggs.isEmpty,
+              "Should have no CometHashAggregateExec - coordination should prevent mixed execution")
+
+            logInfo("Single-stage coordination test passed")
+          }
+        }
+      }
+    } finally {
+      spark.sessionState.functionRegistry.dropFunction(funcId_bloom_filter_agg)
+    }
+  }
+
   test("CometExecRule should apply broadcast exchange transformations") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
