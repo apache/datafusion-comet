@@ -273,7 +273,7 @@ If you're adding a new expression that requires custom protobuf serialization, y
 1. Add a new message to the protobuf definition in `native/proto/src/proto/expr.proto`
 2. Add a native expression handler in `expression_registry.rs` to deserialize the new protobuf message type and
    create a native expression
- 
+
 For most expressions, you can skip this step if you're using the existing scalar function infrastructure.
 
 #### Adding a New Scalar Function Expression
