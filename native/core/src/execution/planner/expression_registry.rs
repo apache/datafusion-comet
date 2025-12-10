@@ -25,7 +25,90 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_proto::spark_expression::{expr::ExprStruct, Expr};
 
 use crate::execution::operators::ExecutionError;
-use crate::execution::planner::traits::{ExpressionBuilder, ExpressionType};
+
+/// Trait for building physical expressions from Spark protobuf expressions
+pub trait ExpressionBuilder: Send + Sync {
+    /// Build a DataFusion physical expression from a Spark protobuf expression
+    fn build(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+        planner: &super::PhysicalPlanner,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError>;
+}
+
+/// Enum to identify different expression types for registry dispatch
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExpressionType {
+    // Arithmetic expressions
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    IntegralDivide,
+    Remainder,
+    UnaryMinus,
+
+    // Comparison expressions
+    Eq,
+    Neq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    EqNullSafe,
+    NeqNullSafe,
+
+    // Logical expressions
+    And,
+    Or,
+    Not,
+
+    // Null checks
+    IsNull,
+    IsNotNull,
+
+    // Bitwise operations
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXor,
+    BitwiseShiftLeft,
+    BitwiseShiftRight,
+
+    // Other expressions
+    Bound,
+    Unbound,
+    Literal,
+    Cast,
+    CaseWhen,
+    In,
+    If,
+    Substring,
+    Like,
+    Rlike,
+    CheckOverflow,
+    ScalarFunc,
+    NormalizeNanAndZero,
+    Subquery,
+    BloomFilterMightContain,
+    CreateNamedStruct,
+    GetStructField,
+    ToJson,
+    ToPrettyString,
+    ListExtract,
+    GetArrayStructFields,
+    ArrayInsert,
+    Rand,
+    Randn,
+    SparkPartitionId,
+    MonotonicallyIncreasingId,
+
+    // Time functions
+    Hour,
+    Minute,
+    Second,
+    TruncTimestamp,
+}
 
 /// Registry for expression builders
 pub struct ExpressionRegistry {

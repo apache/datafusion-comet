@@ -25,14 +25,42 @@ use std::{
 use datafusion_comet_proto::spark_operator::Operator;
 use jni::objects::GlobalRef;
 
-use super::{
-    traits::{OperatorBuilder, OperatorType},
-    PhysicalPlanner,
-};
+use super::PhysicalPlanner;
 use crate::execution::{
     operators::{ExecutionError, ScanExec},
     spark_plan::SparkPlan,
 };
+
+/// Trait for building physical operators from Spark protobuf operators
+pub trait OperatorBuilder: Send + Sync {
+    /// Build a Spark plan from a protobuf operator
+    fn build(
+        &self,
+        spark_plan: &datafusion_comet_proto::spark_operator::Operator,
+        inputs: &mut Vec<Arc<GlobalRef>>,
+        partition_count: usize,
+        planner: &PhysicalPlanner,
+    ) -> Result<(Vec<ScanExec>, Arc<SparkPlan>), ExecutionError>;
+}
+
+/// Enum to identify different operator types for registry dispatch
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OperatorType {
+    Scan,
+    NativeScan,
+    IcebergScan,
+    Projection,
+    Filter,
+    HashAgg,
+    Limit,
+    Sort,
+    ShuffleWriter,
+    ParquetWriter,
+    Expand,
+    SortMergeJoin,
+    HashJoin,
+    Window,
+}
 
 /// Global registry of operator builders
 pub struct OperatorRegistry {
