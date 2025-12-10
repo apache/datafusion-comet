@@ -384,7 +384,7 @@ class CometExecRuleSuite extends CometTestBase {
               |""".stripMargin)
 
           // Execute the plan to trigger AQE stage creation
-          val result = df.collect()
+          df.collect()
 
           // Get the executed plan which should have AQE stages
           val executedPlan = df.queryExecution.executedPlan
