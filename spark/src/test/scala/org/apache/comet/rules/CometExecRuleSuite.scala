@@ -393,10 +393,9 @@ class CometExecRuleSuite extends CometTestBase {
           // Check if we have QueryStageExec nodes (indicating AQE created stages)
           val queryStages = stripAQEPlan(executedPlan).collect { case qs: QueryStageExec => qs }
 
-          assert (queryStages.nonEmpty)
+          assert(queryStages.nonEmpty)
           // We have AQE stages - test the cross-stage coordination
-          logInfo(
-            s"AQE created ${queryStages.length} stages - testing cross-stage coordination")
+          logInfo(s"AQE created ${queryStages.length} stages - testing cross-stage coordination")
 
           // Verify that we have ObjectHashAggregateExec operators in the plan
           // Need to recursively search through AQE stages
