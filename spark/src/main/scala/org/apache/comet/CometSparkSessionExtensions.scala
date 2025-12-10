@@ -283,12 +283,4 @@ object CometSparkSessionExtensions extends Logging {
     node.getTagValue(CometExplainInfo.EXTENSION_INFO).exists(_.nonEmpty)
   }
 
-  // Helper to reduce boilerplate
-  def createMessage(condition: Boolean, message: => String): Option[String] = {
-    if (condition) {
-      Some(message)
-    } else {
-      None
-    }
-  }
 }
