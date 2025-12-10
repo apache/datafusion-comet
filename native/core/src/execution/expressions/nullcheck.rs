@@ -15,16 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Native DataFusion expressions
+//! Null check expression builders
 
-pub mod arithmetic;
-pub mod bitwise;
-pub mod comparison;
-pub mod logical;
-pub mod nullcheck;
-pub mod subquery;
+use datafusion::physical_expr::expressions::{IsNotNullExpr, IsNullExpr};
 
-pub use datafusion_comet_spark_expr::EvalMode;
+use crate::unary_expr_builder;
 
-// Re-export the extract_expr macro for convenience in expression builders
-pub use crate::extract_expr;
+/// Macro to define all null check builders at once
+macro_rules! define_null_check_builders {
+    () => {
+        unary_expr_builder!(IsNullBuilder, IsNull, IsNullExpr::new);
+        unary_expr_builder!(IsNotNullBuilder, IsNotNull, IsNotNullExpr::new);
+    };
+}
+
+define_null_check_builders!();

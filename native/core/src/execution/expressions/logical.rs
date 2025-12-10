@@ -15,16 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Native DataFusion expressions
+//! Logical expression builders
 
-pub mod arithmetic;
-pub mod bitwise;
-pub mod comparison;
-pub mod logical;
-pub mod nullcheck;
-pub mod subquery;
+use datafusion::logical_expr::Operator as DataFusionOperator;
+use datafusion::physical_expr::expressions::NotExpr;
 
-pub use datafusion_comet_spark_expr::EvalMode;
+use crate::{binary_expr_builder, unary_expr_builder};
 
-// Re-export the extract_expr macro for convenience in expression builders
-pub use crate::extract_expr;
+/// Macro to define all logical builders at once
+macro_rules! define_logical_builders {
+    () => {
+        binary_expr_builder!(AndBuilder, And, DataFusionOperator::And);
+        binary_expr_builder!(OrBuilder, Or, DataFusionOperator::Or);
+        unary_expr_builder!(NotBuilder, Not, NotExpr::new);
+    };
+}
+
+define_logical_builders!();
