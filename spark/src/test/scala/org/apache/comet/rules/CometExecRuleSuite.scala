@@ -25,7 +25,7 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.expressions.ExpressionInfo
-import org.apache.spark.sql.catalyst.expressions.aggregate.{BloomFilterAggregate, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{BloomFilterAggregate, Final, Partial, PartialMerge}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
@@ -448,14 +448,71 @@ class CometExecRuleSuite extends CometTestBase {
             buffer.toSeq
           }
 
+          // Create a mapping from aggregate operators to their containing QueryStageExec
+          def buildStageMapping(plan: SparkPlan): Map[BaseAggregateExec, QueryStageExec] = {
+            val mapping = scala.collection.mutable.Map[BaseAggregateExec, QueryStageExec]()
+            def collect(p: SparkPlan, currentStage: Option[QueryStageExec]): Unit = {
+              p match {
+                case stage: QueryStageExec =>
+                  collect(stage.plan, Some(stage))
+                case agg: BaseAggregateExec if currentStage.isDefined =>
+                  mapping += (agg -> currentStage.get)
+                  p.children.foreach(collect(_, currentStage))
+                case _ =>
+                  p.children.foreach(collect(_, currentStage))
+              }
+            }
+            collect(plan, None)
+            mapping.toMap
+          }
+
           val partialAggregates = findPartialAggsInAQE(executedPlan)
           if (partialAggregates.nonEmpty) {
             val expectedMessage =
               "Cannot convert final aggregate to Comet (Final aggregates disabled via test config), " +
                 "so partial aggregates must also use Spark to avoid mixed execution"
+
+            val partialAggsWithFallback =
+              partialAggregates.filter(hasFallbackMessage(_, expectedMessage))
             assert(
-              partialAggregates.exists(hasFallbackMessage(_, expectedMessage)),
-              s"Partial aggregate should have fallback message: $expectedMessage")
+              partialAggsWithFallback.nonEmpty,
+              s"Should have partial aggregates with fallback message: $expectedMessage")
+
+            // Find final aggregates to verify cross-stage coordination
+            def findFinalAggsInAQE(plan: SparkPlan): Seq[BaseAggregateExec] = {
+              val buffer = scala.collection.mutable.ListBuffer[BaseAggregateExec]()
+              def collect(p: SparkPlan): Unit = {
+                p match {
+                  case agg: BaseAggregateExec
+                      if agg.aggregateExpressions.exists(_.mode == Final) =>
+                    buffer += agg
+                  case stage: ShuffleQueryStageExec => collect(stage.plan)
+                  case stage: BroadcastQueryStageExec => collect(stage.plan)
+                  case _ => p.children.foreach(collect)
+                }
+              }
+              collect(plan)
+              buffer.toSeq
+            }
+
+            val finalAggregates = findFinalAggsInAQE(executedPlan)
+            val stageMapping = buildStageMapping(stripAQEPlan(executedPlan))
+
+            if (finalAggregates.nonEmpty && partialAggsWithFallback.nonEmpty) {
+              // Verify that partial and final aggregates are in different stages
+              val partialStages = partialAggsWithFallback.flatMap(stageMapping.get).distinct
+              val finalStages = finalAggregates.flatMap(stageMapping.get).distinct
+
+              assert(
+                partialStages.nonEmpty && finalStages.nonEmpty,
+                "Should find both partial and final aggregates within QueryStageExec nodes")
+
+              assert(
+                partialStages.intersect(finalStages).isEmpty,
+                s"Partial aggregates (stages: ${partialStages.map(_.id)}) and " +
+                  s"final aggregates (stages: ${finalStages.map(_.id)}) should be in different AQE stages " +
+                  "to prove cross-stage coordination is working")
+            }
           }
         }
       }
