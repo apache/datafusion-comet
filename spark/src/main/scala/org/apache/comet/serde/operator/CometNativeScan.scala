@@ -23,7 +23,7 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.Literal
+import org.apache.spark.sql.catalyst.expressions.{Expression, Literal, PlanExpression}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.FileSourceScanExec
@@ -59,6 +59,11 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       withInfo(scanExec, s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled")
     }
 
+    // Native DataFusion doesn't support subqueries/dynamic pruning
+    if (scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
+      withInfo(scanExec, "Native DataFusion scan does not support subqueries/dynamic pruning")
+    }
+
     if (SQLConf.get.ignoreCorruptFiles ||
       scanExec.relation.options
         .get("ignorecorruptfiles") // Spark sets this to lowercase.
@@ -82,6 +87,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
     // the scan is supported if no fallback reasons were added to the node
     !hasExplainInfo(scanExec)
   }
+
+  private def isDynamicPruningFilter(e: Expression): Boolean =
+    e.exists(_.isInstanceOf[PlanExpression[_]])
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
