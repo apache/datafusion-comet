@@ -182,27 +182,16 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           }
         }
 
-        val fallbackReasons = new ListBuffer[String]()
-        val typeChecker = CometScanTypeChecker(scanImpl)
-        val schemaSupported =
-          typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
-        val partitionSchemaSupported =
-          typeChecker.isSchemaSupported(r.partitionSchema, fallbackReasons)
+        // check that schema is supported
+        checkSchema(scanExec, scanImpl, r)
 
-        if (!schemaSupported) {
-          fallbackReasons += s"Unsupported schema ${scanExec.requiredSchema} for $scanImpl"
-        }
-        if (!partitionSchemaSupported) {
-          fallbackReasons += s"Unsupported partitioning schema ${r.partitionSchema} for $scanImpl"
-        }
-        withInfos(scanExec, fallbackReasons.toSet)
-
-        if (schemaSupported && partitionSchemaSupported && !hasExplainInfo(scanExec)) {
+        if (hasExplainInfo(scanExec)) {
+          // could not accelerate, and plan is already tagged with fallback reasons
+          scanExec
+        } else {
           // this is confusing, but we always insert a CometScanExec here, which may replaced
           // with a CometNativeExec when CometExecRule runs, depending on the scanImpl value.
           CometScanExec(scanExec, session, scanImpl)
-        } else {
-          withInfos(scanExec, fallbackReasons.toSet)
         }
 
       case _ =>
@@ -614,6 +603,21 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     }
   }
 
+  def checkSchema(scanExec: FileSourceScanExec, scanImpl: String, r: HadoopFsRelation): Unit = {
+    val fallbackReasons = new ListBuffer[String]()
+    val typeChecker = CometScanTypeChecker(scanImpl)
+    val schemaSupported =
+      typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
+    if (!schemaSupported) {
+      withInfo(scanExec, s"Unsupported schema ${scanExec.requiredSchema} for $scanImpl")
+    }
+    val partitionSchemaSupported =
+      typeChecker.isSchemaSupported(r.partitionSchema, fallbackReasons)
+    if (!partitionSchemaSupported) {
+      fallbackReasons += s"Unsupported partitioning schema ${r.partitionSchema} for $scanImpl"
+    }
+    withInfos(scanExec, fallbackReasons.toSet)
+  }
 }
 
 case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with CometTypeShim {
