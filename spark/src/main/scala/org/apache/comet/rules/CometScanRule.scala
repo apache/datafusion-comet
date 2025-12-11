@@ -20,17 +20,15 @@
 package org.apache.comet.rules
 
 import java.net.URI
-
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
-
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
+import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData, MetadataColumnHelper, sideBySide}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
@@ -39,10 +37,9 @@ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
-
 import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, isCometLoaded, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
@@ -178,8 +175,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
         if (encryptionEnabled(hadoopConf) && scanImpl != CometConf.SCAN_NATIVE_COMET) {
           if (!isEncryptionConfigSupported(hadoopConf)) {
-            // return early in this case to avoid any reads
-            return withInfo(scanExec, s"$scanImpl does not support encryption")
+            withInfo(scanExec, s"$scanImpl does not support encryption")
           }
         }
 
@@ -197,7 +193,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           fallbackReasons += s"Unsupported partitioning schema ${r.partitionSchema} for $scanImpl"
         }
 
-        if (schemaSupported && partitionSchemaSupported) {
+        if (schemaSupported && partitionSchemaSupported && !hasExplainInfo(scanExec)) {
           // this is confusing, but we always insert a CometScanExec here, which may replaced
           // with a CometNativeExec when CometExecRule runs, depending on the scanImpl value.
           CometScanExec(scanExec, session, scanImpl)
