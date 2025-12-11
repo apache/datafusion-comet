@@ -732,6 +732,7 @@ case class CometIcebergNativeScanMetadata(
     nameMapping: Option[String],
     tasks: java.util.List[_],
     scanSchema: Any,
+    tableSchema: Any,
     globalFieldIdMapping: Map[String, Int],
     catalogProperties: Map[String, String],
     fileFormat: String)
@@ -763,6 +764,7 @@ object CometIcebergNativeScanMetadata extends Logging {
       table <- getTable(scan)
       tasks <- getTasks(scan)
       scanSchema <- getExpectedSchema(scan)
+      tableSchema <- getSchema(table)
     } yield {
       // nameMapping is optional - if it fails we just use None
       val nameMapping = getTableProperties(table).flatMap { properties =>
@@ -787,6 +789,7 @@ object CometIcebergNativeScanMetadata extends Logging {
         nameMapping = nameMapping,
         tasks = tasks,
         scanSchema = scanSchema,
+        tableSchema = tableSchema,
         globalFieldIdMapping = globalFieldIdMapping,
         catalogProperties = catalogProperties,
         fileFormat = fileFormat)

@@ -124,7 +124,7 @@ impl ColumnReader {
         match desc.physical_type() {
             PhysicalType::BOOLEAN => typed_reader!(BoolColumnReader, Boolean),
             PhysicalType::INT32 => {
-                if let Some(ref logical_type) = desc.logical_type() {
+                if let Some(ref logical_type) = desc.logical_type_ref() {
                     match logical_type {
                         lt @ LogicalType::Integer {
                             bit_width,
@@ -282,7 +282,7 @@ impl ColumnReader {
                 }
             }
             PhysicalType::INT64 => {
-                if let Some(ref logical_type) = desc.logical_type() {
+                if let Some(ref logical_type) = desc.logical_type_ref() {
                     match logical_type {
                         lt @ LogicalType::Integer {
                             bit_width,
@@ -331,19 +331,19 @@ impl ColumnReader {
                                 None
                             };
                             match unit {
-                                ParquetTimeUnit::MILLIS(_) => {
+                                ParquetTimeUnit::MILLIS => {
                                     typed_reader!(
                                         Int64TimestampMillisColumnReader,
                                         ArrowDataType::Timestamp(time_unit, time_zone)
                                     )
                                 }
-                                ParquetTimeUnit::MICROS(_) => {
+                                ParquetTimeUnit::MICROS => {
                                     typed_reader!(
                                         Int64TimestampMicrosColumnReader,
                                         ArrowDataType::Timestamp(time_unit, time_zone)
                                     )
                                 }
-                                ParquetTimeUnit::NANOS(_) => {
+                                ParquetTimeUnit::NANOS => {
                                     typed_reader!(
                                         Int64TimestampNanosColumnReader,
                                         ArrowDataType::Int64
@@ -390,7 +390,7 @@ impl ColumnReader {
 
             PhysicalType::DOUBLE => typed_reader!(DoubleColumnReader, Float64),
             PhysicalType::BYTE_ARRAY => {
-                if let Some(logical_type) = desc.logical_type() {
+                if let Some(logical_type) = desc.logical_type_ref() {
                     match logical_type {
                         LogicalType::String => typed_reader!(StringColumnReader, Utf8),
                         // https://github.com/apache/parquet-format/blob/master/LogicalTypes.md
@@ -403,13 +403,13 @@ impl ColumnReader {
                 }
             }
             PhysicalType::FIXED_LEN_BYTE_ARRAY => {
-                if let Some(logical_type) = desc.logical_type() {
+                if let Some(logical_type) = desc.logical_type_ref() {
                     match logical_type {
                         LogicalType::Decimal {
                             precision,
                             scale: _,
                         } => {
-                            if !use_decimal_128 && precision <= DECIMAL_MAX_INT_DIGITS {
+                            if !use_decimal_128 && precision <= &DECIMAL_MAX_INT_DIGITS {
                                 typed_reader!(FLBADecimal32ColumnReader, Int32)
                             } else if !use_decimal_128
                                 && promotion_info.precision <= DECIMAL_MAX_LONG_DIGITS
