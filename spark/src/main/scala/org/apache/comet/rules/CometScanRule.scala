@@ -28,7 +28,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, GenericInternalRow}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, PlanExpression}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
@@ -134,6 +134,11 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
   }
 
   private def transformV1Scan(scanExec: FileSourceScanExec): SparkPlan = {
+
+    if (COMET_DPP_FALLBACK_ENABLED.get() &&
+      scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
+      return withInfo(scanExec, "Dynamic Partition Pruning is not supported")
+    }
 
     scanExec.relation match {
       case r: HadoopFsRelation =>
@@ -594,6 +599,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       SCAN_NATIVE_COMET
     }
   }
+
+  private def isDynamicPruningFilter(e: Expression): Boolean =
+    e.exists(_.isInstanceOf[PlanExpression[_]])
 
   def checkSchema(scanExec: FileSourceScanExec, scanImpl: String, r: HadoopFsRelation): Unit = {
     val fallbackReasons = new ListBuffer[String]()
