@@ -19,6 +19,8 @@
 
 package org.apache.comet.rules
 
+import scala.collection.mutable.ListBuffer
+
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
@@ -26,17 +28,26 @@ import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
-import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
+import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
+import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, V2CommandExec}
+import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
+import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
+import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
+import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, Unsupported}
@@ -211,7 +222,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         }
         if (!newChildren.exists(_.isInstanceOf[BroadcastExchangeExec])) {
           val newPlan = convertNode(plan.withNewChildren(newChildren))
-          if (isCometNative(newPlan) || isCometBroadCastForceEnabled(conf)) {
+          if (isCometNative(newPlan) || CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.get(conf)) {
             newPlan
           } else {
             // copy fallback reasons to the original plan
@@ -347,7 +358,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) return plan
 
-    if (!isCometExecEnabled(conf)) {
+    if (!CometConf.COMET_EXEC_ENABLED.get(conf)) {
       // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle
       if (isCometShuffleEnabled(conf)) {
         applyCometShuffle(plan)
@@ -518,4 +529,49 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       false
     }
   }
+
+  private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
+    // Only consider converting leaf nodes to columnar currently, so that all the following
+    // operators can have a chance to be converted to columnar. Leaf operators that output
+    // columnar batches, such as Spark's vectorized readers, will also be converted to native
+    // comet batches.
+    val fallbackReasons = new ListBuffer[String]()
+    if (CometSparkToColumnarExec.isSchemaSupported(op.schema, fallbackReasons)) {
+      op match {
+        // Convert Spark DS v1 scan to Arrow format
+        case scan: FileSourceScanExec =>
+          scan.relation.fileFormat match {
+            case _: CSVFileFormat => CometConf.COMET_CONVERT_FROM_CSV_ENABLED.get(conf)
+            case _: JsonFileFormat => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
+            case _: ParquetFileFormat => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
+            case _ => isSparkToArrowEnabled(conf, op)
+          }
+        // Convert Spark DS v2 scan to Arrow format
+        case scan: BatchScanExec =>
+          scan.scan match {
+            case _: CSVScan => CometConf.COMET_CONVERT_FROM_CSV_ENABLED.get(conf)
+            case _: JsonScan => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
+            case _: ParquetScan => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
+            case _ => isSparkToArrowEnabled(conf, op)
+          }
+        // other leaf nodes
+        case _: LeafExecNode =>
+          isSparkToArrowEnabled(conf, op)
+        case _ =>
+          // TODO: consider converting other intermediate operators to columnar.
+          false
+      }
+    } else {
+      false
+    }
+  }
+
+  private def isSparkToArrowEnabled(conf: SQLConf, op: SparkPlan) = {
+    COMET_SPARK_TO_ARROW_ENABLED.get(conf) && {
+      val simpleClassName = Utils.getSimpleName(op.getClass)
+      val nodeName = simpleClassName.replaceAll("Exec$", "")
+      COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
+    }
+  }
+
 }
