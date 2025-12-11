@@ -112,10 +112,12 @@ public class CometFileKeyUnwrapper {
   private String normalizeS3Scheme(final String filePath) {
     // Normalize s3:// and s3n:// to s3a:// for consistent cache lookups
     // This handles the case where ObjectStoreUrl uses s3:// but Spark uses s3a://
-    if (filePath.startsWith("s3://")) {
-      return "s3a://" + filePath.substring(5);
-    } else if (filePath.startsWith("s3n://")) {
-      return "s3a://" + filePath.substring(6);
+    String s3Prefix = "s3://";
+    String s3nPrefix = "s3n://";
+    if (filePath.startsWith(s3Prefix)) {
+      return "s3a://" + filePath.substring(s3Prefix.length());
+    } else if (filePath.startsWith(s3nPrefix)) {
+      return "s3a://" + filePath.substring(s3nPrefix.length());
     }
     return filePath;
   }
