@@ -178,7 +178,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
         if (encryptionEnabled(hadoopConf) && scanImpl != CometConf.SCAN_NATIVE_COMET) {
           if (!isEncryptionConfigSupported(hadoopConf)) {
-            withInfo(scanExec, s"$scanImpl does not support encryption")
+            // return early in this case to avoid any reads
+            return withInfo(scanExec, s"$scanImpl does not support encryption")
           }
         }
 
