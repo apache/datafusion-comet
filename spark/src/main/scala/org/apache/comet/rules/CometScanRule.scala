@@ -145,10 +145,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
     scanExec.relation match {
       case r: HadoopFsRelation =>
-        val fallbackReasons = new ListBuffer[String]()
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
-          fallbackReasons += s"Unsupported file format ${r.fileFormat}"
-          return withInfos(scanExec, fallbackReasons.toSet)
+          return withInfo(scanExec, s"Unsupported file format ${r.fileFormat}")
         }
 
         var scanImpl = COMET_NATIVE_SCAN_IMPL.get()
@@ -173,17 +171,18 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           // Spark already converted these to Java-native types, so we can't check SQL types.
           // ArrayBasedMapData, GenericInternalRow, GenericArrayData correspond to maps, structs,
           // and arrays respectively.
-          fallbackReasons +=
-            "Full native scan disabled because nested types for default values are not supported"
-          return withInfos(scanExec, fallbackReasons.toSet)
+          withInfo(
+            scanExec,
+            "Full native scan disabled because nested types for default values are not supported")
         }
 
         if (encryptionEnabled(hadoopConf) && scanImpl != CometConf.SCAN_NATIVE_COMET) {
           if (!isEncryptionConfigSupported(hadoopConf)) {
-            return withInfos(scanExec, fallbackReasons.toSet)
+            withInfo(scanExec, s"$scanImpl does not support encryption")
           }
         }
 
+        val fallbackReasons = new ListBuffer[String]()
         val typeChecker = CometScanTypeChecker(scanImpl)
         val schemaSupported =
           typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
