@@ -1176,13 +1176,93 @@ fn cast_string_to_decimal256_impl(
     ))
 }
 
+/// Validates if a string is a valid decimal similar to BigDecimal
+fn is_valid_decimal_format(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+
+    let bytes = s.as_bytes();
+    let mut idx = 0;
+    let len = bytes.len();
+
+    // Skip leading +/- signs
+    if bytes[idx] == b'+' || bytes[idx] == b'-' {
+        idx += 1;
+        if idx >= len {
+            // Sign only. Fail early
+            return false;
+        }
+    }
+
+    // Check invalid cases like "++", "+-"
+    if bytes[idx] == b'+' || bytes[idx] == b'-' {
+        return false;
+    }
+
+    // Now we need at least one digit either before or after a decimal point
+    let mut has_digit = false;
+    let mut is_decimal_point_seen = false;
+
+    while idx < len {
+        let ch = bytes[idx];
+
+        if ch.is_ascii_digit() {
+            has_digit = true;
+            idx += 1;
+        } else if ch == b'.' {
+            if is_decimal_point_seen {
+                // Multiple decimal points or decimal after exponent
+                return false;
+            }
+            is_decimal_point_seen = true;
+            idx += 1;
+        } else if ch.eq_ignore_ascii_case(&b'e') {
+            if !has_digit {
+                // Exponent without any digits before it
+                return false;
+            }
+            idx += 1;
+            // Exponent part must have optional sign followed by atleast a digit
+            if idx >= len {
+                return false;
+            }
+
+            if bytes[idx] == b'+' || bytes[idx] == b'-' {
+                idx += 1;
+                if idx >= len {
+                    return false;
+                }
+            }
+
+            // Must have at least one digit in exponent
+            if !bytes[idx].is_ascii_digit() {
+                return false;
+            }
+
+            // Rest all should only be digits
+            while idx < len {
+                if !bytes[idx].is_ascii_digit() {
+                    return false;
+                }
+                idx += 1;
+            }
+            break;
+        } else {
+            // Invalid character found. Fail fast
+            return false;
+        }
+    }
+    has_digit
+}
+
 /// Parse a string to decimal following Spark's behavior
 fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Option<i128>> {
     if s.is_empty() {
         return Ok(None);
     }
     // Handle special values (inf, nan, etc.)
-    if s.eq_ignore_ascii_case( "inf")
+    if s.eq_ignore_ascii_case("inf")
         || s.eq_ignore_ascii_case("+inf")
         || s.eq_ignore_ascii_case("infinity")
         || s.eq_ignore_ascii_case("+infinity")
@@ -1192,9 +1272,11 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
     {
         return Ok(None);
     }
-    // Parse the string as a decimal number
-    // Note: We do NOT strip 'D' or 'F' suffixes - let rust's parsing fail naturally
-    println!("parsing string {} ", s);
+
+    if !is_valid_decimal_format(s) {
+        return Ok(None);
+    }
+
     match parse_decimal_str(s) {
         Ok((mantissa, exponent)) => {
             // Convert to target scale
@@ -1202,15 +1284,23 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
             let scale_adjustment = target_scale - exponent;
 
             let scaled_value = if scale_adjustment >= 0 {
-                // Need to multiply (increase scale)
+                // Need to multiply (increase scale) but return None if scale is too high to fit i128
+                if scale_adjustment > 38 {
+                    return Ok(None);
+                }
                 mantissa.checked_mul(10_i128.pow(scale_adjustment as u32))
             } else {
-                // Need to divide (decrease scale) - use rounding half up
-                let divisor = 10_i128.pow((-scale_adjustment) as u32);
-                let quotient_opt =  mantissa.checked_div(divisor);
-                // value too small too in given scale
-                if quotient_opt.is_none(){
+                // Need to multiply (increase scale) but return None if scale is too high to fit i128
+                let abs_scale_adjustment = (-scale_adjustment) as u32;
+                if abs_scale_adjustment > 38 {
                     return Ok(Some(0));
+                }
+
+                let divisor = 10_i128.pow(abs_scale_adjustment);
+                let quotient_opt = mantissa.checked_div(divisor);
+                // Check if divisor is 0
+                if quotient_opt.is_none() {
+                    return Ok(None);
                 }
                 let quotient = quotient_opt.unwrap();
                 let remainder = mantissa % divisor;
@@ -1256,16 +1346,13 @@ fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
         return Err("Empty string".to_string());
     }
 
-    // Check if input is scientific notation (e.g., "1.23E-5", "1e10")
-    let mut is_scientific = false;
     let (mantissa_str, exponent) = if let Some(e_pos) = s.find(|c| ['e', 'E'].contains(&c)) {
         let mantissa_part = &s[..e_pos];
         let exponent_part = &s[e_pos + 1..];
-        is_scientific = true;
         // Parse exponent
         let exp: i32 = exponent_part
             .parse()
-            .map_err(|_| "Invalid exponent".to_string())?;
+            .map_err(|e| format!("Invalid exponent: {}", e))?;
 
         (mantissa_part, exp)
     } else {
@@ -1294,12 +1381,8 @@ fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
 
     // Parse integral part
     let integral_value: i128 = if integral_part.is_empty() {
-        if is_scientific{
-            return Err("scientific notation without mantissa".to_string())
-        }
-        else{
-            0
-        }
+        // Empty integral part is valid (e.g., ".5" or "-.7e9")
+        0
     } else {
         integral_part
             .parse()

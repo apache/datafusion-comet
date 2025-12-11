@@ -109,6 +109,32 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     assertTestsExist(CometCast.supportedTypes, CometCast.supportedTypes)
   }
 
+  val specialValues: Seq[String] = Seq(
+    "1.5f",
+    "1.5F",
+    "2.0d",
+    "2.0D",
+    "3.14159265358979d",
+    "inf",
+    "Inf",
+    "INF",
+    "+inf",
+    "+Infinity",
+    "-inf",
+    "-Infinity",
+    "NaN",
+    "nan",
+    "NAN",
+    "1.23e4",
+    "1.23E4",
+    "-1.23e-4",
+    "  123.456789  ",
+    "0.0",
+    "-0.0",
+    "",
+    "xyz",
+    null)
+
   // CAST from BooleanType
 
   test("cast BooleanType to ByteType") {
@@ -652,45 +678,19 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.LongType)
   }
 
-  def specialValues: Seq[String] = Seq(
-    "1.5f",
-    "1.5F",
-    "2.0d",
-    "2.0D",
-    "3.14159265358979d",
-    "inf",
-    "Inf",
-    "INF",
-    "+inf",
-    "+Infinity",
-    "-inf",
-    "-Infinity",
-    "NaN",
-    "nan",
-    "NAN",
-    "1.23e4",
-    "1.23E4",
-    "-1.23e-4",
-    "  123.456789  ",
-    "0.0",
-    "-0.0",
-    "",
-    "xyz",
-    null)
-
   test("cast StringType to FloatType special values") {
     Seq(true, false).foreach { v =>
       castTest(specialValues.toDF("a"), DataTypes.FloatType, testAnsi = v)
     }
   }
 
-  test("cast StringType to DoubleType special values") {
+  test("ANSI support - cast StringType to DoubleType special values") {
     Seq(true, false).foreach { v =>
       castTest(specialValues.toDF("a"), DataTypes.DoubleType, testAnsi = v)
     }
   }
 
-  test("cast StringType to DoubleType") {
+  test("ANSI support - cast StringType to DoubleType") {
     Seq(true, false).foreach { v =>
       castTest(
         gen.generateStrings(dataSize, numericPattern, 10).toDF("a"),
@@ -699,7 +699,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("cast StringType to FloatType") {
+  test("ANSI support - cast StringType to FloatType") {
     Seq(true, false).foreach { v =>
       castTest(
         gen.generateStrings(dataSize, numericPattern, 10).toDF("a"),
@@ -708,48 +708,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("cast StringType to DecimalType(10,2)") {
-    val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
-    castTest(values, DataTypes.createDecimalType(10, 2))
+  test("ANSI support - cast StringType to FloatType special values") {
+    Seq(true, false).foreach { v =>
+      castTest(specialValues.toDF("a"), DataTypes.FloatType, testAnsi = v)
+    }
   }
 
-  test("cast StringType to DecimalType(10,2) basic values") {
-    val values = Seq(
-      "123.45",
-      "-67.89",
-      "0.001",
-      "999.99",
-      "123.456",
-      "123.45D",
-      ".5",
-      "5.",
-      "+123.45",
-      "  123.45  ",
-      "inf",
-      "",
-      "abc",
-      null).toDF("a")
-    Seq(true, false).foreach(k => castTest(values, DataTypes.createDecimalType(10, 2), k))
-  }
-
-  test("cast StringType to DecimalType(38,10) high precision") {
-    val values = Seq(
-      "123.45",
-      "-67.89",
-      "9999999999999999999999999999.9999999999",
-      "-9999999999999999999999999999.9999999999",
-      "0.0000000001",
-      "123456789012345678.1234567890",
-      "123.456",
-      "inf",
-      "",
-      "abc",
-      null).toDF("a")
-    Seq(true, false).foreach(k =>
-      castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = k))
-  }
-
-  test("cast StringType to Float type scientific notation") {
+  test("ANSI support - cast StringType to Float type scientific notation") {
     val values = Seq(
       "1.23E-5",
       "1.23e10",
@@ -764,6 +729,47 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "e5",
       null).toDF("a")
     Seq(true, false).foreach(k => castTest(values, DataTypes.FloatType, testAnsi = k))
+  }
+
+  test("ANSI support - cast StringType to DecimalType(22,2)") {
+    val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
+    Seq(true, false).foreach(k =>
+      castTest(values, DataTypes.createDecimalType(22, 2), testAnsi = k))
+  }
+
+  test("ANSI support - cast StringType to DecimalType(2,2)") {
+    val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
+    Seq(true, false).foreach(k =>
+      castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = k))
+  }
+
+  test("ANSI support - cast StringType to DecimalType(38,10) high precision") {
+    val values = gen.generateStrings(dataSize, numericPattern, 38).toDF("a")
+    Seq(true, false).foreach(k =>
+      castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = k))
+  }
+
+  test("cast StringType to DecimalType(10,2) basic values") {
+    val values = Seq(
+      "123.45",
+      "-67.89",
+      "-67.89",
+      "-67.895",
+      "67.895",
+      "0.001",
+      "999.99",
+      "123.456",
+      "123.45D",
+      ".5",
+      "5.",
+      "+123.45",
+      "  123.45  ",
+      "inf",
+      "",
+      "abc",
+      null).toDF("a")
+    Seq(true, false).foreach(k =>
+      castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = k))
   }
 
   test("cast StringType to Decimal type scientific notation") {
