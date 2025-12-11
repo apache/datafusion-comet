@@ -160,6 +160,13 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           scanImpl = selectScan(scanExec, r.partitionSchema, hadoopConf)
         }
 
+        // Native DataFusion doesn't support subqueries/dynamic pruning
+        if (scanImpl == SCAN_NATIVE_DATAFUSION &&
+          scanExec.partitionFilters.exists(isDynamicPruningFilter)) {
+          fallbackReasons += "Native DataFusion scan does not support subqueries/dynamic pruning"
+          return withInfos(scanExec, fallbackReasons.toSet)
+        }
+
         if (scanImpl == SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
           fallbackReasons +=
             s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled"
