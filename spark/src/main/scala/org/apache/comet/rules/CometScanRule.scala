@@ -42,7 +42,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
@@ -108,7 +108,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     }
 
     def transformScan(plan: SparkPlan): SparkPlan = plan match {
-      case scan if !isCometScanEnabled(conf) =>
+      case scan if !CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf) =>
         withInfo(scan, "Comet Scan is not enabled")
 
       case scan if hasMetadataCol(scan) =>
