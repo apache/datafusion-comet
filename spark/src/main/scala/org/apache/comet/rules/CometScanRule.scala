@@ -48,6 +48,7 @@ import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflecti
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
+import org.apache.comet.serde.operator.CometNativeScan
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -160,35 +161,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           scanImpl = selectScan(scanExec, r.partitionSchema, hadoopConf)
         }
 
-        if (scanImpl == SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
-          fallbackReasons +=
-            s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled"
-          return withInfos(scanExec, fallbackReasons.toSet)
-        }
-
-        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && (SQLConf.get.ignoreCorruptFiles ||
-            scanExec.relation.options
-              .get("ignorecorruptfiles") // Spark sets this to lowercase.
-              .contains("true"))) {
-          fallbackReasons +=
-            "Full native scan disabled because ignoreCorruptFiles enabled"
-          return withInfos(scanExec, fallbackReasons.toSet)
-        }
-
-        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && (SQLConf.get.ignoreMissingFiles ||
-            scanExec.relation.options
-              .get("ignoremissingfiles") // Spark sets this to lowercase.
-              .contains("true"))) {
-          fallbackReasons +=
-            "Full native scan disabled because ignoreMissingFiles enabled"
-          return withInfos(scanExec, fallbackReasons.toSet)
-        }
-
-        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && scanExec.bucketedScan) {
-          // https://github.com/apache/datafusion-comet/issues/1719
-          fallbackReasons +=
-            "Full native scan disabled because bucketed scan is not supported"
-          return withInfos(scanExec, fallbackReasons.toSet)
+        if (scanImpl == SCAN_NATIVE_DATAFUSION && !CometNativeScan.isSupported(scanExec)) {
+          return scanExec
         }
 
         val possibleDefaultValues = getExistenceDefaultValues(scanExec.requiredSchema)

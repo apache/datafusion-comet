@@ -26,23 +26,69 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.execution.FileSourceScanExec
 import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StructField, StructType}
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometConf.COMET_EXEC_ENABLED
+import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, withInfo}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
+/**
+ * Validation and serde logic for `native_datafusion` scans.
+ */
 object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
+  /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
+  def isSupported(scanExec: FileSourceScanExec): Boolean = {
+
+    if (hasExplainInfo(scanExec)) {
+      // this node has already been tagged with fallback reasons
+      return false
+    }
+
+    if (!COMET_EXEC_ENABLED.get()) {
+      withInfo(scanExec, s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled")
+    }
+
+    if (SQLConf.get.ignoreCorruptFiles ||
+      scanExec.relation.options
+        .get("ignorecorruptfiles") // Spark sets this to lowercase.
+        .contains("true")) {
+      withInfo(scanExec, "Full native scan disabled because ignoreCorruptFiles enabled")
+    }
+
+    if (SQLConf.get.ignoreMissingFiles ||
+      scanExec.relation.options
+        .get("ignoremissingfiles") // Spark sets this to lowercase.
+        .contains("true")) {
+
+      withInfo(scanExec, "Full native scan disabled because ignoreMissingFiles enabled")
+    }
+
+    if (scanExec.bucketedScan) {
+      // https://github.com/apache/datafusion-comet/issues/1719
+      withInfo(scanExec, "Full native scan disabled because bucketed scan is not supported")
+    }
+
+    !hasExplainInfo(scanExec)
+  }
+
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
+
+  override def getSupportLevel(operator: CometScanExec): SupportLevel = {
+    // all checks happen in CometScanRule before ScanExec is converted to CometScanExec, so
+    // we always report compatible here because this serde object is for the converted CometScanExec
+    Compatible()
+  }
 
   override def convert(
       scan: CometScanExec,
