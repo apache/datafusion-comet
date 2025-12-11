@@ -23,7 +23,7 @@ macro_rules! arithmetic_expr_builder {
     ($builder_name:ident, $expr_type:ident, $operator:expr) => {
         pub struct $builder_name;
 
-        impl $crate::execution::planner::traits::ExpressionBuilder for $builder_name {
+        impl $crate::execution::planner::expression_registry::ExpressionBuilder for $builder_name {
             fn build(
                 &self,
                 spark_expr: &datafusion_comet_proto::spark_expression::Expr,
@@ -61,7 +61,8 @@ use crate::execution::{
     expressions::extract_expr,
     operators::ExecutionError,
     planner::{
-        from_protobuf_eval_mode, traits::ExpressionBuilder, BinaryExprOptions, PhysicalPlanner,
+        expression_registry::ExpressionBuilder, from_protobuf_eval_mode, BinaryExprOptions,
+        PhysicalPlanner,
     },
 };
 

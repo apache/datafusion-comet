@@ -15,17 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Core traits for the modular planner framework
-
-use std::sync::Arc;
-
-use arrow::datatypes::SchemaRef;
-use datafusion::physical_expr::PhysicalExpr;
-use datafusion_comet_proto::spark_expression::Expr;
-use jni::objects::GlobalRef;
-
-use crate::execution::operators::ScanExec;
-use crate::execution::{operators::ExecutionError, spark_plan::SparkPlan};
+//! Core macros for the modular planner framework
 
 /// Macro to extract a specific expression variant, panicking if called with wrong type.
 /// This should be used in expression builders where the registry guarantees the correct
@@ -48,13 +38,34 @@ macro_rules! extract_expr {
     };
 }
 
+/// Macro to extract a specific operator variant, panicking if called with wrong type.
+/// This should be used in operator builders where the registry guarantees the correct
+/// operator type has been routed to the builder.
+#[macro_export]
+macro_rules! extract_op {
+    ($spark_operator:expr, $variant:ident) => {
+        match $spark_operator
+            .op_struct
+            .as_ref()
+            .expect("operator struct must be present")
+        {
+            datafusion_comet_proto::spark_operator::operator::OpStruct::$variant(op) => op,
+            other => panic!(
+                "{} builder called with wrong operator type: {:?}",
+                stringify!($variant),
+                other
+            ),
+        }
+    };
+}
+
 /// Macro to generate binary expression builders with minimal boilerplate
 #[macro_export]
 macro_rules! binary_expr_builder {
     ($builder_name:ident, $expr_type:ident, $operator:expr) => {
         pub struct $builder_name;
 
-        impl $crate::execution::planner::traits::ExpressionBuilder for $builder_name {
+        impl $crate::execution::planner::expression_registry::ExpressionBuilder for $builder_name {
             fn build(
                 &self,
                 spark_expr: &datafusion_comet_proto::spark_expression::Expr,
@@ -84,7 +95,7 @@ macro_rules! unary_expr_builder {
     ($builder_name:ident, $expr_type:ident, $expr_constructor:expr) => {
         pub struct $builder_name;
 
-        impl $crate::execution::planner::traits::ExpressionBuilder for $builder_name {
+        impl $crate::execution::planner::expression_registry::ExpressionBuilder for $builder_name {
             fn build(
                 &self,
                 spark_expr: &datafusion_comet_proto::spark_expression::Expr,
@@ -100,121 +111,4 @@ macro_rules! unary_expr_builder {
             }
         }
     };
-}
-
-/// Trait for building physical expressions from Spark protobuf expressions
-pub trait ExpressionBuilder: Send + Sync {
-    /// Build a DataFusion physical expression from a Spark protobuf expression
-    fn build(
-        &self,
-        spark_expr: &Expr,
-        input_schema: SchemaRef,
-        planner: &super::PhysicalPlanner,
-    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError>;
-}
-
-/// Trait for building physical operators from Spark protobuf operators
-#[allow(dead_code)]
-pub trait OperatorBuilder: Send + Sync {
-    /// Build a Spark plan from a protobuf operator
-    fn build(
-        &self,
-        spark_plan: &datafusion_comet_proto::spark_operator::Operator,
-        inputs: &mut Vec<Arc<GlobalRef>>,
-        partition_count: usize,
-        planner: &super::PhysicalPlanner,
-    ) -> Result<(Vec<ScanExec>, Arc<SparkPlan>), ExecutionError>;
-}
-
-/// Enum to identify different expression types for registry dispatch
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ExpressionType {
-    // Arithmetic expressions
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    IntegralDivide,
-    Remainder,
-    UnaryMinus,
-
-    // Comparison expressions
-    Eq,
-    Neq,
-    Lt,
-    LtEq,
-    Gt,
-    GtEq,
-    EqNullSafe,
-    NeqNullSafe,
-
-    // Logical expressions
-    And,
-    Or,
-    Not,
-
-    // Null checks
-    IsNull,
-    IsNotNull,
-
-    // Bitwise operations
-    BitwiseAnd,
-    BitwiseOr,
-    BitwiseXor,
-    BitwiseShiftLeft,
-    BitwiseShiftRight,
-
-    // Other expressions
-    Bound,
-    Unbound,
-    Literal,
-    Cast,
-    CaseWhen,
-    In,
-    If,
-    Substring,
-    Like,
-    Rlike,
-    CheckOverflow,
-    ScalarFunc,
-    NormalizeNanAndZero,
-    Subquery,
-    BloomFilterMightContain,
-    CreateNamedStruct,
-    GetStructField,
-    ToJson,
-    ToPrettyString,
-    ListExtract,
-    GetArrayStructFields,
-    ArrayInsert,
-    Rand,
-    Randn,
-    SparkPartitionId,
-    MonotonicallyIncreasingId,
-
-    // Time functions
-    Hour,
-    Minute,
-    Second,
-    TruncTimestamp,
-}
-
-/// Enum to identify different operator types for registry dispatch
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
-pub enum OperatorType {
-    Scan,
-    NativeScan,
-    IcebergScan,
-    Projection,
-    Filter,
-    HashAgg,
-    Limit,
-    Sort,
-    ShuffleWriter,
-    ParquetWriter,
-    Expand,
-    SortMergeJoin,
-    HashJoin,
-    Window,
 }

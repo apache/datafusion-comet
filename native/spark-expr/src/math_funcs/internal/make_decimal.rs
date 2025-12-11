@@ -34,7 +34,7 @@ pub fn spark_make_decimal(
     match &args[0] {
         ColumnarValue::Scalar(v) => match v {
             ScalarValue::Int64(n) => Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(
-                long_to_decimal(n, precision),
+                long_to_decimal(n, precision, scale),
                 precision,
                 scale,
             ))),
@@ -45,7 +45,7 @@ pub fn spark_make_decimal(
                 let arr = a.as_primitive::<Int64Type>();
                 let mut result = Decimal128Builder::new();
                 for v in arr.into_iter() {
-                    result.append_option(long_to_decimal(&v, precision))
+                    result.append_option(long_to_decimal(&v, precision, scale))
                 }
                 let result_type = DataType::Decimal128(precision, scale);
 
@@ -61,9 +61,11 @@ pub fn spark_make_decimal(
 /// Convert the input long to decimal with the given maximum precision. If overflows, returns null
 /// instead.
 #[inline]
-fn long_to_decimal(v: &Option<i64>, precision: u8) -> Option<i128> {
+fn long_to_decimal(v: &Option<i64>, precision: u8, scale: i8) -> Option<i128> {
     match v {
-        Some(v) if validate_decimal_precision(*v as i128, precision).is_ok() => Some(*v as i128),
+        Some(v) if validate_decimal_precision(*v as i128, precision, scale).is_ok() => {
+            Some(*v as i128)
+        }
         _ => None,
     }
 }

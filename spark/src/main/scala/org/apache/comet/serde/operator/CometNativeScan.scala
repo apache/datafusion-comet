@@ -112,7 +112,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(scan.conf)) {
 
         val dataFilters = new ListBuffer[Expr]()
-        for (filter <- scan.dataFilters) {
+        for (filter <- scan.supportedDataFilters) {
           exprToProto(filter, scan.output) match {
             case Some(proto) => dataFilters += proto
             case _ =>
