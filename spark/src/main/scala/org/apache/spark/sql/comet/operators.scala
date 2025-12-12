@@ -1071,7 +1071,17 @@ trait CometBaseAggregate {
     // if there is Comet partial aggregation.
     val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
 
-    if (multiMode || sparkFinalMode) {
+    if (multiMode) {
+      withInfo(
+        aggregate,
+        s"Multiple aggregation modes in the same expression are not supported: ${modes.mkString(", ")}")
+      return None
+    }
+
+    if (sparkFinalMode) {
+      withInfo(
+        aggregate,
+        "Final mode hash aggregation requires Comet partial aggregation in the child plan")
       return None
     }
 
@@ -1200,9 +1210,30 @@ trait CometBaseAggregate {
         hashAggBuilder.setModeValue(mode.getNumber)
         Some(builder.setHashAgg(hashAggBuilder).build())
       } else {
-        val allChildren: Seq[Expression] =
-          groupingExpressions ++ aggregateExpressions ++ aggregateAttributes
-        withInfo(aggregate, allChildren: _*)
+        // Provide specific fallback reasons based on what failed
+        if (childOp.isEmpty) {
+          withInfo(aggregate, "No child operator available for hash aggregation")
+        } else if (!groupingExprs.forall(_.isDefined)) {
+          val failedGroupExprs = groupingExpressions.zip(groupingExprs).collect {
+            case (expr, proto) if proto.isEmpty => expr.name
+          }
+          withInfo(
+            aggregate,
+            s"Unsupported grouping expressions: ${failedGroupExprs.mkString(", ")}")
+        } else if (!aggExprs.forall(_.isDefined)) {
+          val failedAggExprs = aggregateExpressions.zip(aggExprs).collect {
+            case (expr, proto) if proto.isEmpty => expr.aggregateFunction.prettyName
+          }
+          withInfo(
+            aggregate,
+            s"Unsupported aggregate functions: ${failedAggExprs.mkString(", ")}")
+        } else {
+          // Fallback for any other unexpected cases
+          withInfo(
+            aggregate,
+            "Hash aggregation conversion failed due to unsupported expressions",
+            (groupingExpressions ++ aggregateExpressions ++ aggregateAttributes): _*)
+        }
         None
       }
     }
