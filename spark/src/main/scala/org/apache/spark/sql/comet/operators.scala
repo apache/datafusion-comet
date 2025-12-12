@@ -1079,7 +1079,8 @@ trait CometBaseAggregate {
               _.aggregateFunction.isInstanceOf[BloomFilterAggregate])) {
             withInfo(
               aggregate,
-              "Cannot perform final aggregate in Comet because incompatible partial aggregate ran in Spark")
+              "Cannot perform final aggregate in Comet because " +
+                "incompatible partial aggregate ran in Spark")
             return None
           }
         case _ =>
