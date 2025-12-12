@@ -35,6 +35,7 @@ import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefa
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
+import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
@@ -281,10 +282,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
         }
         if (schemaSupported && partitionSchemaSupported) {
-          val cometCsvScan = CometCsvScan(session, scan)
           CometBatchScanExec(
-            scanExec.copy(scan = cometCsvScan),
-            runtimeFilters = scanExec.runtimeFilters)
+            scanExec.clone().asInstanceOf[BatchScanExec],
+            runtimeFilters = scanExec.runtimeFilters,
+            fileFormat = new CSVFileFormat)
         } else {
           withInfos(scanExec, fallbackReasons.toSet)
         }

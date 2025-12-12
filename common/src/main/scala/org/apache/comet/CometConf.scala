@@ -145,7 +145,7 @@ object CometConf extends ShimCometConf {
 
   val COMET_CSV_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.csv.v2.enabled")
-      .category(CATEGORY_SCAN)
+      .category(CATEGORY_TESTING)
       .doc(
         "Whether to use the native Comet V2 CSV reader for improved performance. " +
           "Default: false (uses standard Spark CSV reader) " +

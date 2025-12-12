@@ -33,6 +33,7 @@ mod parquet_writer;
 pub use parquet_writer::ParquetWriterExec;
 mod scan;
 mod csv_scan;
+pub use csv_scan::init_csv_datasource_exec;
 
 /// Error returned during executing operators.
 #[derive(thiserror::Error, Debug)]

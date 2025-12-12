@@ -50,6 +50,7 @@ message Operator {
     NativeScan native_scan = 111;
     IcebergScan iceberg_scan = 112;
     ParquetWriter parquet_writer = 113;
+    CsvScan csv_scan = 114;
   }
 }
 
@@ -107,6 +108,13 @@ message NativeScan {
   // the map.
   map<string, string> object_store_options = 13;
   bool encryption_enabled = 14;
+}
+
+message CsvScan {
+  repeated SparkStructField schema = 1;
+  repeated SparkFilePartition file_partitions = 2;
+  map<string, string> object_store_options = 3;
+  map<string, string> options = 4;
 }
 
 message IcebergScan {

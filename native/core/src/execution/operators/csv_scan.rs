@@ -15,32 +15,52 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::collections::HashMap;
 use crate::execution::operators::ExecutionError;
 use arrow::datatypes::SchemaRef;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::datasource::physical_plan::CsvSource;
 use datafusion_datasource::file_groups::FileGroup;
-use datafusion_datasource::file_scan_config::FileScanConfigBuilder;
+use datafusion_datasource::file_scan_config::{FileScanConfig, FileScanConfigBuilder};
 use datafusion_datasource::source::DataSourceExec;
 use datafusion_datasource::PartitionedFile;
 use std::sync::Arc;
+use crate::execution::spark_config::SparkConfig;
 
-pub(crate) fn init_csv_datasource_exec(
+pub fn init_csv_datasource_exec(
     object_store_url: ObjectStoreUrl,
     file_groups: Vec<Vec<PartitionedFile>>,
     data_schema: SchemaRef,
+    options: &HashMap<String, String>
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    let csv_source = CsvSource::new(false, 0, 1);
+    let csv_source = build_csv_source(options);
 
     let file_groups = file_groups
         .iter()
         .map(|files| FileGroup::new(files.clone()))
         .collect();
 
-    let file_scan_config =
-        FileScanConfigBuilder::new(object_store_url, data_schema, Arc::new(csv_source))
+    let file_scan_config: FileScanConfig =
+        FileScanConfigBuilder::new(object_store_url, data_schema, csv_source)
             .with_file_groups(file_groups)
             .build();
 
     Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))
+}
+
+fn build_csv_source(options: &HashMap<String, String>) -> Arc<CsvSource> {
+    let has_header = options.get_bool("header");
+    let delimiter = options
+        .get("delimiter")
+        .and_then(|s| s.chars().next())
+        .map(|c| c as u8)
+        .unwrap_or(b',');
+    let quote = options
+        .get("quote")
+        .and_then(|s| s.chars().next())
+        .map(|c| c as u8)
+        .unwrap_or(b'"');
+    let csv_source = CsvSource::new(has_header, delimiter, quote);
+
+    Arc::new(csv_source)
 }
