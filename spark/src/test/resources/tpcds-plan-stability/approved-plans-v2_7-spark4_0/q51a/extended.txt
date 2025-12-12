@@ -13,7 +13,7 @@ TakeOrderedAndProject
                :                 +- CometSortMergeJoin
                :                    :- CometSort
                :                    :  +- CometColumnarExchange
-               :                    :     +- HashAggregate
+               :                    :     +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                :                    :        +- CometColumnarToRow
                :                    :           +- CometColumnarExchange
                :                    :              +- HashAggregate
@@ -66,7 +66,7 @@ TakeOrderedAndProject
                :                    :                                                                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                :                    +- CometSort
                :                       +- CometColumnarExchange
-               :                          +- HashAggregate
+               :                          +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                :                             +- CometColumnarToRow
                :                                +- CometColumnarExchange
                :                                   +- HashAggregate
@@ -118,7 +118,7 @@ TakeOrderedAndProject
                                        +- CometSortMergeJoin
                                           :- CometSort
                                           :  +- CometColumnarExchange
-                                          :     +- HashAggregate
+                                          :     +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                                           :        +- CometColumnarToRow
                                           :           +- CometColumnarExchange
                                           :              +- HashAggregate
@@ -171,7 +171,7 @@ TakeOrderedAndProject
                                           :                                                                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                                           +- CometSort
                                              +- CometColumnarExchange
-                                                +- HashAggregate
+                                                +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                                                    +- CometColumnarToRow
                                                       +- CometColumnarExchange
                                                          +- HashAggregate
