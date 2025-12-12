@@ -1,7 +1,7 @@
 WholeStageCodegen (7)
-  HashAggregate [sum] [sum(UnscaledValue(cs_ext_discount_amt)),excess discount amount,sum]
-    CometColumnarToRow
-      InputAdapter
+  CometColumnarToRow
+    InputAdapter
+      CometHashAggregate [sum] [excess discount amount,sum(UnscaledValue(cs_ext_discount_amt))]
         CometColumnarExchange #1
           WholeStageCodegen (6)
             HashAggregate [cs_ext_discount_amt] [sum,sum]
@@ -34,10 +34,10 @@ WholeStageCodegen (7)
                       InputAdapter
                         BroadcastExchange #4
                           WholeStageCodegen (4)
-                            Filter [(1.3 * avg(cs_ext_discount_amt))]
-                              HashAggregate [cs_item_sk,sum,count] [avg(UnscaledValue(cs_ext_discount_amt)),(1.3 * avg(cs_ext_discount_amt)),sum,count]
-                                CometColumnarToRow
-                                  InputAdapter
+                            CometColumnarToRow
+                              InputAdapter
+                                CometFilter [(1.3 * avg(cs_ext_discount_amt)),cs_item_sk]
+                                  CometHashAggregate [sum,count] [(1.3 * avg(cs_ext_discount_amt)),cs_item_sk,avg(UnscaledValue(cs_ext_discount_amt))]
                                     CometColumnarExchange [cs_item_sk] #5
                                       WholeStageCodegen (3)
                                         HashAggregate [cs_item_sk,cs_ext_discount_amt] [sum,count,sum,count]

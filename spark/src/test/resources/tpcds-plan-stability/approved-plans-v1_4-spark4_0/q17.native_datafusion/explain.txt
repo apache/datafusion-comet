@@ -1,7 +1,7 @@
 == Physical Plan ==
-TakeOrderedAndProject (43)
-+- * HashAggregate (42)
-   +- * CometColumnarToRow (41)
+* CometColumnarToRow (43)
++- CometTakeOrderedAndProject (42)
+   +- CometHashAggregate (41)
       +- CometColumnarExchange (40)
          +- * HashAggregate (39)
             +- * Project (38)
@@ -231,19 +231,17 @@ Results [21]: [i_item_id#27, i_item_desc#26, s_state#23, count#46, sum#47, count
 Input [21]: [i_item_id#27, i_item_desc#26, s_state#23, count#46, sum#47, count#48, n#49, avg#50, m2#51, count#52, sum#53, count#54, n#55, avg#56, m2#57, count#58, sum#59, count#60, n#61, avg#62, m2#63]
 Arguments: hashpartitioning(i_item_id#27, i_item_desc#26, s_state#23, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
-(41) CometColumnarToRow [codegen id : 9]
-Input [21]: [i_item_id#27, i_item_desc#26, s_state#23, count#46, sum#47, count#48, n#49, avg#50, m2#51, count#52, sum#53, count#54, n#55, avg#56, m2#57, count#58, sum#59, count#60, n#61, avg#62, m2#63]
-
-(42) HashAggregate [codegen id : 9]
+(41) CometHashAggregate
 Input [21]: [i_item_id#27, i_item_desc#26, s_state#23, count#46, sum#47, count#48, n#49, avg#50, m2#51, count#52, sum#53, count#54, n#55, avg#56, m2#57, count#58, sum#59, count#60, n#61, avg#62, m2#63]
 Keys [3]: [i_item_id#27, i_item_desc#26, s_state#23]
 Functions [9]: [count(ss_quantity#5), avg(ss_quantity#5), stddev_samp(cast(ss_quantity#5 as double)), count(sr_return_quantity#11), avg(sr_return_quantity#11), stddev_samp(cast(sr_return_quantity#11 as double)), count(cs_quantity#16), avg(cs_quantity#16), stddev_samp(cast(cs_quantity#16 as double))]
-Aggregate Attributes [9]: [count(ss_quantity#5)#64, avg(ss_quantity#5)#65, stddev_samp(cast(ss_quantity#5 as double))#66, count(sr_return_quantity#11)#67, avg(sr_return_quantity#11)#68, stddev_samp(cast(sr_return_quantity#11 as double))#69, count(cs_quantity#16)#70, avg(cs_quantity#16)#71, stddev_samp(cast(cs_quantity#16 as double))#72]
-Results [15]: [i_item_id#27, i_item_desc#26, s_state#23, count(ss_quantity#5)#64 AS store_sales_quantitycount#73, avg(ss_quantity#5)#65 AS store_sales_quantityave#74, stddev_samp(cast(ss_quantity#5 as double))#66 AS store_sales_quantitystdev#75, (stddev_samp(cast(ss_quantity#5 as double))#66 / avg(ss_quantity#5)#65) AS store_sales_quantitycov#76, count(sr_return_quantity#11)#67 AS as_store_returns_quantitycount#77, avg(sr_return_quantity#11)#68 AS as_store_returns_quantityave#78, stddev_samp(cast(sr_return_quantity#11 as double))#69 AS as_store_returns_quantitystdev#79, (stddev_samp(cast(sr_return_quantity#11 as double))#69 / avg(sr_return_quantity#11)#68) AS store_returns_quantitycov#80, count(cs_quantity#16)#70 AS catalog_sales_quantitycount#81, avg(cs_quantity#16)#71 AS catalog_sales_quantityave#82, (stddev_samp(cast(cs_quantity#16 as double))#72 / avg(cs_quantity#16)#71) AS catalog_sales_quantitystdev#83, (stddev_samp(cast(cs_quantity#16 as double))#72 / avg(cs_quantity#16)#71) AS catalog_sales_quantitycov#84]
 
-(43) TakeOrderedAndProject
-Input [15]: [i_item_id#27, i_item_desc#26, s_state#23, store_sales_quantitycount#73, store_sales_quantityave#74, store_sales_quantitystdev#75, store_sales_quantitycov#76, as_store_returns_quantitycount#77, as_store_returns_quantityave#78, as_store_returns_quantitystdev#79, store_returns_quantitycov#80, catalog_sales_quantitycount#81, catalog_sales_quantityave#82, catalog_sales_quantitystdev#83, catalog_sales_quantitycov#84]
-Arguments: 100, [i_item_id#27 ASC NULLS FIRST, i_item_desc#26 ASC NULLS FIRST, s_state#23 ASC NULLS FIRST], [i_item_id#27, i_item_desc#26, s_state#23, store_sales_quantitycount#73, store_sales_quantityave#74, store_sales_quantitystdev#75, store_sales_quantitycov#76, as_store_returns_quantitycount#77, as_store_returns_quantityave#78, as_store_returns_quantitystdev#79, store_returns_quantitycov#80, catalog_sales_quantitycount#81, catalog_sales_quantityave#82, catalog_sales_quantitystdev#83, catalog_sales_quantitycov#84]
+(42) CometTakeOrderedAndProject
+Input [15]: [i_item_id#27, i_item_desc#26, s_state#23, store_sales_quantitycount#64, store_sales_quantityave#65, store_sales_quantitystdev#66, store_sales_quantitycov#67, as_store_returns_quantitycount#68, as_store_returns_quantityave#69, as_store_returns_quantitystdev#70, store_returns_quantitycov#71, catalog_sales_quantitycount#72, catalog_sales_quantityave#73, catalog_sales_quantitystdev#74, catalog_sales_quantitycov#75]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_item_id#27 ASC NULLS FIRST,i_item_desc#26 ASC NULLS FIRST,s_state#23 ASC NULLS FIRST], output=[i_item_id#27,i_item_desc#26,s_state#23,store_sales_quantitycount#64,store_sales_quantityave#65,store_sales_quantitystdev#66,store_sales_quantitycov#67,as_store_returns_quantitycount#68,as_store_returns_quantityave#69,as_store_returns_quantitystdev#70,store_returns_quantitycov#71,catalog_sales_quantitycount#72,catalog_sales_quantityave#73,catalog_sales_quantitystdev#74,catalog_sales_quantitycov#75]), [i_item_id#27, i_item_desc#26, s_state#23, store_sales_quantitycount#64, store_sales_quantityave#65, store_sales_quantitystdev#66, store_sales_quantitycov#67, as_store_returns_quantitycount#68, as_store_returns_quantityave#69, as_store_returns_quantitystdev#70, store_returns_quantitycov#71, catalog_sales_quantitycount#72, catalog_sales_quantityave#73, catalog_sales_quantitystdev#74, catalog_sales_quantitycov#75], 100, 0, [i_item_id#27 ASC NULLS FIRST, i_item_desc#26 ASC NULLS FIRST, s_state#23 ASC NULLS FIRST], [i_item_id#27, i_item_desc#26, s_state#23, store_sales_quantitycount#64, store_sales_quantityave#65, store_sales_quantitystdev#66, store_sales_quantitycov#67, as_store_returns_quantitycount#68, as_store_returns_quantityave#69, as_store_returns_quantitystdev#70, store_returns_quantitycov#71, catalog_sales_quantitycount#72, catalog_sales_quantityave#73, catalog_sales_quantitystdev#74, catalog_sales_quantitycov#75]
+
+(43) CometColumnarToRow [codegen id : 9]
+Input [15]: [i_item_id#27, i_item_desc#26, s_state#23, store_sales_quantitycount#64, store_sales_quantityave#65, store_sales_quantitystdev#66, store_sales_quantitycov#67, as_store_returns_quantitycount#68, as_store_returns_quantityave#69, as_store_returns_quantitystdev#70, store_returns_quantitycov#71, catalog_sales_quantitycount#72, catalog_sales_quantityave#73, catalog_sales_quantitystdev#74, catalog_sales_quantitycov#75]
 
 ===== Subqueries =====
 
@@ -256,18 +254,18 @@ BroadcastExchange (48)
 
 
 (44) CometNativeScan parquet spark_catalog.default.date_dim
-Output [2]: [d_date_sk#18, d_quarter_name#85]
+Output [2]: [d_date_sk#18, d_quarter_name#76]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_quarter_name), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_quarter_name:string>
 
 (45) CometFilter
-Input [2]: [d_date_sk#18, d_quarter_name#85]
-Condition : ((isnotnull(d_quarter_name#85) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(d_quarter_name#85, 6)) = 2001Q1)) AND isnotnull(d_date_sk#18))
+Input [2]: [d_date_sk#18, d_quarter_name#76]
+Condition : ((isnotnull(d_quarter_name#76) AND (static_invoke(CharVarcharCodegenUtils.readSidePadding(d_quarter_name#76, 6)) = 2001Q1)) AND isnotnull(d_date_sk#18))
 
 (46) CometProject
-Input [2]: [d_date_sk#18, d_quarter_name#85]
+Input [2]: [d_date_sk#18, d_quarter_name#76]
 Arguments: [d_date_sk#18], [d_date_sk#18]
 
 (47) CometColumnarToRow [codegen id : 1]
@@ -286,18 +284,18 @@ BroadcastExchange (53)
 
 
 (49) CometNativeScan parquet spark_catalog.default.date_dim
-Output [2]: [d_date_sk#19, d_quarter_name#86]
+Output [2]: [d_date_sk#19, d_quarter_name#77]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_quarter_name:string>
 
 (50) CometFilter
-Input [2]: [d_date_sk#19, d_quarter_name#86]
-Condition : (static_invoke(CharVarcharCodegenUtils.readSidePadding(d_quarter_name#86, 6)) IN (2001Q1,2001Q2,2001Q3) AND isnotnull(d_date_sk#19))
+Input [2]: [d_date_sk#19, d_quarter_name#77]
+Condition : (static_invoke(CharVarcharCodegenUtils.readSidePadding(d_quarter_name#77, 6)) IN (2001Q1,2001Q2,2001Q3) AND isnotnull(d_date_sk#19))
 
 (51) CometProject
-Input [2]: [d_date_sk#19, d_quarter_name#86]
+Input [2]: [d_date_sk#19, d_quarter_name#77]
 Arguments: [d_date_sk#19], [d_date_sk#19]
 
 (52) CometColumnarToRow [codegen id : 1]

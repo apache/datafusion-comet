@@ -1,7 +1,7 @@
 == Physical Plan ==
-TakeOrderedAndProject (46)
-+- * HashAggregate (45)
-   +- * CometColumnarToRow (44)
+* CometColumnarToRow (46)
++- CometTakeOrderedAndProject (45)
+   +- CometHashAggregate (44)
       +- CometColumnarExchange (43)
          +- * HashAggregate (42)
             +- * Project (41)
@@ -248,19 +248,17 @@ Results [6]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_pur
 Input [6]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29, count#31]
 Arguments: hashpartitioning(cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
-(44) CometColumnarToRow [codegen id : 6]
-Input [6]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29, count#31]
-
-(45) HashAggregate [codegen id : 6]
+(44) CometHashAggregate
 Input [6]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29, count#31]
 Keys [5]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cd_purchase_estimate#24, cd_credit_rating#29]
 Functions [1]: [count(1)]
-Aggregate Attributes [1]: [count(1)#32]
-Results [8]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, count(1)#32 AS cnt1#33, cd_purchase_estimate#24, count(1)#32 AS cnt2#34, cd_credit_rating#29, count(1)#32 AS cnt3#35]
 
-(46) TakeOrderedAndProject
-Input [8]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cnt1#33, cd_purchase_estimate#24, cnt2#34, cd_credit_rating#29, cnt3#35]
-Arguments: 100, [cd_gender#26 ASC NULLS FIRST, cd_marital_status#27 ASC NULLS FIRST, cd_education_status#28 ASC NULLS FIRST, cd_purchase_estimate#24 ASC NULLS FIRST, cd_credit_rating#29 ASC NULLS FIRST], [cd_gender#26, cd_marital_status#27, cd_education_status#28, cnt1#33, cd_purchase_estimate#24, cnt2#34, cd_credit_rating#29, cnt3#35]
+(45) CometTakeOrderedAndProject
+Input [8]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cnt1#32, cd_purchase_estimate#24, cnt2#33, cd_credit_rating#29, cnt3#34]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[cd_gender#26 ASC NULLS FIRST,cd_marital_status#27 ASC NULLS FIRST,cd_education_status#28 ASC NULLS FIRST,cd_purchase_estimate#24 ASC NULLS FIRST,cd_credit_rating#29 ASC NULLS FIRST], output=[cd_gender#26,cd_marital_status#27,cd_education_status#28,cnt1#32,cd_purchase_estimate#24,cnt2#33,cd_credit_rating#29,cnt3#34]), [cd_gender#26, cd_marital_status#27, cd_education_status#28, cnt1#32, cd_purchase_estimate#24, cnt2#33, cd_credit_rating#29, cnt3#34], 100, 0, [cd_gender#26 ASC NULLS FIRST, cd_marital_status#27 ASC NULLS FIRST, cd_education_status#28 ASC NULLS FIRST, cd_purchase_estimate#24 ASC NULLS FIRST, cd_credit_rating#29 ASC NULLS FIRST], [cd_gender#26, cd_marital_status#27, cd_education_status#28, cnt1#32, cd_purchase_estimate#24, cnt2#33, cd_credit_rating#29, cnt3#34]
+
+(46) CometColumnarToRow [codegen id : 6]
+Input [8]: [cd_gender#26, cd_marital_status#27, cd_education_status#28, cnt1#32, cd_purchase_estimate#24, cnt2#33, cd_credit_rating#29, cnt3#34]
 
 ===== Subqueries =====
 

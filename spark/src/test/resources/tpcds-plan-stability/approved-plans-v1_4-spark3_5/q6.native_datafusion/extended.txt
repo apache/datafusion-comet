@@ -1,7 +1,7 @@
-TakeOrderedAndProject
-+- Filter
-   +- HashAggregate
-      +- CometColumnarToRow
+CometColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometFilter
+      +- CometHashAggregate
          +- CometColumnarExchange
             +- HashAggregate
                +- Project
@@ -65,4 +65,4 @@ TakeOrderedAndProject
                                                    +- CometFilter
                                                       +- CometNativeScan parquet spark_catalog.default.item
 
-Comet accelerated 39 out of 58 eligible operators (67%). Final plan contains 8 transitions between Spark and Comet.
+Comet accelerated 42 out of 58 eligible operators (72%). Final plan contains 8 transitions between Spark and Comet.

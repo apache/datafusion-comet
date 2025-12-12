@@ -1,8 +1,8 @@
 == Physical Plan ==
-TakeOrderedAndProject (25)
-+- * Filter (24)
-   +- * HashAggregate (23)
-      +- * CometColumnarToRow (22)
+* CometColumnarToRow (25)
++- CometTakeOrderedAndProject (24)
+   +- CometFilter (23)
+      +- CometHashAggregate (22)
          +- CometColumnarExchange (21)
             +- * HashAggregate (20)
                +- * Project (19)
@@ -125,23 +125,21 @@ Results [4]: [w_warehouse_name#7, i_item_id#11, sum#16, sum#17]
 Input [4]: [w_warehouse_name#7, i_item_id#11, sum#16, sum#17]
 Arguments: hashpartitioning(w_warehouse_name#7, i_item_id#11, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
-(22) CometColumnarToRow [codegen id : 5]
-Input [4]: [w_warehouse_name#7, i_item_id#11, sum#16, sum#17]
-
-(23) HashAggregate [codegen id : 5]
+(22) CometHashAggregate
 Input [4]: [w_warehouse_name#7, i_item_id#11, sum#16, sum#17]
 Keys [2]: [w_warehouse_name#7, i_item_id#11]
 Functions [2]: [sum(CASE WHEN (d_date#13 < 2000-03-11) THEN inv_quantity_on_hand#3 ELSE 0 END), sum(CASE WHEN (d_date#13 >= 2000-03-11) THEN inv_quantity_on_hand#3 ELSE 0 END)]
-Aggregate Attributes [2]: [sum(CASE WHEN (d_date#13 < 2000-03-11) THEN inv_quantity_on_hand#3 ELSE 0 END)#18, sum(CASE WHEN (d_date#13 >= 2000-03-11) THEN inv_quantity_on_hand#3 ELSE 0 END)#19]
-Results [4]: [w_warehouse_name#7, i_item_id#11, sum(CASE WHEN (d_date#13 < 2000-03-11) THEN inv_quantity_on_hand#3 ELSE 0 END)#18 AS inv_before#20, sum(CASE WHEN (d_date#13 >= 2000-03-11) THEN inv_quantity_on_hand#3 ELSE 0 END)#19 AS inv_after#21]
 
-(24) Filter [codegen id : 5]
-Input [4]: [w_warehouse_name#7, i_item_id#11, inv_before#20, inv_after#21]
-Condition : (CASE WHEN (inv_before#20 > 0) THEN (knownfloatingpointnormalized(normalizenanandzero((cast(inv_after#21 as double) / knownfloatingpointnormalized(normalizenanandzero(cast(inv_before#20 as double)))))) >= 0.666667) END AND CASE WHEN (inv_before#20 > 0) THEN (knownfloatingpointnormalized(normalizenanandzero((cast(inv_after#21 as double) / knownfloatingpointnormalized(normalizenanandzero(cast(inv_before#20 as double)))))) <= 1.5) END)
+(23) CometFilter
+Input [4]: [w_warehouse_name#7, i_item_id#11, inv_before#18, inv_after#19]
+Condition : (CASE WHEN (inv_before#18 > 0) THEN (knownfloatingpointnormalized(normalizenanandzero((cast(inv_after#19 as double) / knownfloatingpointnormalized(normalizenanandzero(cast(inv_before#18 as double)))))) >= 0.666667) END AND CASE WHEN (inv_before#18 > 0) THEN (knownfloatingpointnormalized(normalizenanandzero((cast(inv_after#19 as double) / knownfloatingpointnormalized(normalizenanandzero(cast(inv_before#18 as double)))))) <= 1.5) END)
 
-(25) TakeOrderedAndProject
-Input [4]: [w_warehouse_name#7, i_item_id#11, inv_before#20, inv_after#21]
-Arguments: 100, [w_warehouse_name#7 ASC NULLS FIRST, i_item_id#11 ASC NULLS FIRST], [w_warehouse_name#7, i_item_id#11, inv_before#20, inv_after#21]
+(24) CometTakeOrderedAndProject
+Input [4]: [w_warehouse_name#7, i_item_id#11, inv_before#18, inv_after#19]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[w_warehouse_name#7 ASC NULLS FIRST,i_item_id#11 ASC NULLS FIRST], output=[w_warehouse_name#7,i_item_id#11,inv_before#18,inv_after#19]), [w_warehouse_name#7, i_item_id#11, inv_before#18, inv_after#19], 100, 0, [w_warehouse_name#7 ASC NULLS FIRST, i_item_id#11 ASC NULLS FIRST], [w_warehouse_name#7, i_item_id#11, inv_before#18, inv_after#19]
+
+(25) CometColumnarToRow [codegen id : 5]
+Input [4]: [w_warehouse_name#7, i_item_id#11, inv_before#18, inv_after#19]
 
 ===== Subqueries =====
 

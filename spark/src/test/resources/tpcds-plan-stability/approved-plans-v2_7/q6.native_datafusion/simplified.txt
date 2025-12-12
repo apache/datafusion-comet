@@ -1,9 +1,9 @@
-TakeOrderedAndProject [cnt,ca_state,state]
-  WholeStageCodegen (5)
-    Filter [cnt]
-      HashAggregate [ca_state,count] [count(1),state,cnt,count]
-        CometColumnarToRow
-          InputAdapter
+WholeStageCodegen (5)
+  CometColumnarToRow
+    InputAdapter
+      CometTakeOrderedAndProject [ca_state] [state,cnt]
+        CometFilter [state,cnt,ca_state]
+          CometHashAggregate [count] [state,cnt,ca_state,count(1)]
             CometColumnarExchange [ca_state] #1
               WholeStageCodegen (4)
                 HashAggregate [ca_state] [count,count]

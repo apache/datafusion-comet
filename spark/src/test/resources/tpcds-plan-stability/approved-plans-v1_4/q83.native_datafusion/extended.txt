@@ -1,102 +1,100 @@
-TakeOrderedAndProject
-+- Project
-   +- BroadcastHashJoin
-      :- Project
-      :  +- BroadcastHashJoin
-      :     :- HashAggregate
-      :     :  +- CometColumnarToRow
-      :     :     +- CometColumnarExchange
-      :     :        +- HashAggregate
-      :     :           +- Project
-      :     :              +- BroadcastHashJoin
-      :     :                 :- Project
-      :     :                 :  +- BroadcastHashJoin
-      :     :                 :     :- Filter
-      :     :                 :     :  +- ColumnarToRow
-      :     :                 :     :     +-  Scan parquet spark_catalog.default.store_returns [COMET: Native DataFusion scan does not support subqueries/dynamic pruning]
-      :     :                 :     :           +- SubqueryBroadcast
-      :     :                 :     :              +- BroadcastExchange
-      :     :                 :     :                 +- CometColumnarToRow
-      :     :                 :     :                    +- CometProject
-      :     :                 :     :                       +- CometBroadcastHashJoin
-      :     :                 :     :                          :- CometFilter
-      :     :                 :     :                          :  +- CometNativeScan parquet spark_catalog.default.date_dim
-      :     :                 :     :                          +- CometBroadcastExchange
-      :     :                 :     :                             +- CometProject
-      :     :                 :     :                                +- CometBroadcastHashJoin
-      :     :                 :     :                                   :- CometNativeScan parquet spark_catalog.default.date_dim
-      :     :                 :     :                                   +- CometBroadcastExchange
-      :     :                 :     :                                      +- CometProject
-      :     :                 :     :                                         +- CometFilter
-      :     :                 :     :                                            +- CometNativeScan parquet spark_catalog.default.date_dim
-      :     :                 :     +- BroadcastExchange
-      :     :                 :        +- CometColumnarToRow
-      :     :                 :           +- CometProject
-      :     :                 :              +- CometFilter
-      :     :                 :                 +- CometNativeScan parquet spark_catalog.default.item
-      :     :                 +- BroadcastExchange
-      :     :                    +- CometColumnarToRow
-      :     :                       +- CometProject
-      :     :                          +- CometBroadcastHashJoin
-      :     :                             :- CometFilter
-      :     :                             :  +- CometNativeScan parquet spark_catalog.default.date_dim
-      :     :                             +- CometBroadcastExchange
-      :     :                                +- CometProject
-      :     :                                   +- CometBroadcastHashJoin
-      :     :                                      :- CometNativeScan parquet spark_catalog.default.date_dim
-      :     :                                      +- CometBroadcastExchange
-      :     :                                         +- CometProject
-      :     :                                            +- CometFilter
-      :     :                                               +- CometNativeScan parquet spark_catalog.default.date_dim
-      :     +- BroadcastExchange
-      :        +- HashAggregate
-      :           +- CometColumnarToRow
-      :              +- CometColumnarExchange
-      :                 +- HashAggregate
-      :                    +- Project
-      :                       +- BroadcastHashJoin
-      :                          :- Project
-      :                          :  +- BroadcastHashJoin
-      :                          :     :- Filter
-      :                          :     :  +- ColumnarToRow
-      :                          :     :     +-  Scan parquet spark_catalog.default.catalog_returns [COMET: Native DataFusion scan does not support subqueries/dynamic pruning]
-      :                          :     :           +- SubqueryBroadcast
-      :                          :     :              +- BroadcastExchange
-      :                          :     :                 +- CometColumnarToRow
-      :                          :     :                    +- CometProject
-      :                          :     :                       +- CometBroadcastHashJoin
-      :                          :     :                          :- CometFilter
-      :                          :     :                          :  +- CometNativeScan parquet spark_catalog.default.date_dim
-      :                          :     :                          +- CometBroadcastExchange
-      :                          :     :                             +- CometProject
-      :                          :     :                                +- CometBroadcastHashJoin
-      :                          :     :                                   :- CometNativeScan parquet spark_catalog.default.date_dim
-      :                          :     :                                   +- CometBroadcastExchange
-      :                          :     :                                      +- CometProject
-      :                          :     :                                         +- CometFilter
-      :                          :     :                                            +- CometNativeScan parquet spark_catalog.default.date_dim
-      :                          :     +- BroadcastExchange
-      :                          :        +- CometColumnarToRow
-      :                          :           +- CometProject
-      :                          :              +- CometFilter
-      :                          :                 +- CometNativeScan parquet spark_catalog.default.item
-      :                          +- BroadcastExchange
-      :                             +- CometColumnarToRow
-      :                                +- CometProject
-      :                                   +- CometBroadcastHashJoin
-      :                                      :- CometFilter
-      :                                      :  +- CometNativeScan parquet spark_catalog.default.date_dim
-      :                                      +- CometBroadcastExchange
-      :                                         +- CometProject
-      :                                            +- CometBroadcastHashJoin
-      :                                               :- CometNativeScan parquet spark_catalog.default.date_dim
-      :                                               +- CometBroadcastExchange
-      :                                                  +- CometProject
-      :                                                     +- CometFilter
-      :                                                        +- CometNativeScan parquet spark_catalog.default.date_dim
-      +- BroadcastExchange
-         +- HashAggregate
-            +- CometColumnarToRow
+CometColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometProject
+      +- CometBroadcastHashJoin
+         :- CometProject
+         :  +- CometBroadcastHashJoin
+         :     :- CometHashAggregate
+         :     :  +- CometColumnarExchange
+         :     :     +- HashAggregate
+         :     :        +- Project
+         :     :           +- BroadcastHashJoin
+         :     :              :- Project
+         :     :              :  +- BroadcastHashJoin
+         :     :              :     :- Filter
+         :     :              :     :  +- ColumnarToRow
+         :     :              :     :     +-  Scan parquet spark_catalog.default.store_returns [COMET: Native DataFusion scan does not support subqueries/dynamic pruning]
+         :     :              :     :           +- SubqueryBroadcast
+         :     :              :     :              +- BroadcastExchange
+         :     :              :     :                 +- CometColumnarToRow
+         :     :              :     :                    +- CometProject
+         :     :              :     :                       +- CometBroadcastHashJoin
+         :     :              :     :                          :- CometFilter
+         :     :              :     :                          :  +- CometNativeScan parquet spark_catalog.default.date_dim
+         :     :              :     :                          +- CometBroadcastExchange
+         :     :              :     :                             +- CometProject
+         :     :              :     :                                +- CometBroadcastHashJoin
+         :     :              :     :                                   :- CometNativeScan parquet spark_catalog.default.date_dim
+         :     :              :     :                                   +- CometBroadcastExchange
+         :     :              :     :                                      +- CometProject
+         :     :              :     :                                         +- CometFilter
+         :     :              :     :                                            +- CometNativeScan parquet spark_catalog.default.date_dim
+         :     :              :     +- BroadcastExchange
+         :     :              :        +- CometColumnarToRow
+         :     :              :           +- CometProject
+         :     :              :              +- CometFilter
+         :     :              :                 +- CometNativeScan parquet spark_catalog.default.item
+         :     :              +- BroadcastExchange
+         :     :                 +- CometColumnarToRow
+         :     :                    +- CometProject
+         :     :                       +- CometBroadcastHashJoin
+         :     :                          :- CometFilter
+         :     :                          :  +- CometNativeScan parquet spark_catalog.default.date_dim
+         :     :                          +- CometBroadcastExchange
+         :     :                             +- CometProject
+         :     :                                +- CometBroadcastHashJoin
+         :     :                                   :- CometNativeScan parquet spark_catalog.default.date_dim
+         :     :                                   +- CometBroadcastExchange
+         :     :                                      +- CometProject
+         :     :                                         +- CometFilter
+         :     :                                            +- CometNativeScan parquet spark_catalog.default.date_dim
+         :     +- CometBroadcastExchange
+         :        +- CometHashAggregate
+         :           +- CometColumnarExchange
+         :              +- HashAggregate
+         :                 +- Project
+         :                    +- BroadcastHashJoin
+         :                       :- Project
+         :                       :  +- BroadcastHashJoin
+         :                       :     :- Filter
+         :                       :     :  +- ColumnarToRow
+         :                       :     :     +-  Scan parquet spark_catalog.default.catalog_returns [COMET: Native DataFusion scan does not support subqueries/dynamic pruning]
+         :                       :     :           +- SubqueryBroadcast
+         :                       :     :              +- BroadcastExchange
+         :                       :     :                 +- CometColumnarToRow
+         :                       :     :                    +- CometProject
+         :                       :     :                       +- CometBroadcastHashJoin
+         :                       :     :                          :- CometFilter
+         :                       :     :                          :  +- CometNativeScan parquet spark_catalog.default.date_dim
+         :                       :     :                          +- CometBroadcastExchange
+         :                       :     :                             +- CometProject
+         :                       :     :                                +- CometBroadcastHashJoin
+         :                       :     :                                   :- CometNativeScan parquet spark_catalog.default.date_dim
+         :                       :     :                                   +- CometBroadcastExchange
+         :                       :     :                                      +- CometProject
+         :                       :     :                                         +- CometFilter
+         :                       :     :                                            +- CometNativeScan parquet spark_catalog.default.date_dim
+         :                       :     +- BroadcastExchange
+         :                       :        +- CometColumnarToRow
+         :                       :           +- CometProject
+         :                       :              +- CometFilter
+         :                       :                 +- CometNativeScan parquet spark_catalog.default.item
+         :                       +- BroadcastExchange
+         :                          +- CometColumnarToRow
+         :                             +- CometProject
+         :                                +- CometBroadcastHashJoin
+         :                                   :- CometFilter
+         :                                   :  +- CometNativeScan parquet spark_catalog.default.date_dim
+         :                                   +- CometBroadcastExchange
+         :                                      +- CometProject
+         :                                         +- CometBroadcastHashJoin
+         :                                            :- CometNativeScan parquet spark_catalog.default.date_dim
+         :                                            +- CometBroadcastExchange
+         :                                               +- CometProject
+         :                                                  +- CometFilter
+         :                                                     +- CometNativeScan parquet spark_catalog.default.date_dim
+         +- CometBroadcastExchange
+            +- CometHashAggregate
                +- CometColumnarExchange
                   +- HashAggregate
                      +- Project
@@ -127,4 +125,4 @@ TakeOrderedAndProject
                                                       +- CometFilter
                                                          +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 72 out of 114 eligible operators (63%). Final plan contains 14 transitions between Spark and Comet.
+Comet accelerated 82 out of 114 eligible operators (71%). Final plan contains 12 transitions between Spark and Comet.

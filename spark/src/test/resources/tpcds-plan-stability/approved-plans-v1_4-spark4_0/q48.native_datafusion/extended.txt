@@ -1,5 +1,5 @@
-HashAggregate
-+- CometColumnarToRow
+CometColumnarToRow
++- CometHashAggregate
    +- CometColumnarExchange
       +- HashAggregate
          +- Project
@@ -39,4 +39,4 @@ HashAggregate
                         +- CometFilter
                            +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 15 out of 33 eligible operators (45%). Final plan contains 7 transitions between Spark and Comet.
+Comet accelerated 16 out of 33 eligible operators (48%). Final plan contains 7 transitions between Spark and Comet.
