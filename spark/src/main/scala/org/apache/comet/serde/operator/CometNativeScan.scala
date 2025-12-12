@@ -143,7 +143,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       }
 
       val filePartitions = scan.getFilePartitions()
-      val firstPartition = filePartitions.flatMap(_.files).headOption
+      val firstPartition = filePartitions.flatMap(p => p.files).headOption
 
       filePartitions.foreach { partition =>
         partition2Proto(partition, nativeScanBuilder, scan.relation.partitionSchema)
