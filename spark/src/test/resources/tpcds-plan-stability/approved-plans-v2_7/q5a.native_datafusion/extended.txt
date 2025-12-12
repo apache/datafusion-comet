@@ -4,12 +4,12 @@ CometColumnarToRow
       +- CometColumnarExchange
          +- HashAggregate
             +- Union
-               :- HashAggregate
+               :-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                :  +- CometColumnarToRow
                :     +- CometColumnarExchange
                :        +- HashAggregate
                :           +- Union
-               :              :- HashAggregate
+               :              :-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                :              :  +- CometColumnarToRow
                :              :     +- CometColumnarExchange
                :              :        +- HashAggregate
@@ -43,7 +43,7 @@ CometColumnarToRow
                :              :                       +- CometProject
                :              :                          +- CometFilter
                :              :                             +- CometNativeScan parquet spark_catalog.default.store
-               :              :- HashAggregate
+               :              :-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                :              :  +- CometColumnarToRow
                :              :     +- CometColumnarExchange
                :              :        +- HashAggregate
@@ -72,7 +72,7 @@ CometColumnarToRow
                :              :                       +- CometProject
                :              :                          +- CometFilter
                :              :                             +- CometNativeScan parquet spark_catalog.default.catalog_page
-               :              +- HashAggregate
+               :              +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                :                 +- CometColumnarToRow
                :                    +- CometColumnarExchange
                :                       +- HashAggregate
@@ -106,16 +106,16 @@ CometColumnarToRow
                :                                      +- CometProject
                :                                         +- CometFilter
                :                                            +- CometNativeScan parquet spark_catalog.default.web_site
-               :- HashAggregate
+               :-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                :  +- CometColumnarToRow
                :     +- CometColumnarExchange
                :        +- HashAggregate
-               :           +- HashAggregate
+               :           +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                :              +- CometColumnarToRow
                :                 +- CometColumnarExchange
                :                    +- HashAggregate
                :                       +- Union
-               :                          :- HashAggregate
+               :                          :-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                :                          :  +- CometColumnarToRow
                :                          :     +- CometColumnarExchange
                :                          :        +- HashAggregate
@@ -149,7 +149,7 @@ CometColumnarToRow
                :                          :                       +- CometProject
                :                          :                          +- CometFilter
                :                          :                             +- CometNativeScan parquet spark_catalog.default.store
-               :                          :- HashAggregate
+               :                          :-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                :                          :  +- CometColumnarToRow
                :                          :     +- CometColumnarExchange
                :                          :        +- HashAggregate
@@ -178,7 +178,7 @@ CometColumnarToRow
                :                          :                       +- CometProject
                :                          :                          +- CometFilter
                :                          :                             +- CometNativeScan parquet spark_catalog.default.catalog_page
-               :                          +- HashAggregate
+               :                          +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                :                             +- CometColumnarToRow
                :                                +- CometColumnarExchange
                :                                   +- HashAggregate
@@ -212,16 +212,16 @@ CometColumnarToRow
                :                                                  +- CometProject
                :                                                     +- CometFilter
                :                                                        +- CometNativeScan parquet spark_catalog.default.web_site
-               +- HashAggregate
+               +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                   +- CometColumnarToRow
                      +- CometColumnarExchange
                         +- HashAggregate
-                           +- HashAggregate
+                           +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                               +- CometColumnarToRow
                                  +- CometColumnarExchange
                                     +- HashAggregate
                                        +- Union
-                                          :- HashAggregate
+                                          :-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                                           :  +- CometColumnarToRow
                                           :     +- CometColumnarExchange
                                           :        +- HashAggregate
@@ -255,7 +255,7 @@ CometColumnarToRow
                                           :                       +- CometProject
                                           :                          +- CometFilter
                                           :                             +- CometNativeScan parquet spark_catalog.default.store
-                                          :- HashAggregate
+                                          :-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                                           :  +- CometColumnarToRow
                                           :     +- CometColumnarExchange
                                           :        +- HashAggregate
@@ -284,7 +284,7 @@ CometColumnarToRow
                                           :                       +- CometProject
                                           :                          +- CometFilter
                                           :                             +- CometNativeScan parquet spark_catalog.default.catalog_page
-                                          +- HashAggregate
+                                          +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                                              +- CometColumnarToRow
                                                 +- CometColumnarExchange
                                                    +- HashAggregate

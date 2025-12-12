@@ -1074,7 +1074,8 @@ trait CometBaseAggregate {
     if (multiMode) {
       withInfo(
         aggregate,
-        s"Multiple aggregation modes in the same expression are not supported: ${modes.mkString(", ")}")
+        "Multiple aggregation modes in the same expression are not supported: " +
+          s"${modes.mkString(", ")}")
       return None
     }
 

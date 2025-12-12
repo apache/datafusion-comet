@@ -25,7 +25,7 @@ CometColumnarToRow
       :              :     :  :           +- BroadcastExchange
       :              :     :  :              +- Project
       :              :     :  :                 +- Filter
-      :              :     :  :                    +- HashAggregate
+      :              :     :  :                    +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
       :              :     :  :                       +- CometColumnarToRow
       :              :     :  :                          +- CometColumnarExchange
       :              :     :  :                             +- HashAggregate
@@ -55,11 +55,11 @@ CometColumnarToRow
       :              :     :     +- CometProject
       :              :     :        +- CometFilter
       :              :     :           :  +- Subquery
-      :              :     :           :     +- HashAggregate
+      :              :     :           :     +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
       :              :     :           :        +- CometColumnarToRow
       :              :     :           :           +- CometColumnarExchange
       :              :     :           :              +- HashAggregate
-      :              :     :           :                 +- HashAggregate
+      :              :     :           :                 +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
       :              :     :           :                    +- CometColumnarToRow
       :              :     :           :                       +- CometColumnarExchange
       :              :     :           :                          +- HashAggregate
@@ -141,7 +141,7 @@ CometColumnarToRow
                      :     :  :           +- BroadcastExchange
                      :     :  :              +- Project
                      :     :  :                 +- Filter
-                     :     :  :                    +- HashAggregate
+                     :     :  :                    +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                      :     :  :                       +- CometColumnarToRow
                      :     :  :                          +- CometColumnarExchange
                      :     :  :                             +- HashAggregate
