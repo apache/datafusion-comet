@@ -117,15 +117,6 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
   /**
    * Pre-processes the plan to ensure coordination between partial and final hash aggregates.
-   *
-   * This method walks the plan top-down to identify final hash aggregates that cannot be
-   * converted to Comet. For such cases, it finds and tags any corresponding partial aggregates
-   * with fallback reasons to prevent mixed Comet partial + Spark final aggregation.
-   *
-   * @param plan
-   *   The input plan to pre-process
-   * @return
-   *   The plan with appropriate fallback tags added
    */
   private def fixUpAggregates(plan: SparkPlan): SparkPlan = {
     plan.transformDown {
