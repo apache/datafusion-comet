@@ -1,8 +1,8 @@
-TakeOrderedAndProject [qoh,i_product_name,i_brand,i_class,i_category]
-  WholeStageCodegen (3)
-    HashAggregate [i_product_name,i_brand,i_class,i_category,spark_grouping_id,sum,count] [avg(inv_quantity_on_hand),qoh,sum,count]
-      CometColumnarToRow
-        InputAdapter
+WholeStageCodegen (3)
+  CometColumnarToRow
+    InputAdapter
+      CometTakeOrderedAndProject [i_product_name,i_brand,i_class,i_category,qoh]
+        CometHashAggregate [spark_grouping_id,sum,count] [i_product_name,i_brand,i_class,i_category,qoh,avg(inv_quantity_on_hand)]
           CometColumnarExchange [i_product_name,i_brand,i_class,i_category,spark_grouping_id] #1
             WholeStageCodegen (2)
               HashAggregate [i_product_name,i_brand,i_class,i_category,spark_grouping_id,inv_quantity_on_hand] [sum,count,sum,count]
