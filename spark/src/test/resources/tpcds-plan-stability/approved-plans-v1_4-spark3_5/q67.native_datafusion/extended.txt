@@ -5,10 +5,10 @@ TakeOrderedAndProject
          +- CometColumnarToRow
             +- CometSort
                +- CometColumnarExchange
-                  +- WindowGroupLimit
-                     +- Sort
-                        +- HashAggregate
-                           +- CometColumnarToRow
+                  +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+                     +- CometColumnarToRow
+                        +- CometSort
+                           +- CometHashAggregate
                               +- CometColumnarExchange
                                  +- HashAggregate
                                     +- Expand
@@ -43,4 +43,4 @@ TakeOrderedAndProject
                                                       +- CometFilter
                                                          +- CometNativeScan parquet spark_catalog.default.item
 
-Comet accelerated 15 out of 37 eligible operators (40%). Final plan contains 7 transitions between Spark and Comet.
+Comet accelerated 17 out of 37 eligible operators (45%). Final plan contains 7 transitions between Spark and Comet.

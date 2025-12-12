@@ -1,70 +1,65 @@
 == Physical Plan ==
-TakeOrderedAndProject (66)
-+- * Project (65)
-   +- Window (64)
-      +- * CometColumnarToRow (63)
-         +- CometSort (62)
-            +- CometExchange (61)
-               +- CometHashAggregate (60)
-                  +- CometColumnarExchange (59)
-                     +- * HashAggregate (58)
-                        +- Union (57)
-                           :- * HashAggregate (42)
-                           :  +- * CometColumnarToRow (41)
-                           :     +- CometColumnarExchange (40)
-                           :        +- * HashAggregate (39)
-                           :           +- * Project (38)
-                           :              +- * BroadcastHashJoin Inner BuildRight (37)
-                           :                 :- * CometColumnarToRow (9)
-                           :                 :  +- CometProject (8)
-                           :                 :     +- CometBroadcastHashJoin (7)
-                           :                 :        :- CometFilter (2)
-                           :                 :        :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (1)
-                           :                 :        +- CometBroadcastExchange (6)
-                           :                 :           +- CometProject (5)
-                           :                 :              +- CometFilter (4)
-                           :                 :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (3)
-                           :                 +- BroadcastExchange (36)
-                           :                    +- * Project (35)
-                           :                       +- * BroadcastHashJoin LeftSemi BuildRight (34)
-                           :                          :- * CometColumnarToRow (12)
-                           :                          :  +- CometFilter (11)
-                           :                          :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store (10)
-                           :                          +- BroadcastExchange (33)
-                           :                             +- * Project (32)
-                           :                                +- * Filter (31)
-                           :                                   +- Window (30)
-                           :                                      +- WindowGroupLimit (29)
-                           :                                         +- * CometColumnarToRow (28)
-                           :                                            +- CometSort (27)
-                           :                                               +- CometHashAggregate (26)
-                           :                                                  +- CometExchange (25)
-                           :                                                     +- CometHashAggregate (24)
-                           :                                                        +- CometProject (23)
-                           :                                                           +- CometBroadcastHashJoin (22)
-                           :                                                              :- CometProject (20)
-                           :                                                              :  +- CometBroadcastHashJoin (19)
-                           :                                                              :     :- CometFilter (14)
-                           :                                                              :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (13)
-                           :                                                              :     +- CometBroadcastExchange (18)
-                           :                                                              :        +- CometProject (17)
-                           :                                                              :           +- CometFilter (16)
-                           :                                                              :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store (15)
-                           :                                                              +- ReusedExchange (21)
-                           :- * HashAggregate (49)
-                           :  +- * CometColumnarToRow (48)
-                           :     +- CometColumnarExchange (47)
-                           :        +- * HashAggregate (46)
-                           :           +- * HashAggregate (45)
-                           :              +- * CometColumnarToRow (44)
-                           :                 +- ReusedExchange (43)
-                           +- * HashAggregate (56)
-                              +- * CometColumnarToRow (55)
-                                 +- CometColumnarExchange (54)
-                                    +- * HashAggregate (53)
-                                       +- * HashAggregate (52)
-                                          +- * CometColumnarToRow (51)
-                                             +- ReusedExchange (50)
+TakeOrderedAndProject (61)
++- * Project (60)
+   +- Window (59)
+      +- * CometColumnarToRow (58)
+         +- CometSort (57)
+            +- CometExchange (56)
+               +- CometHashAggregate (55)
+                  +- CometExchange (54)
+                     +- CometHashAggregate (53)
+                        +- CometUnion (52)
+                           :- CometHashAggregate (41)
+                           :  +- CometColumnarExchange (40)
+                           :     +- * HashAggregate (39)
+                           :        +- * Project (38)
+                           :           +- * BroadcastHashJoin Inner BuildRight (37)
+                           :              :- * CometColumnarToRow (9)
+                           :              :  +- CometProject (8)
+                           :              :     +- CometBroadcastHashJoin (7)
+                           :              :        :- CometFilter (2)
+                           :              :        :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (1)
+                           :              :        +- CometBroadcastExchange (6)
+                           :              :           +- CometProject (5)
+                           :              :              +- CometFilter (4)
+                           :              :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (3)
+                           :              +- BroadcastExchange (36)
+                           :                 +- * Project (35)
+                           :                    +- * BroadcastHashJoin LeftSemi BuildRight (34)
+                           :                       :- * CometColumnarToRow (12)
+                           :                       :  +- CometFilter (11)
+                           :                       :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store (10)
+                           :                       +- BroadcastExchange (33)
+                           :                          +- * Project (32)
+                           :                             +- * Filter (31)
+                           :                                +- Window (30)
+                           :                                   +- WindowGroupLimit (29)
+                           :                                      +- * CometColumnarToRow (28)
+                           :                                         +- CometSort (27)
+                           :                                            +- CometHashAggregate (26)
+                           :                                               +- CometExchange (25)
+                           :                                                  +- CometHashAggregate (24)
+                           :                                                     +- CometProject (23)
+                           :                                                        +- CometBroadcastHashJoin (22)
+                           :                                                           :- CometProject (20)
+                           :                                                           :  +- CometBroadcastHashJoin (19)
+                           :                                                           :     :- CometFilter (14)
+                           :                                                           :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales (13)
+                           :                                                           :     +- CometBroadcastExchange (18)
+                           :                                                           :        +- CometProject (17)
+                           :                                                           :           +- CometFilter (16)
+                           :                                                           :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store (15)
+                           :                                                           +- ReusedExchange (21)
+                           :- CometHashAggregate (46)
+                           :  +- CometExchange (45)
+                           :     +- CometHashAggregate (44)
+                           :        +- CometHashAggregate (43)
+                           :           +- ReusedExchange (42)
+                           +- CometHashAggregate (51)
+                              +- CometExchange (50)
+                                 +- CometHashAggregate (49)
+                                    +- CometHashAggregate (48)
+                                       +- ReusedExchange (47)
 
 
 (1) CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
@@ -252,154 +247,126 @@ Results [3]: [s_state#21, s_county#8, sum#23]
 Input [3]: [s_state#21, s_county#8, sum#23]
 Arguments: hashpartitioning(s_state#21, s_county#8, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
-(41) CometColumnarToRow [codegen id : 5]
-Input [3]: [s_state#21, s_county#8, sum#23]
-
-(42) HashAggregate [codegen id : 5]
+(41) CometHashAggregate
 Input [3]: [s_state#21, s_county#8, sum#23]
 Keys [2]: [s_state#21, s_county#8]
 Functions [1]: [sum(UnscaledValue(ss_net_profit#2))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_net_profit#2))#24]
-Results [6]: [cast(MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#24,17,2) as decimal(27,2)) AS total_sum#25, s_state#21 AS s_state#26, s_county#8 AS s_county#27, 0 AS g_state#28, 0 AS g_county#29, 0 AS lochierarchy#30]
 
-(43) ReusedExchange [Reuses operator id: 40]
+(42) ReusedExchange [Reuses operator id: 40]
+Output [3]: [s_state#24, s_county#25, sum#26]
+
+(43) CometHashAggregate
+Input [3]: [s_state#24, s_county#25, sum#26]
+Keys [2]: [s_state#24, s_county#25]
+Functions [1]: [sum(UnscaledValue(ss_net_profit#27))]
+
+(44) CometHashAggregate
+Input [2]: [total_sum#28, s_state#24]
+Keys [1]: [s_state#24]
+Functions [1]: [partial_sum(total_sum#28)]
+
+(45) CometExchange
+Input [3]: [s_state#24, sum#29, isEmpty#30]
+Arguments: hashpartitioning(s_state#24, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=5]
+
+(46) CometHashAggregate
+Input [3]: [s_state#24, sum#29, isEmpty#30]
+Keys [1]: [s_state#24]
+Functions [1]: [sum(total_sum#28)]
+
+(47) ReusedExchange [Reuses operator id: 40]
 Output [3]: [s_state#31, s_county#32, sum#33]
 
-(44) CometColumnarToRow [codegen id : 10]
-Input [3]: [s_state#31, s_county#32, sum#33]
-
-(45) HashAggregate [codegen id : 10]
+(48) CometHashAggregate
 Input [3]: [s_state#31, s_county#32, sum#33]
 Keys [2]: [s_state#31, s_county#32]
 Functions [1]: [sum(UnscaledValue(ss_net_profit#34))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_net_profit#34))#24]
-Results [2]: [MakeDecimal(sum(UnscaledValue(ss_net_profit#34))#24,17,2) AS total_sum#35, s_state#31]
 
-(46) HashAggregate [codegen id : 10]
-Input [2]: [total_sum#35, s_state#31]
-Keys [1]: [s_state#31]
+(49) CometHashAggregate
+Input [1]: [total_sum#35]
+Keys: []
 Functions [1]: [partial_sum(total_sum#35)]
-Aggregate Attributes [2]: [sum#36, isEmpty#37]
-Results [3]: [s_state#31, sum#38, isEmpty#39]
 
-(47) CometColumnarExchange
-Input [3]: [s_state#31, sum#38, isEmpty#39]
-Arguments: hashpartitioning(s_state#31, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
+(50) CometExchange
+Input [2]: [sum#36, isEmpty#37]
+Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
 
-(48) CometColumnarToRow [codegen id : 11]
-Input [3]: [s_state#31, sum#38, isEmpty#39]
-
-(49) HashAggregate [codegen id : 11]
-Input [3]: [s_state#31, sum#38, isEmpty#39]
-Keys [1]: [s_state#31]
+(51) CometHashAggregate
+Input [2]: [sum#36, isEmpty#37]
+Keys: []
 Functions [1]: [sum(total_sum#35)]
-Aggregate Attributes [1]: [sum(total_sum#35)#40]
-Results [6]: [sum(total_sum#35)#40 AS total_sum#41, s_state#31, null AS s_county#42, 0 AS g_state#43, 1 AS g_county#44, 1 AS lochierarchy#45]
 
-(50) ReusedExchange [Reuses operator id: 40]
-Output [3]: [s_state#46, s_county#47, sum#48]
+(52) CometUnion
+Child 0 Input [6]: [total_sum#38, s_state#39, s_county#40, g_state#41, g_county#42, lochierarchy#43]
+Child 1 Input [6]: [total_sum#44, s_state#24, s_county#45, g_state#46, g_county#47, lochierarchy#48]
+Child 2 Input [6]: [total_sum#49, s_state#50, s_county#51, g_state#52, g_county#53, lochierarchy#54]
 
-(51) CometColumnarToRow [codegen id : 16]
-Input [3]: [s_state#46, s_county#47, sum#48]
-
-(52) HashAggregate [codegen id : 16]
-Input [3]: [s_state#46, s_county#47, sum#48]
-Keys [2]: [s_state#46, s_county#47]
-Functions [1]: [sum(UnscaledValue(ss_net_profit#49))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_net_profit#49))#24]
-Results [1]: [MakeDecimal(sum(UnscaledValue(ss_net_profit#49))#24,17,2) AS total_sum#50]
-
-(53) HashAggregate [codegen id : 16]
-Input [1]: [total_sum#50]
-Keys: []
-Functions [1]: [partial_sum(total_sum#50)]
-Aggregate Attributes [2]: [sum#51, isEmpty#52]
-Results [2]: [sum#53, isEmpty#54]
-
-(54) CometColumnarExchange
-Input [2]: [sum#53, isEmpty#54]
-Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=6]
-
-(55) CometColumnarToRow [codegen id : 17]
-Input [2]: [sum#53, isEmpty#54]
-
-(56) HashAggregate [codegen id : 17]
-Input [2]: [sum#53, isEmpty#54]
-Keys: []
-Functions [1]: [sum(total_sum#50)]
-Aggregate Attributes [1]: [sum(total_sum#50)#55]
-Results [6]: [sum(total_sum#50)#55 AS total_sum#56, null AS s_state#57, null AS s_county#58, 1 AS g_state#59, 1 AS g_county#60, 2 AS lochierarchy#61]
-
-(57) Union
-
-(58) HashAggregate [codegen id : 18]
-Input [6]: [total_sum#25, s_state#26, s_county#27, g_state#28, g_county#29, lochierarchy#30]
-Keys [6]: [total_sum#25, s_state#26, s_county#27, g_state#28, g_county#29, lochierarchy#30]
-Functions: []
-Aggregate Attributes: []
-Results [6]: [total_sum#25, s_state#26, s_county#27, g_state#28, g_county#29, lochierarchy#30]
-
-(59) CometColumnarExchange
-Input [6]: [total_sum#25, s_state#26, s_county#27, g_state#28, g_county#29, lochierarchy#30]
-Arguments: hashpartitioning(total_sum#25, s_state#26, s_county#27, g_state#28, g_county#29, lochierarchy#30, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=7]
-
-(60) CometHashAggregate
-Input [6]: [total_sum#25, s_state#26, s_county#27, g_state#28, g_county#29, lochierarchy#30]
-Keys [6]: [total_sum#25, s_state#26, s_county#27, g_state#28, g_county#29, lochierarchy#30]
+(53) CometHashAggregate
+Input [6]: [total_sum#38, s_state#39, s_county#40, g_state#41, g_county#42, lochierarchy#43]
+Keys [6]: [total_sum#38, s_state#39, s_county#40, g_state#41, g_county#42, lochierarchy#43]
 Functions: []
 
-(61) CometExchange
-Input [5]: [total_sum#25, s_state#26, s_county#27, lochierarchy#30, _w0#62]
-Arguments: hashpartitioning(lochierarchy#30, _w0#62, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=8]
+(54) CometExchange
+Input [6]: [total_sum#38, s_state#39, s_county#40, g_state#41, g_county#42, lochierarchy#43]
+Arguments: hashpartitioning(total_sum#38, s_state#39, s_county#40, g_state#41, g_county#42, lochierarchy#43, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=7]
 
-(62) CometSort
-Input [5]: [total_sum#25, s_state#26, s_county#27, lochierarchy#30, _w0#62]
-Arguments: [total_sum#25, s_state#26, s_county#27, lochierarchy#30, _w0#62], [lochierarchy#30 ASC NULLS FIRST, _w0#62 ASC NULLS FIRST, total_sum#25 DESC NULLS LAST]
+(55) CometHashAggregate
+Input [6]: [total_sum#38, s_state#39, s_county#40, g_state#41, g_county#42, lochierarchy#43]
+Keys [6]: [total_sum#38, s_state#39, s_county#40, g_state#41, g_county#42, lochierarchy#43]
+Functions: []
 
-(63) CometColumnarToRow [codegen id : 19]
-Input [5]: [total_sum#25, s_state#26, s_county#27, lochierarchy#30, _w0#62]
+(56) CometExchange
+Input [5]: [total_sum#38, s_state#39, s_county#40, lochierarchy#43, _w0#55]
+Arguments: hashpartitioning(lochierarchy#43, _w0#55, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=8]
 
-(64) Window
-Input [5]: [total_sum#25, s_state#26, s_county#27, lochierarchy#30, _w0#62]
-Arguments: [rank(total_sum#25) windowspecdefinition(lochierarchy#30, _w0#62, total_sum#25 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#63], [lochierarchy#30, _w0#62], [total_sum#25 DESC NULLS LAST]
+(57) CometSort
+Input [5]: [total_sum#38, s_state#39, s_county#40, lochierarchy#43, _w0#55]
+Arguments: [total_sum#38, s_state#39, s_county#40, lochierarchy#43, _w0#55], [lochierarchy#43 ASC NULLS FIRST, _w0#55 ASC NULLS FIRST, total_sum#38 DESC NULLS LAST]
 
-(65) Project [codegen id : 20]
-Output [5]: [total_sum#25, s_state#26, s_county#27, lochierarchy#30, rank_within_parent#63]
-Input [6]: [total_sum#25, s_state#26, s_county#27, lochierarchy#30, _w0#62, rank_within_parent#63]
+(58) CometColumnarToRow [codegen id : 13]
+Input [5]: [total_sum#38, s_state#39, s_county#40, lochierarchy#43, _w0#55]
 
-(66) TakeOrderedAndProject
-Input [5]: [total_sum#25, s_state#26, s_county#27, lochierarchy#30, rank_within_parent#63]
-Arguments: 100, [lochierarchy#30 DESC NULLS LAST, CASE WHEN (lochierarchy#30 = 0) THEN s_state#26 END ASC NULLS FIRST, rank_within_parent#63 ASC NULLS FIRST], [total_sum#25, s_state#26, s_county#27, lochierarchy#30, rank_within_parent#63]
+(59) Window
+Input [5]: [total_sum#38, s_state#39, s_county#40, lochierarchy#43, _w0#55]
+Arguments: [rank(total_sum#38) windowspecdefinition(lochierarchy#43, _w0#55, total_sum#38 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#56], [lochierarchy#43, _w0#55], [total_sum#38 DESC NULLS LAST]
+
+(60) Project [codegen id : 14]
+Output [5]: [total_sum#38, s_state#39, s_county#40, lochierarchy#43, rank_within_parent#56]
+Input [6]: [total_sum#38, s_state#39, s_county#40, lochierarchy#43, _w0#55, rank_within_parent#56]
+
+(61) TakeOrderedAndProject
+Input [5]: [total_sum#38, s_state#39, s_county#40, lochierarchy#43, rank_within_parent#56]
+Arguments: 100, [lochierarchy#43 DESC NULLS LAST, CASE WHEN (lochierarchy#43 = 0) THEN s_state#39 END ASC NULLS FIRST, rank_within_parent#56 ASC NULLS FIRST], [total_sum#38, s_state#39, s_county#40, lochierarchy#43, rank_within_parent#56]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#3 IN dynamicpruning#4
-BroadcastExchange (71)
-+- * CometColumnarToRow (70)
-   +- CometProject (69)
-      +- CometFilter (68)
-         +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (67)
+BroadcastExchange (66)
++- * CometColumnarToRow (65)
+   +- CometProject (64)
+      +- CometFilter (63)
+         +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (62)
 
 
-(67) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+(62) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#5, d_month_seq#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_month_seq), GreaterThanOrEqual(d_month_seq,1212), LessThanOrEqual(d_month_seq,1223), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_month_seq:int>
 
-(68) CometFilter
+(63) CometFilter
 Input [2]: [d_date_sk#5, d_month_seq#6]
 Condition : (((isnotnull(d_month_seq#6) AND (d_month_seq#6 >= 1212)) AND (d_month_seq#6 <= 1223)) AND isnotnull(d_date_sk#5))
 
-(69) CometProject
+(64) CometProject
 Input [2]: [d_date_sk#5, d_month_seq#6]
 Arguments: [d_date_sk#5], [d_date_sk#5]
 
-(70) CometColumnarToRow [codegen id : 1]
+(65) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#5]
 
-(71) BroadcastExchange
+(66) BroadcastExchange
 Input [1]: [d_date_sk#5]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=9]
 

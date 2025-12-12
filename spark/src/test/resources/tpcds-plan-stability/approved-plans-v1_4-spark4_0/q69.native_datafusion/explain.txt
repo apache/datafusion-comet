@@ -1,7 +1,7 @@
 == Physical Plan ==
-TakeOrderedAndProject (44)
-+- * HashAggregate (43)
-   +- * CometColumnarToRow (42)
+* CometColumnarToRow (44)
++- CometTakeOrderedAndProject (43)
+   +- CometHashAggregate (42)
       +- CometColumnarExchange (41)
          +- * HashAggregate (40)
             +- * Project (39)
@@ -237,19 +237,17 @@ Results [6]: [cd_gender#22, cd_marital_status#23, cd_education_status#24, cd_pur
 Input [6]: [cd_gender#22, cd_marital_status#23, cd_education_status#24, cd_purchase_estimate#20, cd_credit_rating#25, count#27]
 Arguments: hashpartitioning(cd_gender#22, cd_marital_status#23, cd_education_status#24, cd_purchase_estimate#20, cd_credit_rating#25, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=6]
 
-(42) CometColumnarToRow [codegen id : 10]
-Input [6]: [cd_gender#22, cd_marital_status#23, cd_education_status#24, cd_purchase_estimate#20, cd_credit_rating#25, count#27]
-
-(43) HashAggregate [codegen id : 10]
+(42) CometHashAggregate
 Input [6]: [cd_gender#22, cd_marital_status#23, cd_education_status#24, cd_purchase_estimate#20, cd_credit_rating#25, count#27]
 Keys [5]: [cd_gender#22, cd_marital_status#23, cd_education_status#24, cd_purchase_estimate#20, cd_credit_rating#25]
 Functions [1]: [count(1)]
-Aggregate Attributes [1]: [count(1)#28]
-Results [8]: [cd_gender#22, cd_marital_status#23, cd_education_status#24, count(1)#28 AS cnt1#29, cd_purchase_estimate#20, count(1)#28 AS cnt2#30, cd_credit_rating#25, count(1)#28 AS cnt3#31]
 
-(44) TakeOrderedAndProject
-Input [8]: [cd_gender#22, cd_marital_status#23, cd_education_status#24, cnt1#29, cd_purchase_estimate#20, cnt2#30, cd_credit_rating#25, cnt3#31]
-Arguments: 100, [cd_gender#22 ASC NULLS FIRST, cd_marital_status#23 ASC NULLS FIRST, cd_education_status#24 ASC NULLS FIRST, cd_purchase_estimate#20 ASC NULLS FIRST, cd_credit_rating#25 ASC NULLS FIRST], [cd_gender#22, cd_marital_status#23, cd_education_status#24, cnt1#29, cd_purchase_estimate#20, cnt2#30, cd_credit_rating#25, cnt3#31]
+(43) CometTakeOrderedAndProject
+Input [8]: [cd_gender#22, cd_marital_status#23, cd_education_status#24, cnt1#28, cd_purchase_estimate#20, cnt2#29, cd_credit_rating#25, cnt3#30]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[cd_gender#22 ASC NULLS FIRST,cd_marital_status#23 ASC NULLS FIRST,cd_education_status#24 ASC NULLS FIRST,cd_purchase_estimate#20 ASC NULLS FIRST,cd_credit_rating#25 ASC NULLS FIRST], output=[cd_gender#22,cd_marital_status#23,cd_education_status#24,cnt1#28,cd_purchase_estimate#20,cnt2#29,cd_credit_rating#25,cnt3#30]), [cd_gender#22, cd_marital_status#23, cd_education_status#24, cnt1#28, cd_purchase_estimate#20, cnt2#29, cd_credit_rating#25, cnt3#30], 100, 0, [cd_gender#22 ASC NULLS FIRST, cd_marital_status#23 ASC NULLS FIRST, cd_education_status#24 ASC NULLS FIRST, cd_purchase_estimate#20 ASC NULLS FIRST, cd_credit_rating#25 ASC NULLS FIRST], [cd_gender#22, cd_marital_status#23, cd_education_status#24, cnt1#28, cd_purchase_estimate#20, cnt2#29, cd_credit_rating#25, cnt3#30]
+
+(44) CometColumnarToRow [codegen id : 10]
+Input [8]: [cd_gender#22, cd_marital_status#23, cd_education_status#24, cnt1#28, cd_purchase_estimate#20, cnt2#29, cd_credit_rating#25, cnt3#30]
 
 ===== Subqueries =====
 
@@ -262,18 +260,18 @@ BroadcastExchange (49)
 
 
 (45) CometNativeScan parquet spark_catalog.default.date_dim
-Output [3]: [d_date_sk#7, d_year#32, d_moy#33]
+Output [3]: [d_date_sk#7, d_year#31, d_moy#32]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), IsNotNull(d_moy), EqualTo(d_year,2001), GreaterThanOrEqual(d_moy,4), LessThanOrEqual(d_moy,6), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 
 (46) CometFilter
-Input [3]: [d_date_sk#7, d_year#32, d_moy#33]
-Condition : (((((isnotnull(d_year#32) AND isnotnull(d_moy#33)) AND (d_year#32 = 2001)) AND (d_moy#33 >= 4)) AND (d_moy#33 <= 6)) AND isnotnull(d_date_sk#7))
+Input [3]: [d_date_sk#7, d_year#31, d_moy#32]
+Condition : (((((isnotnull(d_year#31) AND isnotnull(d_moy#32)) AND (d_year#31 = 2001)) AND (d_moy#32 >= 4)) AND (d_moy#32 <= 6)) AND isnotnull(d_date_sk#7))
 
 (47) CometProject
-Input [3]: [d_date_sk#7, d_year#32, d_moy#33]
+Input [3]: [d_date_sk#7, d_year#31, d_moy#32]
 Arguments: [d_date_sk#7], [d_date_sk#7]
 
 (48) CometColumnarToRow [codegen id : 1]

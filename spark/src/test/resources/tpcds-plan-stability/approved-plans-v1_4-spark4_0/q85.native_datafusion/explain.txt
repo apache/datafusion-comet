@@ -1,7 +1,7 @@
 == Physical Plan ==
-TakeOrderedAndProject (52)
-+- * HashAggregate (51)
-   +- * CometColumnarToRow (50)
+* CometColumnarToRow (52)
++- CometTakeOrderedAndProject (51)
+   +- CometHashAggregate (50)
       +- CometColumnarExchange (49)
          +- * HashAggregate (48)
             +- * Project (47)
@@ -280,19 +280,17 @@ Results [7]: [r_reason_desc#36, sum#43, count#44, sum#45, count#46, sum#47, coun
 Input [7]: [r_reason_desc#36, sum#43, count#44, sum#45, count#46, sum#47, count#48]
 Arguments: hashpartitioning(r_reason_desc#36, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=7]
 
-(50) CometColumnarToRow [codegen id : 9]
-Input [7]: [r_reason_desc#36, sum#43, count#44, sum#45, count#46, sum#47, count#48]
-
-(51) HashAggregate [codegen id : 9]
+(50) CometHashAggregate
 Input [7]: [r_reason_desc#36, sum#43, count#44, sum#45, count#46, sum#47, count#48]
 Keys [1]: [r_reason_desc#36]
 Functions [3]: [avg(ws_quantity#4), avg(UnscaledValue(wr_refunded_cash#16)), avg(UnscaledValue(wr_fee#15))]
-Aggregate Attributes [3]: [avg(ws_quantity#4)#49, avg(UnscaledValue(wr_refunded_cash#16))#50, avg(UnscaledValue(wr_fee#15))#51]
-Results [4]: [substr(r_reason_desc#36, 1, 20) AS substr(r_reason_desc, 1, 20)#52, avg(ws_quantity#4)#49 AS avg(ws_quantity)#53, cast((avg(UnscaledValue(wr_refunded_cash#16))#50 / 100.0) as decimal(11,6)) AS avg(wr_refunded_cash)#54, cast((avg(UnscaledValue(wr_fee#15))#51 / 100.0) as decimal(11,6)) AS avg(wr_fee)#55]
 
-(52) TakeOrderedAndProject
-Input [4]: [substr(r_reason_desc, 1, 20)#52, avg(ws_quantity)#53, avg(wr_refunded_cash)#54, avg(wr_fee)#55]
-Arguments: 100, [substr(r_reason_desc, 1, 20)#52 ASC NULLS FIRST, avg(ws_quantity)#53 ASC NULLS FIRST, avg(wr_refunded_cash)#54 ASC NULLS FIRST, avg(wr_fee)#55 ASC NULLS FIRST], [substr(r_reason_desc, 1, 20)#52, avg(ws_quantity)#53, avg(wr_refunded_cash)#54, avg(wr_fee)#55]
+(51) CometTakeOrderedAndProject
+Input [4]: [substr(r_reason_desc, 1, 20)#49, avg(ws_quantity)#50, avg(wr_refunded_cash)#51, avg(wr_fee)#52]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[substr(r_reason_desc, 1, 20)#49 ASC NULLS FIRST,avg(ws_quantity)#50 ASC NULLS FIRST,avg(wr_refunded_cash)#51 ASC NULLS FIRST,avg(wr_fee)#52 ASC NULLS FIRST], output=[substr(r_reason_desc, 1, 20)#49,avg(ws_quantity)#50,avg(wr_refunded_cash)#51,avg(wr_fee)#52]), [substr(r_reason_desc, 1, 20)#49, avg(ws_quantity)#50, avg(wr_refunded_cash)#51, avg(wr_fee)#52], 100, 0, [substr(r_reason_desc, 1, 20)#49 ASC NULLS FIRST, avg(ws_quantity)#50 ASC NULLS FIRST, avg(wr_refunded_cash)#51 ASC NULLS FIRST, avg(wr_fee)#52 ASC NULLS FIRST], [substr(r_reason_desc, 1, 20)#49, avg(ws_quantity)#50, avg(wr_refunded_cash)#51, avg(wr_fee)#52]
+
+(52) CometColumnarToRow [codegen id : 9]
+Input [4]: [substr(r_reason_desc, 1, 20)#49, avg(ws_quantity)#50, avg(wr_refunded_cash)#51, avg(wr_fee)#52]
 
 ===== Subqueries =====
 
@@ -305,18 +303,18 @@ BroadcastExchange (57)
 
 
 (53) CometNativeScan parquet spark_catalog.default.date_dim
-Output [2]: [d_date_sk#33, d_year#56]
+Output [2]: [d_date_sk#33, d_year#53]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), EqualTo(d_year,2000), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int>
 
 (54) CometFilter
-Input [2]: [d_date_sk#33, d_year#56]
-Condition : ((isnotnull(d_year#56) AND (d_year#56 = 2000)) AND isnotnull(d_date_sk#33))
+Input [2]: [d_date_sk#33, d_year#53]
+Condition : ((isnotnull(d_year#53) AND (d_year#53 = 2000)) AND isnotnull(d_date_sk#33))
 
 (55) CometProject
-Input [2]: [d_date_sk#33, d_year#56]
+Input [2]: [d_date_sk#33, d_year#53]
 Arguments: [d_date_sk#33], [d_date_sk#33]
 
 (56) CometColumnarToRow [codegen id : 1]

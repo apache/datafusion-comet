@@ -1,7 +1,7 @@
 == Physical Plan ==
-TakeOrderedAndProject (26)
-+- * HashAggregate (25)
-   +- * CometColumnarToRow (24)
+* CometColumnarToRow (26)
++- CometTakeOrderedAndProject (25)
+   +- CometHashAggregate (24)
       +- CometColumnarExchange (23)
          +- * HashAggregate (22)
             +- * Expand (21)
@@ -134,19 +134,17 @@ Results [7]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_gr
 Input [7]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_grouping_id#20, sum#23, count#24]
 Arguments: hashpartitioning(i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_grouping_id#20, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
-(24) CometColumnarToRow [codegen id : 3]
-Input [7]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_grouping_id#20, sum#23, count#24]
-
-(25) HashAggregate [codegen id : 3]
+(24) CometHashAggregate
 Input [7]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_grouping_id#20, sum#23, count#24]
 Keys [5]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_grouping_id#20]
 Functions [1]: [avg(inv_quantity_on_hand#2)]
-Aggregate Attributes [1]: [avg(inv_quantity_on_hand#2)#25]
-Results [5]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, avg(inv_quantity_on_hand#2)#25 AS qoh#26]
 
-(26) TakeOrderedAndProject
-Input [5]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, qoh#26]
-Arguments: 100, [qoh#26 ASC NULLS FIRST, i_product_name#16 ASC NULLS FIRST, i_brand#17 ASC NULLS FIRST, i_class#18 ASC NULLS FIRST, i_category#19 ASC NULLS FIRST], [i_product_name#16, i_brand#17, i_class#18, i_category#19, qoh#26]
+(25) CometTakeOrderedAndProject
+Input [5]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, qoh#25]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[qoh#25 ASC NULLS FIRST,i_product_name#16 ASC NULLS FIRST,i_brand#17 ASC NULLS FIRST,i_class#18 ASC NULLS FIRST,i_category#19 ASC NULLS FIRST], output=[i_product_name#16,i_brand#17,i_class#18,i_category#19,qoh#25]), [i_product_name#16, i_brand#17, i_class#18, i_category#19, qoh#25], 100, 0, [qoh#25 ASC NULLS FIRST, i_product_name#16 ASC NULLS FIRST, i_brand#17 ASC NULLS FIRST, i_class#18 ASC NULLS FIRST, i_category#19 ASC NULLS FIRST], [i_product_name#16, i_brand#17, i_class#18, i_category#19, qoh#25]
+
+(26) CometColumnarToRow [codegen id : 3]
+Input [5]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, qoh#25]
 
 ===== Subqueries =====
 

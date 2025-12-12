@@ -1,8 +1,8 @@
-TakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
-  WholeStageCodegen (5)
-    HashAggregate [s_store_name,sum] [sum(UnscaledValue(ss_net_profit)),sum(ss_net_profit),sum]
-      CometColumnarToRow
-        InputAdapter
+WholeStageCodegen (5)
+  CometColumnarToRow
+    InputAdapter
+      CometTakeOrderedAndProject [s_store_name,sum(ss_net_profit)]
+        CometHashAggregate [sum] [s_store_name,sum(ss_net_profit),sum(UnscaledValue(ss_net_profit))]
           CometColumnarExchange [s_store_name] #1
             WholeStageCodegen (4)
               HashAggregate [s_store_name,ss_net_profit] [sum,sum]
