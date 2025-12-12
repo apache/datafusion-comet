@@ -19,6 +19,8 @@
 
 package org.apache.comet.rules
 
+import scala.collection.mutable.ListBuffer
+
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
@@ -26,21 +28,29 @@ import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
-import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
+import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
+import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, V2CommandExec}
+import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
+import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
+import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
+import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, Unsupported}
-import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator._
 import org.apache.comet.serde.operator.CometDataWritingCommand
 
@@ -192,13 +202,13 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
-        convertToCometIfAllChildrenAreNative(s, CometExchangeSink).getOrElse(s)
+        convertToComet(s, CometExchangeSink).getOrElse(s)
 
       case s @ BroadcastQueryStageExec(
             _,
             ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
             _) =>
-        convertToCometIfAllChildrenAreNative(s, CometExchangeSink).getOrElse(s)
+        convertToComet(s, CometExchangeSink).getOrElse(s)
 
       // `CometBroadcastExchangeExec`'s broadcast output is not compatible with Spark's broadcast
       // exchange. It is only used for Comet native execution. We only transform Spark broadcast
@@ -206,27 +216,20 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // broadcast exchange is forced to be enabled by Comet config.
       case plan if plan.children.exists(_.isInstanceOf[BroadcastExchangeExec]) =>
         val newChildren = plan.children.map {
-          case b: BroadcastExchangeExec
-              if isCometNative(b.child) &&
-                CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) =>
-            operator2Proto(b) match {
-              case Some(nativeOp) =>
-                val cometOp = CometBroadcastExchangeExec(b, b.output, b.mode, b.child)
-                CometSinkPlaceHolder(nativeOp, b, cometOp)
-              case None => b
-            }
+          case b: BroadcastExchangeExec if b.children.forall(_.isInstanceOf[CometNativeExec]) =>
+            convertToComet(b, CometBroadcastExchangeExec).getOrElse(b)
           case other => other
         }
         if (!newChildren.exists(_.isInstanceOf[BroadcastExchangeExec])) {
           val newPlan = convertNode(plan.withNewChildren(newChildren))
-          if (isCometNative(newPlan) || isCometBroadCastForceEnabled(conf)) {
+          if (isCometNative(newPlan) || CometConf.COMET_EXEC_BROADCAST_FORCE_ENABLED.get(conf)) {
             newPlan
           } else {
-            if (isCometNative(newPlan)) {
-              val reason =
-                getCometBroadcastNotEnabledReason(conf).getOrElse("no reason available")
-              withInfo(plan, s"Broadcast is not enabled: $reason")
-            }
+            // copy fallback reasons to the original plan
+            newPlan
+              .getTagValue(CometExplainInfo.EXTENSION_INFO)
+              .foreach(reasons => withInfos(plan, reasons))
+            // return the original plan
             plan
           }
         } else {
@@ -235,42 +238,49 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       // For AQE shuffle stage on a Comet shuffle exchange
       case s @ ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) =>
-        convertToCometIfAllChildrenAreNative(s, CometExchangeSink).getOrElse(s)
+        convertToComet(s, CometExchangeSink).getOrElse(s)
 
       // For AQE shuffle stage on a reused Comet shuffle exchange
       // Note that we don't need to handle `ReusedExchangeExec` for non-AQE case, because
       // the query plan won't be re-optimized/planned in non-AQE mode.
       case s @ ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
-        convertToCometIfAllChildrenAreNative(s, CometExchangeSink).getOrElse(s)
+        convertToComet(s, CometExchangeSink).getOrElse(s)
 
       case s: ShuffleExchangeExec =>
         convertToComet(s, CometShuffleExchangeExec).getOrElse(s)
 
       case op =>
-        val handler = allExecs
-          .get(op.getClass)
-          .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
-        handler match {
-          case Some(handler) =>
-            return convertToCometIfAllChildrenAreNative(op, handler).getOrElse(op)
-          case _ =>
+        // if all children are native (or if this is a leaf node) then see if there is a
+        // registered handler for creating a fully native plan
+        if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
+          val handler = allExecs
+            .get(op.getClass)
+            .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
+          handler match {
+            case Some(handler) =>
+              return convertToComet(op, handler).getOrElse(op)
+            case _ =>
+          }
         }
 
         op match {
           case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
-              _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec =>
+              _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec | _: ExecutedCommandExec |
+              _: V2CommandExec =>
             // Some execs should never be replaced. We include
             // these cases specially here so we do not add a misleading 'info' message
             op
-          case _: ExecutedCommandExec | _: V2CommandExec =>
-            // Some execs that comet will not accelerate, such as command execs.
-            op
           case _ =>
-            if (!hasExplainInfo(op)) {
-              // An operator that is not supported by Comet
+            // The operator was not converted to a Comet plan. Possible reasons for this happening:
+            // 1. Comet does not support this operator.
+            // 2. The operator could not be supported based on query context and current
+            //    configs. In this case, it should have already been tagged with fallback
+            //    reasons.
+            // 3. The operator has children that could not be converted, so execution
+            //    has already fallen back to Spark.
+            if (op.children.forall(_.isInstanceOf[CometNativeExec]) && !hasExplainInfo(op)) {
               withInfo(op, s"${op.nodeName} is not supported")
             } else {
-              // Already has fallback reason, do not override it
               op
             }
         }
@@ -348,7 +358,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) return plan
 
-    if (!isCometExecEnabled(conf)) {
+    if (!CometConf.COMET_EXEC_ENABLED.get(conf)) {
       // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle
       if (isCometShuffleEnabled(conf)) {
         applyCometShuffle(plan)
@@ -457,79 +467,12 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
     }
   }
 
-  /**
-   * Fallback for handling sinks that have not been handled explicitly. This method should
-   * eventually be removed once CometExecRule fully uses the operator serde framework.
-   */
-  private def operator2Proto(op: SparkPlan, childOp: Operator*): Option[Operator] = {
-
-    def isCometSink(op: SparkPlan): Boolean = {
-      op match {
-        case _: CometSparkToColumnarExec => true
-        case _: CometSinkPlaceHolder => true
-        case _ => false
-      }
-    }
-
-    def isExchangeSink(op: SparkPlan): Boolean = {
-      op match {
-        case _: ShuffleExchangeExec => true
-        case ShuffleQueryStageExec(_, _: CometShuffleExchangeExec, _) => true
-        case ShuffleQueryStageExec(_, ReusedExchangeExec(_, _: CometShuffleExchangeExec), _) =>
-          true
-        case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
-        case BroadcastQueryStageExec(
-              _,
-              ReusedExchangeExec(_, _: CometBroadcastExchangeExec),
-              _) =>
-          true
-        case _: BroadcastExchangeExec => true
-        case _ => false
-      }
-    }
-
-    val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
-    childOp.foreach(builder.addChildren)
-
-    op match {
-      case op if isExchangeSink(op) =>
-        CometExchangeSink.convert(op, builder, childOp: _*)
-
-      case op if isCometSink(op) =>
-        CometScanWrapper.convert(op, builder, childOp: _*)
-
-      case _ =>
-        // Emit warning if:
-        //  1. it is not Spark shuffle operator, which is handled separately
-        //  2. it is not a Comet operator
-        if (!op.nodeName.contains("Comet") &&
-          !op.isInstanceOf[ShuffleExchangeExec]) {
-          withInfo(op, s"unsupported Spark operator: ${op.nodeName}")
-        }
-        None
-    }
-  }
-
-  /**
-   * Convert a Spark plan to a Comet plan using the specified serde handler, but only if all
-   * children are native.
-   */
-  private def convertToCometIfAllChildrenAreNative(
-      op: SparkPlan,
-      handler: CometOperatorSerde[_]): Option[SparkPlan] = {
-    if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
-      convertToComet(op, handler)
-    } else {
-      None
-    }
-  }
-
   /** Convert a Spark plan to a Comet plan using the specified serde handler */
   private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] = {
     val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
     if (isOperatorEnabled(serde, op)) {
       val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
-      if (op.children.forall(_.isInstanceOf[CometNativeExec])) {
+      if (op.children.nonEmpty && op.children.forall(_.isInstanceOf[CometNativeExec])) {
         val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
         childOp.foreach(builder.addChildren)
         return serde
@@ -586,4 +529,49 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       false
     }
   }
+
+  private def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
+    // Only consider converting leaf nodes to columnar currently, so that all the following
+    // operators can have a chance to be converted to columnar. Leaf operators that output
+    // columnar batches, such as Spark's vectorized readers, will also be converted to native
+    // comet batches.
+    val fallbackReasons = new ListBuffer[String]()
+    if (CometSparkToColumnarExec.isSchemaSupported(op.schema, fallbackReasons)) {
+      op match {
+        // Convert Spark DS v1 scan to Arrow format
+        case scan: FileSourceScanExec =>
+          scan.relation.fileFormat match {
+            case _: CSVFileFormat => CometConf.COMET_CONVERT_FROM_CSV_ENABLED.get(conf)
+            case _: JsonFileFormat => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
+            case _: ParquetFileFormat => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
+            case _ => isSparkToArrowEnabled(conf, op)
+          }
+        // Convert Spark DS v2 scan to Arrow format
+        case scan: BatchScanExec =>
+          scan.scan match {
+            case _: CSVScan => CometConf.COMET_CONVERT_FROM_CSV_ENABLED.get(conf)
+            case _: JsonScan => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
+            case _: ParquetScan => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
+            case _ => isSparkToArrowEnabled(conf, op)
+          }
+        // other leaf nodes
+        case _: LeafExecNode =>
+          isSparkToArrowEnabled(conf, op)
+        case _ =>
+          // TODO: consider converting other intermediate operators to columnar.
+          false
+      }
+    } else {
+      false
+    }
+  }
+
+  private def isSparkToArrowEnabled(conf: SQLConf, op: SparkPlan) = {
+    COMET_SPARK_TO_ARROW_ENABLED.get(conf) && {
+      val simpleClassName = Utils.getSimpleName(op.getClass)
+      val nodeName = simpleClassName.replaceAll("Exec$", "")
+      COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
+    }
+  }
+
 }

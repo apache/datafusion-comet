@@ -21,8 +21,6 @@ package org.apache.comet
 
 import java.nio.ByteOrder
 
-import scala.collection.mutable.ListBuffer
-
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
@@ -30,15 +28,7 @@ import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.comet._
-import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
-import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
-import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
-import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
-import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
-import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
@@ -75,10 +65,6 @@ class CometSparkSessionExtensions
 
 object CometSparkSessionExtensions extends Logging {
   lazy val isBigEndian: Boolean = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN)
-
-  private[comet] def isANSIEnabled(conf: SQLConf): Boolean = {
-    conf.getConf(SQLConf.ANSI_ENABLED)
-  }
 
   /**
    * Checks whether Comet extension should be loaded for Spark.
@@ -122,21 +108,6 @@ object CometSparkSessionExtensions extends Logging {
     }
   }
 
-  private[comet] def isCometBroadCastForceEnabled(conf: SQLConf): Boolean = {
-    COMET_EXEC_BROADCAST_FORCE_ENABLED.get(conf)
-  }
-
-  private[comet] def getCometBroadcastNotEnabledReason(conf: SQLConf): Option[String] = {
-    if (!CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) &&
-      !isCometBroadCastForceEnabled(conf)) {
-      Some(
-        s"${COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.key}.enabled is not specified and " +
-          s"${COMET_EXEC_BROADCAST_FORCE_ENABLED.key} is not specified")
-    } else {
-      None
-    }
-  }
-
   // Check whether Comet shuffle is enabled:
   // 1. `COMET_EXEC_SHUFFLE_ENABLED` is true
   // 2. `spark.shuffle.manager` is set to `CometShuffleManager`
@@ -149,60 +120,8 @@ object CometSparkSessionExtensions extends Logging {
       "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
   }
 
-  private[comet] def isCometScanEnabled(conf: SQLConf): Boolean = {
-    COMET_NATIVE_SCAN_ENABLED.get(conf)
-  }
-
-  private[comet] def isCometExecEnabled(conf: SQLConf): Boolean = {
-    COMET_EXEC_ENABLED.get(conf)
-  }
-
   def isCometScan(op: SparkPlan): Boolean = {
     op.isInstanceOf[CometBatchScanExec] || op.isInstanceOf[CometScanExec]
-  }
-
-  def shouldApplySparkToColumnar(conf: SQLConf, op: SparkPlan): Boolean = {
-    // Only consider converting leaf nodes to columnar currently, so that all the following
-    // operators can have a chance to be converted to columnar. Leaf operators that output
-    // columnar batches, such as Spark's vectorized readers, will also be converted to native
-    // comet batches.
-    val fallbackReasons = new ListBuffer[String]()
-    if (CometSparkToColumnarExec.isSchemaSupported(op.schema, fallbackReasons)) {
-      op match {
-        // Convert Spark DS v1 scan to Arrow format
-        case scan: FileSourceScanExec =>
-          scan.relation.fileFormat match {
-            case _: CSVFileFormat => CometConf.COMET_CONVERT_FROM_CSV_ENABLED.get(conf)
-            case _: JsonFileFormat => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
-            case _: ParquetFileFormat => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
-            case _ => isSparkToArrowEnabled(conf, op)
-          }
-        // Convert Spark DS v2 scan to Arrow format
-        case scan: BatchScanExec =>
-          scan.scan match {
-            case _: CSVScan => CometConf.COMET_CONVERT_FROM_CSV_ENABLED.get(conf)
-            case _: JsonScan => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
-            case _: ParquetScan => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
-            case _ => isSparkToArrowEnabled(conf, op)
-          }
-        // other leaf nodes
-        case _: LeafExecNode =>
-          isSparkToArrowEnabled(conf, op)
-        case _ =>
-          // TODO: consider converting other intermediate operators to columnar.
-          false
-      }
-    } else {
-      false
-    }
-  }
-
-  private def isSparkToArrowEnabled(conf: SQLConf, op: SparkPlan) = {
-    COMET_SPARK_TO_ARROW_ENABLED.get(conf) && {
-      val simpleClassName = Utils.getSimpleName(op.getClass)
-      val nodeName = simpleClassName.replaceAll("Exec$", "")
-      COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
-    }
   }
 
   def isSpark35Plus: Boolean = {
@@ -364,12 +283,4 @@ object CometSparkSessionExtensions extends Logging {
     node.getTagValue(CometExplainInfo.EXTENSION_INFO).exists(_.nonEmpty)
   }
 
-  // Helper to reduce boilerplate
-  def createMessage(condition: Boolean, message: => String): Option[String] = {
-    if (condition) {
-      Some(message)
-    } else {
-      None
-    }
-  }
 }
