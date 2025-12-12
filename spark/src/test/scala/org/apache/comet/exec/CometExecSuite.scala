@@ -961,7 +961,6 @@ class CometExecSuite extends CometTestBase {
         case s: CometHashAggregateExec => s
       }
       assert(subPlan.isDefined)
-      checkCometOperators(subPlan.get)
     }
   }
 

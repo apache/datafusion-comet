@@ -131,9 +131,7 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  // TODO this test exposes the bug described in
-  // https://github.com/apache/datafusion-comet/issues/1389
-  ignore("CometExecRule should not allow Comet partial and Spark final hash aggregate") {
+  test("CometExecRule should not allow Comet partial and Spark final hash aggregate") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
