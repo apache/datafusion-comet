@@ -27,8 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, Literal, PlanExpre
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.FileSourceScanExec
-import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, PartitionedFile}
-import org.apache.spark.sql.execution.datasources.v2.{DataSourceRDD, DataSourceRDDPartition}
+import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StructField, StructType}
 
@@ -143,31 +142,11 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         nativeScanBuilder.addAllDefaultValuesIndexes(indexes.toIterable.asJava)
       }
 
-      // TODO: modify CometNativeScan to generate the file partitions without instantiating RDD.
-      var firstPartition: Option[PartitionedFile] = None
-      scan.inputRDD match {
-        case rdd: DataSourceRDD =>
-          val partitions = rdd.partitions
-          partitions.foreach(p => {
-            val inputPartitions = p.asInstanceOf[DataSourceRDDPartition].inputPartitions
-            inputPartitions.foreach(partition => {
-              if (firstPartition.isEmpty) {
-                firstPartition = partition.asInstanceOf[FilePartition].files.headOption
-              }
-              partition2Proto(
-                partition.asInstanceOf[FilePartition],
-                nativeScanBuilder,
-                scan.relation.partitionSchema)
-            })
-          })
-        case rdd: FileScanRDD =>
-          rdd.filePartitions.foreach(partition => {
-            if (firstPartition.isEmpty) {
-              firstPartition = partition.files.headOption
-            }
-            partition2Proto(partition, nativeScanBuilder, scan.relation.partitionSchema)
-          })
-        case _ =>
+      val filePartitions = scan.getFilePartitions()
+      val firstPartition = filePartitions.flatMap(_.files).headOption
+
+      filePartitions.foreach { partition =>
+        partition2Proto(partition, nativeScanBuilder, scan.relation.partitionSchema)
       }
 
       val partitionSchema = schema2Proto(scan.relation.partitionSchema.fields)

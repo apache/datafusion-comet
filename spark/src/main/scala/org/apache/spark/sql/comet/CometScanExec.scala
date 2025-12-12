@@ -294,26 +294,35 @@ case class CometScanExec(
   }
 
   /**
-   * Create an RDD for bucketed reads. The non-bucketed variant of this function is
-   * [[createReadRDD]].
-   *
-   * The algorithm is pretty simple: each RDD partition being returned should include all the
-   * files with the same bucket id from all the given Hive partitions.
+   * Get the file partitions for this scan without instantiating readers or RDD.
+   */
+  def getFilePartitions: Seq[FilePartition] = {
+    val filePartitions = if (bucketedScan) {
+      createFilePartitionsForBucketedScan(
+        relation.bucketSpec.get,
+        dynamicallySelectedPartitions,
+        relation)
+    } else {
+      createFilePartitionsForNonBucketedScan(dynamicallySelectedPartitions, relation)
+    }
+    sendDriverMetrics()
+    filePartitions
+  }
+
+  /**
+   * Create file partitions for bucketed scans without instantiating readers.
    *
    * @param bucketSpec
    *   the bucketing spec.
-   * @param readFile
-   *   a function to read each (part of a) file.
    * @param selectedPartitions
    *   Hive-style partition that are part of the read.
    * @param fsRelation
    *   [[HadoopFsRelation]] associated with the read.
    */
-  private def createBucketedReadRDD(
+  private def createFilePartitionsForBucketedScan(
       bucketSpec: BucketSpec,
-      readFile: (PartitionedFile) => Iterator[InternalRow],
       selectedPartitions: Array[PartitionDirectory],
-      fsRelation: HadoopFsRelation): RDD[InternalRow] = {
+      fsRelation: HadoopFsRelation): Seq[FilePartition] = {
     logInfo(s"Planning with ${bucketSpec.numBuckets} buckets")
     val filesGroupedToBuckets =
       selectedPartitions
@@ -337,7 +346,7 @@ case class CometScanExec(
       filesGroupedToBuckets
     }
 
-    val filePartitions = optionalNumCoalescedBuckets
+    optionalNumCoalescedBuckets
       .map { numCoalescedBuckets =>
         logInfo(s"Coalescing to ${numCoalescedBuckets} buckets")
         val coalescedBuckets = prunedFilesGroupedToBuckets.groupBy(_._1 % numCoalescedBuckets)
@@ -356,25 +365,19 @@ case class CometScanExec(
           FilePartition(bucketId, prunedFilesGroupedToBuckets.getOrElse(bucketId, Array.empty))
         }
       }
-
-    prepareRDD(fsRelation, readFile, filePartitions)
   }
 
   /**
-   * Create an RDD for non-bucketed reads. The bucketed variant of this function is
-   * [[createBucketedReadRDD]].
+   * Create file partitions for non-bucketed scans without instantiating readers.
    *
-   * @param readFile
-   *   a function to read each (part of a) file.
    * @param selectedPartitions
    *   Hive-style partition that are part of the read.
    * @param fsRelation
    *   [[HadoopFsRelation]] associated with the read.
    */
-  private def createReadRDD(
-      readFile: (PartitionedFile) => Iterator[InternalRow],
+  private def createFilePartitionsForNonBucketedScan(
       selectedPartitions: Array[PartitionDirectory],
-      fsRelation: HadoopFsRelation): RDD[InternalRow] = {
+      fsRelation: HadoopFsRelation): Seq[FilePartition] = {
     val openCostInBytes = fsRelation.sparkSession.sessionState.conf.filesOpenCostInBytes
     val maxSplitBytes =
       FilePartition.maxSplitBytes(fsRelation.sparkSession, selectedPartitions)
@@ -420,10 +423,52 @@ case class CometScanExec(
       }
       .sortBy(_.length)(implicitly[Ordering[Long]].reverse)
 
-    prepareRDD(
-      fsRelation,
-      readFile,
-      FilePartition.getFilePartitions(relation.sparkSession, splitFiles, maxSplitBytes))
+    FilePartition.getFilePartitions(relation.sparkSession, splitFiles, maxSplitBytes)
+  }
+
+  /**
+   * Create an RDD for bucketed reads. The non-bucketed variant of this function is
+   * [[createReadRDD]].
+   *
+   * Each RDD partition being returned should include all the files with the same bucket id from
+   * all the given Hive partitions.
+   *
+   * @param bucketSpec
+   *   the bucketing spec.
+   * @param readFile
+   *   a function to read each (part of a) file.
+   * @param selectedPartitions
+   *   Hive-style partition that are part of the read.
+   * @param fsRelation
+   *   [[HadoopFsRelation]] associated with the read.
+   */
+  private def createBucketedReadRDD(
+      bucketSpec: BucketSpec,
+      readFile: (PartitionedFile) => Iterator[InternalRow],
+      selectedPartitions: Array[PartitionDirectory],
+      fsRelation: HadoopFsRelation): RDD[InternalRow] = {
+    val filePartitions =
+      createFilePartitionsForBucketedScan(bucketSpec, selectedPartitions, fsRelation)
+    prepareRDD(fsRelation, readFile, filePartitions)
+  }
+
+  /**
+   * Create an RDD for non-bucketed reads. The bucketed variant of this function is
+   * [[createBucketedReadRDD]].
+   *
+   * @param readFile
+   *   a function to read each (part of a) file.
+   * @param selectedPartitions
+   *   Hive-style partition that are part of the read.
+   * @param fsRelation
+   *   [[HadoopFsRelation]] associated with the read.
+   */
+  private def createReadRDD(
+      readFile: (PartitionedFile) => Iterator[InternalRow],
+      selectedPartitions: Array[PartitionDirectory],
+      fsRelation: HadoopFsRelation): RDD[InternalRow] = {
+    val filePartitions = createFilePartitionsForNonBucketedScan(selectedPartitions, fsRelation)
+    prepareRDD(fsRelation, readFile, filePartitions)
   }
 
   private def prepareRDD(
