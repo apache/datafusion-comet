@@ -169,6 +169,21 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   /**
+   * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate with
+   * partial mode, it will return None.
+   */
+  private def findCometPartialAgg(plan: SparkPlan): Option[SparkPlan] = {
+    plan.collectFirst {
+      case agg: CometHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+        Some(agg)
+      case agg: BaseAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+        Some(agg)
+      case a: AQEShuffleReadExec => findCometPartialAgg(a.child)
+      case s: ShuffleQueryStageExec => findCometPartialAgg(s.plan)
+    }.flatten
+  }
+
+  /**
    * Tags the first related partial aggregate in the subtree with fallback reasons. Stops
    * transforming after finding and tagging the first partial aggregate to avoid affecting
    * unrelated aggregates elsewhere in the tree.
