@@ -31,9 +31,6 @@ of expressions that be disabled.
 Expressions that are not Spark-compatible will fall back to Spark by default and can be enabled by setting
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`.
 
-It is also possible to specify `spark.comet.expression.allowIncompatible=true` to enable all
-incompatible expressions.
-
 ## Conditional Expressions
 
 | Expression | SQL                                         | Spark-Compatible? |
@@ -66,6 +63,7 @@ incompatible expressions.
 | Ascii           | Yes               |                                                                                                            |
 | BitLength       | Yes               |                                                                                                            |
 | Chr             | Yes               |                                                                                                            |
+| Concat          | Yes               | Only string inputs are supported                                                                           |
 | ConcatWs        | Yes               |                                                                                                            |
 | Contains        | Yes               |                                                                                                            |
 | EndsWith        | Yes               |                                                                                                            |
@@ -117,7 +115,8 @@ incompatible expressions.
 ## Math Expressions
 
 | Expression     | SQL       | Spark-Compatible? | Compatibility Notes               |
-|----------------|-----------|-------------------|-----------------------------------|
+| -------------- | --------- | ----------------- | --------------------------------- |
+| Abs            | `abs`     | Yes               |                                   |
 | Acos           | `acos`    | Yes               |                                   |
 | Add            | `+`       | Yes               |                                   |
 | Asin           | `asin`    | Yes               |                                   |
@@ -126,6 +125,8 @@ incompatible expressions.
 | BRound         | `bround`  | Yes               |                                   |
 | Ceil           | `ceil`    | Yes               |                                   |
 | Cos            | `cos`     | Yes               |                                   |
+| Cosh           | `cosh`    | Yes               |                                   |
+| Cot            | `cot`     | Yes               |                                   |
 | Divide         | `/`       | Yes               |                                   |
 | Exp            | `exp`     | Yes               |                                   |
 | Expm1          | `expm1`   | Yes               |                                   |
@@ -144,9 +145,11 @@ incompatible expressions.
 | Round          | `round`   | Yes               |                                   |
 | Signum         | `signum`  | Yes               |                                   |
 | Sin            | `sin`     | Yes               |                                   |
+| Sinh           | `sinh`    | Yes               |                                   |
 | Sqrt           | `sqrt`    | Yes               |                                   |
 | Subtract       | `-`       | Yes               |                                   |
 | Tan            | `tan`     | Yes               |                                   |
+| Tanh           | `tanh`    | Yes               |                                   |
 | TryAdd         | `try_add` | Yes               | Only integer inputs are supported |
 | TryDivide      | `try_div` | Yes               | Only integer inputs are supported |
 | TryMultiply    | `try_mul` | Yes               | Only integer inputs are supported |
@@ -200,6 +203,23 @@ incompatible expressions.
 | VariancePop   |            | Yes                       |                                                                  |
 | VarianceSamp  |            | Yes                       |                                                                  |
 
+## Window Functions
+
+```{warning}
+Window support is disabled by default due to known correctness issues. Tracking issue: [#2721](https://github.com/apache/datafusion-comet/issues/2721).
+```
+
+Comet supports using the following aggregate functions within window contexts with PARTITION BY and ORDER BY clauses.
+
+| Expression | Spark-Compatible? | Compatibility Notes |
+| ---------- | ----------------- | ------------------- |
+| Count      | Yes               |                     |
+| Max        | Yes               |                     |
+| Min        | Yes               |                     |
+| Sum        | Yes               |                     |
+
+**Note:** Dedicated window functions such as `rank`, `dense_rank`, `row_number`, `lag`, `lead`, `ntile`, `cume_dist`, `percent_rank`, and `nth_value` are not currently supported and will fall back to Spark.
+
 ## Array Expressions
 
 | Expression     | Spark-Compatible? | Compatibility Notes                                                                                                                                                                       |
@@ -249,12 +269,21 @@ incompatible expressions.
 | ---------- | ------------------------ | ------------------------------------------------------------------------------------------- |
 | Cast       | Depends on specific cast | See the [Comet Compatibility Guide] for list of supported cast expressions and known issues |
 
+## SortOrder
+
+| Expression | Spark-Compatible? | Compatibility Notes |
+| ---------- | ----------------- | ------------------- |
+| NullsFirst | Yes               |                     |
+| NullsLast  | Yes               |                     |
+| Ascending  | Yes               |                     |
+| Descending | Yes               |                     |
+
 ## Other
 
 | Expression                   | Spark-Compatible? | Compatibility Notes                                                         |
 | ---------------------------- | ----------------- | --------------------------------------------------------------------------- |
 | Alias                        | Yes               |                                                                             |
-| AttributeRefernce            | Yes               |                                                                             |
+| AttributeReference           | Yes               |                                                                             |
 | BloomFilterMightContain      | Yes               |                                                                             |
 | Coalesce                     | Yes               |                                                                             |
 | CheckOverflow                | Yes               |                                                                             |

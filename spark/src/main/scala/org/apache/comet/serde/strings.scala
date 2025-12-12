@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, InitCap, Length, Like, Literal, Lower, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, InitCap, Length, Like, Literal, Lower, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
@@ -113,6 +113,18 @@ object CometSubstring extends CometExpressionSerde[Substring] {
   }
 }
 
+object CometConcat extends CometScalarFunction[Concat]("concat") {
+  val unsupportedReason = "CONCAT supports only string input parameters"
+
+  override def getSupportLevel(expr: Concat): SupportLevel = {
+    if (expr.children.forall(_.dataType == DataTypes.StringType)) {
+      Compatible()
+    } else {
+      Incompatible(Some(unsupportedReason))
+    }
+  }
+}
+
 object CometLike extends CometExpressionSerde[Like] {
 
   override def convert(expr: Like, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
@@ -162,6 +174,16 @@ object CometRLike extends CometExpressionSerde[RLike] {
 
 object CometStringRPad extends CometExpressionSerde[StringRPad] {
 
+  override def getSupportLevel(expr: StringRPad): SupportLevel = {
+    if (expr.str.isInstanceOf[Literal]) {
+      return Unsupported(Some("Scalar values are not supported for the str argument"))
+    }
+    if (!expr.pad.isInstanceOf[Literal]) {
+      return Unsupported(Some("Only scalar values are supported for the pad argument"))
+    }
+    Compatible()
+  }
+
   override def convert(
       expr: StringRPad,
       inputs: Seq[Attribute],
@@ -177,21 +199,16 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] {
 
 object CometStringLPad extends CometExpressionSerde[StringLPad] {
 
-  /**
-   * Convert a Spark expression into a protocol buffer representation that can be passed into
-   * native code.
-   *
-   * @param expr
-   *   The Spark expression.
-   * @param inputs
-   *   The input attributes.
-   * @param binding
-   *   Whether the attributes are bound (this is only relevant in aggregate expressions).
-   * @return
-   *   Protocol buffer representation, or None if the expression could not be converted. In this
-   *   case it is expected that the input expression will have been tagged with reasons why it
-   *   could not be converted.
-   */
+  override def getSupportLevel(expr: StringLPad): SupportLevel = {
+    if (expr.str.isInstanceOf[Literal]) {
+      return Unsupported(Some("Scalar values are not supported for the str argument"))
+    }
+    if (!expr.pad.isInstanceOf[Literal]) {
+      return Unsupported(Some("Only scalar values are supported for the pad argument"))
+    }
+    Compatible()
+  }
+
   override def convert(
       expr: StringLPad,
       inputs: Seq[Attribute],

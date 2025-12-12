@@ -60,7 +60,6 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     sparkSession.conf.set(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key, "true")
     sparkSession.conf.set(CometConf.COMET_ENABLED.key, "false")
     sparkSession.conf.set(CometConf.COMET_EXEC_ENABLED.key, "false")
-    sparkSession.conf.set(CometConf.COMET_COLUMNAR_SHUFFLE_MEMORY_SIZE.key, "10g")
     // TODO: support dictionary encoding in vectorized execution
     sparkSession.conf.set("parquet.enable.dictionary", "false")
 

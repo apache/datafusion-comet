@@ -32,9 +32,9 @@ TakeOrderedAndProject (49)
                                                    +- * Filter (31)
                                                       +- Window (30)
                                                          +- WindowGroupLimit (29)
-                                                            +- * Sort (28)
-                                                               +- * HashAggregate (27)
-                                                                  +- * CometColumnarToRow (26)
+                                                            +- * CometColumnarToRow (28)
+                                                               +- CometSort (27)
+                                                                  +- CometHashAggregate (26)
                                                                      +- CometExchange (25)
                                                                         +- CometHashAggregate (24)
                                                                            +- CometProject (23)
@@ -168,35 +168,33 @@ Functions [1]: [partial_sum(UnscaledValue(ss_net_profit#11))]
 Input [2]: [s_state#16, sum#18]
 Arguments: hashpartitioning(s_state#16, 5), ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=1]
 
-(26) CometColumnarToRow [codegen id : 1]
-Input [2]: [s_state#16, sum#18]
-
-(27) HashAggregate [codegen id : 1]
+(26) CometHashAggregate
 Input [2]: [s_state#16, sum#18]
 Keys [1]: [s_state#16]
 Functions [1]: [sum(UnscaledValue(ss_net_profit#11))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_net_profit#11))#19]
-Results [3]: [s_state#16, MakeDecimal(sum(UnscaledValue(ss_net_profit#11))#19,17,2) AS _w0#20, s_state#16]
 
-(28) Sort [codegen id : 1]
-Input [3]: [s_state#16, _w0#20, s_state#16]
-Arguments: [s_state#16 ASC NULLS FIRST, _w0#20 DESC NULLS LAST], false, 0
+(27) CometSort
+Input [3]: [s_state#16, _w0#19, s_state#16]
+Arguments: [s_state#16, _w0#19, s_state#16], [s_state#16 ASC NULLS FIRST, _w0#19 DESC NULLS LAST]
+
+(28) CometColumnarToRow [codegen id : 1]
+Input [3]: [s_state#16, _w0#19, s_state#16]
 
 (29) WindowGroupLimit
-Input [3]: [s_state#16, _w0#20, s_state#16]
-Arguments: [s_state#16], [_w0#20 DESC NULLS LAST], rank(_w0#20), 5, Final
+Input [3]: [s_state#16, _w0#19, s_state#16]
+Arguments: [s_state#16], [_w0#19 DESC NULLS LAST], rank(_w0#19), 5, Final
 
 (30) Window
-Input [3]: [s_state#16, _w0#20, s_state#16]
-Arguments: [rank(_w0#20) windowspecdefinition(s_state#16, _w0#20 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS ranking#21], [s_state#16], [_w0#20 DESC NULLS LAST]
+Input [3]: [s_state#16, _w0#19, s_state#16]
+Arguments: [rank(_w0#19) windowspecdefinition(s_state#16, _w0#19 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS ranking#20], [s_state#16], [_w0#19 DESC NULLS LAST]
 
 (31) Filter [codegen id : 2]
-Input [4]: [s_state#16, _w0#20, s_state#16, ranking#21]
-Condition : (ranking#21 <= 5)
+Input [4]: [s_state#16, _w0#19, s_state#16, ranking#20]
+Condition : (ranking#20 <= 5)
 
 (32) Project [codegen id : 2]
 Output [1]: [s_state#16]
-Input [4]: [s_state#16, _w0#20, s_state#16, ranking#21]
+Input [4]: [s_state#16, _w0#19, s_state#16, ranking#20]
 
 (33) BroadcastExchange
 Input [1]: [s_state#16]
@@ -209,11 +207,11 @@ Join type: LeftSemi
 Join condition: None
 
 (35) Project [codegen id : 3]
-Output [3]: [s_store_sk#7, s_county#8, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_state#9, 2)) AS s_state#22]
+Output [3]: [s_store_sk#7, s_county#8, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_state#9, 2)) AS s_state#21]
 Input [3]: [s_store_sk#7, s_county#8, s_state#9]
 
 (36) BroadcastExchange
-Input [3]: [s_store_sk#7, s_county#8, s_state#22]
+Input [3]: [s_store_sk#7, s_county#8, s_state#21]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=3]
 
 (37) BroadcastHashJoin [codegen id : 4]
@@ -223,56 +221,56 @@ Join type: Inner
 Join condition: None
 
 (38) Project [codegen id : 4]
-Output [3]: [ss_net_profit#2, s_state#22, s_county#8]
-Input [5]: [ss_store_sk#1, ss_net_profit#2, s_store_sk#7, s_county#8, s_state#22]
+Output [3]: [ss_net_profit#2, s_state#21, s_county#8]
+Input [5]: [ss_store_sk#1, ss_net_profit#2, s_store_sk#7, s_county#8, s_state#21]
 
 (39) Expand [codegen id : 4]
-Input [3]: [ss_net_profit#2, s_state#22, s_county#8]
-Arguments: [[ss_net_profit#2, s_state#22, s_county#8, 0], [ss_net_profit#2, s_state#22, null, 1], [ss_net_profit#2, null, null, 3]], [ss_net_profit#2, s_state#23, s_county#24, spark_grouping_id#25]
+Input [3]: [ss_net_profit#2, s_state#21, s_county#8]
+Arguments: [[ss_net_profit#2, s_state#21, s_county#8, 0], [ss_net_profit#2, s_state#21, null, 1], [ss_net_profit#2, null, null, 3]], [ss_net_profit#2, s_state#22, s_county#23, spark_grouping_id#24]
 
 (40) HashAggregate [codegen id : 4]
-Input [4]: [ss_net_profit#2, s_state#23, s_county#24, spark_grouping_id#25]
-Keys [3]: [s_state#23, s_county#24, spark_grouping_id#25]
+Input [4]: [ss_net_profit#2, s_state#22, s_county#23, spark_grouping_id#24]
+Keys [3]: [s_state#22, s_county#23, spark_grouping_id#24]
 Functions [1]: [partial_sum(UnscaledValue(ss_net_profit#2))]
-Aggregate Attributes [1]: [sum#26]
-Results [4]: [s_state#23, s_county#24, spark_grouping_id#25, sum#27]
+Aggregate Attributes [1]: [sum#25]
+Results [4]: [s_state#22, s_county#23, spark_grouping_id#24, sum#26]
 
 (41) CometColumnarExchange
-Input [4]: [s_state#23, s_county#24, spark_grouping_id#25, sum#27]
-Arguments: hashpartitioning(s_state#23, s_county#24, spark_grouping_id#25, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
+Input [4]: [s_state#22, s_county#23, spark_grouping_id#24, sum#26]
+Arguments: hashpartitioning(s_state#22, s_county#23, spark_grouping_id#24, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
 (42) CometColumnarToRow [codegen id : 5]
-Input [4]: [s_state#23, s_county#24, spark_grouping_id#25, sum#27]
+Input [4]: [s_state#22, s_county#23, spark_grouping_id#24, sum#26]
 
 (43) HashAggregate [codegen id : 5]
-Input [4]: [s_state#23, s_county#24, spark_grouping_id#25, sum#27]
-Keys [3]: [s_state#23, s_county#24, spark_grouping_id#25]
+Input [4]: [s_state#22, s_county#23, spark_grouping_id#24, sum#26]
+Keys [3]: [s_state#22, s_county#23, spark_grouping_id#24]
 Functions [1]: [sum(UnscaledValue(ss_net_profit#2))]
-Aggregate Attributes [1]: [sum(UnscaledValue(ss_net_profit#2))#28]
-Results [7]: [MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#28,17,2) AS total_sum#29, s_state#23, s_county#24, (cast((shiftright(spark_grouping_id#25, 1) & 1) as tinyint) + cast((shiftright(spark_grouping_id#25, 0) & 1) as tinyint)) AS lochierarchy#30, MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#28,17,2) AS _w0#31, (cast((shiftright(spark_grouping_id#25, 1) & 1) as tinyint) + cast((shiftright(spark_grouping_id#25, 0) & 1) as tinyint)) AS _w1#32, CASE WHEN (cast((shiftright(spark_grouping_id#25, 0) & 1) as tinyint) = 0) THEN s_state#23 END AS _w2#33]
+Aggregate Attributes [1]: [sum(UnscaledValue(ss_net_profit#2))#27]
+Results [7]: [MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#27,17,2) AS total_sum#28, s_state#22, s_county#23, (cast((shiftright(spark_grouping_id#24, 1) & 1) as tinyint) + cast((shiftright(spark_grouping_id#24, 0) & 1) as tinyint)) AS lochierarchy#29, MakeDecimal(sum(UnscaledValue(ss_net_profit#2))#27,17,2) AS _w0#30, (cast((shiftright(spark_grouping_id#24, 1) & 1) as tinyint) + cast((shiftright(spark_grouping_id#24, 0) & 1) as tinyint)) AS _w1#31, CASE WHEN (cast((shiftright(spark_grouping_id#24, 0) & 1) as tinyint) = 0) THEN s_state#22 END AS _w2#32]
 
 (44) CometColumnarExchange
-Input [7]: [total_sum#29, s_state#23, s_county#24, lochierarchy#30, _w0#31, _w1#32, _w2#33]
-Arguments: hashpartitioning(_w1#32, _w2#33, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
+Input [7]: [total_sum#28, s_state#22, s_county#23, lochierarchy#29, _w0#30, _w1#31, _w2#32]
+Arguments: hashpartitioning(_w1#31, _w2#32, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
 (45) CometSort
-Input [7]: [total_sum#29, s_state#23, s_county#24, lochierarchy#30, _w0#31, _w1#32, _w2#33]
-Arguments: [total_sum#29, s_state#23, s_county#24, lochierarchy#30, _w0#31, _w1#32, _w2#33], [_w1#32 ASC NULLS FIRST, _w2#33 ASC NULLS FIRST, _w0#31 DESC NULLS LAST]
+Input [7]: [total_sum#28, s_state#22, s_county#23, lochierarchy#29, _w0#30, _w1#31, _w2#32]
+Arguments: [total_sum#28, s_state#22, s_county#23, lochierarchy#29, _w0#30, _w1#31, _w2#32], [_w1#31 ASC NULLS FIRST, _w2#32 ASC NULLS FIRST, _w0#30 DESC NULLS LAST]
 
 (46) CometColumnarToRow [codegen id : 6]
-Input [7]: [total_sum#29, s_state#23, s_county#24, lochierarchy#30, _w0#31, _w1#32, _w2#33]
+Input [7]: [total_sum#28, s_state#22, s_county#23, lochierarchy#29, _w0#30, _w1#31, _w2#32]
 
 (47) Window
-Input [7]: [total_sum#29, s_state#23, s_county#24, lochierarchy#30, _w0#31, _w1#32, _w2#33]
-Arguments: [rank(_w0#31) windowspecdefinition(_w1#32, _w2#33, _w0#31 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#34], [_w1#32, _w2#33], [_w0#31 DESC NULLS LAST]
+Input [7]: [total_sum#28, s_state#22, s_county#23, lochierarchy#29, _w0#30, _w1#31, _w2#32]
+Arguments: [rank(_w0#30) windowspecdefinition(_w1#31, _w2#32, _w0#30 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#33], [_w1#31, _w2#32], [_w0#30 DESC NULLS LAST]
 
 (48) Project [codegen id : 7]
-Output [5]: [total_sum#29, s_state#23, s_county#24, lochierarchy#30, rank_within_parent#34]
-Input [8]: [total_sum#29, s_state#23, s_county#24, lochierarchy#30, _w0#31, _w1#32, _w2#33, rank_within_parent#34]
+Output [5]: [total_sum#28, s_state#22, s_county#23, lochierarchy#29, rank_within_parent#33]
+Input [8]: [total_sum#28, s_state#22, s_county#23, lochierarchy#29, _w0#30, _w1#31, _w2#32, rank_within_parent#33]
 
 (49) TakeOrderedAndProject
-Input [5]: [total_sum#29, s_state#23, s_county#24, lochierarchy#30, rank_within_parent#34]
-Arguments: 100, [lochierarchy#30 DESC NULLS LAST, CASE WHEN (lochierarchy#30 = 0) THEN s_state#23 END ASC NULLS FIRST, rank_within_parent#34 ASC NULLS FIRST], [total_sum#29, s_state#23, s_county#24, lochierarchy#30, rank_within_parent#34]
+Input [5]: [total_sum#28, s_state#22, s_county#23, lochierarchy#29, rank_within_parent#33]
+Arguments: 100, [lochierarchy#29 DESC NULLS LAST, CASE WHEN (lochierarchy#29 = 0) THEN s_state#22 END ASC NULLS FIRST, rank_within_parent#33 ASC NULLS FIRST], [total_sum#28, s_state#22, s_county#23, lochierarchy#29, rank_within_parent#33]
 
 ===== Subqueries =====
 

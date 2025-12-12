@@ -22,16 +22,64 @@ package org.apache.spark.sql.comet
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.{ParallelCollectionRDD, RDD}
 import org.apache.spark.serializer.Serializer
-import org.apache.spark.sql.catalyst.expressions.{Attribute, NamedExpression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSet, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.util.truncatedString
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffledBatchRDD, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{SparkPlan, TakeOrderedAndProjectExec, UnaryExecNode, UnsafeRowSerializer}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.exprToProto
-import org.apache.comet.serde.QueryPlanSerde.supportedSortType
+import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.CometSparkSessionExtensions.isCometShuffleEnabled
+import org.apache.comet.serde.{Compatible, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, supportedSortType}
+import org.apache.comet.serde.operator.CometSink
+
+object CometTakeOrderedAndProjectExec extends CometSink[TakeOrderedAndProjectExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED)
+
+  override def getSupportLevel(op: TakeOrderedAndProjectExec): SupportLevel = {
+    if (!isCometShuffleEnabled(op.conf)) {
+      return Unsupported(Some("TakeOrderedAndProject requires shuffle to be enabled"))
+    }
+    op.projectList.foreach { p =>
+      val o = exprToProto(p, op.child.output)
+      if (o.isEmpty) {
+        return Unsupported(Some(s"unsupported projection: $p"))
+      }
+      o
+    }
+    op.sortOrder.foreach { s =>
+      val o = exprToProto(s, op.child.output)
+      if (o.isEmpty) {
+        return Unsupported(Some(s"unsupported sort order: $s"))
+      }
+      o
+    }
+    if (!supportedSortType(op, op.sortOrder)) {
+      return Unsupported(Some("unsupported data type in sort order"))
+    }
+    Compatible()
+  }
+
+  override def createExec(
+      nativeOp: OperatorOuterClass.Operator,
+      op: TakeOrderedAndProjectExec): CometNativeExec = {
+    CometSinkPlaceHolder(
+      nativeOp,
+      op,
+      CometTakeOrderedAndProjectExec(
+        op,
+        op.output,
+        op.limit,
+        op.offset,
+        op.sortOrder,
+        op.projectList,
+        op.child))
+  }
+}
 
 /**
  * Comet physical plan node for Spark `TakeOrderedAndProjectExec`.
@@ -50,10 +98,15 @@ case class CometTakeOrderedAndProjectExec(
     child: SparkPlan)
     extends CometExec
     with UnaryExecNode {
+
+  override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(projectList)
+
   private lazy val writeMetrics =
     SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
+
   private lazy val readMetrics =
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
+
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
     "numPartitions" -> SQLMetrics.createMetric(
@@ -130,25 +183,4 @@ case class CometTakeOrderedAndProjectExec(
 
   override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     this.copy(child = newChild)
-}
-
-object CometTakeOrderedAndProjectExec {
-  def isSupported(plan: TakeOrderedAndProjectExec): Boolean = {
-    val exprs = plan.projectList.map { p =>
-      val o = exprToProto(p, plan.child.output)
-      if (o.isEmpty) {
-        withInfo(plan, s"unsupported projection: $p")
-      }
-      o
-    }
-    val sortOrders = plan.sortOrder.map { s =>
-      val o = exprToProto(s, plan.child.output)
-      if (o.isEmpty) {
-        withInfo(plan, s"unsupported sort order: $s")
-      }
-      o
-    }
-    exprs.forall(_.isDefined) && sortOrders.forall(_.isDefined) &&
-    supportedSortType(plan, plan.sortOrder)
-  }
 }

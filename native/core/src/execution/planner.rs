@@ -17,12 +17,12 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
-use crate::execution::operators::CopyMode;
+use crate::execution::operators::IcebergScanExec;
 use crate::{
     errors::ExpressionError,
     execution::{
         expressions::subquery::Subquery,
-        operators::{CopyExec, ExecutionError, ExpandExec, ScanExec},
+        operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec},
         serde::to_arrow_datatype,
         shuffle::ShuffleWriterExec,
     },
@@ -66,6 +66,7 @@ use datafusion_comet_spark_expr::{
     create_negate_expr, BinaryOutputStyle, BloomFilterAgg, BloomFilterMightContain, EvalMode,
     SparkHour, SparkMinute, SparkSecond,
 };
+use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
@@ -95,9 +96,11 @@ use arrow::array::{
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
+use datafusion::common::UnnestOptions;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
+use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
 use datafusion_comet_proto::spark_expression::ListLiteral;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
@@ -675,19 +678,6 @@ impl PhysicalPlanner {
                 let op = DataFusionOperator::BitwiseShiftLeft;
                 Ok(Arc::new(BinaryExpr::new(left, op, right)))
             }
-            // https://github.com/apache/datafusion-comet/issues/666
-            // ExprStruct::Abs(expr) => {
-            //     let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-            //     let return_type = child.data_type(&input_schema)?;
-            //     let args = vec![child];
-            //     let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-            //     let comet_abs = Arc::new(ScalarUDF::new_from_impl(Abs::new(
-            //         eval_mode,
-            //         return_type.to_string(),
-            //     )?));
-            //     let expr = ScalarFunctionExpr::new("abs", comet_abs, args, return_type);
-            //     Ok(Arc::new(expr))
-            // }
             ExprStruct::CaseWhen(case_when) => {
                 let when_then_pairs = case_when
                     .when
@@ -1091,17 +1081,10 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter: Arc<dyn ExecutionPlan> = if filter.wrap_child_in_copy_exec {
-                    Arc::new(FilterExec::try_new(
-                        predicate,
-                        Self::wrap_in_copy_exec(Arc::clone(&child.native_plan)),
-                    )?)
-                } else {
-                    Arc::new(FilterExec::try_new(
-                        predicate,
-                        Arc::clone(&child.native_plan),
-                    )?)
-                };
+                let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(
+                    predicate,
+                    Arc::clone(&child.native_plan),
+                )?);
 
                 Ok((
                     scans,
@@ -1229,15 +1212,13 @@ impl PhysicalPlanner {
                     .collect();
 
                 let fetch = sort.fetch.map(|num| num as usize);
-                // SortExec caches batches so we need to make a copy of incoming batches. Also,
-                // SortExec fails in some cases if we do not unpack dictionary-encoded arrays, and
-                // it would be more efficient if we could avoid that.
-                // https://github.com/apache/datafusion-comet/issues/963
-                let child_copied = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
 
                 let mut sort_exec: Arc<dyn ExecutionPlan> = Arc::new(
-                    SortExec::new(LexOrdering::new(exprs?).unwrap(), Arc::clone(&child_copied))
-                        .with_fetch(fetch),
+                    SortExec::new(
+                        LexOrdering::new(exprs?).unwrap(),
+                        Arc::clone(&child.native_plan),
+                    )
+                    .with_fetch(fetch),
                 );
 
                 if let Some(skip) = sort.skip.filter(|&n| n > 0).map(|n| n as usize) {
@@ -1327,17 +1308,11 @@ impl PhysicalPlanner {
                     &object_store_options,
                 )?;
 
-                // Generate file groups
-                let mut file_groups: Vec<Vec<PartitionedFile>> =
-                    Vec::with_capacity(partition_count);
-                scan.file_partitions.iter().try_for_each(|partition| {
-                    let files = self.get_partitioned_files(partition)?;
-                    file_groups.push(files);
-                    Ok::<(), ExecutionError>(())
-                })?;
-
-                // TODO: I think we can remove partition_count in the future, but leave for testing.
-                assert_eq!(file_groups.len(), partition_count);
+                // Comet serializes all partitions' PartitionedFiles, but we only want to read this
+                // Spark partition's PartitionedFiles
+                let files =
+                    self.get_partitioned_files(&scan.file_partitions[self.partition as usize])?;
+                let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
                 let partition_fields: Vec<Field> = partition_schema
                     .fields()
                     .iter()
@@ -1397,17 +1372,51 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(spark_plan.plan_id, Arc::new(scan), vec![])),
                 ))
             }
+            OpStruct::IcebergScan(scan) => {
+                let required_schema: SchemaRef =
+                    convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
+
+                let catalog_properties: HashMap<String, String> = scan
+                    .catalog_properties
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+
+                let metadata_location = scan.metadata_location.clone();
+
+                debug_assert!(
+                    !scan.file_partitions.is_empty(),
+                    "IcebergScan must have at least one file partition. This indicates a bug in Scala serialization."
+                );
+
+                let tasks = parse_file_scan_tasks(
+                    &scan.file_partitions[self.partition as usize].file_scan_tasks,
+                )?;
+                let file_task_groups = vec![tasks];
+
+                let iceberg_scan = IcebergScanExec::new(
+                    metadata_location,
+                    required_schema,
+                    catalog_properties,
+                    file_task_groups,
+                )?;
+
+                Ok((
+                    vec![],
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        Arc::new(iceberg_scan),
+                        vec![],
+                    )),
+                ))
+            }
             OpStruct::ShuffleWriter(writer) => {
                 assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
 
-                // We wrap native shuffle in a CopyExec. This existed previously, but for
-                // RangePartitioning at least we want to ensure that dictionaries are unpacked.
-                let wrapped_child = Self::wrap_in_copy_exec(Arc::clone(&child.native_plan));
-
                 let partitioning = self.create_partitioning(
                     writer.partitioning.as_ref().unwrap(),
-                    wrapped_child.schema(),
+                    child.native_plan.schema(),
                 )?;
 
                 let codec = match writer.codec.try_into() {
@@ -1424,7 +1433,7 @@ impl PhysicalPlanner {
                 }?;
 
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    wrapped_child,
+                    Arc::clone(&child.native_plan),
                     partitioning,
                     codec,
                     writer.output_data_file.clone(),
@@ -1437,6 +1446,45 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(
                         spark_plan.plan_id,
                         shuffle_writer,
+                        vec![Arc::clone(&child)],
+                    )),
+                ))
+            }
+            OpStruct::ParquetWriter(writer) => {
+                assert_eq!(children.len(), 1);
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+
+                let codec = match writer.compression.try_into() {
+                    Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
+                    Ok(SparkCompressionCodec::Snappy) => Ok(CompressionCodec::Snappy),
+                    Ok(SparkCompressionCodec::Zstd) => Ok(CompressionCodec::Zstd(3)),
+                    Ok(SparkCompressionCodec::Lz4) => Ok(CompressionCodec::Lz4Frame),
+                    _ => Err(GeneralError(format!(
+                        "Unsupported parquet compression codec: {:?}",
+                        writer.compression
+                    ))),
+                }?;
+
+                let parquet_writer = Arc::new(ParquetWriterExec::try_new(
+                    Arc::clone(&child.native_plan),
+                    writer.output_path.clone(),
+                    writer
+                        .work_dir
+                        .as_ref()
+                        .expect("work_dir is provided")
+                        .clone(),
+                    writer.job_id.clone(),
+                    writer.task_attempt_id,
+                    codec,
+                    self.partition,
+                    writer.column_names.clone(),
+                )?);
+
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        parquet_writer,
                         vec![Arc::clone(&child)],
                     )),
                 ))
@@ -1489,6 +1537,117 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(spark_plan.plan_id, expand, vec![child])),
                 ))
             }
+            OpStruct::Explode(explode) => {
+                assert_eq!(children.len(), 1);
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+
+                // Create the expression for the array to explode
+                let child_expr = if let Some(child_expr) = &explode.child {
+                    self.create_expr(child_expr, child.schema())?
+                } else {
+                    return Err(ExecutionError::GeneralError(
+                        "Explode operator requires a child expression".to_string(),
+                    ));
+                };
+
+                // Create projection expressions for other columns
+                let projections: Vec<Arc<dyn PhysicalExpr>> = explode
+                    .project_list
+                    .iter()
+                    .map(|expr| self.create_expr(expr, child.schema()))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // For UnnestExec, we need to add a projection to put the columns in the right order:
+                // 1. First add all projection columns
+                // 2. Then add the array column to be exploded
+                // Then UnnestExec will unnest the last column
+
+                // Use return_field() to get the proper column names from the expressions
+                let child_schema = child.schema();
+                let mut project_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = projections
+                    .iter()
+                    .map(|expr| {
+                        let field = expr
+                            .return_field(&child_schema)
+                            .expect("Failed to get field from expression");
+                        let name = field.name().to_string();
+                        (Arc::clone(expr), name)
+                    })
+                    .collect();
+
+                // Add the array column as the last column
+                let array_field = child_expr
+                    .return_field(&child_schema)
+                    .expect("Failed to get field from array expression");
+                let array_col_name = array_field.name().to_string();
+                project_exprs.push((Arc::clone(&child_expr), array_col_name.clone()));
+
+                // Create a projection to arrange columns as needed
+                let project_exec = Arc::new(ProjectionExec::try_new(
+                    project_exprs,
+                    Arc::clone(&child.native_plan),
+                )?);
+
+                // Get the input schema from the projection
+                let project_schema = project_exec.schema();
+
+                // Build the output schema for UnnestExec
+                // The output schema replaces the list column with its element type
+                let mut output_fields: Vec<Field> = Vec::new();
+
+                // Add all projection columns (non-array columns)
+                for i in 0..projections.len() {
+                    output_fields.push(project_schema.field(i).clone());
+                }
+
+                // Add the unnested array element field
+                // Extract the element type from the list/array type
+                let array_field = project_schema.field(projections.len());
+                let element_type = match array_field.data_type() {
+                    DataType::List(field) => field.data_type().clone(),
+                    dt => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "Expected List type for explode, got {:?}",
+                            dt
+                        )))
+                    }
+                };
+
+                // The output column has the same name as the input array column
+                // but with the element type instead of the list type
+                output_fields.push(Field::new(
+                    array_field.name(),
+                    element_type,
+                    true, // Element is nullable after unnesting
+                ));
+
+                let output_schema = Arc::new(Schema::new(output_fields));
+
+                // Use UnnestExec to explode the last column (the array column)
+                // ListUnnest specifies which column to unnest and the depth (1 for single level)
+                let list_unnest = ListUnnest {
+                    index_in_input_schema: projections.len(), // Index of the array column to unnest
+                    depth: 1, // Unnest one level (explode single array)
+                };
+
+                let unnest_options = UnnestOptions {
+                    preserve_nulls: explode.outer,
+                    recursions: vec![],
+                };
+
+                let unnest_exec = Arc::new(UnnestExec::new(
+                    project_exec,
+                    vec![list_unnest],
+                    vec![], // No struct columns to unnest
+                    output_schema,
+                    unnest_options,
+                ));
+
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, unnest_exec, vec![child])),
+                ))
+            }
             OpStruct::SortMergeJoin(join) => {
                 let (join_params, scans) = self.parse_join_parameters(
                     inputs,
@@ -1514,8 +1673,8 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
-                let left = Self::wrap_in_copy_exec(Arc::clone(&join_params.left.native_plan));
-                let right = Self::wrap_in_copy_exec(Arc::clone(&join_params.right.native_plan));
+                let left = Arc::clone(&join_params.left.native_plan);
+                let right = Arc::clone(&join_params.right.native_plan);
 
                 let join = Arc::new(SortMergeJoinExec::try_new(
                     Arc::clone(&left),
@@ -1577,12 +1736,8 @@ impl PhysicalPlanner {
                     partition_count,
                 )?;
 
-                // HashJoinExec may cache the input batch internally. We need
-                // to copy the input batch to avoid the data corruption from reusing the input
-                // batch. We also need to unpack dictionary arrays, because the join operators
-                // do not support them.
-                let left = Self::wrap_in_copy_exec(Arc::clone(&join_params.left.native_plan));
-                let right = Self::wrap_in_copy_exec(Arc::clone(&join_params.right.native_plan));
+                let left = Arc::clone(&join_params.left.native_plan);
+                let right = Arc::clone(&join_params.right.native_plan);
 
                 let hash_join = Arc::new(HashJoinExec::try_new(
                     left,
@@ -1812,11 +1967,6 @@ impl PhysicalPlanner {
         ))
     }
 
-    /// Wrap an ExecutionPlan in a CopyExec, which will unpack any dictionary-encoded arrays.
-    fn wrap_in_copy_exec(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-        Arc::new(CopyExec::new(plan, CopyMode::UnpackOrClone))
-    }
-
     /// Create a DataFusion physical aggregate expression from Spark physical aggregate expression
     fn create_agg_expr(
         &self,
@@ -1872,7 +2022,9 @@ impl PhysicalPlanner {
 
                 let builder = match datatype {
                     DataType::Decimal128(_, _) => {
-                        let func = AggregateUDF::new_from_impl(SumDecimal::try_new(datatype)?);
+                        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                        let func =
+                            AggregateUDF::new_from_impl(SumDecimal::try_new(datatype, eval_mode)?);
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
                     _ => {
@@ -2698,6 +2850,167 @@ fn convert_spark_types_to_arrow_schema(
     arrow_schema
 }
 
+/// Converts protobuf FileScanTasks from Scala into iceberg-rust FileScanTask objects.
+///
+/// Each task contains a residual predicate that is used for row-group level filtering
+/// during Parquet scanning.
+fn parse_file_scan_tasks(
+    proto_tasks: &[spark_operator::IcebergFileScanTask],
+) -> Result<Vec<iceberg::scan::FileScanTask>, ExecutionError> {
+    let results: Result<Vec<_>, _> = proto_tasks
+        .iter()
+        .map(|proto_task| {
+            let schema: iceberg::spec::Schema = serde_json::from_str(&proto_task.schema_json)
+                .map_err(|e| {
+                    ExecutionError::GeneralError(format!("Failed to parse schema JSON: {}", e))
+                })?;
+
+            let schema_ref = Arc::new(schema);
+
+            // CometScanRule validates format before serialization
+            debug_assert_eq!(
+                proto_task.data_file_format.as_str(),
+                "PARQUET",
+                "Only PARQUET format is supported. This indicates a bug in CometScanRule validation."
+            );
+            let data_file_format = iceberg::spec::DataFileFormat::Parquet;
+
+            let deletes: Vec<iceberg::scan::FileScanTaskDeleteFile> = proto_task
+                .delete_files
+                .iter()
+                .map(|del| {
+                    let file_type = match del.content_type.as_str() {
+                        "POSITION_DELETES" => iceberg::spec::DataContentType::PositionDeletes,
+                        "EQUALITY_DELETES" => iceberg::spec::DataContentType::EqualityDeletes,
+                        other => {
+                            return Err(GeneralError(format!(
+                                "Invalid delete content type '{}'. This indicates a bug in Scala serialization.",
+                                other
+                            )))
+                        }
+                    };
+
+                    Ok(iceberg::scan::FileScanTaskDeleteFile {
+                        file_path: del.file_path.clone(),
+                        file_type,
+                        partition_spec_id: del.partition_spec_id,
+                        equality_ids: if del.equality_ids.is_empty() {
+                            None
+                        } else {
+                            Some(del.equality_ids.clone())
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>, ExecutionError>>()?;
+
+            // Residuals are serialized with binding=false (name-based references).
+            // Convert to Iceberg predicate and bind to this file's schema for row-group filtering.
+            let bound_predicate = proto_task
+                .residual
+                .as_ref()
+                .and_then(|residual_expr| {
+                    convert_spark_expr_to_predicate(residual_expr)
+                })
+                .map(
+                    |pred| -> Result<iceberg::expr::BoundPredicate, ExecutionError> {
+                        let bound = pred.bind(Arc::clone(&schema_ref), true).map_err(|e| {
+                            ExecutionError::GeneralError(format!(
+                                "Failed to bind predicate to schema: {}",
+                                e
+                            ))
+                        })?;
+
+                        Ok(bound)
+                    },
+                )
+                .transpose()?;
+
+            let partition = if let (Some(partition_json), Some(partition_type_json)) = (
+                proto_task.partition_data_json.as_ref(),
+                proto_task.partition_type_json.as_ref(),
+            ) {
+                let partition_type: iceberg::spec::StructType =
+                    serde_json::from_str(partition_type_json).map_err(|e| {
+                        ExecutionError::GeneralError(format!(
+                            "Failed to parse partition type JSON: {}",
+                            e
+                        ))
+                    })?;
+
+                let partition_data_value: serde_json::Value = serde_json::from_str(partition_json)
+                    .map_err(|e| {
+                        ExecutionError::GeneralError(format!(
+                            "Failed to parse partition data JSON: {}",
+                            e
+                        ))
+                    })?;
+
+                match iceberg::spec::Literal::try_from_json(
+                    partition_data_value,
+                    &iceberg::spec::Type::Struct(partition_type),
+                ) {
+                    Ok(Some(iceberg::spec::Literal::Struct(s))) => Some(s),
+                    Ok(None) => None,
+                    Ok(other) => {
+                        return Err(GeneralError(format!(
+                            "Expected struct literal for partition data, got: {:?}",
+                            other
+                        )))
+                    }
+                    Err(e) => {
+                        return Err(GeneralError(format!(
+                            "Failed to deserialize partition data from JSON: {}",
+                            e
+                        )))
+                    }
+                }
+            } else {
+                None
+            };
+
+            let partition_spec = if let Some(partition_spec_json) =
+                proto_task.partition_spec_json.as_ref()
+            {
+                // Try to parse partition spec, but gracefully handle unknown transforms
+                // for forward compatibility (e.g., TestForwardCompatibility tests)
+                match serde_json::from_str::<iceberg::spec::PartitionSpec>(partition_spec_json) {
+                    Ok(spec) => Some(Arc::new(spec)),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+
+            let name_mapping = if let Some(name_mapping_json) = proto_task.name_mapping_json.as_ref()
+            {
+                match serde_json::from_str::<iceberg::spec::NameMapping>(name_mapping_json) {
+                    Ok(mapping) => Some(Arc::new(mapping)),
+                    Err(_) => None, // Name mapping is optional
+                }
+            } else {
+                None
+            };
+
+            Ok(iceberg::scan::FileScanTask {
+                data_file_path: proto_task.data_file_path.clone(),
+                start: proto_task.start,
+                length: proto_task.length,
+                record_count: proto_task.record_count,
+                data_file_format,
+                schema: schema_ref,
+                project_field_ids: proto_task.project_field_ids.clone(),
+                predicate: bound_predicate,
+                deletes,
+                partition,
+                partition_spec,
+                name_mapping,
+            })
+        })
+        .collect();
+
+    results
+}
+
 /// Create CASE WHEN expression and add casting as needed
 fn create_case_expr(
     when_then_pairs: Vec<(Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>)>,
@@ -2937,6 +3250,250 @@ fn literal_to_array_ref(
     }
 }
 
+// ============================================================================
+// Spark Expression to Iceberg Predicate Conversion
+// ============================================================================
+//
+// Predicates are converted through Spark expressions rather than directly from
+// Iceberg Java to Iceberg Rust. This leverages Comet's existing expression
+// serialization infrastructure, which handles hundreds of expression types.
+//
+// Conversion path:
+//   Iceberg Expression (Java) -> Spark Catalyst Expression -> Protobuf -> Iceberg Predicate (Rust)
+//
+// Note: NOT IN predicates are skipped because iceberg-rust's RowGroupMetricsEvaluator::not_in()
+// always returns MIGHT_MATCH (never prunes row groups). These are handled by CometFilter post-scan.
+
+/// Converts a protobuf Spark expression to an Iceberg predicate for row-group filtering.
+fn convert_spark_expr_to_predicate(
+    expr: &spark_expression::Expr,
+) -> Option<iceberg::expr::Predicate> {
+    use spark_expression::expr::ExprStruct;
+
+    match &expr.expr_struct {
+        Some(ExprStruct::Eq(binary)) => convert_binary_to_predicate(
+            &binary.left,
+            &binary.right,
+            iceberg::expr::PredicateOperator::Eq,
+        ),
+        Some(ExprStruct::Neq(binary)) => convert_binary_to_predicate(
+            &binary.left,
+            &binary.right,
+            iceberg::expr::PredicateOperator::NotEq,
+        ),
+        Some(ExprStruct::Lt(binary)) => convert_binary_to_predicate(
+            &binary.left,
+            &binary.right,
+            iceberg::expr::PredicateOperator::LessThan,
+        ),
+        Some(ExprStruct::LtEq(binary)) => convert_binary_to_predicate(
+            &binary.left,
+            &binary.right,
+            iceberg::expr::PredicateOperator::LessThanOrEq,
+        ),
+        Some(ExprStruct::Gt(binary)) => convert_binary_to_predicate(
+            &binary.left,
+            &binary.right,
+            iceberg::expr::PredicateOperator::GreaterThan,
+        ),
+        Some(ExprStruct::GtEq(binary)) => convert_binary_to_predicate(
+            &binary.left,
+            &binary.right,
+            iceberg::expr::PredicateOperator::GreaterThanOrEq,
+        ),
+        Some(ExprStruct::IsNull(unary)) => {
+            if let Some(ref child) = unary.child {
+                extract_column_reference(child).map(|column| {
+                    iceberg::expr::Predicate::Unary(iceberg::expr::UnaryExpression::new(
+                        iceberg::expr::PredicateOperator::IsNull,
+                        iceberg::expr::Reference::new(column),
+                    ))
+                })
+            } else {
+                None
+            }
+        }
+        Some(ExprStruct::IsNotNull(unary)) => {
+            if let Some(ref child) = unary.child {
+                extract_column_reference(child).map(|column| {
+                    iceberg::expr::Predicate::Unary(iceberg::expr::UnaryExpression::new(
+                        iceberg::expr::PredicateOperator::NotNull,
+                        iceberg::expr::Reference::new(column),
+                    ))
+                })
+            } else {
+                None
+            }
+        }
+        Some(ExprStruct::And(binary)) => {
+            let left = binary
+                .left
+                .as_ref()
+                .and_then(|e| convert_spark_expr_to_predicate(e));
+            let right = binary
+                .right
+                .as_ref()
+                .and_then(|e| convert_spark_expr_to_predicate(e));
+            match (left, right) {
+                (Some(l), Some(r)) => Some(l.and(r)),
+                (Some(l), None) => Some(l),
+                (None, Some(r)) => Some(r),
+                _ => None,
+            }
+        }
+        Some(ExprStruct::Or(binary)) => {
+            let left = binary
+                .left
+                .as_ref()
+                .and_then(|e| convert_spark_expr_to_predicate(e));
+            let right = binary
+                .right
+                .as_ref()
+                .and_then(|e| convert_spark_expr_to_predicate(e));
+            match (left, right) {
+                (Some(l), Some(r)) => Some(l.or(r)),
+                _ => None, // OR requires both sides to be valid
+            }
+        }
+        Some(ExprStruct::Not(unary)) => unary
+            .child
+            .as_ref()
+            .and_then(|child| convert_spark_expr_to_predicate(child))
+            .map(|p| !p),
+        Some(ExprStruct::In(in_expr)) => {
+            // NOT IN predicates don't work correctly with iceberg-rust's row-group filtering.
+            // The iceberg-rust RowGroupMetricsEvaluator::not_in() always returns MIGHT_MATCH
+            // (never prunes row groups), even in cases where pruning is possible (e.g., when
+            // min == max == value and value is in the NOT IN set).
+            //
+            // Workaround: Skip NOT IN in predicate pushdown and let CometFilter handle it
+            // post-scan. This sacrifices row-group pruning for NOT IN but ensures correctness.
+            if in_expr.negated {
+                return None;
+            }
+
+            if let Some(ref value) = in_expr.in_value {
+                if let Some(column) = extract_column_reference(value) {
+                    let datums: Vec<iceberg::spec::Datum> = in_expr
+                        .lists
+                        .iter()
+                        .filter_map(extract_literal_as_datum)
+                        .collect();
+
+                    if datums.len() == in_expr.lists.len() {
+                        Some(iceberg::expr::Reference::new(column).is_in(datums))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        _ => None, // Unsupported expression
+    }
+}
+
+fn convert_binary_to_predicate(
+    left: &Option<Box<spark_expression::Expr>>,
+    right: &Option<Box<spark_expression::Expr>>,
+    op: iceberg::expr::PredicateOperator,
+) -> Option<iceberg::expr::Predicate> {
+    let left_ref = left.as_ref()?;
+    let right_ref = right.as_ref()?;
+
+    if let (Some(column), Some(datum)) = (
+        extract_column_reference(left_ref),
+        extract_literal_as_datum(right_ref),
+    ) {
+        return Some(iceberg::expr::Predicate::Binary(
+            iceberg::expr::BinaryExpression::new(op, iceberg::expr::Reference::new(column), datum),
+        ));
+    }
+
+    if let (Some(datum), Some(column)) = (
+        extract_literal_as_datum(left_ref),
+        extract_column_reference(right_ref),
+    ) {
+        let reversed_op = match op {
+            iceberg::expr::PredicateOperator::LessThan => {
+                iceberg::expr::PredicateOperator::GreaterThan
+            }
+            iceberg::expr::PredicateOperator::LessThanOrEq => {
+                iceberg::expr::PredicateOperator::GreaterThanOrEq
+            }
+            iceberg::expr::PredicateOperator::GreaterThan => {
+                iceberg::expr::PredicateOperator::LessThan
+            }
+            iceberg::expr::PredicateOperator::GreaterThanOrEq => {
+                iceberg::expr::PredicateOperator::LessThanOrEq
+            }
+            _ => op, // Eq and NotEq are symmetric
+        };
+        return Some(iceberg::expr::Predicate::Binary(
+            iceberg::expr::BinaryExpression::new(
+                reversed_op,
+                iceberg::expr::Reference::new(column),
+                datum,
+            ),
+        ));
+    }
+
+    None
+}
+
+fn extract_column_reference(expr: &spark_expression::Expr) -> Option<String> {
+    use spark_expression::expr::ExprStruct;
+
+    match &expr.expr_struct {
+        Some(ExprStruct::Unbound(unbound_ref)) => Some(unbound_ref.name.clone()),
+        _ => None,
+    }
+}
+
+fn extract_literal_as_datum(expr: &spark_expression::Expr) -> Option<iceberg::spec::Datum> {
+    use spark_expression::expr::ExprStruct;
+
+    match &expr.expr_struct {
+        Some(ExprStruct::Literal(literal)) => {
+            if literal.is_null {
+                return None;
+            }
+
+            match &literal.value {
+                Some(spark_expression::literal::Value::IntVal(v)) => {
+                    Some(iceberg::spec::Datum::int(*v))
+                }
+                Some(spark_expression::literal::Value::LongVal(v)) => {
+                    Some(iceberg::spec::Datum::long(*v))
+                }
+                Some(spark_expression::literal::Value::FloatVal(v)) => {
+                    Some(iceberg::spec::Datum::double(*v as f64))
+                }
+                Some(spark_expression::literal::Value::DoubleVal(v)) => {
+                    Some(iceberg::spec::Datum::double(*v))
+                }
+                Some(spark_expression::literal::Value::StringVal(v)) => {
+                    Some(iceberg::spec::Datum::string(v.clone()))
+                }
+                Some(spark_expression::literal::Value::BoolVal(v)) => {
+                    Some(iceberg::spec::Datum::bool(*v))
+                }
+                Some(spark_expression::literal::Value::ByteVal(v)) => {
+                    Some(iceberg::spec::Datum::int(*v))
+                }
+                Some(spark_expression::literal::Value::ShortVal(v)) => {
+                    Some(iceberg::spec::Datum::int(*v))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures::{poll, StreamExt};
@@ -3120,11 +3677,8 @@ mod tests {
                         assert!(batch.is_ok(), "got error {}", batch.unwrap_err());
                         let batch = batch.unwrap();
                         assert_eq!(batch.num_rows(), row_count / 4);
-                        // string/binary should still be packed with dictionary
-                        assert!(matches!(
-                            batch.column(0).data_type(),
-                            DataType::Dictionary(_, _)
-                        ));
+                        // string/binary should no longer be packed with dictionary
+                        assert!(matches!(batch.column(0).data_type(), DataType::Utf8));
                     }
                     Poll::Ready(None) => {
                         break;
@@ -3211,7 +3765,6 @@ mod tests {
             children: vec![child_op],
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
-                wrap_child_in_copy_exec: false,
             })),
         }
     }

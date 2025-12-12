@@ -68,6 +68,7 @@ jobs:
             value: |
               org.apache.comet.CometFuzzTestSuite
               org.apache.comet.CometFuzzAggregateSuite
+              org.apache.comet.CometFuzzIcebergSuite
               org.apache.comet.CometFuzzMathSuite
               org.apache.comet.DataGeneratorSuite
           - name: "shuffle"
@@ -82,6 +83,7 @@ jobs:
               org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
           - name: "parquet"
             value: |
+              org.apache.comet.parquet.CometParquetWriterSuite
               org.apache.comet.parquet.ParquetReadV1Suite
               org.apache.comet.parquet.ParquetReadV2Suite
               org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite
@@ -89,19 +91,17 @@ jobs:
               org.apache.spark.sql.comet.ParquetDatetimeRebaseV2Suite
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
+              org.apache.comet.CometIcebergNativeSuite
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometGenerateExecSuite
+              org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
-              org.apache.comet.CometArrayExpressionSuite
-              org.apache.comet.CometCastSuite
-              org.apache.comet.CometExpressionSuite
-              org.apache.comet.CometExpressionCoverageSuite
               org.apache.comet.CometNativeSuite
               org.apache.comet.CometSparkSessionExtensionsSuite
-              org.apache.comet.CometStringExpressionSuite
               org.apache.spark.CometPluginsSuite
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsNonOverrideSuite
@@ -112,9 +112,21 @@ jobs:
               org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTaskMetricsSuite
+              org.apache.comet.objectstore.NativeConfigSuite
+          - name: "expressions"
+            value: |
+              org.apache.comet.CometExpressionSuite
+              org.apache.comet.CometExpressionCoverageSuite
+              org.apache.comet.CometTemporalExpressionSuite
+              org.apache.comet.CometArrayExpressionSuite
+              org.apache.comet.CometCastSuite
+              org.apache.comet.CometMathExpressionSuite
+              org.apache.comet.CometStringExpressionSuite
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
-              org.apache.comet.objectstore.NativeConfigSuite
+              org.apache.comet.expressions.conditional.CometIfSuite
+              org.apache.comet.expressions.conditional.CometCoalesceSuite
+              org.apache.comet.expressions.conditional.CometCaseWhenSuite
           - name: "sql"
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite
@@ -122,7 +134,7 @@ jobs:
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-macos-builder
         with:

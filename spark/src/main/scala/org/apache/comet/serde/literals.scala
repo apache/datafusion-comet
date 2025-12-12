@@ -23,7 +23,7 @@ import java.lang
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
-import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DateType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -92,7 +92,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
 
         case arr: ArrayType =>
           val listLiteralBuilder: ListLiteral.Builder =
-            makeListLiteral(value.asInstanceOf[GenericArrayData].array, arr)
+            makeListLiteral(value.asInstanceOf[ArrayData].array, arr)
           exprBuilder.setListVal(listLiteralBuilder.build())
           exprBuilder.setDatatype(serializeDataType(dataType).get)
         case dt =>
@@ -198,7 +198,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
           })
       case a: ArrayType =>
         array.foreach(v => {
-          val casted = v.asInstanceOf[GenericArrayData]
+          val casted = v.asInstanceOf[ArrayData]
           listLiteralBuilder.addListValues(if (casted != null) {
             makeListLiteral(casted.array, a)
           } else ListLiteral.newBuilder())

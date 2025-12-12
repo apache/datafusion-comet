@@ -435,6 +435,25 @@ object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
 }
 
 object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
+  val unsupportedReason = "reverse on array containing binary is not supported"
+
+  @tailrec
+  private def containsBinary(dt: DataType): Boolean = {
+    dt match {
+      case BinaryType => true
+      case ArrayType(elementType, _) => containsBinary(elementType)
+      case _ => false
+    }
+  }
+
+  override def getSupportLevel(expr: Reverse): SupportLevel = {
+    if (containsBinary(expr.child.dataType)) {
+      Incompatible(Some(unsupportedReason))
+    } else {
+      Compatible(None)
+    }
+  }
+
   override def convert(
       expr: Reverse,
       inputs: Seq[Attribute],
@@ -474,7 +493,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
         .setOneBased(true)
         .setFailOnError(expr.failOnError)
 
-      defaultExpr.foreach(arrayExtractBuilder.setDefaultValue(_))
+      defaultExpr.foreach(arrayExtractBuilder.setDefaultValue)
 
       Some(
         ExprOuterClass.Expr

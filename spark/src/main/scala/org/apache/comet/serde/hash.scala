@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, Sha2, XxHash64}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Murmur3Hash, Sha1, Sha2, XxHash64}
 import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType, StringType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -86,6 +86,20 @@ object CometSha2 extends CometExpressionSerde[Sha2] {
     val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
     val numBitsExpr = exprToProtoInternal(expr.right, inputs, binding)
     scalarFunctionExprToProtoWithReturnType("sha2", StringType, false, leftExpr, numBitsExpr)
+  }
+}
+
+object CometSha1 extends CometExpressionSerde[Sha1] {
+  override def convert(
+      expr: Sha1,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (!HashUtils.isSupportedType(expr)) {
+      withInfo(expr, s"HashUtils doesn't support dataType: ${expr.child.dataType}")
+      return None
+    }
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProtoWithReturnType("sha1", StringType, false, childExpr)
   }
 }
 

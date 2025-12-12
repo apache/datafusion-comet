@@ -104,6 +104,6 @@ This is **out-of-date** documentation. The latest Comet release is version {late
 if __name__ == "__main__":
     print("Generating versioned user guide docs...")
     snapshot_version = get_version_from_pom()
-    latest_released_version = "0.11.0"
-    previous_versions = ["0.8.0", "0.9.1", "0.10.1"]
+    latest_released_version = "0.12.0"
+    previous_versions = ["0.8.0", "0.9.1", "0.10.1", "0.11.0"]
     generate_docs(snapshot_version, latest_released_version, previous_versions)
