@@ -150,13 +150,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   private def isAggSupported(agg: BaseAggregateExec): Boolean = {
-    // scalastyle:off
-    val x = allExecs
+    allExecs
       .get(agg.getClass)
       .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
       .forall(handler => isOperatorEnabled(handler, agg))
-    println(s"isAggSupported($agg -> $x")
-    x
   }
 
   /**
@@ -598,9 +595,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       op: SparkPlan): Boolean = {
     // scalastyle:off
     val opName = op.getClass.getSimpleName
-    println(s"isOperatorEnabled: $opName")
     if (handler.enabledConfig.forall(_.get(op.conf))) {
-      println("isOperatorEnabled 1")
       handler.getSupportLevel(op) match {
         case Unsupported(notes) =>
           withInfo(op, notes.getOrElse(""))
@@ -625,14 +620,12 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             false
           }
         case Compatible(notes) =>
-          println("isOperatorEnabled 2")
           if (notes.isDefined) {
             logWarning(s"Comet supports $opName but has notes: ${notes.get}")
           }
           true
       }
     } else {
-      println("isOperatorEnabled 4")
       withInfo(
         op,
         s"Native support for operator $opName is disabled. " +
