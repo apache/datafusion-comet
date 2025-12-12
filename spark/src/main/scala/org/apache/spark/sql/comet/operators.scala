@@ -1215,16 +1215,26 @@ object CometHashAggregateExec
     CometConf.COMET_EXEC_AGGREGATE_ENABLED)
 
   override def getSupportLevel(op: HashAggregateExec): SupportLevel = {
+    // scalastyle:off
+    println("getSupportLevel")
+
     // some unit tests need to disable partial or final hash aggregate support to test that
     // CometExecRule does not allow mixed Spark/Comet aggregates
-    if (!CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf) &&
+    val a = CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf)
+    val b = CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf)
+    println(s"COMET_ENABLE_PARTIAL_HASH_AGGREGATE=$a")
+    println(s"COMET_ENABLE_FINAL_HASH_AGGREGATE=$b")
+    if (!a &&
       op.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)) {
+      println("partial not supported")
       return Unsupported(Some("Partial aggregates disabled via test config"))
     }
-    if (!CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf) &&
+    if (!b &&
       op.aggregateExpressions.exists(_.mode == Final)) {
+      println("final not supported")
       return Unsupported(Some("Final aggregates disabled via test config"))
     }
+    println(s"supported: ${op.aggregateExpressions.map(_.mode).distinct}")
     Compatible()
   }
 
@@ -1255,6 +1265,30 @@ object CometObjectHashAggregateExec
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_AGGREGATE_ENABLED)
+
+  override def getSupportLevel(op: ObjectHashAggregateExec): SupportLevel = {
+    // scalastyle:off
+    println("getSupportLevel")
+
+    // some unit tests need to disable partial or final hash aggregate support to test that
+    // CometExecRule does not allow mixed Spark/Comet aggregates
+    val a = CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf)
+    val b = CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf)
+    println(s"COMET_ENABLE_PARTIAL_HASH_AGGREGATE=$a")
+    println(s"COMET_ENABLE_FINAL_HASH_AGGREGATE=$b")
+    if (!a &&
+      op.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)) {
+      println("partial not supported")
+      return Unsupported(Some("Partial aggregates disabled via test config"))
+    }
+    if (!b &&
+      op.aggregateExpressions.exists(_.mode == Final)) {
+      println("final not supported")
+      return Unsupported(Some("Final aggregates disabled via test config"))
+    }
+    println(s"supported: ${op.aggregateExpressions.map(_.mode).distinct}")
+    Compatible()
+  }
 
   override def convert(
       aggregate: ObjectHashAggregateExec,

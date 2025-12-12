@@ -245,8 +245,7 @@ class CometExecRuleSuite extends CometTestBase {
           val partialAggregates = findPartialAggregates(transformedPlan)
           assert(partialAggregates.nonEmpty, "Should have found at least one partial aggregate")
           val expectedMessage =
-            "Cannot convert final aggregate to Comet (Final aggregates disabled via test config), " +
-              "so partial aggregates must also use Spark to avoid mixed execution"
+            "Partial aggregate not supported because final aggregate was not supported"
           assert(
             partialAggregates.exists(hasFallbackMessage(_, expectedMessage)),
             s"Partial aggregate should have fallback message: $expectedMessage")
