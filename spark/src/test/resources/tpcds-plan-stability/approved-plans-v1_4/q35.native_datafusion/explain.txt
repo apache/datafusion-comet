@@ -1,7 +1,7 @@
 == Physical Plan ==
-TakeOrderedAndProject (45)
-+- * HashAggregate (44)
-   +- * CometColumnarToRow (43)
+* CometColumnarToRow (45)
++- CometTakeOrderedAndProject (44)
+   +- CometHashAggregate (43)
       +- CometColumnarExchange (42)
          +- * HashAggregate (41)
             +- * Project (40)
@@ -242,19 +242,17 @@ Results [19]: [ca_state#16, cd_gender#23, cd_marital_status#24, cd_dep_count#20,
 Input [19]: [ca_state#16, cd_gender#23, cd_marital_status#24, cd_dep_count#20, cd_dep_employed_count#21, cd_dep_college_count#22, count#38, min#39, max#40, sum#41, count#42, min#43, max#44, sum#45, count#46, min#47, max#48, sum#49, count#50]
 Arguments: hashpartitioning(ca_state#16, cd_gender#23, cd_marital_status#24, cd_dep_count#20, cd_dep_employed_count#21, cd_dep_college_count#22, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=6]
 
-(43) CometColumnarToRow [codegen id : 10]
-Input [19]: [ca_state#16, cd_gender#23, cd_marital_status#24, cd_dep_count#20, cd_dep_employed_count#21, cd_dep_college_count#22, count#38, min#39, max#40, sum#41, count#42, min#43, max#44, sum#45, count#46, min#47, max#48, sum#49, count#50]
-
-(44) HashAggregate [codegen id : 10]
+(43) CometHashAggregate
 Input [19]: [ca_state#16, cd_gender#23, cd_marital_status#24, cd_dep_count#20, cd_dep_employed_count#21, cd_dep_college_count#22, count#38, min#39, max#40, sum#41, count#42, min#43, max#44, sum#45, count#46, min#47, max#48, sum#49, count#50]
 Keys [6]: [ca_state#16, cd_gender#23, cd_marital_status#24, cd_dep_count#20, cd_dep_employed_count#21, cd_dep_college_count#22]
 Functions [10]: [count(1), min(cd_dep_count#20), max(cd_dep_count#20), avg(cd_dep_count#20), min(cd_dep_employed_count#21), max(cd_dep_employed_count#21), avg(cd_dep_employed_count#21), min(cd_dep_college_count#22), max(cd_dep_college_count#22), avg(cd_dep_college_count#22)]
-Aggregate Attributes [10]: [count(1)#51, min(cd_dep_count#20)#52, max(cd_dep_count#20)#53, avg(cd_dep_count#20)#54, min(cd_dep_employed_count#21)#55, max(cd_dep_employed_count#21)#56, avg(cd_dep_employed_count#21)#57, min(cd_dep_college_count#22)#58, max(cd_dep_college_count#22)#59, avg(cd_dep_college_count#22)#60]
-Results [18]: [ca_state#16, cd_gender#23, cd_marital_status#24, count(1)#51 AS cnt1#61, min(cd_dep_count#20)#52 AS min(cd_dep_count)#62, max(cd_dep_count#20)#53 AS max(cd_dep_count)#63, avg(cd_dep_count#20)#54 AS avg(cd_dep_count)#64, cd_dep_employed_count#21, count(1)#51 AS cnt2#65, min(cd_dep_employed_count#21)#55 AS min(cd_dep_employed_count)#66, max(cd_dep_employed_count#21)#56 AS max(cd_dep_employed_count)#67, avg(cd_dep_employed_count#21)#57 AS avg(cd_dep_employed_count)#68, cd_dep_college_count#22, count(1)#51 AS cnt3#69, min(cd_dep_college_count#22)#58 AS min(cd_dep_college_count)#70, max(cd_dep_college_count#22)#59 AS max(cd_dep_college_count)#71, avg(cd_dep_college_count#22)#60 AS avg(cd_dep_college_count)#72, cd_dep_count#20]
 
-(45) TakeOrderedAndProject
-Input [18]: [ca_state#16, cd_gender#23, cd_marital_status#24, cnt1#61, min(cd_dep_count)#62, max(cd_dep_count)#63, avg(cd_dep_count)#64, cd_dep_employed_count#21, cnt2#65, min(cd_dep_employed_count)#66, max(cd_dep_employed_count)#67, avg(cd_dep_employed_count)#68, cd_dep_college_count#22, cnt3#69, min(cd_dep_college_count)#70, max(cd_dep_college_count)#71, avg(cd_dep_college_count)#72, cd_dep_count#20]
-Arguments: 100, [ca_state#16 ASC NULLS FIRST, cd_gender#23 ASC NULLS FIRST, cd_marital_status#24 ASC NULLS FIRST, cd_dep_count#20 ASC NULLS FIRST, cd_dep_employed_count#21 ASC NULLS FIRST, cd_dep_college_count#22 ASC NULLS FIRST], [ca_state#16, cd_gender#23, cd_marital_status#24, cnt1#61, min(cd_dep_count)#62, max(cd_dep_count)#63, avg(cd_dep_count)#64, cd_dep_employed_count#21, cnt2#65, min(cd_dep_employed_count)#66, max(cd_dep_employed_count)#67, avg(cd_dep_employed_count)#68, cd_dep_college_count#22, cnt3#69, min(cd_dep_college_count)#70, max(cd_dep_college_count)#71, avg(cd_dep_college_count)#72]
+(44) CometTakeOrderedAndProject
+Input [18]: [ca_state#16, cd_gender#23, cd_marital_status#24, cnt1#51, min(cd_dep_count)#52, max(cd_dep_count)#53, avg(cd_dep_count)#54, cd_dep_employed_count#21, cnt2#55, min(cd_dep_employed_count)#56, max(cd_dep_employed_count)#57, avg(cd_dep_employed_count)#58, cd_dep_college_count#22, cnt3#59, min(cd_dep_college_count)#60, max(cd_dep_college_count)#61, avg(cd_dep_college_count)#62, cd_dep_count#20]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[ca_state#16 ASC NULLS FIRST,cd_gender#23 ASC NULLS FIRST,cd_marital_status#24 ASC NULLS FIRST,cd_dep_count#20 ASC NULLS FIRST,cd_dep_employed_count#21 ASC NULLS FIRST,cd_dep_college_count#22 ASC NULLS FIRST], output=[ca_state#16,cd_gender#23,cd_marital_status#24,cnt1#51,min(cd_dep_count)#52,max(cd_dep_count)#53,avg(cd_dep_count)#54,cd_dep_employed_count#21,cnt2#55,min(cd_dep_employed_count)#56,max(cd_dep_employed_count)#57,avg(cd_dep_employed_count)#58,cd_dep_college_count#22,cnt3#59,min(cd_dep_college_count)#60,max(cd_dep_college_count)#61,avg(cd_dep_college_count)#62]), [ca_state#16, cd_gender#23, cd_marital_status#24, cnt1#51, min(cd_dep_count)#52, max(cd_dep_count)#53, avg(cd_dep_count)#54, cd_dep_employed_count#21, cnt2#55, min(cd_dep_employed_count)#56, max(cd_dep_employed_count)#57, avg(cd_dep_employed_count)#58, cd_dep_college_count#22, cnt3#59, min(cd_dep_college_count)#60, max(cd_dep_college_count)#61, avg(cd_dep_college_count)#62], 100, 0, [ca_state#16 ASC NULLS FIRST, cd_gender#23 ASC NULLS FIRST, cd_marital_status#24 ASC NULLS FIRST, cd_dep_count#20 ASC NULLS FIRST, cd_dep_employed_count#21 ASC NULLS FIRST, cd_dep_college_count#22 ASC NULLS FIRST], [ca_state#16, cd_gender#23, cd_marital_status#24, cnt1#51, min(cd_dep_count)#52, max(cd_dep_count)#53, avg(cd_dep_count)#54, cd_dep_employed_count#21, cnt2#55, min(cd_dep_employed_count)#56, max(cd_dep_employed_count)#57, avg(cd_dep_employed_count)#58, cd_dep_college_count#22, cnt3#59, min(cd_dep_college_count)#60, max(cd_dep_college_count)#61, avg(cd_dep_college_count)#62]
+
+(45) CometColumnarToRow [codegen id : 10]
+Input [17]: [ca_state#16, cd_gender#23, cd_marital_status#24, cnt1#51, min(cd_dep_count)#52, max(cd_dep_count)#53, avg(cd_dep_count)#54, cd_dep_employed_count#21, cnt2#55, min(cd_dep_employed_count)#56, max(cd_dep_employed_count)#57, avg(cd_dep_employed_count)#58, cd_dep_college_count#22, cnt3#59, min(cd_dep_college_count)#60, max(cd_dep_college_count)#61, avg(cd_dep_college_count)#62]
 
 ===== Subqueries =====
 
@@ -267,18 +265,18 @@ BroadcastExchange (50)
 
 
 (46) CometNativeScan parquet spark_catalog.default.date_dim
-Output [3]: [d_date_sk#9, d_year#73, d_qoy#74]
+Output [3]: [d_date_sk#9, d_year#63, d_qoy#64]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_year), IsNotNull(d_qoy), EqualTo(d_year,2002), LessThan(d_qoy,4), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_qoy:int>
 
 (47) CometFilter
-Input [3]: [d_date_sk#9, d_year#73, d_qoy#74]
-Condition : ((((isnotnull(d_year#73) AND isnotnull(d_qoy#74)) AND (d_year#73 = 2002)) AND (d_qoy#74 < 4)) AND isnotnull(d_date_sk#9))
+Input [3]: [d_date_sk#9, d_year#63, d_qoy#64]
+Condition : ((((isnotnull(d_year#63) AND isnotnull(d_qoy#64)) AND (d_year#63 = 2002)) AND (d_qoy#64 < 4)) AND isnotnull(d_date_sk#9))
 
 (48) CometProject
-Input [3]: [d_date_sk#9, d_year#73, d_qoy#74]
+Input [3]: [d_date_sk#9, d_year#63, d_qoy#64]
 Arguments: [d_date_sk#9], [d_date_sk#9]
 
 (49) CometColumnarToRow [codegen id : 1]

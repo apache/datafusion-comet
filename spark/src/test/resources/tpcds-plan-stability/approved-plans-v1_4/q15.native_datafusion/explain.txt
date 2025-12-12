@@ -1,7 +1,7 @@
 == Physical Plan ==
-TakeOrderedAndProject (24)
-+- * HashAggregate (23)
-   +- * CometColumnarToRow (22)
+* CometColumnarToRow (24)
++- CometTakeOrderedAndProject (23)
+   +- CometHashAggregate (22)
       +- CometColumnarExchange (21)
          +- * HashAggregate (20)
             +- * Project (19)
@@ -124,19 +124,17 @@ Results [2]: [ca_zip#11, sum#14]
 Input [2]: [ca_zip#11, sum#14]
 Arguments: hashpartitioning(ca_zip#11, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
-(22) CometColumnarToRow [codegen id : 5]
-Input [2]: [ca_zip#11, sum#14]
-
-(23) HashAggregate [codegen id : 5]
+(22) CometHashAggregate
 Input [2]: [ca_zip#11, sum#14]
 Keys [1]: [ca_zip#11]
 Functions [1]: [sum(UnscaledValue(cs_sales_price#2))]
-Aggregate Attributes [1]: [sum(UnscaledValue(cs_sales_price#2))#15]
-Results [2]: [ca_zip#11, MakeDecimal(sum(UnscaledValue(cs_sales_price#2))#15,17,2) AS sum(cs_sales_price)#16]
 
-(24) TakeOrderedAndProject
-Input [2]: [ca_zip#11, sum(cs_sales_price)#16]
-Arguments: 100, [ca_zip#11 ASC NULLS FIRST], [ca_zip#11, sum(cs_sales_price)#16]
+(23) CometTakeOrderedAndProject
+Input [2]: [ca_zip#11, sum(cs_sales_price)#15]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[ca_zip#11 ASC NULLS FIRST], output=[ca_zip#11,sum(cs_sales_price)#15]), [ca_zip#11, sum(cs_sales_price)#15], 100, 0, [ca_zip#11 ASC NULLS FIRST], [ca_zip#11, sum(cs_sales_price)#15]
+
+(24) CometColumnarToRow [codegen id : 5]
+Input [2]: [ca_zip#11, sum(cs_sales_price)#15]
 
 ===== Subqueries =====
 
@@ -149,18 +147,18 @@ BroadcastExchange (29)
 
 
 (25) CometNativeScan parquet spark_catalog.default.date_dim
-Output [3]: [d_date_sk#12, d_year#17, d_qoy#18]
+Output [3]: [d_date_sk#12, d_year#16, d_qoy#17]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
 PushedFilters: [IsNotNull(d_qoy), IsNotNull(d_year), EqualTo(d_qoy,2), EqualTo(d_year,2001), IsNotNull(d_date_sk)]
 ReadSchema: struct<d_date_sk:int,d_year:int,d_qoy:int>
 
 (26) CometFilter
-Input [3]: [d_date_sk#12, d_year#17, d_qoy#18]
-Condition : ((((isnotnull(d_qoy#18) AND isnotnull(d_year#17)) AND (d_qoy#18 = 2)) AND (d_year#17 = 2001)) AND isnotnull(d_date_sk#12))
+Input [3]: [d_date_sk#12, d_year#16, d_qoy#17]
+Condition : ((((isnotnull(d_qoy#17) AND isnotnull(d_year#16)) AND (d_qoy#17 = 2)) AND (d_year#16 = 2001)) AND isnotnull(d_date_sk#12))
 
 (27) CometProject
-Input [3]: [d_date_sk#12, d_year#17, d_qoy#18]
+Input [3]: [d_date_sk#12, d_year#16, d_qoy#17]
 Arguments: [d_date_sk#12], [d_date_sk#12]
 
 (28) CometColumnarToRow [codegen id : 1]

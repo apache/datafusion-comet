@@ -1064,14 +1064,9 @@ trait CometBaseAggregate {
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
 
-    val modes = aggregate.aggregateExpressions.map(_.mode).distinct
     // In distinct aggregates there can be a combination of modes
-    val multiMode = modes.size > 1
-    // For a final mode HashAggregate, we only need to transform the HashAggregate
-    // if there is Comet partial aggregation.
-    val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
-
-    if (multiMode || sparkFinalMode) {
+    val modes = aggregate.aggregateExpressions.map(_.mode).distinct
+    if (modes.size > 1) {
       return None
     }
 
@@ -1207,22 +1202,6 @@ trait CometBaseAggregate {
       }
     }
 
-  }
-
-  /**
-   * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate with
-   * partial mode, it will return None.
-   */
-  private def findCometPartialAgg(plan: SparkPlan): Option[CometHashAggregateExec] = {
-    plan.collectFirst {
-      case agg: CometHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
-        Some(agg)
-      case agg: HashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) => None
-      case agg: ObjectHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
-        None
-      case a: AQEShuffleReadExec => findCometPartialAgg(a.child)
-      case s: ShuffleQueryStageExec => findCometPartialAgg(s.plan)
-    }.flatten
   }
 
 }
