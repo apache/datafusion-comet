@@ -1074,6 +1074,12 @@ trait CometBaseAggregate {
       // in most cases, Comet partial aggregates are compatible with Spark final
       // aggregates, but there are some exceptions
       findPartialAgg(aggregate.child) match {
+        case Some(agg: HashAggregateExec) if agg.conf.ansiEnabled =>
+          withInfo(
+            aggregate,
+            "Cannot perform final aggregate in Comet because " +
+              "incompatible partial aggregate ran in Spark")
+          return None
         case Some(child: ObjectHashAggregateExec) =>
           if (child.aggregateExpressions.exists(
               _.aggregateFunction.isInstanceOf[BloomFilterAggregate])) {
