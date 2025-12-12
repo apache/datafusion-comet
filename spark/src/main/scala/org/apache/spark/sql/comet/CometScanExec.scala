@@ -294,9 +294,10 @@ case class CometScanExec(
   }
 
   /**
-   * Get the file partitions for this scan without instantiating readers or RDD.
+   * Get the file partitions for this scan without instantiating readers or RDD. This is useful
+   * for native scans that only need partition metadata.
    */
-  def getFilePartitions: Seq[FilePartition] = {
+  def getFilePartitions(): Seq[FilePartition] = {
     val filePartitions = if (bucketedScan) {
       createFilePartitionsForBucketedScan(
         relation.bucketSpec.get,

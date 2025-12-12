@@ -142,10 +142,12 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         nativeScanBuilder.addAllDefaultValuesIndexes(indexes.toIterable.asJava)
       }
 
+      var firstPartition: Option[PartitionedFile] = None
       val filePartitions = scan.getFilePartitions()
-      val firstPartition = filePartitions.flatMap(p => p.files).headOption
-
       filePartitions.foreach { partition =>
+        if (firstPartition.isEmpty) {
+          firstPartition = partition.files.headOption
+        }
         partition2Proto(partition, nativeScanBuilder, scan.relation.partitionSchema)
       }
 
