@@ -134,14 +134,21 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
           case Some(partialAgg: BaseAggregateExec) =>
             val isFinalSupported = isAggSupported(finalAgg)
             val isPartialSupported = isAggSupported(partialAgg)
-            if (isFinalSupported && isPartialSupported) {
-              // cool
-            } else {
-              // all or nothing for testing this PR but we only want to
-              // fallback for both in cases where we know that there are
-              // compatibility issues
-              withInfo(finalAgg, "nope")
-              withInfo(partialAgg, "nope")
+            // all or nothing for testing this PR, but we only want to
+            // fallback for both in cases where we know that there are
+            // compatibility issues (or somehow fix the plan to fix the
+            // issues)
+            (isFinalSupported, isPartialSupported) match {
+              case (true, false) =>
+                withInfo(
+                  finalAgg,
+                  "Final aggregate not supported because partial aggregate was not supported")
+              case (false, true) =>
+                withInfo(
+                  partialAgg,
+                  "Partial aggregate not supported because final aggregate was not supported")
+              case _ =>
+              // no further action needed
             }
           case _ =>
         }
@@ -152,20 +159,10 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   private def isAggSupported(agg: BaseAggregateExec): Boolean = {
-    val handler = allExecs
+    allExecs
       .get(agg.getClass)
       .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
-    handler match {
-      case Some(serde) =>
-        serde.getSupportLevel(agg) match {
-          case Compatible(_) => true
-          case _ =>
-            // TODO need to consider Incompat case where incompat is enabled
-            false
-        }
-      case _ =>
-        false
-    }
+      .forall(handler => isOperatorEnabled(handler, agg))
   }
 
   /**
