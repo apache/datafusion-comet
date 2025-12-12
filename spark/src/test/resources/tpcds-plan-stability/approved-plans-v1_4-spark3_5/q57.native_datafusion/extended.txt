@@ -11,7 +11,7 @@ TakeOrderedAndProject
       :     :              +- CometColumnarToRow
       :     :                 +- CometSort
       :     :                    +- CometColumnarExchange
-      :     :                       +- HashAggregate
+      :     :                       +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
       :     :                          +- CometColumnarToRow
       :     :                             +- CometColumnarExchange
       :     :                                +- HashAggregate
@@ -48,7 +48,7 @@ TakeOrderedAndProject
       :              +- CometColumnarToRow
       :                 +- CometSort
       :                    +- CometColumnarExchange
-      :                       +- HashAggregate
+      :                       +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
       :                          +- CometColumnarToRow
       :                             +- CometColumnarExchange
       :                                +- HashAggregate
@@ -85,7 +85,7 @@ TakeOrderedAndProject
                +- CometColumnarToRow
                   +- CometSort
                      +- CometColumnarExchange
-                        +- HashAggregate
+                        +-  HashAggregate [COMET: Final mode hash aggregation requires Comet partial aggregation in the child plan]
                            +- CometColumnarToRow
                               +- CometColumnarExchange
                                  +- HashAggregate
