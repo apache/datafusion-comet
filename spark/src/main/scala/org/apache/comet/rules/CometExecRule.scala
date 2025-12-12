@@ -127,37 +127,44 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
    * @return
    *   The plan with appropriate fallback tags added
    */
-  private def tagUnsupportedPartialAggregates(plan: SparkPlan): SparkPlan = {
+  private def fixUpAggregates(plan: SparkPlan): SparkPlan = {
     plan.transformDown {
       case finalAgg: BaseAggregateExec if hasFinalMode(finalAgg) =>
-        // Check if this final aggregate can be converted to Comet
-        val handler = allExecs
-          .get(finalAgg.getClass)
-          .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
-
-        handler match {
-          case Some(serde) =>
-            // Get the actual support level and reason for the final aggregate
-            serde.getSupportLevel(finalAgg) match {
-              case Unsupported(reasonOpt) =>
-                // Final aggregate cannot be converted, extract the actual reason
-                val actualReason = reasonOpt.getOrElse("Final aggregate not supported by Comet")
-                val reason = s"Cannot convert final aggregate to Comet ($actualReason), " +
-                  "so partial aggregates must also use Spark to avoid mixed execution"
-                tagRelatedPartialAggregates(finalAgg, reason)
-              case Incompatible(reasonOpt) =>
-                // Final aggregate cannot be converted, extract the actual reason
-                val actualReason = reasonOpt.getOrElse("Final aggregate incompatible with Comet")
-                val reason = s"Cannot convert final aggregate to Comet ($actualReason), " +
-                  "so partial aggregates must also use Spark to avoid mixed execution"
-                tagRelatedPartialAggregates(finalAgg, reason)
-              case Compatible(_) =>
-                finalAgg
+        findPartialAgg(finalAgg) match {
+          case Some(partialAgg: BaseAggregateExec) =>
+            val isFinalSupported = isAggSupported(finalAgg)
+            val isPartialSupported = isAggSupported(partialAgg)
+            if (isFinalSupported && isPartialSupported) {
+              // cool
+            } else {
+              // all or nothing for testing this PR but we only want to
+              // fallback for both in cases where we know that there are
+              // compatibility issues
+              withInfo(finalAgg, "nope")
+              withInfo(partialAgg, "nope")
             }
           case _ =>
-            finalAgg
         }
-      case other => other
+        finalAgg
+      case other =>
+        other
+    }
+  }
+
+  private def isAggSupported(agg: BaseAggregateExec): Boolean = {
+    val handler = allExecs
+      .get(agg.getClass)
+      .map(_.asInstanceOf[CometOperatorSerde[SparkPlan]])
+    handler match {
+      case Some(serde) =>
+        serde.getSupportLevel(agg) match {
+          case Compatible(_) => true
+          case _ =>
+            // TODO need to consider Incompat case where incompat is enabled
+            false
+        }
+      case _ =>
+        false
     }
   }
 
@@ -169,17 +176,16 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   /**
-   * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate with
-   * partial mode, it will return None.
+   * Find the first partial aggregate in the plan.
    */
-  private def findCometPartialAgg(plan: SparkPlan): Option[SparkPlan] = {
+  private def findPartialAgg(plan: SparkPlan): Option[SparkPlan] = {
     plan.collectFirst {
       case agg: CometHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
         Some(agg)
       case agg: BaseAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
         Some(agg)
-      case a: AQEShuffleReadExec => findCometPartialAgg(a.child)
-      case s: ShuffleQueryStageExec => findCometPartialAgg(s.plan)
+      case a: AQEShuffleReadExec => findPartialAgg(a.child)
+      case s: ShuffleQueryStageExec => findPartialAgg(s.plan)
     }.flatten
   }
 
@@ -483,7 +489,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       }
 
       // Pre-process the plan to ensure coordination between partial and final hash aggregates
-      val planWithAggregateCoordination = tagUnsupportedPartialAggregates(planWithJoinRewritten)
+      val planWithAggregateCoordination = fixUpAggregates(planWithJoinRewritten)
 
       var newPlan = transform(planWithAggregateCoordination)
 
