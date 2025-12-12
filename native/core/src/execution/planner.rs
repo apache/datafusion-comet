@@ -59,6 +59,7 @@ use datafusion::{
     },
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
+        empty::EmptyExec,
         joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
         limit::LocalLimitExec,
         projection::ProjectionExec,
@@ -1047,6 +1048,17 @@ impl PhysicalPlanner {
                     .map(|offset| *offset as usize)
                     .collect();
 
+                // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
+                let partition_files = &scan.file_partitions[self.partition as usize];
+
+                if partition_files.partitioned_file.is_empty() {
+                    let empty_exec = Arc::new(EmptyExec::new(required_schema));
+                    return Ok((
+                        vec![],
+                        Arc::new(SparkPlan::new(spark_plan.plan_id, empty_exec, vec![])),
+                    ));
+                }
+
                 // Convert the Spark expressions to Physical expressions
                 let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
                     .data_filters
@@ -1090,13 +1102,12 @@ impl PhysicalPlanner {
                     None
                 };
 
-                // Get one file from the list of files
-                let one_file = scan
-                    .file_partitions
+                // Get one file from this partition (we know it's not empty due to early return above)
+                let one_file = partition_files
+                    .partitioned_file
                     .first()
-                    .and_then(|f| f.partitioned_file.first())
                     .map(|f| f.file_path.clone())
-                    .ok_or(GeneralError("Failed to locate file".to_string()))?;
+                    .expect("partition should have files after empty check");
 
                 let object_store_options: HashMap<String, String> = scan
                     .object_store_options
