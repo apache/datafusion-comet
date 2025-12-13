@@ -821,12 +821,9 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
         // override base date due to known issues with experimental scans
         baseDate =
           new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime)
-
       val schema = StructType(Range(0, 100).map(_ => genField(r, 0, maxDepth)))
-
       val df =
-        FuzzDataGenerator.generateDataFrame(new Random(42), spark, schema, 100000, dataGenOptions)
-      println(df.schema)
+        FuzzDataGenerator.generateDataFrame(new Random(42), spark, schema, 10000, dataGenOptions)
       df.write.mode(SaveMode.Overwrite).parquet(filename)
     }
     filename
@@ -845,7 +842,8 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
         StructField(name, DataTypes.createArrayType(element.dataType, true))
       case 1 if depth < maxDepth =>
         // struct
-        val fields = Range(0, r.nextInt(10)).map(_ => genField(r, depth + 1, maxDepth)).toArray
+        val fields =
+          Range(1, 2 + r.nextInt(10)).map(_ => genField(r, depth + 1, maxDepth)).toArray
         StructField(name, DataTypes.createStructType(fields))
       case _ =>
         // primitive field
