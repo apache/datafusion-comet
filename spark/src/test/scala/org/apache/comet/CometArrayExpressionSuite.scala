@@ -829,4 +829,42 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
     }
   }
+
+  test("size with array input") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+        // Test size function with arrays built from columns (ensures native execution)
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(array(_2, _3, _4)) from t1 where _2 is not null"))
+        checkSparkAnswerAndOperator(sql("SELECT size(array(_1)) from t1 where _1 is not null"))
+        checkSparkAnswerAndOperator(sql("SELECT size(array(_2, _3)) from t1 where _2 is null"))
+
+        // Test with conditional arrays (forces runtime evaluation)
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(case when _2 > 0 then array(_2, _3, _4) else array(_2) end) from t1"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(case when _1 then array(_8, _9) else array(_8, _9, _10) end) from t1"))
+
+        // Test empty arrays using conditional logic to avoid constant folding
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(case when _2 < 0 then array(_2, _3) else array() end) from t1"))
+
+        // Test null arrays using conditional logic
+        checkSparkAnswerAndOperator(sql(
+          "SELECT size(case when _2 is null then cast(null as array<int>) else array(_2) end) from t1"))
+
+        // Test with different data types using column references
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(array(_8, _9, _10)) from t1 where _8 is not null")
+        ) // string arrays
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(array(_2, _3, _4, _5, _6)) from t1 where _2 is not null")
+        ) // int arrays
+      }
+    }
+  }
 }

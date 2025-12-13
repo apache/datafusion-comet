@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.annotation.tailrec
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse}
+import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayRemove, ArrayRepeat, ArraysOverlap, ArrayUnion, Attribute, CreateArray, ElementAt, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -540,6 +540,31 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     CometArrayCompact.convert(expr, inputs, binding)
+  }
+}
+
+object CometSize extends CometExpressionSerde[Size] {
+
+  override def getSupportLevel(expr: Size): SupportLevel = {
+    // TODO respect spark.sql.legacy.sizeOfNull
+    expr.child.dataType match {
+      case _: ArrayType => Compatible()
+      case _: MapType => Unsupported(Some("size does not support map inputs"))
+      case other =>
+        // this should be unreachable because Spark only supports map and array inputs
+        Unsupported(Some(s"Unsupported child data type: $other"))
+    }
+
+  }
+
+  override def convert(
+      expr: Size,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val arrayExprProto = exprToProto(expr.child, inputs, binding)
+
+    val sizeScalarExpr = scalarFunctionExprToProto("size", arrayExprProto)
+    optExprWithInfo(sizeScalarExpr, expr)
   }
 }
 
