@@ -173,6 +173,19 @@ under the License.
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>s3</artifactId>
     </dependency>
+    <!-- Jetty dependencies for REST catalog testing -->
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-server</artifactId>
+      <version>9.4.53.v20231009</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.eclipse.jetty</groupId>
+      <artifactId>jetty-servlet</artifactId>
+      <version>9.4.53.v20231009</version>
+      <scope>test</scope>
+    </dependency>
     <!-- Iceberg dependencies for testing native Iceberg scan -->
     <!-- Note: The specific Iceberg artifact is defined in profiles below based on Spark version -->
   </dependencies>
