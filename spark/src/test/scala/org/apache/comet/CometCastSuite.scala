@@ -109,6 +109,32 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     assertTestsExist(CometCast.supportedTypes, CometCast.supportedTypes)
   }
 
+  val specialValues: Seq[String] = Seq(
+    "1.5f",
+    "1.5F",
+    "2.0d",
+    "2.0D",
+    "3.14159265358979d",
+    "inf",
+    "Inf",
+    "INF",
+    "+inf",
+    "+Infinity",
+    "-inf",
+    "-Infinity",
+    "NaN",
+    "nan",
+    "NAN",
+    "1.23e4",
+    "1.23E4",
+    "-1.23e-4",
+    "  123.456789  ",
+    "0.0",
+    "-0.0",
+    "",
+    "xyz",
+    null)
+
   // CAST from BooleanType
 
   test("cast BooleanType to ByteType") {
@@ -652,54 +678,130 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.LongType)
   }
 
-  ignore("cast StringType to FloatType") {
-    // https://github.com/apache/datafusion-comet/issues/326
-    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.FloatType)
-  }
-
-  test("cast StringType to FloatType (partial support)") {
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
-      SQLConf.ANSI_ENABLED.key -> "false") {
-      castTest(
-        gen.generateStrings(dataSize, "0123456789.", 8).toDF("a"),
-        DataTypes.FloatType,
-        testAnsi = false)
+  test("cast StringType to FloatType special values") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
+    Seq(true, false).foreach { v =>
+      castTest(specialValues.toDF("a"), DataTypes.FloatType, testAnsi = v)
     }
   }
 
-  ignore("cast StringType to DoubleType") {
-    // https://github.com/apache/datafusion-comet/issues/326
-    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.DoubleType)
+  test("cast StringType to DoubleType special values") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
+    Seq(true, false).foreach { v =>
+      castTest(specialValues.toDF("a"), DataTypes.DoubleType, testAnsi = v)
+    }
   }
 
-  test("cast StringType to DoubleType (partial support)") {
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
-      SQLConf.ANSI_ENABLED.key -> "false") {
+  test("cast StringType to DoubleType") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
+    Seq(true, false).foreach { v =>
       castTest(
-        gen.generateStrings(dataSize, "0123456789.", 8).toDF("a"),
+        gen.generateStrings(dataSize, numericPattern, 10).toDF("a"),
         DataTypes.DoubleType,
-        testAnsi = false)
+        testAnsi = v)
     }
   }
 
-  ignore("cast StringType to DecimalType(10,2)") {
-    // https://github.com/apache/datafusion-comet/issues/325
-    val values = gen.generateStrings(dataSize, numericPattern, 8).toDF("a")
-    castTest(values, DataTypes.createDecimalType(10, 2))
+  test("cast StringType to FloatType") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
+    Seq(true, false).foreach { v =>
+      castTest(
+        gen.generateStrings(dataSize, numericPattern, 10).toDF("a"),
+        DataTypes.FloatType,
+        testAnsi = v)
+    }
   }
 
-  test("cast StringType to DecimalType(10,2) (partial support)") {
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
-      SQLConf.ANSI_ENABLED.key -> "false") {
-      val values = gen
-        .generateStrings(dataSize, "0123456789.", 8)
-        .filter(_.exists(_.isDigit))
-        .toDF("a")
-      castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = false)
-    }
+  test("cast StringType to Float type scientific notation") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
+    val values = Seq(
+      "1.23E-5",
+      "1.23e10",
+      "1.23E+10",
+      "-1.23e-5",
+      "1e5",
+      "1E-2",
+      "-1.5e3",
+      "1.23E0",
+      "0e0",
+      "1.23e",
+      "e5",
+      null).toDF("a")
+    Seq(true, false).foreach(k => castTest(values, DataTypes.FloatType, testAnsi = k))
+  }
+
+  test("cast StringType to DecimalType(22,2)") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
+    val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
+    Seq(true, false).foreach(k =>
+      castTest(values, DataTypes.createDecimalType(22, 2), testAnsi = k))
+  }
+
+  test("cast StringType to DecimalType(2,2)") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
+    val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
+    Seq(true, false).foreach(k =>
+      castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = k))
+  }
+
+  test("cast StringType to DecimalType(38,10) high precision") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
+    val values = gen.generateStrings(dataSize, numericPattern, 38).toDF("a")
+    Seq(true, false).foreach(k =>
+      castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = k))
+  }
+
+  test("cast StringType to DecimalType(10,2) basic values") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
+    val values = Seq(
+      "123.45",
+      "-67.89",
+      "-67.89",
+      "-67.895",
+      "67.895",
+      "0.001",
+      "999.99",
+      "123.456",
+      "123.45D",
+      ".5",
+      "5.",
+      "+123.45",
+      "  123.45  ",
+      "inf",
+      "",
+      "abc",
+      null).toDF("a")
+    Seq(true, false).foreach(k =>
+      castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = k))
+  }
+
+  test("cast StringType to Decimal type scientific notation") {
+    // TODO fix for Spark 4.0.0
+    assume(!isSpark40Plus)
+    val values = Seq(
+      "1.23E-5",
+      "1.23e10",
+      "1.23E+10",
+      "-1.23e-5",
+      "1e5",
+      "1E-2",
+      "-1.5e3",
+      "1.23E0",
+      "0e0",
+      "1.23e",
+      "e5",
+      null).toDF("a")
+    Seq(true, false).foreach(k =>
+      castTest(values, DataTypes.createDecimalType(23, 8), testAnsi = k))
   }
 
   test("cast StringType to BinaryType") {

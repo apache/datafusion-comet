@@ -185,16 +185,9 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case DataTypes.BinaryType =>
         Compatible()
       case DataTypes.FloatType | DataTypes.DoubleType =>
-        // https://github.com/apache/datafusion-comet/issues/326
-        Incompatible(
-          Some(
-            "Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. " +
-              "Does not support ANSI mode."))
+        Compatible()
       case _: DecimalType =>
-        // https://github.com/apache/datafusion-comet/issues/325
-        Incompatible(
-          Some("Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. " +
-            "Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits"))
+        Compatible()
       case DataTypes.DateType =>
         // https://github.com/apache/datafusion-comet/issues/327
         Compatible(Some("Only supports years between 262143 BC and 262142 AD"))
