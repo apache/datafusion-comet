@@ -119,15 +119,8 @@ object FuzzDataGenerator {
             Range(1, 2 + r.nextInt(10)).map(_ => genField(r, depth + 1, maxDepth)).toArray
           StructField(name, DataTypes.createStructType(fields))
         case _ =>
-          // primitive field
-          r.nextInt(3) match {
-            case 0 =>
-              StructField(name, DataTypes.LongType)
-            case 1 =>
-              StructField(name, DataTypes.createDecimalType(10, 2))
-            case _ =>
-              StructField(name, DataTypes.StringType)
-          }
+          // primitive
+          StructField(name, randomChoice(options.primitiveTypes, r))
       }
     }
 

@@ -499,87 +499,76 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     }
   }
 
-  def shuffleDeeplyNestedBenchmark(maxDepth: Int, partitionNum: Int): Unit = {
-    val numRows = 10000
+  def shuffleDeeplyNestedBenchmark(
+      name: String,
+      filename: String,
+      numRows: Int,
+      partitionNum: Int): Unit = {
     val benchmark =
-      new Benchmark(
-        s"SQL Deeply Nested (depth=$maxDepth) Shuffle ($partitionNum Partition)",
-        numRows,
-        output = output)
+      new Benchmark(s"Shuffle with nested schema ($name)", numRows, output = output)
+    val df = spark.read.parquet(filename)
+    withTempTable("deeplyNestedTable") {
+      df.createOrReplaceTempView("deeplyNestedTable")
+      val sql = "select * from deeplyNestedTable"
 
-    for (generateArray <- Seq(true, false)) {
-      for (generateStruct <- Seq(true, false)) {
-        if (generateArray || generateStruct) {
-          val filename =
-            createDeeplyNestedParquetFile(numRows, maxDepth, generateArray, generateStruct)
-          try {
-            val df = spark.read.parquet(filename)
+      benchmark.addCase("Spark") { _ =>
+        spark
+          .sql(sql)
+          .repartition(partitionNum)
+          .noop()
+      }
 
-            withTempTable("deeplyNestedTable") {
-              df.createOrReplaceTempView("deeplyNestedTable")
+      benchmark.addCase("Comet (Spark Shuffle)") { _ =>
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+          spark
+            .sql(sql)
+            .repartition(partitionNum)
+            .noop()
+        }
+      }
 
-              val sql = "select * from deeplyNestedTable"
-              val config = s"arrays=$generateArray, structs=$generateStruct, maxDepth=$maxDepth"
-
-              benchmark.addCase(s"SQL Parquet ($config) - Spark") { _ =>
-                spark
-                  .sql(sql)
-                  .repartition(partitionNum)
-                  .noop()
-              }
-
-              benchmark.addCase(s"SQL Parquet ($config) - Comet (Spark Shuffle)") { _ =>
-                withSQLConf(
-                  CometConf.COMET_ENABLED.key -> "true",
-                  CometConf.COMET_EXEC_ENABLED.key -> "true",
-                  CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
-                  spark
-                    .sql(sql)
-                    .repartition(partitionNum)
-                    .noop()
-                }
-              }
-
-              benchmark.addCase(s"SQL Parquet ($config) - Comet (JVM Shuffle)") { _ =>
-                withSQLConf(
-                  CometConf.COMET_ENABLED.key -> "true",
-                  CometConf.COMET_EXEC_ENABLED.key -> "true",
-                  CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-                  CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
-                  spark
-                    .sql(sql)
-                    .repartition(partitionNum)
-                    .noop()
-                }
-              }
-
-              benchmark.addCase(s"SQL Parquet ($config) - Comet (Native Shuffle)") { _ =>
-                withSQLConf(
-                  CometConf.COMET_ENABLED.key -> "true",
-                  CometConf.COMET_EXEC_ENABLED.key -> "true",
-                  CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-                  CometConf.COMET_SHUFFLE_MODE.key -> "native") {
-                  spark
-                    .sql(sql)
-                    .repartition(partitionNum)
-                    .noop()
-                }
-                benchmark.run()
-              }
-            }
-          } finally {
-            new java.io.File(filename).delete()
+      for (shuffle <- Seq("jvm", "native")) {
+        benchmark.addCase(s"Comet ($shuffle Shuffle)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> shuffle) {
+            spark
+              .sql(sql)
+              .repartition(partitionNum)
+              .noop()
           }
         }
       }
+
+      benchmark.run()
     }
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    runBenchmark("Deeply Nested Shuffle") {
-      Seq(2, 4).foreach { maxDepth =>
-        Seq(5, 201).foreach { partitionNum =>
-          shuffleDeeplyNestedBenchmark(maxDepth, partitionNum)
+
+    // nested type shuffle
+    val numRows = 1000
+    for (generateArray <- Seq(true, false)) {
+      for (generateStruct <- Seq(true, false)) {
+        if (generateArray || generateStruct) {
+          for (maxDepth <- Seq(2, 4)) {
+            val filename =
+              createDeeplyNestedParquetFile(numRows, maxDepth, generateArray, generateStruct)
+            try {
+              for (partitionNum <- Seq(5, 201)) {
+                val name = s"array=$generateArray, struct=$generateStruct, maxDepth=$maxDepth, " +
+                  s"partitionNum=$partitionNum"
+                shuffleDeeplyNestedBenchmark(name, filename, numRows, partitionNum)
+              }
+            } finally {
+              new java.io.File(filename).delete()
+            }
+          }
         }
       }
     }
@@ -835,6 +824,9 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
         // override base date due to known issues with experimental scans
         baseDate =
           new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime)
+
+      // scalastyle:off
+      println(s"Generating $filename")
       val df =
         FuzzDataGenerator.generateDataFrame(r, spark, schema, numRows, dataGenOptions)
       df.write.mode(SaveMode.Overwrite).parquet(filename)
