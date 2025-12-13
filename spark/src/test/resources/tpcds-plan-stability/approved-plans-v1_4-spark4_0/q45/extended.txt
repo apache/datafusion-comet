@@ -5,7 +5,7 @@ TakeOrderedAndProject
          +- HashAggregate
             +- Project
                +- Filter
-                  +- BroadcastHashJoin
+                  +-  BroadcastHashJoin [COMET: Unsupported join type ExistenceJoin(exists#1)]
                      :- CometColumnarToRow
                      :  +- CometProject
                      :     +- CometBroadcastHashJoin

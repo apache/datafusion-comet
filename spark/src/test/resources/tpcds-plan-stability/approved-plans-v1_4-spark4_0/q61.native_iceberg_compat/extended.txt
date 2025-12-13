@@ -1,5 +1,5 @@
 Project
-+- BroadcastNestedLoopJoin
++-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
    :- CometColumnarToRow
    :  +- CometHashAggregate
    :     +- CometExchange

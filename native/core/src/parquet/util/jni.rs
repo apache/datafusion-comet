@@ -30,7 +30,6 @@ use datafusion::execution::object_store::ObjectStoreUrl;
 use object_store::path::Path;
 use parquet::{
     basic::{Encoding, LogicalType, TimeUnit, Type as PhysicalType},
-    format::{MicroSeconds, MilliSeconds, NanoSeconds},
     schema::types::{ColumnDescriptor, ColumnPath, PrimitiveTypeBuilder},
 };
 use url::{ParseError, Url};
@@ -185,9 +184,9 @@ fn convert_logical_type(
 
 fn convert_time_unit(time_unit: jint) -> TimeUnit {
     match time_unit {
-        0 => TimeUnit::MILLIS(MilliSeconds::new()),
-        1 => TimeUnit::MICROS(MicroSeconds::new()),
-        2 => TimeUnit::NANOS(NanoSeconds::new()),
+        0 => TimeUnit::MILLIS,
+        1 => TimeUnit::MICROS,
+        2 => TimeUnit::NANOS,
         _ => panic!("Invalid time unit id for Parquet: {time_unit}"),
     }
 }
