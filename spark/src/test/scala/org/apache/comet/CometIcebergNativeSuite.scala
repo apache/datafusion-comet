@@ -2268,21 +2268,10 @@ class CometIcebergNativeSuite extends CometTestBase {
           ) USING iceberg
         """)
 
-        // Insert data
         spark.sql("""
           INSERT INTO rest_cat.db.test_table
           VALUES (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)
         """)
-
-        // Query the table
-        val df = spark.sql("SELECT * FROM rest_cat.db.test_table ORDER BY id")
-
-        // Print the explain to see fallback reasons
-        // scalastyle:off println
-        println("=== EXPLAIN OUTPUT ===")
-        df.explain(true)
-        println("=== END EXPLAIN ===")
-        // scalastyle:on println
 
         checkIcebergNativeScan("SELECT * FROM rest_cat.db.test_table ORDER BY id")
 
