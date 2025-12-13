@@ -19,23 +19,25 @@
 
 package org.apache.spark.sql.benchmark
 
+import java.text.SimpleDateFormat
+import java.util.concurrent.atomic.AtomicLong
+
+import scala.util.Random
+
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{Column, SaveMode, SparkSession}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
-import java.text.SimpleDateFormat
-import java.util.concurrent.atomic.AtomicLong
-import scala.util.Random
-
 /**
  * Benchmark to measure Comet shuffle performance. To run this benchmark:
- * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometShuffleBenchmark`
- * Results will be written to
+ * `SPARK_GENERATE_BENCHMARK_FILES=1 make
+ * benchmark-org.apache.spark.sql.benchmark.CometShuffleBenchmark` Results will be written to
  * "spark/benchmarks/CometShuffleBenchmark-**results.txt".
  */
 object CometShuffleBenchmark extends CometBenchmarkBase {
@@ -737,8 +739,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     val tempDir = System.getProperty("java.io.tmpdir")
     val filename = s"$tempDir/CometFuzzTestSuite_${System.currentTimeMillis()}.parquet"
     val r = new Random(42)
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "false") {
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       val dataGenOptions = DataGenOptions(
         generateNegativeZero = false,
         // override base date due to known issues with experimental scans
@@ -747,7 +748,8 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
 
       val schema = StructType(Range(0, 10).map(_ => genField(r, 0, maxDepth)))
 
-      val df = FuzzDataGenerator.generateDataFrame(new Random(42), spark, schema, 100, dataGenOptions)
+      val df =
+        FuzzDataGenerator.generateDataFrame(new Random(42), spark, schema, 100, dataGenOptions)
       println(df.schema)
       df.write.mode(SaveMode.Overwrite).parquet(filename)
     }
@@ -763,11 +765,11 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     r.nextInt(10) match {
       case 0 if depth < maxDepth =>
         // array
-        val element = genField(r, depth+1, maxDepth)
+        val element = genField(r, depth + 1, maxDepth)
         StructField(name, DataTypes.createArrayType(element.dataType, true))
       case 1 if depth < maxDepth =>
         // struct
-        val fields = Range(0, r.nextInt(10)).map(_ => genField(r, depth+1, maxDepth)).toArray
+        val fields = Range(0, r.nextInt(10)).map(_ => genField(r, depth + 1, maxDepth)).toArray
         StructField(name, DataTypes.createStructType(fields))
       case 2 =>
         StructField(name, DataTypes.LongType)
