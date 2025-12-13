@@ -2242,7 +2242,7 @@ class CometIcebergNativeSuite extends CometTestBase {
     }
   }
 
-  test("REST catalog should fall back to Spark (metadata not physically accessible)") {
+  test("REST catalog with native Iceberg scan") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withRESTCatalog { (restUri, httpServer, warehouseDir) =>
@@ -2253,7 +2253,8 @@ class CometIcebergNativeSuite extends CometTestBase {
         "spark.sql.catalog.rest_cat.warehouse" -> warehouseDir.getAbsolutePath,
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
 
         // Create namespace first (REST catalog requires explicit namespace creation)
         spark.sql("CREATE NAMESPACE rest_cat.db")
@@ -2275,23 +2276,15 @@ class CometIcebergNativeSuite extends CometTestBase {
 
         // Query the table
         val df = spark.sql("SELECT * FROM rest_cat.db.test_table ORDER BY id")
-        val executedPlan = df.queryExecution.executedPlan
 
-        // Verify that it falls back to Spark (not using CometIcebergNativeScanExec)
-        // REST catalog metadata is not accessible as a physical file, so native scan should fall back
-        val icebergScans = collectIcebergNativeScans(executedPlan)
-        assert(
-          icebergScans.isEmpty,
-          s"Expected REST catalog to fall back to Spark, but found ${icebergScans.length} " +
-            s"CometIcebergNativeScanExec nodes. Plan:\n$executedPlan")
+        // Print the explain to see fallback reasons
+        // scalastyle:off println
+        println("=== EXPLAIN OUTPUT ===")
+        df.explain(true)
+        println("=== END EXPLAIN ===")
+        // scalastyle:on println
 
-        // Verify correctness - data should still be readable via Spark
-        checkAnswer(
-          df,
-          Seq(
-            org.apache.spark.sql.Row(1, "Alice", 10.5),
-            org.apache.spark.sql.Row(2, "Bob", 20.3),
-            org.apache.spark.sql.Row(3, "Charlie", 30.7)))
+        checkIcebergNativeScan("SELECT * FROM rest_cat.db.test_table ORDER BY id")
 
         spark.sql("DROP TABLE rest_cat.db.test_table")
         spark.sql("DROP NAMESPACE rest_cat.db")

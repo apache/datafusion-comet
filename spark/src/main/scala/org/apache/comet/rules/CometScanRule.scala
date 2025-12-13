@@ -257,20 +257,34 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       case _
           if scanExec.scan.getClass.getName ==
             "org.apache.iceberg.spark.source.SparkBatchQueryScan" =>
+        // scalastyle:off println
+        println(s"=== CometScanRule: Detected Iceberg SparkBatchQueryScan ===")
+        // scalastyle:on println
+
         val fallbackReasons = new ListBuffer[String]()
 
         // Native Iceberg scan requires both configs to be enabled
         if (!COMET_ICEBERG_NATIVE_ENABLED.get()) {
           fallbackReasons += "Native Iceberg scan disabled because " +
             s"${COMET_ICEBERG_NATIVE_ENABLED.key} is not enabled"
+          // scalastyle:off println
+          println(s"=== Fallback: COMET_ICEBERG_NATIVE_ENABLED not enabled ===")
+          // scalastyle:on println
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
         if (!COMET_EXEC_ENABLED.get()) {
           fallbackReasons += "Native Iceberg scan disabled because " +
             s"${COMET_EXEC_ENABLED.key} is not enabled"
+          // scalastyle:off println
+          println(s"=== Fallback: COMET_EXEC_ENABLED not enabled ===")
+          // scalastyle:on println
           return withInfos(scanExec, fallbackReasons.toSet)
         }
+
+        // scalastyle:off println
+        println(s"=== CometScanRule: Both configs enabled, checking schema ===")
+        // scalastyle:on println
 
         val typeChecker = CometScanTypeChecker(SCAN_NATIVE_DATAFUSION)
         val schemaSupported =
@@ -279,29 +293,143 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         if (!schemaSupported) {
           fallbackReasons += "Comet extension is not enabled for " +
             s"${scanExec.scan.getClass.getSimpleName}: Schema not supported"
+          // scalastyle:off println
+          println(s"=== Fallback: Schema not supported ===")
+          // scalastyle:on println
         }
+
+        // scalastyle:off println
+        println(s"=== CometScanRule: Schema check passed, extracting metadata ===")
+        // scalastyle:on println
 
         // Extract all Iceberg metadata once using reflection.
         // If any required reflection fails, this returns None, and we fall back to Spark.
         // First get metadataLocation and catalogProperties which are needed by the factory.
-        val metadataLocationOpt = IcebergReflection
-          .getTable(scanExec.scan)
-          .flatMap(IcebergReflection.getMetadataLocation)
+        val tableOpt = IcebergReflection.getTable(scanExec.scan)
+        tableOpt.foreach { table =>
+          logInfo(s"Iceberg table class: ${table.getClass.getName}")
+        }
+
+        // scalastyle:off println
+        if (tableOpt.isEmpty) {
+          println(s"=== Failed to get Iceberg table via reflection ===")
+        } else {
+          println(s"=== Got Iceberg table: ${tableOpt.get.getClass.getName} ===")
+        }
+        // scalastyle:on println
+
+        val metadataLocationOpt = tableOpt.flatMap { table =>
+          val metadataLoc = IcebergReflection.getMetadataLocation(table)
+          metadataLoc match {
+            case Some(loc) =>
+              logInfo(s"Iceberg metadata location: $loc")
+              // scalastyle:off println
+              println(s"=== Got metadata location: $loc ===")
+              // scalastyle:on println
+            case None =>
+              logInfo(s"Iceberg metadata location not available (likely REST catalog)")
+              // scalastyle:off println
+              println(s"=== Metadata location not available ===")
+              // scalastyle:on println
+          }
+          metadataLoc
+        }
 
         val metadataOpt = metadataLocationOpt.flatMap { metadataLocation =>
+          // scalastyle:off println
+          println(s"=== Starting metadata extraction for location: $metadataLocation ===")
+          // scalastyle:on println
           try {
             val session = org.apache.spark.sql.SparkSession.active
             val hadoopConf = session.sessionState.newHadoopConf()
+
+            // For REST catalogs, the metadata file may not exist on disk since metadata
+            // is fetched via HTTP. Check if file exists; if not, use table location instead.
             val metadataUri = new java.net.URI(metadataLocation)
-            val hadoopS3Options = NativeConfig.extractObjectStoreOptions(hadoopConf, metadataUri)
+            // scalastyle:off println
+            println(s"=== metadataUri: $metadataUri, scheme: ${metadataUri.getScheme}, path: ${metadataUri.getPath} ===")
+            // scalastyle:on println
+
+            val metadataFile = new java.io.File(metadataUri.getPath)
+            // scalastyle:off println
+            println(s"=== metadataFile: ${metadataFile.getAbsolutePath}, exists: ${metadataFile.exists()} ===")
+            // scalastyle:on println
+
+            val effectiveLocation = if (!metadataFile.exists() && metadataUri.getScheme == "file") {
+              // Metadata file doesn't exist (REST catalog with InMemoryFileIO or similar)
+              // Use table location instead for FileIO initialization
+              // scalastyle:off println
+              println(s"=== Metadata file doesn't exist, attempting to get table location ===")
+              // scalastyle:on println
+
+              tableOpt.flatMap { table =>
+                try {
+                  val locationMethod = table.getClass.getMethod("location")
+                  val tableLocation = locationMethod.invoke(table).asInstanceOf[String]
+                  // scalastyle:off println
+                  println(s"=== REST catalog detected: metadata file doesn't exist, using table location: $tableLocation ===")
+                  // scalastyle:on println
+                  Some(tableLocation)
+                } catch {
+                  case e: Exception =>
+                    // scalastyle:off println
+                    println(s"=== Could not get table location, using metadata location anyway: ${e.getMessage} ===")
+                    e.printStackTrace()
+                    // scalastyle:on println
+                    Some(metadataLocation)
+                }
+              }.getOrElse(metadataLocation)
+            } else {
+              // scalastyle:off println
+              println(s"=== Metadata file exists or not file:// scheme, using metadata location ===")
+              // scalastyle:on println
+              metadataLocation
+            }
+
+            // scalastyle:off println
+            println(s"=== effectiveLocation: $effectiveLocation ===")
+            // scalastyle:on println
+
+            val effectiveUri = new java.net.URI(effectiveLocation)
+            // scalastyle:off println
+            println(s"=== effectiveUri: $effectiveUri ===")
+            // scalastyle:on println
+
+            val hadoopS3Options = NativeConfig.extractObjectStoreOptions(hadoopConf, effectiveUri)
+            // scalastyle:off println
+            println(s"=== hadoopS3Options: $hadoopS3Options ===")
+            // scalastyle:on println
+
             val catalogProperties =
               org.apache.comet.serde.operator.CometIcebergNativeScan
                 .hadoopToIcebergS3Properties(hadoopS3Options)
+            // scalastyle:off println
+            println(s"=== catalogProperties: $catalogProperties ===")
+            // scalastyle:on println
 
-            CometIcebergNativeScanMetadata
-              .extract(scanExec.scan, metadataLocation, catalogProperties)
+            // scalastyle:off println
+            println(s"=== Calling CometIcebergNativeScanMetadata.extract with location: $effectiveLocation ===")
+            // scalastyle:on println
+
+            val result = CometIcebergNativeScanMetadata
+              .extract(scanExec.scan, effectiveLocation, catalogProperties)
+
+            // scalastyle:off println
+            result match {
+              case Some(metadata) =>
+                println(s"=== CometIcebergNativeScanMetadata.extract returned Some(metadata) ===")
+              case None =>
+                println(s"=== CometIcebergNativeScanMetadata.extract returned None ===")
+            }
+            // scalastyle:on println
+
+            result
           } catch {
             case e: Exception =>
+              // scalastyle:off println
+              println(s"=== Failed to extract catalog properties from Iceberg scan: ${e.getMessage} ===")
+              e.printStackTrace()
+              // scalastyle:on println
               logError(
                 s"Failed to extract catalog properties from Iceberg scan: ${e.getMessage}",
                 e)
@@ -309,49 +437,98 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           }
         }
 
+        // scalastyle:off println
+        if (metadataOpt.isEmpty) {
+          println(s"=== metadataOpt is None, will fall back ===")
+        } else {
+          println(s"=== metadataOpt is Some, proceeding with validation ===")
+        }
+        // scalastyle:on println
+
         // If metadata extraction failed, fall back to Spark
         val metadata = metadataOpt match {
-          case Some(m) => m
+          case Some(m) =>
+            // scalastyle:off println
+            println(s"=== Got metadata, proceeding with validation ===")
+            // scalastyle:on println
+            m
           case None =>
             fallbackReasons += "Failed to extract Iceberg metadata via reflection"
+            // scalastyle:off println
+            println(s"=== No metadata, falling back. Reasons: ${fallbackReasons.mkString(", ")} ===")
+            // scalastyle:on println
             return withInfos(scanExec, fallbackReasons.toSet)
         }
 
         // Now perform all validation using the pre-extracted metadata
         // Check if table uses a FileIO implementation compatible with iceberg-rust
+        // scalastyle:off println
+        println(s"=== Starting FileIO compatibility check ===")
+        // scalastyle:on println
+
         val fileIOCompatible = IcebergReflection.getFileIO(metadata.table) match {
           case Some(fileIO) =>
             val fileIOClassName = fileIO.getClass.getName
-            if (fileIOClassName == "org.apache.iceberg.inmemory.InMemoryFileIO") {
-              fallbackReasons += "Comet does not support InMemoryFileIO table locations"
-              false
-            } else {
-              true
-            }
+            // scalastyle:off println
+            println(s"=== FileIO class: $fileIOClassName ===")
+            // scalastyle:on println
+            // InMemoryFileIO is now supported with table location fallback for REST catalogs
+            true
           case None =>
             fallbackReasons += "Could not check FileIO compatibility"
+            // scalastyle:off println
+            println(s"=== Could not get FileIO, falling back ===")
+            // scalastyle:on println
             false
         }
 
+        // scalastyle:off println
+        println(s"=== FileIO compatible: $fileIOCompatible ===")
+        // scalastyle:on println
+
         // Check Iceberg table format version
+        // scalastyle:off println
+        println(s"=== Checking format version ===")
+        // scalastyle:on println
+
         val formatVersionSupported = IcebergReflection.getFormatVersion(metadata.table) match {
           case Some(formatVersion) =>
+            // scalastyle:off println
+            println(s"=== Format version: $formatVersion ===")
+            // scalastyle:on println
             if (formatVersion > 2) {
               fallbackReasons += "Iceberg table format version " +
                 s"$formatVersion is not supported. " +
                 "Comet only supports Iceberg table format V1 and V2"
+              // scalastyle:off println
+              println(s"=== Format version $formatVersion not supported, falling back ===")
+              // scalastyle:on println
               false
             } else {
+              // scalastyle:off println
+              println(s"=== Format version $formatVersion supported ===")
+              // scalastyle:on println
               true
             }
           case None =>
             fallbackReasons += "Could not verify Iceberg table format version"
+            // scalastyle:off println
+            println(s"=== Could not get format version, falling back ===")
+            // scalastyle:on println
             false
         }
+
+        // scalastyle:off println
+        println(s"=== Checking file formats and schemes ===")
+        // scalastyle:on println
 
         // Check if all files are Parquet format and use supported filesystem schemes
         val (allParquetFiles, unsupportedSchemes) =
           IcebergReflection.validateFileFormatsAndSchemes(metadata.tasks)
+
+        // scalastyle:off println
+        println(s"=== allParquetFiles: $allParquetFiles, unsupportedSchemes: ${unsupportedSchemes.mkString(", ")} ===")
+        // scalastyle:on println
 
         val allSupportedFilesystems = if (unsupportedSchemes.isEmpty) {
           true
@@ -367,6 +544,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             "Comet only supports Parquet files in Iceberg tables"
         }
 
+        // scalastyle:off println
+        println(s"=== Checking partition types ===")
+        // scalastyle:on println
+
         // Partition values are deserialized via iceberg-rust's Literal::try_from_json()
         // which has incomplete type support (binary/fixed unimplemented, decimals limited)
         val partitionTypesSupported = (for {
@@ -374,6 +555,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         } yield {
           val unsupportedTypes =
             IcebergReflection.validatePartitionTypes(partitionSpec, metadata.scanSchema)
+
+          // scalastyle:off println
+          println(s"=== unsupportedTypes: ${unsupportedTypes.size} ===")
+          // scalastyle:on println
 
           if (unsupportedTypes.nonEmpty) {
             unsupportedTypes.foreach { case (fieldName, typeStr, reason) =>
@@ -516,15 +701,35 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           !hasUnsupportedDeletes
         }
 
+        // scalastyle:off println
+        println(s"=== Final validation results: ===")
+        println(s"===   schemaSupported: $schemaSupported ===")
+        println(s"===   fileIOCompatible: $fileIOCompatible ===")
+        println(s"===   formatVersionSupported: $formatVersionSupported ===")
+        println(s"===   allParquetFiles: $allParquetFiles ===")
+        println(s"===   allSupportedFilesystems: $allSupportedFilesystems ===")
+        println(s"===   partitionTypesSupported: $partitionTypesSupported ===")
+        println(s"===   complexTypePredicatesSupported: $complexTypePredicatesSupported ===")
+        println(s"===   transformFunctionsSupported: $transformFunctionsSupported ===")
+        println(s"===   deleteFileTypesSupported: $deleteFileTypesSupported ===")
+        // scalastyle:on println
+
         if (schemaSupported && fileIOCompatible && formatVersionSupported && allParquetFiles &&
           allSupportedFilesystems && partitionTypesSupported &&
           complexTypePredicatesSupported && transformFunctionsSupported &&
           deleteFileTypesSupported) {
+          // scalastyle:off println
+          println(s"=== ALL CHECKS PASSED - Creating CometBatchScanExec with native Iceberg scan ===")
+          // scalastyle:on println
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
             nativeIcebergScanMetadata = Some(metadata))
         } else {
+          // scalastyle:off println
+          println(s"=== Some checks failed - Falling back to Spark ===")
+          println(s"=== Fallback reasons: ${fallbackReasons.mkString(", ")} ===")
+          // scalastyle:on println
           withInfos(scanExec, fallbackReasons.toSet)
         }
 
