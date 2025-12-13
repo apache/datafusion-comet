@@ -345,8 +345,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
         // If metadata extraction failed, fall back to Spark
         val metadata = metadataOpt match {
-          case Some(m) =>
-            m
+          case Some(m) => m
           case None =>
             fallbackReasons += "Failed to extract Iceberg metadata via reflection"
             return withInfos(scanExec, fallbackReasons.toSet)
