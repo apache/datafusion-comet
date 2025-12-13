@@ -499,7 +499,84 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     }
   }
 
+  def shuffleDeeplyNestedBenchmark(maxDepth: Int, partitionNum: Int): Unit = {
+    val filename = createDeeplyNestedParquetFile(maxDepth)
+    try {
+      val df = spark.read.parquet(filename)
+      val numRows = df.count()
+      val columns = df.columns.mkString(", ")
+
+      val benchmark =
+        new Benchmark(
+          s"SQL Deeply Nested (depth=$maxDepth) Shuffle ($partitionNum Partition)",
+          numRows,
+          output = output)
+
+      withTempTable("deeplyNestedTable") {
+        df.createOrReplaceTempView("deeplyNestedTable")
+
+        benchmark.addCase("SQL Parquet - Spark") { _ =>
+          spark
+            .sql(s"select $columns from deeplyNestedTable")
+            .repartition(partitionNum)
+            .noop()
+        }
+
+        benchmark.addCase("SQL Parquet - Comet (Spark Shuffle)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+            spark
+              .sql(s"select $columns from deeplyNestedTable")
+              .repartition(partitionNum)
+              .noop()
+          }
+        }
+
+        benchmark.addCase("SQL Parquet - Comet (Comet Arrow Shuffle)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+            CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> "false") {
+            spark
+              .sql(s"select $columns from deeplyNestedTable")
+              .repartition(partitionNum)
+              .noop()
+          }
+        }
+
+        benchmark.addCase("SQL Parquet - Comet (Comet Shuffle)") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+            spark
+              .sql(s"select $columns from deeplyNestedTable")
+              .repartition(partitionNum)
+              .noop()
+          }
+        }
+
+        benchmark.run()
+      }
+    } finally {
+      new java.io.File(filename).delete()
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
+    runBenchmark("Deeply Nested Shuffle") {
+      Seq(2, 4).foreach { maxDepth =>
+        Seq(5, 201).foreach { partitionNum =>
+          shuffleDeeplyNestedBenchmark(maxDepth, partitionNum)
+        }
+      }
+    }
+
     runBenchmarkWithTable("Shuffle on array", 1024 * 1024 * 1) { v =>
       Seq(
         BooleanType,
