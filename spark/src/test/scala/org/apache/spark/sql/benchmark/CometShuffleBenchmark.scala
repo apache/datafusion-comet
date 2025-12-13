@@ -848,7 +848,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
         val fields = Range(0, r.nextInt(10)).map(_ => genField(r, depth + 1, maxDepth)).toArray
         StructField(name, DataTypes.createStructType(fields))
       case _ =>
-      // primitive field
+        // primitive field
         r.nextInt(3) match {
           case 0 =>
             StructField(name, DataTypes.LongType)
