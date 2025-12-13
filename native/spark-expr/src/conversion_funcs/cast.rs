@@ -1101,7 +1101,7 @@ fn cast_string_to_decimal128_impl(
                 Ok(None) => {
                     if eval_mode == EvalMode::Ansi {
                         return Err(invalid_value(
-                            str_value,
+                            string_array.value(i),
                             "STRING",
                             &format!("DECIMAL({},{})", precision, scale),
                         ));
