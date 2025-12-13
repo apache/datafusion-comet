@@ -79,11 +79,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       withInfo(scanExec, "Full native scan disabled because ignoreMissingFiles enabled")
     }
 
-    if (scanExec.bucketedScan) {
-      // https://github.com/apache/datafusion-comet/issues/1719
-      withInfo(scanExec, "Full native scan disabled because bucketed scan is not supported")
-    }
-
     // the scan is supported if no fallback reasons were added to the node
     !hasExplainInfo(scanExec)
   }

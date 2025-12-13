@@ -52,7 +52,6 @@ The `native_datafusion` and `native_iceberg_compat` scans share the following li
 
 The `native_datafusion` scan has some additional limitations:
 
-- Bucketed scans are not supported
 - No support for row indexes
 - `PARQUET_FIELD_ID_READ_ENABLED` is not respected [#1758]
 - There are failures in the Spark SQL test suite [#1545]
