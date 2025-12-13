@@ -325,12 +325,12 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
               logInfo(s"Iceberg metadata location: $loc")
               // scalastyle:off println
               println(s"=== Got metadata location: $loc ===")
-              // scalastyle:on println
+            // scalastyle:on println
             case None =>
               logInfo(s"Iceberg metadata location not available (likely REST catalog)")
               // scalastyle:off println
               println(s"=== Metadata location not available ===")
-              // scalastyle:on println
+            // scalastyle:on println
           }
           metadataLoc
         }
@@ -347,44 +347,57 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             // is fetched via HTTP. Check if file exists; if not, use table location instead.
             val metadataUri = new java.net.URI(metadataLocation)
             // scalastyle:off println
-            println(s"=== metadataUri: $metadataUri, scheme: ${metadataUri.getScheme}, path: ${metadataUri.getPath} ===")
+            println(
+              s"=== metadataUri: $metadataUri, scheme: ${metadataUri.getScheme}, " +
+                s"path: ${metadataUri.getPath} ===")
             // scalastyle:on println
 
             val metadataFile = new java.io.File(metadataUri.getPath)
             // scalastyle:off println
-            println(s"=== metadataFile: ${metadataFile.getAbsolutePath}, exists: ${metadataFile.exists()} ===")
+            println(
+              s"=== metadataFile: ${metadataFile.getAbsolutePath}, " +
+                s"exists: ${metadataFile.exists()} ===")
             // scalastyle:on println
 
-            val effectiveLocation = if (!metadataFile.exists() && metadataUri.getScheme == "file") {
-              // Metadata file doesn't exist (REST catalog with InMemoryFileIO or similar)
-              // Use table location instead for FileIO initialization
-              // scalastyle:off println
-              println(s"=== Metadata file doesn't exist, attempting to get table location ===")
-              // scalastyle:on println
+            val effectiveLocation =
+              if (!metadataFile.exists() && metadataUri.getScheme == "file") {
+                // Metadata file doesn't exist (REST catalog with InMemoryFileIO or similar)
+                // Use table location instead for FileIO initialization
+                // scalastyle:off println
+                println(s"=== Metadata file doesn't exist, attempting to get table location ===")
+                // scalastyle:on println
 
-              tableOpt.flatMap { table =>
-                try {
-                  val locationMethod = table.getClass.getMethod("location")
-                  val tableLocation = locationMethod.invoke(table).asInstanceOf[String]
-                  // scalastyle:off println
-                  println(s"=== REST catalog detected: metadata file doesn't exist, using table location: $tableLocation ===")
-                  // scalastyle:on println
-                  Some(tableLocation)
-                } catch {
-                  case e: Exception =>
-                    // scalastyle:off println
-                    println(s"=== Could not get table location, using metadata location anyway: ${e.getMessage} ===")
-                    e.printStackTrace()
-                    // scalastyle:on println
-                    Some(metadataLocation)
-                }
-              }.getOrElse(metadataLocation)
-            } else {
-              // scalastyle:off println
-              println(s"=== Metadata file exists or not file:// scheme, using metadata location ===")
-              // scalastyle:on println
-              metadataLocation
-            }
+                tableOpt
+                  .flatMap { table =>
+                    try {
+                      val locationMethod = table.getClass.getMethod("location")
+                      val tableLocation = locationMethod.invoke(table).asInstanceOf[String]
+                      // scalastyle:off println
+                      println(
+                        s"=== REST catalog detected: metadata file doesn't exist, " +
+                          s"using table location: $tableLocation ===")
+                      // scalastyle:on println
+                      Some(tableLocation)
+                    } catch {
+                      case e: Exception =>
+                        // scalastyle:off println
+                        println(
+                          s"=== Could not get table location, " +
+                            s"using metadata location anyway: ${e.getMessage} ===")
+                        e.printStackTrace()
+                        // scalastyle:on println
+                        Some(metadataLocation)
+                    }
+                  }
+                  .getOrElse(metadataLocation)
+              } else {
+                // scalastyle:off println
+                println(
+                  s"=== Metadata file exists or not file:// scheme, " +
+                    s"using metadata location ===")
+                // scalastyle:on println
+                metadataLocation
+              }
 
             // scalastyle:off println
             println(s"=== effectiveLocation: $effectiveLocation ===")
@@ -408,7 +421,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
             // scalastyle:on println
 
             // scalastyle:off println
-            println(s"=== Calling CometIcebergNativeScanMetadata.extract with location: $effectiveLocation ===")
+            println(
+              s"=== Calling CometIcebergNativeScanMetadata.extract " +
+                s"with location: $effectiveLocation ===")
             // scalastyle:on println
 
             val result = CometIcebergNativeScanMetadata
@@ -427,7 +442,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           } catch {
             case e: Exception =>
               // scalastyle:off println
-              println(s"=== Failed to extract catalog properties from Iceberg scan: ${e.getMessage} ===")
+              println(
+                s"=== Failed to extract catalog properties from Iceberg scan: " +
+                  s"${e.getMessage} ===")
               e.printStackTrace()
               // scalastyle:on println
               logError(
@@ -455,7 +472,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           case None =>
             fallbackReasons += "Failed to extract Iceberg metadata via reflection"
             // scalastyle:off println
-            println(s"=== No metadata, falling back. Reasons: ${fallbackReasons.mkString(", ")} ===")
+            println(
+              s"=== No metadata, falling back. " +
+                s"Reasons: ${fallbackReasons.mkString(", ")} ===")
             // scalastyle:on println
             return withInfos(scanExec, fallbackReasons.toSet)
         }
@@ -527,7 +546,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           IcebergReflection.validateFileFormatsAndSchemes(metadata.tasks)
 
         // scalastyle:off println
-        println(s"=== allParquetFiles: $allParquetFiles, unsupportedSchemes: ${unsupportedSchemes.mkString(", ")} ===")
+        println(
+          s"=== allParquetFiles: $allParquetFiles, " +
+            s"unsupportedSchemes: ${unsupportedSchemes.mkString(", ")} ===")
         // scalastyle:on println
 
         val allSupportedFilesystems = if (unsupportedSchemes.isEmpty) {
@@ -719,7 +740,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           complexTypePredicatesSupported && transformFunctionsSupported &&
           deleteFileTypesSupported) {
           // scalastyle:off println
-          println(s"=== ALL CHECKS PASSED - Creating CometBatchScanExec with native Iceberg scan ===")
+          println(
+            s"=== ALL CHECKS PASSED - " +
+              s"Creating CometBatchScanExec with native Iceberg scan ===")
           // scalastyle:on println
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
