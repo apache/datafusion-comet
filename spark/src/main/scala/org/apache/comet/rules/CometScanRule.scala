@@ -313,7 +313,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
                       val tableLocation = locationMethod.invoke(table).asInstanceOf[String]
                       Some(tableLocation)
                     } catch {
-                      case e: Exception =>
+                      case _: Exception =>
                         Some(metadataLocation)
                     }
                   }
@@ -355,8 +355,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         // Check if table uses a FileIO implementation compatible with iceberg-rust
 
         val fileIOCompatible = IcebergReflection.getFileIO(metadata.table) match {
-          case Some(fileIO) =>
-            val fileIOClassName = fileIO.getClass.getName
+          case Some(_) =>
             // InMemoryFileIO is now supported with table location fallback for REST catalogs
             true
           case None =>

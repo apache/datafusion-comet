@@ -2245,7 +2245,7 @@ class CometIcebergNativeSuite extends CometTestBase {
   test("REST catalog with native Iceberg scan") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
-    withRESTCatalog { (restUri, httpServer, warehouseDir) =>
+    withRESTCatalog { (restUri, _, warehouseDir) =>
       withSQLConf(
         "spark.sql.catalog.rest_cat" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.rest_cat.catalog-impl" -> "org.apache.iceberg.rest.RESTCatalog",
