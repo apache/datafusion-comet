@@ -2242,6 +2242,45 @@ class CometIcebergNativeSuite extends CometTestBase {
     }
   }
 
+  test("REST catalog with native Iceberg scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withRESTCatalog { (restUri, _, warehouseDir) =>
+      withSQLConf(
+        "spark.sql.catalog.rest_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.rest_cat.catalog-impl" -> "org.apache.iceberg.rest.RESTCatalog",
+        "spark.sql.catalog.rest_cat.uri" -> restUri,
+        "spark.sql.catalog.rest_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+
+        // Create namespace first (REST catalog requires explicit namespace creation)
+        spark.sql("CREATE NAMESPACE rest_cat.db")
+
+        // Create a table via REST catalog
+        spark.sql("""
+          CREATE TABLE rest_cat.db.test_table (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO rest_cat.db.test_table
+          VALUES (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)
+        """)
+
+        checkIcebergNativeScan("SELECT * FROM rest_cat.db.test_table ORDER BY id")
+
+        spark.sql("DROP TABLE rest_cat.db.test_table")
+        spark.sql("DROP NAMESPACE rest_cat.db")
+      }
+    }
+  }
+
   // Helper to create temp directory
   def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile
@@ -2255,6 +2294,61 @@ class CometIcebergNativeSuite extends CometTestBase {
         file.delete()
       }
       deleteRecursively(dir)
+    }
+  }
+
+  // Helper to set up REST catalog with embedded Jetty server
+  def withRESTCatalog(f: (String, org.eclipse.jetty.server.Server, File) => Unit): Unit = {
+    import org.apache.iceberg.inmemory.InMemoryCatalog
+    import org.apache.iceberg.CatalogProperties
+    import org.apache.iceberg.rest.{RESTCatalogAdapter, RESTCatalogServlet}
+    import org.eclipse.jetty.server.Server
+    import org.eclipse.jetty.servlet.{ServletContextHandler, ServletHolder}
+    import org.eclipse.jetty.server.handler.gzip.GzipHandler
+
+    val warehouseDir = Files.createTempDirectory("comet-rest-catalog-test").toFile
+    val backendCatalog = new InMemoryCatalog()
+    backendCatalog.initialize(
+      "in-memory",
+      java.util.Map.of(CatalogProperties.WAREHOUSE_LOCATION, warehouseDir.getAbsolutePath))
+
+    val adapter = new RESTCatalogAdapter(backendCatalog)
+    val servlet = new RESTCatalogServlet(adapter)
+
+    val servletContext = new ServletContextHandler(ServletContextHandler.NO_SESSIONS)
+    servletContext.setContextPath("/")
+    val servletHolder = new ServletHolder(servlet)
+    servletHolder.setInitParameter("javax.ws.rs.Application", "ServiceListPublic")
+    servletContext.addServlet(servletHolder, "/*")
+    servletContext.setVirtualHosts(null)
+    servletContext.setGzipHandler(new GzipHandler())
+
+    val httpServer = new Server(0) // random port
+    httpServer.setHandler(servletContext)
+
+    try {
+      httpServer.start()
+      val restUri = httpServer.getURI.toString.stripSuffix("/")
+      f(restUri, httpServer, warehouseDir)
+    } finally {
+      try {
+        httpServer.stop()
+        httpServer.join()
+      } catch {
+        case _: Exception => // ignore cleanup errors
+      }
+      try {
+        backendCatalog.close()
+      } catch {
+        case _: Exception => // ignore cleanup errors
+      }
+      def deleteRecursively(file: File): Unit = {
+        if (file.isDirectory) {
+          file.listFiles().foreach(deleteRecursively)
+        }
+        file.delete()
+      }
+      deleteRecursively(warehouseDir)
     }
   }
 }
