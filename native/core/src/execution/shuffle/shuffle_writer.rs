@@ -473,7 +473,7 @@ impl MultiPartitionShuffleRepartitioner {
             ));
         }
 
-        // Update data size metric
+        // Update data size metric (uncompressed data size)
         self.metrics.data_size.add(input.get_array_memory_size());
 
         // NOTE: in shuffle writer exec, the output_rows metrics represents the

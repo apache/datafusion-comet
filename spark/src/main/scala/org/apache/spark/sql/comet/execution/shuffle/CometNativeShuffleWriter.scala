@@ -128,8 +128,7 @@ class CometNativeShuffleWriter[K, V](
       .toArray
     Files.delete(tempIndexFilePath)
 
-    // Total written bytes at native
-    metricsReporter.incBytesWritten(Files.size(tempDataFilePath))
+    // note that bytes written is already handled in native code
     metricsReporter.incRecordsWritten(metricsOutputRows.value)
     metricsReporter.incWriteTime(metricsWriteTime.value)
 
