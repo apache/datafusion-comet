@@ -132,6 +132,7 @@ jobs:
               org.apache.comet.exec.CometAggregateSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometGenerateExecSuite
               org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
               org.apache.comet.CometNativeSuite
@@ -140,6 +141,8 @@ jobs:
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsNonOverrideSuite
               org.apache.spark.CometPluginsUnifiedModeOverrideSuite
+              org.apache.comet.rules.CometScanRuleSuite
+              org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
               org.apache.spark.sql.CometTPCHQuerySuite

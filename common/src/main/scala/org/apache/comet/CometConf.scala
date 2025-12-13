@@ -52,7 +52,7 @@ object CometConf extends ShimCometConf {
     "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
 
   private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
-    "Guide (https://datafusion.apache.org/comet/user-guide/tracing.html)"
+    "Guide (https://datafusion.apache.org/comet/contributor-guide/tracing.html)"
 
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
@@ -280,6 +280,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("union", defaultValue = true)
   val COMET_EXEC_EXPAND_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("expand", defaultValue = true)
+  val COMET_EXEC_EXPLODE_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("explode", defaultValue = true)
   val COMET_EXEC_WINDOW_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("window", defaultValue = true)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
@@ -661,6 +663,22 @@ object CometConf extends ShimCometConf {
         "enabled when reading from Iceberg tables.")
       .booleanConf
       .createWithDefault(COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT)
+
+  val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
+    conf("spark.comet.testing.aggregate.partialMode.enabled")
+      .internal()
+      .category(CATEGORY_TESTING)
+      .doc("This setting is used in unit tests")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_ENABLE_FINAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
+    conf("spark.comet.testing.aggregate.finalMode.enabled")
+      .internal()
+      .category(CATEGORY_TESTING)
+      .doc("This setting is used in unit tests")
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")
