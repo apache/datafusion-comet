@@ -24,6 +24,7 @@ import java.nio.charset.Charset
 import java.sql.Timestamp
 import java.text.SimpleDateFormat
 import java.time.{Instant, LocalDateTime, ZoneId}
+import java.util.concurrent.atomic.AtomicLong
 
 import scala.collection.mutable.ListBuffer
 import scala.util.Random
@@ -86,6 +87,44 @@ object FuzzDataGenerator {
     val fields = dataTypes.zipWithIndex
       .map(i => StructField(s"c${i._2}", i._1, nullable = true))
     StructType(fields.toSeq)
+  }
+
+  def generateNestedSchema(
+      r: Random,
+      numCols: Int,
+      maxDepth: Int,
+      options: SchemaGenOptions): StructType = {
+    assert(
+      options.generateArray || options.generateStruct,
+      "cannot generate nested schema if options do not include generating arrays or structs")
+
+    assert(!options.generateMap, "this method does not support maps")
+
+    val counter = new AtomicLong
+
+    def generateFieldName() = {
+      s"c_${counter.incrementAndGet()}"
+    }
+
+    def genField(r: Random, depth: Int, maxDepth: Int): StructField = {
+      val name = generateFieldName()
+      r.nextInt(3) match {
+        case 0 if options.generateArray && depth < maxDepth =>
+          // array
+          val element = genField(r, depth + 1, maxDepth)
+          StructField(name, DataTypes.createArrayType(element.dataType, true))
+        case 1 if options.generateStruct && depth < maxDepth =>
+          // struct
+          val fields =
+            Range(1, 2 + r.nextInt(10)).map(_ => genField(r, depth + 1, maxDepth)).toArray
+          StructField(name, DataTypes.createStructType(fields))
+        case _ =>
+          // primitive
+          StructField(name, randomChoice(options.primitiveTypes, r))
+      }
+    }
+
+    StructType(Range(1, numCols).map(_ => genField(r, 0, maxDepth)))
   }
 
   def generateDataFrame(
