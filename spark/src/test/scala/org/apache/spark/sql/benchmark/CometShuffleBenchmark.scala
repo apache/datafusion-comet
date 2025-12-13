@@ -42,7 +42,7 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
  */
 object CometShuffleBenchmark extends CometBenchmarkBase {
 
-  private val counter = new AtomicLong()
+  new AtomicLong()
 
   override def getSparkSession: SparkSession = {
     val conf = new SparkConf()
@@ -812,50 +812,20 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
   }
 
   private def createDeeplyNestedParquetFile(maxDepth: Int): String = {
-    val tempDir = System.getProperty("java.io.tmpdir")
-    val filename = s"$tempDir/CometFuzzTestSuite_${System.currentTimeMillis()}.parquet"
     val r = new Random(42)
+    val schema = FuzzDataGenerator.generateNestedSchema(r, 100, maxDepth)
+    val tempDir = System.getProperty("java.io.tmpdir")
+    val filename = s"$tempDir/CometShuffleBenchmark_${System.currentTimeMillis()}.parquet"
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       val dataGenOptions = DataGenOptions(
         generateNegativeZero = false,
         // override base date due to known issues with experimental scans
         baseDate =
           new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime)
-      val schema = StructType(Range(0, 100).map(_ => genField(r, 0, maxDepth)))
       val df =
-        FuzzDataGenerator.generateDataFrame(new Random(42), spark, schema, 10000, dataGenOptions)
+        FuzzDataGenerator.generateDataFrame(r, spark, schema, 10000, dataGenOptions)
       df.write.mode(SaveMode.Overwrite).parquet(filename)
     }
     filename
-  }
-
-  private def generateFieldName() = {
-    s"c_${counter.incrementAndGet()}"
-  }
-
-  private def genField(r: Random, depth: Int, maxDepth: Int): StructField = {
-    val name = generateFieldName()
-    r.nextInt(3) match {
-      case 0 if depth < maxDepth =>
-        // array
-        val element = genField(r, depth + 1, maxDepth)
-        StructField(name, DataTypes.createArrayType(element.dataType, true))
-      case 1 if depth < maxDepth =>
-        // struct
-        val fields =
-          Range(1, 2 + r.nextInt(10)).map(_ => genField(r, depth + 1, maxDepth)).toArray
-        StructField(name, DataTypes.createStructType(fields))
-      case _ =>
-        // primitive field
-        r.nextInt(3) match {
-          case 0 =>
-            StructField(name, DataTypes.LongType)
-          case 1 =>
-            StructField(name, DataTypes.createDecimalType(10, 2))
-          case _ =>
-            StructField(name, DataTypes.StringType)
-        }
-    }
-
   }
 }
