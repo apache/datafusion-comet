@@ -17,28 +17,21 @@
  * under the License.
  */
 
-package org.apache.comet.csv
+package org.apache.comet.serde
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.types.StructField
 
-import org.apache.comet.CometConf
+import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
-class CometNativeCsvScanSuite extends CometTestBase {
+package object operator {
 
-  test("Native csv scan") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
-      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
-      "spark.sql.sources.useV1SourceList" -> "") {
-      spark.time {
-        val df = spark.read
-          .options(Map("header" -> "false", "delimiter" -> ","))
-          .csv("/Users/tendoo/Desktop/datafusion-comet/spark/src/test/resources/test-data/csv-test-1.csv")
-        df.show(false)
-      }
+  def schema2Proto(fields: Array[StructField]): Array[OperatorOuterClass.SparkStructField] = {
+    val fieldBuilder = OperatorOuterClass.SparkStructField.newBuilder()
+    fields.map { field =>
+      fieldBuilder.setName(field.name)
+      fieldBuilder.setDataType(serializeDataType(field.dataType).get)
+      fieldBuilder.setNullable(field.nullable)
+      fieldBuilder.build()
     }
-    Thread.sleep(10000000)
   }
 }

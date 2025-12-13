@@ -1179,7 +1179,7 @@ impl PhysicalPlanner {
                     object_store_url,
                     file_groups,
                     data_schema,
-                    &scan.options
+                    &scan.csv_options
                 )?;
                 Ok((
                     vec![],

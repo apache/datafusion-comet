@@ -25,15 +25,16 @@ use datafusion_datasource::file_scan_config::{FileScanConfig, FileScanConfigBuil
 use datafusion_datasource::source::DataSourceExec;
 use datafusion_datasource::PartitionedFile;
 use std::sync::Arc;
+use datafusion_comet_proto::spark_operator::CsvOptions;
 use crate::execution::spark_config::SparkConfig;
 
 pub fn init_csv_datasource_exec(
     object_store_url: ObjectStoreUrl,
     file_groups: Vec<Vec<PartitionedFile>>,
     data_schema: SchemaRef,
-    options: &HashMap<String, String>
+    csv_options: &CsvOptions
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    let csv_source = build_csv_source(options);
+    let csv_source = build_csv_source(csv_options);
 
     let file_groups = file_groups
         .iter()
@@ -48,19 +49,9 @@ pub fn init_csv_datasource_exec(
     Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))
 }
 
-fn build_csv_source(options: &HashMap<String, String>) -> Arc<CsvSource> {
-    let has_header = options.get_bool("header");
-    let delimiter = options
-        .get("delimiter")
-        .and_then(|s| s.chars().next())
-        .map(|c| c as u8)
-        .unwrap_or(b',');
-    let quote = options
-        .get("quote")
-        .and_then(|s| s.chars().next())
-        .map(|c| c as u8)
-        .unwrap_or(b'"');
-    let csv_source = CsvSource::new(has_header, delimiter, quote);
+fn build_csv_source(options: &CsvOptions) -> Arc<CsvSource> {
+    let csv_source = CsvSource::new(options.has_header, options.delimiter as u8, options.quote as u8)
+        .with_terminator(None);
 
     Arc::new(csv_source)
 }

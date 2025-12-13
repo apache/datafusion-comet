@@ -112,10 +112,39 @@ message NativeScan {
 }
 
 message CsvScan {
-  repeated SparkStructField schema = 1;
+  repeated SparkStructField required_schema = 1;
   repeated SparkFilePartition file_partitions = 2;
   map<string, string> object_store_options = 3;
-  map<string, string> options = 4;
+  CsvOptions csv_options = 4;
+}
+
+message CsvOptions {
+  bool has_header = 1;
+  uint32 delimiter = 2;
+  uint32 quote = 3;
+  uint32 escape = 4;
+  CompressionTypeVariant compression = 5;
+  optional uint64 schema_infer_max_rec = 6;
+  string date_format = 7;
+  string datetime_format = 8;
+  string timestamp_format = 9;
+  string timestamp_tz_format = 10;
+  string time_format = 11;
+  string null_value = 12;
+  string null_regex = 13;
+  bytes comment = 14;
+  bytes double_quote = 15;
+  bool newlines_in_values = 16;
+  bytes terminator = 17;
+  bytes truncated_rows = 18;
+}
+
+enum CompressionTypeVariant {
+  GZIP = 0;
+  BZIP2 = 1;
+  XZ = 2;
+  ZSTD = 3;
+  UNCOMPRESSED = 4;
 }
 
 message IcebergScan {

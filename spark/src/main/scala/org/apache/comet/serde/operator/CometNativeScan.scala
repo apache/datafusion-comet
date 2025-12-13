@@ -222,17 +222,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
   }
 
-  private def schema2Proto(
-      fields: Array[StructField]): Array[OperatorOuterClass.SparkStructField] = {
-    val fieldBuilder = OperatorOuterClass.SparkStructField.newBuilder()
-    fields.map(field => {
-      fieldBuilder.setName(field.name)
-      fieldBuilder.setDataType(serializeDataType(field.dataType).get)
-      fieldBuilder.setNullable(field.nullable)
-      fieldBuilder.build()
-    })
-  }
-
   private def partition2Proto(
       partition: FilePartition,
       nativeScanBuilder: OperatorOuterClass.NativeScan.Builder,

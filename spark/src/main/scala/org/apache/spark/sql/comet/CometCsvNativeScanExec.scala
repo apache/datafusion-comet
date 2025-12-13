@@ -27,13 +27,16 @@ import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartit
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.datasources.FilePartition
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
-import org.apache.spark.sql.types.{StructField, StructType}
+import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
+import org.apache.spark.sql.util.CaseInsensitiveStringMap
+
+import com.google.protobuf.ByteString
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.serializeDataType
+import org.apache.comet.serde.operator.schema2Proto
 
 case class CometCsvNativeScanExec(
     override val nativeOp: Operator,
@@ -65,7 +68,9 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
       builder: Operator.Builder,
       childOp: Operator*): Option[Operator] = {
     val csvScanBuilder = OperatorOuterClass.CsvScan.newBuilder()
-    val schemaProto = schema2Proto(op.schema)
+    val csvScan = op.wrapped.scan.asInstanceOf[CSVScan]
+    csvOptions2Proto(csvScan.options)
+    val schemaProto = schema2Proto(op.schema.fields)
     val partitionsProto =
       op.inputPartitions.map(partition => partition2Proto(partition.asInstanceOf[FilePartition]))
     csvScanBuilder.addAllFilePartitions(partitionsProto.asJava)
@@ -80,7 +85,7 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
         csvScanBuilder.putObjectStoreOptions(key, value)
       }
     }
-    csvScanBuilder.addAllSchema(schemaProto.asJava)
+    csvScanBuilder.addAllRequiredSchema(schemaProto.toIterable.asJava)
     Some(builder.setCsvScan(csvScanBuilder).build())
   }
 
@@ -88,14 +93,15 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
     CometCsvNativeScanExec(nativeOp, op.output, op.wrapped, SerializedPlan(None))
   }
 
-  private def schema2Proto(schema: StructType): Seq[OperatorOuterClass.SparkStructField] = {
-    val fieldBuilder = OperatorOuterClass.SparkStructField.newBuilder()
-    schema.fields.map { sf =>
-      fieldBuilder.setDataType(serializeDataType(sf.dataType).get)
-      fieldBuilder.setName(sf.name)
-      fieldBuilder.setNullable(sf.nullable)
-      fieldBuilder.build()
-    }.toSeq
+  private def csvOptions2Proto(
+      parameters: CaseInsensitiveStringMap,
+      columnPruning: Boolean,
+      timeZone: String): OperatorOuterClass.CsvOptions = {
+    val csvOptionsBuilder = OperatorOuterClass.CsvOptions.newBuilder()
+    val options = new CSVOptions(parameters.asScala.toMap, columnPruning, timeZone)
+    csvOptionsBuilder.setDelimiter(ByteString.copyFromUtf8(options.delimiter))
+    csvOptionsBuilder.setHasHeader()
+    csvOptionsBuilder.build()
   }
 
   private def partition2Proto(partition: FilePartition): OperatorOuterClass.SparkFilePartition = {
