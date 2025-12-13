@@ -824,9 +824,6 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
         // override base date due to known issues with experimental scans
         baseDate =
           new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime)
-
-      // scalastyle:off
-      println(s"Generating $filename")
       val df =
         FuzzDataGenerator.generateDataFrame(r, spark, schema, numRows, dataGenOptions)
       df.write.mode(SaveMode.Overwrite).parquet(filename)
