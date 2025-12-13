@@ -534,13 +534,12 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet (Comet Arrow Shuffle)") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (JVM Shuffle)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
-            CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> "false") {
+            CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
             spark
               .sql(s"select $columns from deeplyNestedTable")
               .repartition(partitionNum)
@@ -548,7 +547,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet (Comet Shuffle)") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Native Shuffle)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -823,10 +822,10 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
         baseDate =
           new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime)
 
-      val schema = StructType(Range(0, 10).map(_ => genField(r, 0, maxDepth)))
+      val schema = StructType(Range(0, 100).map(_ => genField(r, 0, maxDepth)))
 
       val df =
-        FuzzDataGenerator.generateDataFrame(new Random(42), spark, schema, 100, dataGenOptions)
+        FuzzDataGenerator.generateDataFrame(new Random(42), spark, schema, 100000, dataGenOptions)
       println(df.schema)
       df.write.mode(SaveMode.Overwrite).parquet(filename)
     }
@@ -839,7 +838,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
 
   private def genField(r: Random, depth: Int, maxDepth: Int): StructField = {
     val name = generateFieldName()
-    r.nextInt(10) match {
+    r.nextInt(3) match {
       case 0 if depth < maxDepth =>
         // array
         val element = genField(r, depth + 1, maxDepth)
@@ -848,12 +847,16 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
         // struct
         val fields = Range(0, r.nextInt(10)).map(_ => genField(r, depth + 1, maxDepth)).toArray
         StructField(name, DataTypes.createStructType(fields))
-      case 2 =>
-        StructField(name, DataTypes.LongType)
-      case 3 =>
-        StructField(name, DataTypes.createDecimalType(10, 2))
       case _ =>
-        StructField(name, DataTypes.StringType)
+      // primitive field
+        r.nextInt(3) match {
+          case 0 =>
+            StructField(name, DataTypes.LongType)
+          case 1 =>
+            StructField(name, DataTypes.createDecimalType(10, 2))
+          case _ =>
+            StructField(name, DataTypes.StringType)
+        }
     }
 
   }
