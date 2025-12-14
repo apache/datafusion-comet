@@ -19,11 +19,13 @@
 
 package org.apache.comet.cost
 
-import com.univocity.parsers.annotations.{Replace, Trim}
-import org.apache.spark.sql.catalyst.expressions.{Ascii, BinaryArithmetic, Chr, ConcatWs, Expression, InitCap, Length, Lower, OctetLength, Reverse, StringSpace, StringTranslate, StringTrim, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Ascii, Chr, ConcatWs, Expression, InitCap, Length, Lower, OctetLength, Reverse, StringSpace, StringTranslate, StringTrim, Substring, Upper}
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan, CometProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.SparkPlan
+
+import com.univocity.parsers.annotations.Replace
+
 import org.apache.comet.DataTypeSupport
 
 case class CometCostEstimate(acceleration: Double)
@@ -96,6 +98,10 @@ class DefaultCometCostModel extends CometCostModel {
   private def estimateExpressionCost(expr: Expression): Double = {
     expr match {
       // string expression numbers from CometStringExpressionBenchmark
+      // TODO this is matching on Spark expressions, which isn't correct since
+      // we need to look at the converted Comet expressions instead, but
+      // this code demonstrates what the goal is - having specific numbers
+      // based on current micro benchmarks
       case _: Substring => 6.3
       case _: Ascii => 0.6
       case _: Ascii => 0.6
