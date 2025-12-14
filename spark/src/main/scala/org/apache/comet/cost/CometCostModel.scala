@@ -1,11 +1,30 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 package org.apache.comet.cost
 
-import org.apache.comet.DataTypeSupport
-import org.apache.spark.sql.catalyst.expressions.{Add, BinaryArithmetic, Expression}
+import org.apache.spark.sql.catalyst.expressions.{BinaryArithmetic, Expression}
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan, CometProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
-import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
+import org.apache.spark.sql.execution.SparkPlan
+
+import org.apache.comet.DataTypeSupport
 
 case class CometCostEstimate(acceleration: Double)
 
@@ -15,7 +34,7 @@ trait CometCostModel {
   def estimateCost(plan: SparkPlan): CometCostEstimate
 }
 
-class DefaultComeCostModel extends CometCostModel {
+class DefaultCometCostModel extends CometCostModel {
 
   // optimistic default of 2x acceleration
   private val defaultAcceleration = 2.0
@@ -27,11 +46,11 @@ class DefaultComeCostModel extends CometCostModel {
         op.shuffleType match {
           case CometNativeShuffle => CometCostEstimate(1.5)
           case CometColumnarShuffle =>
-          if (DataTypeSupport.hasComplexTypes(op.schema)) {
-            CometCostEstimate(0.8)
-          } else {
-            CometCostEstimate(1.1)
-          }
+            if (DataTypeSupport.hasComplexTypes(op.schema)) {
+              CometCostEstimate(0.8)
+            } else {
+              CometCostEstimate(1.1)
+            }
         }
       case _: CometColumnarToRowExec =>
         CometCostEstimate(1.0)
