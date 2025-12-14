@@ -82,7 +82,7 @@ class DefaultCometCostModel extends CometCostModel {
       case _: CometColumnarToRowExec =>
         CometCostEstimate(1.0)
       case op: CometProjectExec =>
-        val total: Double = op.expressions.map(estimateCost).sum
+        val total: Double = op.expressions.map(estimateExpressionCost).sum
         CometCostEstimate(total / op.expressions.length.toDouble)
       case _: CometPlan =>
         CometCostEstimate(defaultAcceleration)
@@ -93,7 +93,7 @@ class DefaultCometCostModel extends CometCostModel {
   }
 
   /** Estimate the cost of an expression */
-  def estimateCost(expr: Expression): Double = {
+  private def estimateExpressionCost(expr: Expression): Double = {
     expr match {
       case _: BinaryArithmetic =>
         2.0
