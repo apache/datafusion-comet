@@ -54,7 +54,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
 
     withTempPath { dir =>
       withTempTable("tbl") {
-        prepareTable(dir, spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 100) AS c1 FROM $tbl"))
+        prepareTable(dir, spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 100) AS c1 FROM tbl"))
 
         benchmark.addCase("SQL Parquet - Spark") { _ =>
           spark.sql(config.query).noop()
