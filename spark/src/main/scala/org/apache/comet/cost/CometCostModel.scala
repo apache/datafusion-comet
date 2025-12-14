@@ -40,7 +40,34 @@ class DefaultCometCostModel extends CometCostModel {
   private val defaultAcceleration = 2.0
 
   override def estimateCost(plan: SparkPlan): CometCostEstimate = {
+    // Walk the entire plan tree and accumulate costs
+    var totalAcceleration = 0.0
+    var operatorCount = 0
 
+    def collectOperatorCosts(node: SparkPlan): Unit = {
+      val operatorCost = estimateOperatorCost(node)
+      totalAcceleration += operatorCost.acceleration
+      operatorCount += 1
+
+      // Recursively process children
+      node.children.foreach(collectOperatorCosts)
+    }
+
+    collectOperatorCosts(plan)
+
+    // Calculate average acceleration across all operators
+    // This is crude but gives us a starting point
+    val averageAcceleration = if (operatorCount > 0) {
+      totalAcceleration / operatorCount.toDouble
+    } else {
+      1.0 // No acceleration if no operators
+    }
+
+    CometCostEstimate(averageAcceleration)
+  }
+
+  /** Estimate the cost of a single operator */
+  private def estimateOperatorCost(plan: SparkPlan): CometCostEstimate = {
     plan match {
       case op: CometShuffleExchangeExec =>
         op.shuffleType match {
