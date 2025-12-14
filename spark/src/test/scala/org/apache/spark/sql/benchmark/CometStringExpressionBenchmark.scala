@@ -100,8 +100,8 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("length", "select length(c1) from tbl"),
     StringExprConfig("repeat", "select repeat(c1, 3) from tbl"),
     StringExprConfig("reverse", "select reverse(c1) from tbl"),
-    StringExprConfig("instr", "select instr(c1, '00') from tbl"),
-    StringExprConfig("replace", "select replace(c1, '10', 'ab') from tbl"),
+    StringExprConfig("instr", "select instr(c1, '123') from tbl"),
+    StringExprConfig("replace", "select replace(c1, '123', 'ab') from tbl"),
     StringExprConfig("space", "select space(2) from tbl"),
     StringExprConfig("translate", "select translate(c1, '123456', 'aBcDeF') from tbl"))
 
