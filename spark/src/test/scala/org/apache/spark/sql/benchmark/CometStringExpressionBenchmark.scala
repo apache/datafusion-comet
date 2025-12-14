@@ -27,9 +27,7 @@ import org.apache.comet.CometConf
 /**
  * Configuration for a string expression benchmark.
  * @param name
- *   Display name for the benchmark
- * @param shortName
- *   Short name for runBenchmarkWithTable
+ *   Name for the benchmark
  * @param query
  *   SQL query to benchmark
  * @param extraCometConfigs
@@ -37,7 +35,6 @@ import org.apache.comet.CometConf
  */
 case class StringExprConfig(
     name: String,
-    shortName: String,
     query: String,
     extraCometConfigs: Map[String, String] = Map.empty)
 
@@ -87,47 +84,31 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
 
   // Configuration for all string expression benchmarks
   private val stringExpressions = List(
+    StringExprConfig("Substring", "select substring(c1, 1, 100) from parquetV1Table"),
+    StringExprConfig("ascii", "select ascii(c1) from parquetV1Table"),
+    StringExprConfig("bitLength", "select bit_length(c1) from parquetV1Table"),
+    StringExprConfig("octet_length", "select octet_length(c1) from parquetV1Table"),
     StringExprConfig(
-      "Substring Expr",
-      "Substring",
-      "select substring(c1, 1, 100) from parquetV1Table"),
-    StringExprConfig("Expr ascii", "ascii", "select ascii(c1) from parquetV1Table"),
-    StringExprConfig("Expr bit_length", "bitLength", "select bit_length(c1) from parquetV1Table"),
-    StringExprConfig(
-      "Expr octet_length",
-      "octet_length",
-      "select octet_length(c1) from parquetV1Table"),
-    StringExprConfig(
-      "Expr upper",
       "upper",
       "select upper(c1) from parquetV1Table",
       extraCometConfigs = Map(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true")),
-    StringExprConfig("Expr lower", "lower", "select lower(c1) from parquetV1Table"),
-    StringExprConfig("Expr chr", "chr", "select chr(c1) from parquetV1Table"),
-    StringExprConfig("Expr initCap", "initCap", "select initCap(c1) from parquetV1Table"),
-    StringExprConfig("Expr trim", "trim", "select trim(c1) from parquetV1Table"),
-    StringExprConfig(
-      "Expr concatws",
-      "concatws",
-      "select concat_ws(' ', c1, c1) from parquetV1Table"),
-    StringExprConfig("Expr length", "length", "select length(c1) from parquetV1Table"),
-    StringExprConfig("Expr repeat", "repeat", "select repeat(c1, 3) from parquetV1Table"),
-    StringExprConfig("Expr reverse", "reverse", "select reverse(c1) from parquetV1Table"),
-    StringExprConfig("Expr instr", "instr", "select instr(c1, '123') from parquetV1Table"),
-    StringExprConfig(
-      "Expr replace",
-      "replace",
-      "select replace(c1, '123', 'abc') from parquetV1Table"),
-    StringExprConfig(
-      "Expr translate",
-      "translate",
-      "select translate(c1, '123456', 'aBcDeF') from parquetV1Table"))
+    StringExprConfig("lower", "select lower(c1) from parquetV1Table"),
+    StringExprConfig("chr", "select chr(c1) from parquetV1Table"),
+    StringExprConfig("initCap", "select initCap(c1) from parquetV1Table"),
+    StringExprConfig("trim", "select trim(c1) from parquetV1Table"),
+    StringExprConfig("concatws", "select concat_ws(' ', c1, c1) from parquetV1Table"),
+    StringExprConfig("length", "select length(c1) from parquetV1Table"),
+    StringExprConfig("repeat", "select repeat(c1, 3) from parquetV1Table"),
+    StringExprConfig("reverse", "select reverse(c1) from parquetV1Table"),
+    StringExprConfig("instr", "select instr(c1, '123') from parquetV1Table"),
+    StringExprConfig("replace", "select replace(c1, '123', 'abc') from parquetV1Table"),
+    StringExprConfig("translate", "select translate(c1, '123456', 'aBcDeF') from parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024;
 
     stringExpressions.foreach { config =>
-      runBenchmarkWithTable(config.shortName, values) { v =>
+      runBenchmarkWithTable(config.name, values) { v =>
         runStringExprBenchmark(config, v)
       }
     }
