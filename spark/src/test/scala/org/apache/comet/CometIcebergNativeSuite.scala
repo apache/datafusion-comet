@@ -26,12 +26,14 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
 
+import org.apache.comet.iceberg.RESTCatalogHelper
+
 /**
  * Test suite for native Iceberg scan using FileScanTasks and iceberg-rust.
  *
  * Note: Requires Iceberg dependencies to be added to pom.xml
  */
-class CometIcebergNativeSuite extends CometTestBase {
+class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
 
   // Skip these tests if Iceberg is not available in classpath
   private def icebergAvailable: Boolean = {
@@ -2294,61 +2296,6 @@ class CometIcebergNativeSuite extends CometTestBase {
         file.delete()
       }
       deleteRecursively(dir)
-    }
-  }
-
-  // Helper to set up REST catalog with embedded Jetty server
-  def withRESTCatalog(f: (String, org.eclipse.jetty.server.Server, File) => Unit): Unit = {
-    import org.apache.iceberg.inmemory.InMemoryCatalog
-    import org.apache.iceberg.CatalogProperties
-    import org.apache.iceberg.rest.{RESTCatalogAdapter, RESTCatalogServlet}
-    import org.eclipse.jetty.server.Server
-    import org.eclipse.jetty.servlet.{ServletContextHandler, ServletHolder}
-    import org.eclipse.jetty.server.handler.gzip.GzipHandler
-
-    val warehouseDir = Files.createTempDirectory("comet-rest-catalog-test").toFile
-    val backendCatalog = new InMemoryCatalog()
-    backendCatalog.initialize(
-      "in-memory",
-      java.util.Map.of(CatalogProperties.WAREHOUSE_LOCATION, warehouseDir.getAbsolutePath))
-
-    val adapter = new RESTCatalogAdapter(backendCatalog)
-    val servlet = new RESTCatalogServlet(adapter)
-
-    val servletContext = new ServletContextHandler(ServletContextHandler.NO_SESSIONS)
-    servletContext.setContextPath("/")
-    val servletHolder = new ServletHolder(servlet)
-    servletHolder.setInitParameter("javax.ws.rs.Application", "ServiceListPublic")
-    servletContext.addServlet(servletHolder, "/*")
-    servletContext.setVirtualHosts(null)
-    servletContext.setGzipHandler(new GzipHandler())
-
-    val httpServer = new Server(0) // random port
-    httpServer.setHandler(servletContext)
-
-    try {
-      httpServer.start()
-      val restUri = httpServer.getURI.toString.stripSuffix("/")
-      f(restUri, httpServer, warehouseDir)
-    } finally {
-      try {
-        httpServer.stop()
-        httpServer.join()
-      } catch {
-        case _: Exception => // ignore cleanup errors
-      }
-      try {
-        backendCatalog.close()
-      } catch {
-        case _: Exception => // ignore cleanup errors
-      }
-      def deleteRecursively(file: File): Unit = {
-        if (file.isDirectory) {
-          file.listFiles().foreach(deleteRecursively)
-        }
-        file.delete()
-      }
-      deleteRecursively(warehouseDir)
     }
   }
 }

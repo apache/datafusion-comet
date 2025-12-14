@@ -241,24 +241,17 @@ under the License.
           <version>1.10.0</version>
           <scope>test</scope>
         </dependency>
-        <!-- Jetty 9.4.56 for Spark 4.0 - compatible with Iceberg's javax.servlet usage -->
-        <!-- Must override Iceberg 1.10.0's transitive jetty-util 11.0.24 to maintain version consistency -->
-        <dependency>
-          <groupId>org.eclipse.jetty</groupId>
-          <artifactId>jetty-util</artifactId>
-          <version>9.4.56.v20240826</version>
-          <scope>test</scope>
-        </dependency>
+        <!-- Jetty 11 for Spark 4.0 REST catalog tests (matches Iceberg 1.10 and Spark 4.0) -->
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
-          <version>9.4.56.v20240826</version>
+          <version>11.0.24</version>
           <scope>test</scope>
         </dependency>
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-servlet</artifactId>
-          <version>9.4.56.v20240826</version>
+          <version>11.0.24</version>
           <scope>test</scope>
         </dependency>
       </dependencies>
