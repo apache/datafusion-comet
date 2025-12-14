@@ -20,7 +20,7 @@
 package org.apache.spark.sql.benchmark
 
 import org.apache.spark.benchmark.Benchmark
-import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.DataFrame
 
 import org.apache.comet.CometConf
 
@@ -30,16 +30,12 @@ import org.apache.comet.CometConf
  *   Display name for the benchmark
  * @param query
  *   SQL query to benchmark
- * @param dataPreparation
- *   Function to prepare test data (defaults to repeated string)
  * @param extraCometConfigs
  *   Additional Comet configurations for the scan+exec case
  */
 case class StringExprConfig(
     name: String,
     query: String,
-    dataPreparation: (String, SparkSession) => DataFrame = (tbl, spark) =>
-      spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 100) AS c1 FROM $tbl"),
     extraCometConfigs: Map[String, String] = Map.empty)
 
 // spotless:off
@@ -59,7 +55,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
-        prepareTable(dir, config.dataPreparation(tbl, spark))
+        prepareTable(dir, spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 100) AS c1 FROM $tbl"))
 
         benchmark.addCase("SQL Parquet - Spark") { _ =>
           spark.sql(config.query).noop()
@@ -89,10 +85,6 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
   // Configuration for all string expression benchmarks
   private val stringExpressions = List(
     StringExprConfig("Substring Expr", "select substring(c1, 1, 100) from parquetV1Table"),
-    StringExprConfig(
-      "StringSpace Expr",
-      "select space(c1) from parquetV1Table",
-      (tbl, spark) => spark.sql(s"SELECT CAST(RAND(1) * 100 AS INTEGER) AS c1 FROM $tbl")),
     StringExprConfig("Expr ascii", "select ascii(c1) from parquetV1Table"),
     StringExprConfig("Expr bit_length", "select bit_length(c1) from parquetV1Table"),
     StringExprConfig("Expr octet_length", "select octet_length(c1) from parquetV1Table"),
@@ -120,7 +112,6 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     // Map each config to a short name for runBenchmarkWithTable
     val benchmarkNames = List(
       "Substring",
-      "StringSpace",
       "ascii",
       "bitLength",
       "octet_length",
