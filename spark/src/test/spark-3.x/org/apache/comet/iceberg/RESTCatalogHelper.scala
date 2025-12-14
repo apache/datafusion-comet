@@ -45,7 +45,7 @@ trait RESTCatalogHelper {
 
     val servletContext = new ServletContextHandler(ServletContextHandler.NO_SESSIONS)
     servletContext.setContextPath("/")
-    val servletHolder = new ServletHolder(servlet: javax.servlet.Servlet)
+    val servletHolder = new ServletHolder(servlet.asInstanceOf[javax.servlet.Servlet])
     servletHolder.setInitParameter("javax.ws.rs.Application", "ServiceListPublic")
     servletContext.addServlet(servletHolder, "/*")
     servletContext.setVirtualHosts(null)
