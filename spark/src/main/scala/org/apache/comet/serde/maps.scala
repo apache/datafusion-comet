@@ -19,9 +19,12 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.types.{ArrayType, MapType}
+import scala.annotation.tailrec
 
+import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, MapType, StructType}
+
+import org.apache.comet.serde.CometArrayReverse.containsBinary
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
@@ -87,5 +90,29 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     val mapFromArraysExpr =
       scalarFunctionExprToProtoWithReturnType("map", returnType, false, keysExpr, valuesExpr)
     optExprWithInfo(mapFromArraysExpr, expr, expr.children: _*)
+  }
+}
+
+object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from_entries") {
+  val keyUnsupportedReason = "Using BinaryType as Map keys is not allowed in map_from_entries"
+  val valueUnsupportedReason = "Using BinaryType as Map values is not allowed in map_from_entries"
+
+  private def containsBinary(dataType: DataType): Boolean = {
+    dataType match {
+      case BinaryType => true
+      case StructType(fields) => fields.exists(field => containsBinary(field.dataType))
+      case ArrayType(elementType, _) => containsBinary(elementType)
+      case _ => false
+    }
+  }
+
+  override def getSupportLevel(expr: MapFromEntries): SupportLevel = {
+    if (containsBinary(expr.dataType.keyType)) {
+      return Incompatible(Some(keyUnsupportedReason))
+    }
+    if (containsBinary(expr.dataType.valueType)) {
+      return Incompatible(Some(valueUnsupportedReason))
+    }
+    Compatible(None)
   }
 }
