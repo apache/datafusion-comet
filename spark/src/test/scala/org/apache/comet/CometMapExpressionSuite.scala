@@ -169,5 +169,4 @@ class CometMapExpressionSuite extends CometTestBase {
         CometMapFromEntries.valueUnsupportedReason)
     }
   }
-
 }
