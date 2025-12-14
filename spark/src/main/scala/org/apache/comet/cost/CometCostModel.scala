@@ -19,11 +19,11 @@
 
 package org.apache.comet.cost
 
-import org.apache.spark.sql.catalyst.expressions.{BinaryArithmetic, Expression}
+import com.univocity.parsers.annotations.{Replace, Trim}
+import org.apache.spark.sql.catalyst.expressions.{Ascii, BinaryArithmetic, Chr, ConcatWs, Expression, InitCap, Length, Lower, OctetLength, Reverse, StringSpace, StringTranslate, StringTrim, Substring, Upper}
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan, CometProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.SparkPlan
-
 import org.apache.comet.DataTypeSupport
 
 case class CometCostEstimate(acceleration: Double)
@@ -95,8 +95,24 @@ class DefaultCometCostModel extends CometCostModel {
   /** Estimate the cost of an expression */
   private def estimateExpressionCost(expr: Expression): Double = {
     expr match {
-      case _: BinaryArithmetic =>
-        2.0
+      // string expression numbers from CometStringExpressionBenchmark
+      case _: Substring => 6.3
+      case _: Ascii => 0.6
+      case _: Ascii => 0.6
+      case _: OctetLength => 0.6
+      case _: Lower => 3.0
+      case _: Upper => 3.0
+      case _: Chr => 0.6
+      case _: InitCap => 0.9
+      case _: StringTrim => 0.4
+      case _: ConcatWs => 0.5
+      case _: Length => 9.1
+      // case _: Repeat => 0.4
+      case _: Reverse => 6.9
+      // case _: Instr => 0.6
+      case _: Replace => 1.3
+      case _: StringSpace => 0.8
+      case _: StringTranslate => 0.8
       case _ => defaultAcceleration
     }
   }
