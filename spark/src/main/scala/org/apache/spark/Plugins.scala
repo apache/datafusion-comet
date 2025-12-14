@@ -28,7 +28,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.sql.internal.StaticSQLConf
 
-import org.apache.comet.CometConf.COMET_ONHEAP_ENABLED
+import org.apache.comet.CometConf.{COMET_COST_BASED_OPTIMIZATION_ENABLED, COMET_ONHEAP_ENABLED}
 import org.apache.comet.CometSparkSessionExtensions
 
 /**
@@ -56,6 +56,15 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
 
     // register CometSparkSessionExtensions if it isn't already registered
     CometDriverPlugin.registerCometSessionExtension(sc.conf)
+
+    // Enable cost-based optimization if configured
+    if (sc.getConf.getBoolean(COMET_COST_BASED_OPTIMIZATION_ENABLED.key, false)) {
+      // Set the custom cost evaluator for Spark's adaptive query execution
+      sc.conf.set(
+        "spark.sql.adaptive.customCostEvaluatorClass",
+        "org.apache.comet.cost.CometCostEvaluator")
+      logInfo("Enabled Comet cost-based optimization with CometCostEvaluator")
+    }
 
     if (CometSparkSessionExtensions.shouldOverrideMemoryConf(sc.getConf)) {
       val execMemOverhead = if (sc.getConf.contains(EXECUTOR_MEMORY_OVERHEAD.key)) {

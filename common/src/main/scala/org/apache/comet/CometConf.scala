@@ -757,9 +757,10 @@ object CometConf extends ShimCometConf {
   val COMET_COST_BASED_OPTIMIZATION_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.cost.enabled")
       .category(CATEGORY_TUNING)
-      .doc("Whether to enable cost-based optimization for Comet. When enabled, Comet will " +
-        "use a cost model to estimate acceleration factors for operators and make decisions " +
-        "about whether to use Comet or Spark operators based on estimated performance.")
+      .doc(
+        "Whether to enable cost-based optimization for Comet. When enabled, Comet will " +
+          "use a cost model to estimate acceleration factors for operators and make decisions " +
+          "about whether to use Comet or Spark operators based on estimated performance.")
       .booleanConf
       .createWithDefault(false)
 
