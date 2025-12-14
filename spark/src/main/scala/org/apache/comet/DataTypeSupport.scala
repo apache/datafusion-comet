@@ -79,4 +79,6 @@ object DataTypeSupport {
     case _: StructType | _: ArrayType | _: MapType => true
     case _ => false
   }
+
+  def hasComplexTypes(schema: StructType) = schema.fields.exists(f => isComplexType(f.dataType))
 }
