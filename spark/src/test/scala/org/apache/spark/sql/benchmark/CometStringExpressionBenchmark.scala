@@ -28,6 +28,8 @@ import org.apache.comet.CometConf
  * Configuration for a string expression benchmark.
  * @param name
  *   Display name for the benchmark
+ * @param shortName
+ *   Short name for runBenchmarkWithTable
  * @param query
  *   SQL query to benchmark
  * @param extraCometConfigs
@@ -35,6 +37,7 @@ import org.apache.comet.CometConf
  */
 case class StringExprConfig(
     name: String,
+    shortName: String,
     query: String,
     extraCometConfigs: Map[String, String] = Map.empty)
 
@@ -84,52 +87,47 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
 
   // Configuration for all string expression benchmarks
   private val stringExpressions = List(
-    StringExprConfig("Substring Expr", "select substring(c1, 1, 100) from parquetV1Table"),
-    StringExprConfig("Expr ascii", "select ascii(c1) from parquetV1Table"),
-    StringExprConfig("Expr bit_length", "select bit_length(c1) from parquetV1Table"),
-    StringExprConfig("Expr octet_length", "select octet_length(c1) from parquetV1Table"),
+    StringExprConfig(
+      "Substring Expr",
+      "Substring",
+      "select substring(c1, 1, 100) from parquetV1Table"),
+    StringExprConfig("Expr ascii", "ascii", "select ascii(c1) from parquetV1Table"),
+    StringExprConfig("Expr bit_length", "bitLength", "select bit_length(c1) from parquetV1Table"),
+    StringExprConfig(
+      "Expr octet_length",
+      "octet_length",
+      "select octet_length(c1) from parquetV1Table"),
     StringExprConfig(
       "Expr upper",
+      "upper",
       "select upper(c1) from parquetV1Table",
       extraCometConfigs = Map(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true")),
-    StringExprConfig("Expr lower", "select lower(c1) from parquetV1Table"),
-    StringExprConfig("Expr chr", "select chr(c1) from parquetV1Table"),
-    StringExprConfig("Expr initCap", "select initCap(c1) from parquetV1Table"),
-    StringExprConfig("Expr trim", "select trim(c1) from parquetV1Table"),
-    StringExprConfig("Expr concatws", "select concat_ws(' ', c1, c1) from parquetV1Table"),
-    StringExprConfig("Expr length", "select length(c1) from parquetV1Table"),
-    StringExprConfig("Expr repeat", "select repeat(c1, 3) from parquetV1Table"),
-    StringExprConfig("Expr reverse", "select reverse(c1) from parquetV1Table"),
-    StringExprConfig("Expr instr", "select instr(c1, '123') from parquetV1Table"),
-    StringExprConfig("Expr replace", "select replace(c1, '123', 'abc') from parquetV1Table"),
+    StringExprConfig("Expr lower", "lower", "select lower(c1) from parquetV1Table"),
+    StringExprConfig("Expr chr", "chr", "select chr(c1) from parquetV1Table"),
+    StringExprConfig("Expr initCap", "initCap", "select initCap(c1) from parquetV1Table"),
+    StringExprConfig("Expr trim", "trim", "select trim(c1) from parquetV1Table"),
+    StringExprConfig(
+      "Expr concatws",
+      "concatws",
+      "select concat_ws(' ', c1, c1) from parquetV1Table"),
+    StringExprConfig("Expr length", "length", "select length(c1) from parquetV1Table"),
+    StringExprConfig("Expr repeat", "repeat", "select repeat(c1, 3) from parquetV1Table"),
+    StringExprConfig("Expr reverse", "reverse", "select reverse(c1) from parquetV1Table"),
+    StringExprConfig("Expr instr", "instr", "select instr(c1, '123') from parquetV1Table"),
+    StringExprConfig(
+      "Expr replace",
+      "replace",
+      "select replace(c1, '123', 'abc') from parquetV1Table"),
     StringExprConfig(
       "Expr translate",
+      "translate",
       "select translate(c1, '123456', 'aBcDeF') from parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024;
 
-    // Map each config to a short name for runBenchmarkWithTable
-    val benchmarkNames = List(
-      "Substring",
-      "ascii",
-      "bitLength",
-      "octet_length",
-      "upper",
-      "lower",
-      "chr",
-      "initCap",
-      "trim",
-      "concatws",
-      "repeat",
-      "length",
-      "reverse",
-      "instr",
-      "replace",
-      "translate")
-
-    stringExpressions.zip(benchmarkNames).foreach { case (config, name) =>
-      runBenchmarkWithTable(name, values) { v =>
+    stringExpressions.foreach { config =>
+      runBenchmarkWithTable(config.shortName, values) { v =>
         runStringExprBenchmark(config, v)
       }
     }
