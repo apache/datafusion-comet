@@ -22,7 +22,7 @@ package org.apache.comet
 import java.io.File
 
 import scala.collection.mutable.ListBuffer
-import scala.util.Random
+import scala.util.{Failure, Random, Success, Try}
 import scala.util.matching.Regex
 
 import org.apache.hadoop.fs.Path
@@ -33,7 +33,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType, StructField, StructType}
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, isSpark40Plus}
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.Compatible
@@ -1072,6 +1072,30 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast ArrayType to ArrayType") {
+    val types = Seq(
+      BooleanType,
+      StringType,
+      ByteType,
+      IntegerType,
+      LongType,
+      ShortType,
+      DecimalType(10, 2),
+      DecimalType(38, 18))
+    for (fromType <- types) {
+      for (toType <- types) {
+        if (fromType != toType &&
+          !tags
+            .get(s"cast $fromType to $toType")
+            .exists(s => s.contains("org.scalatest.Ignore")) &&
+          Cast.canCast(fromType, toType) &&
+          CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) == Compatible()) {
+          castTest(generateArrays(100, fromType), ArrayType(toType))
+        }
+      }
+    }
+  }
+
   private def generateFloats(): DataFrame = {
     withNulls(gen.generateFloats(dataSize)).toDF("a")
   }
@@ -1100,10 +1124,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withNulls(gen.generateLongs(dataSize)).toDF("a")
   }
 
-  private def generateArrays(rowSize: Int, elementType: DataType): DataFrame = {
+  private def generateArrays(rowNum: Int, elementType: DataType): DataFrame = {
     import scala.collection.JavaConverters._
     val schema = StructType(Seq(StructField("a", ArrayType(elementType), true)))
-    spark.createDataFrame(gen.generateRows(rowSize, schema).asJava, schema)
+    spark.createDataFrame(gen.generateRows(rowNum, schema).asJava, schema)
   }
 
   // https://github.com/apache/datafusion-comet/issues/2038
