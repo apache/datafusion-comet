@@ -47,9 +47,9 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
-import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
+import org.apache.comet.CometConf.{COMET_COST_BASED_OPTIMIZATION_ENABLED, COMET_COST_MODEL_CLASS, COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
-import org.apache.comet.cost.DefaultCometCostModel
+import org.apache.comet.cost.CometCostModel
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, Unsupported}
 import org.apache.comet.serde.operator._
@@ -97,6 +97,28 @@ object CometExecRule {
 case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
+
+  // Cache the cost model to avoid loading the class on every call
+  @transient private lazy val costModel: Option[CometCostModel] = {
+    if (COMET_COST_BASED_OPTIMIZATION_ENABLED.get(conf)) {
+      try {
+        val costModelClassName = COMET_COST_MODEL_CLASS.get(conf)
+        // scalastyle:off classforname
+        val costModelClass = Class.forName(costModelClassName)
+        // scalastyle:on classforname
+        val constructor = costModelClass.getConstructor()
+        Some(constructor.newInstance().asInstanceOf[CometCostModel])
+      } catch {
+        case e: Exception =>
+          logWarning(
+            s"Failed to load cost model class: ${e.getMessage}. " +
+              "Falling back to Spark query plan without cost-based optimization.")
+          None
+      }
+    } else {
+      None
+    }
+  }
 
   private def applyCometShuffle(plan: SparkPlan): SparkPlan = {
     plan.transformUp {
@@ -347,15 +369,20 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   override def apply(plan: SparkPlan): SparkPlan = {
     val candidatePlan = _apply(plan)
 
-    // TODO load cost model via config and reflection
-    val costModel = new DefaultCometCostModel
-    val costBefore = costModel.estimateCost(plan)
-    val costAfter = costModel.estimateCost(candidatePlan)
+    // Only apply cost-based optimization if enabled and cost model is available
+    val newPlan = costModel match {
+      case Some(model) =>
+        val costBefore = model.estimateCost(plan)
+        val costAfter = model.estimateCost(candidatePlan)
 
-    val newPlan = if (costAfter.acceleration > costBefore.acceleration) {
-      candidatePlan
-    } else {
-      plan
+        if (costAfter.acceleration > costBefore.acceleration) {
+          candidatePlan
+        } else {
+          plan
+        }
+      case None =>
+        // Cost-based optimization is disabled or failed to load, return candidate plan
+        candidatePlan
     }
 
     if (showTransformations && !newPlan.fastEquals(plan)) {

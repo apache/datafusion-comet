@@ -754,7 +754,7 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithEnvVarOrDefault("ENABLE_COMET_STRICT_TESTING", false)
 
-  val COMET_COST_BASED_OPTIMIZATION_ENABLED: ConfigEntry[Boolean] =
+  val `COMET_COST_BASED_OPTIMIZATION_ENABLED`: ConfigEntry[Boolean] =
     conf("spark.comet.cost.enabled")
       .category(CATEGORY_TUNING)
       .doc(
