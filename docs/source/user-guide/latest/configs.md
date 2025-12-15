@@ -276,6 +276,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.MakeDecimal.enabled` | Enable Comet acceleration for `MakeDecimal` | true |
 | `spark.comet.expression.MapEntries.enabled` | Enable Comet acceleration for `MapEntries` | true |
 | `spark.comet.expression.MapFromArrays.enabled` | Enable Comet acceleration for `MapFromArrays` | true |
+| `spark.comet.expression.MapFromEntries.enabled` | Enable Comet acceleration for `MapFromEntries` | true |
 | `spark.comet.expression.MapKeys.enabled` | Enable Comet acceleration for `MapKeys` | true |
 | `spark.comet.expression.MapValues.enabled` | Enable Comet acceleration for `MapValues` | true |
 | `spark.comet.expression.Md5.enabled` | Enable Comet acceleration for `Md5` | true |
