@@ -241,7 +241,7 @@ under the License.
           <version>1.10.0</version>
           <scope>test</scope>
         </dependency>
-        <!-- Jetty 11 for Spark 4.0 REST catalog tests (matches Iceberg 1.10 and Spark 4.0) -->
+        <!-- Jetty 11.x for Spark 4.0 (jakarta.servlet) -->
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
