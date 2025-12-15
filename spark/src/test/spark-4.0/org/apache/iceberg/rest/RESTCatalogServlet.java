@@ -49,6 +49,7 @@ import static java.lang.String.format;
 /**
  * The RESTCatalogServlet provides a servlet implementation used in combination with a
  * RESTCatalogAdaptor to proxy the REST Spec to any Catalog implementation.
+ * Modified version of Iceberg's org/apache/iceberg/rest/RESTCatalogServlet.java
  */
 public class RESTCatalogServlet extends HttpServlet {
   private static final Logger LOG = LoggerFactory.getLogger(RESTCatalogServlet.class);
