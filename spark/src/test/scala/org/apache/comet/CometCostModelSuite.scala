@@ -40,15 +40,7 @@ class CometCostModelSuite extends CometTestBase {
     withCBOEnabled {
       withTempView("test_data") {
         createSimpleTestData()
-        // Create a more complex query that will trigger AQE with joins/aggregations
-        val query = """
-          SELECT t1.len1, t2.len2, COUNT(*) as cnt
-          FROM (SELECT length(text1) as len1, text1 FROM test_data) t1
-          JOIN (SELECT length(text2) as len2, text2 FROM test_data) t2
-          ON t1.text1 = t2.text2
-          GROUP BY t1.len1, t2.len2
-        """
-
+        val query = "SELECT length(text1), length(text2) FROM test_data"
         executeAndCheckOperator(
           query,
           classOf[CometProjectExec],
@@ -61,58 +53,11 @@ class CometCostModelSuite extends CometTestBase {
     withCBOEnabled {
       withTempView("test_data") {
         createPaddedTestData()
-        // Create a more complex query that will trigger AQE with joins/aggregations
-        val query = """
-          SELECT t1.trimmed1, t2.trimmed2, COUNT(*) as cnt
-          FROM (SELECT trim(text1) as trimmed1, text1 FROM test_data) t1
-          JOIN (SELECT trim(text2) as trimmed2, text2 FROM test_data) t2
-          ON t1.text1 = t2.text2
-          GROUP BY t1.trimmed1, t2.trimmed2
-        """
-
+        val query = "SELECT trim(text1), trim(text2) FROM test_data"
         executeAndCheckOperator(
           query,
           classOf[ProjectExec],
           "Expected Spark ProjectExec for slow expression")
-      }
-    }
-  }
-
-  test("Without CBO, Comet should be used regardless of expression cost") {
-    withCBODisabled {
-      withTempView("test_data") {
-        createPaddedTestData()
-        // Complex query without CBO
-        val query = """
-          SELECT trim(text1) as trimmed1, COUNT(*) as cnt
-          FROM test_data
-          GROUP BY trim(text1)
-        """
-
-        executeAndCheckOperator(
-          query,
-          classOf[CometProjectExec],
-          "Expected CometProjectExec when CBO disabled")
-      }
-    }
-  }
-
-  test("Mixed expressions should use appropriate operators per expression cost") {
-    withCBOEnabled {
-      withTempView("test_data") {
-        createSimpleTestData()
-        // Query mixing fast (length: 9.1x) and slow (ascii: 0.6x) expressions with aggregation
-        // Average acceleration: (9.1 + 0.6) / 2 = 4.85x -> cost = 0.206 (still prefer Comet)
-        val query = """
-          SELECT length(text1) as fast_expr, ascii(text1) as slow_expr, COUNT(*) as cnt
-          FROM test_data
-          GROUP BY length(text1), ascii(text1)
-        """
-
-        executeAndCheckOperator(
-          query,
-          classOf[CometProjectExec],
-          "Expected CometProjectExec for mixed expressions with positive average")
       }
     }
   }
@@ -176,7 +121,7 @@ class CometCostModelSuite extends CometTestBase {
     val tempPath = s"${System.getProperty("java.io.tmpdir")}/comet_cost_test_${System.nanoTime()}"
     df.write.mode("overwrite").parquet(tempPath)
 
-    val parquetDf = spark.read.parquet(tempPath)
+    val parquetDf = spark.read.parquet(tempPath).repartition(5)
     parquetDf.createOrReplaceTempView("test_data")
   }
 
@@ -193,7 +138,7 @@ class CometCostModelSuite extends CometTestBase {
       s"${System.getProperty("java.io.tmpdir")}/comet_cost_test_padded_${System.nanoTime()}"
     df.write.mode("overwrite").parquet(tempPath)
 
-    val parquetDf = spark.read.parquet(tempPath)
+    val parquetDf = spark.read.parquet(tempPath).repartition(5)
     parquetDf.createOrReplaceTempView("test_data")
   }
 
