@@ -192,7 +192,7 @@ under the License.
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
-          <version>9.4.53.v20231009</version>
+          <version>9.4.56.v20240826</version>
           <scope>test</scope>
         </dependency>
         <dependency>
@@ -220,7 +220,7 @@ under the License.
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
-          <version>9.4.53.v20231009</version>
+          <version>9.4.56.v20240826</version>
           <scope>test</scope>
         </dependency>
         <dependency>
@@ -245,7 +245,7 @@ under the License.
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
-          <version>11.0.24</version>
+          <version>9.4.56.v20240826</version>
           <scope>test</scope>
         </dependency>
         <dependency>
