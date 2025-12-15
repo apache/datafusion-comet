@@ -19,14 +19,14 @@
 
 package org.apache.comet.cost
 
-import org.apache.spark.sql.catalyst.expressions.{Ascii, Chr, ConcatWs, Expression, InitCap, Length, Lower, OctetLength, Reverse, StringSpace, StringTranslate, StringTrim, Substring, Upper}
+import scala.jdk.CollectionConverters._
+
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan, CometProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.SparkPlan
 
-import com.univocity.parsers.annotations.Replace
-
 import org.apache.comet.DataTypeSupport
+import org.apache.comet.serde.{ExprOuterClass, OperatorOuterClass}
 
 case class CometCostEstimate(acceleration: Double)
 
@@ -84,8 +84,13 @@ class DefaultCometCostModel extends CometCostModel {
       case _: CometColumnarToRowExec =>
         CometCostEstimate(1.0)
       case op: CometProjectExec =>
-        val total: Double = op.expressions.map(estimateExpressionCost).sum
-        CometCostEstimate(total / op.expressions.length.toDouble)
+        // Cast nativeOp to Operator and extract projection expressions
+        val operator = op.nativeOp.asInstanceOf[OperatorOuterClass.Operator]
+        val projection = operator.getProjection
+        val expressions = projection.getProjectListList.asScala
+
+        val total: Double = expressions.map(estimateCometExpressionCost).sum
+        CometCostEstimate(total / expressions.length.toDouble)
       case _: CometPlan =>
         CometCostEstimate(defaultAcceleration)
       case _ =>
@@ -94,32 +99,36 @@ class DefaultCometCostModel extends CometCostModel {
     }
   }
 
-  /** Estimate the cost of an expression */
-  private def estimateExpressionCost(expr: Expression): Double = {
-    expr match {
-      // string expression numbers from CometStringExpressionBenchmark
-      // TODO this is matching on Spark expressions, which isn't correct since
-      // we need to look at the converted Comet expressions instead, but
-      // this code demonstrates what the goal is - having specific numbers
-      // based on current micro benchmarks
-      case _: Substring => 6.3
-      case _: Ascii => 0.6
-      case _: Ascii => 0.6
-      case _: OctetLength => 0.6
-      case _: Lower => 3.0
-      case _: Upper => 3.0
-      case _: Chr => 0.6
-      case _: InitCap => 0.9
-      case _: StringTrim => 0.4
-      case _: ConcatWs => 0.5
-      case _: Length => 9.1
-      // case _: Repeat => 0.4
-      case _: Reverse => 6.9
-      // case _: Instr => 0.6
-      case _: Replace => 1.3
-      case _: StringSpace => 0.8
-      case _: StringTranslate => 0.8
+  /** Estimate the cost of a Comet protobuf expression */
+  private def estimateCometExpressionCost(expr: ExprOuterClass.Expr): Double = {
+    expr.getExprStructCase match {
+      // Handle specialized expression types
+      case ExprOuterClass.Expr.ExprStructCase.SUBSTRING => 6.3
+
+      // Handle generic scalar functions
+      case ExprOuterClass.Expr.ExprStructCase.SCALARFUNC =>
+        expr.getScalarFunc.getFunc match {
+          // String expression numbers from CometStringExpressionBenchmark
+          case "ascii" => 0.6
+          case "octet_length" => 0.6
+          case "lower" => 3.0
+          case "upper" => 3.0
+          case "char" => 0.6
+          case "initcap" => 0.9
+          case "trim" => 0.4
+          case "concat_ws" => 0.5
+          case "length" => 9.1
+          case "repeat" => 0.4
+          case "reverse" => 6.9
+          case "instr" => 0.6
+          case "replace" => 1.3
+          case "string_space" => 0.8
+          case "translate" => 0.8
+          case _ => defaultAcceleration
+        }
+
       case _ => defaultAcceleration
     }
   }
+
 }
