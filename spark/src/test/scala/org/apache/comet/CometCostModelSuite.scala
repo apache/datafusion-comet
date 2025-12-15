@@ -23,7 +23,6 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.ProjectExec
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.internal.SQLConf
 
 class CometCostModelSuite extends CometTestBase {
 
@@ -37,7 +36,7 @@ class CometCostModelSuite extends CometTestBase {
   // - ascii: 0.6x -> cost = 1/0.6 = 1.67 (high cost, Spark preferred)
 
   test("CBO should prefer Comet for fast expressions (length)") {
-    withCBOEnabled {
+    withSQLConf(CometConf.COMET_COST_BASED_OPTIMIZATION_ENABLED.key -> "true") {
       withTempView("test_data") {
         createSimpleTestData()
         val query = "SELECT length(text1), length(text2) FROM test_data"
@@ -50,7 +49,7 @@ class CometCostModelSuite extends CometTestBase {
   }
 
   test("CBO should prefer Spark for slow expressions (trim)") {
-    withCBOEnabled {
+    withSQLConf(CometConf.COMET_COST_BASED_OPTIMIZATION_ENABLED.key -> "true") {
       withTempView("test_data") {
         createPaddedTestData()
         val query = "SELECT trim(text1), trim(text2) FROM test_data"
@@ -59,51 +58,6 @@ class CometCostModelSuite extends CometTestBase {
           classOf[ProjectExec],
           "Expected Spark ProjectExec for slow expression")
       }
-    }
-  }
-
-  /** Helper method to run tests with CBO enabled */
-  private def withCBOEnabled(f: => Unit): Unit = {
-    withSQLConf(
-      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_COST_BASED_OPTIMIZATION_ENABLED.key -> "true",
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_AGGREGATE_ENABLED.key -> "true", // Enable aggregation for GROUP BY
-      CometConf.COMET_EXEC_HASH_JOIN_ENABLED.key -> "true", // Enable joins
-      // Lower AQE thresholds to ensure it triggers on small test data
-      "spark.sql.adaptive.advisoryPartitionSizeInBytes" -> "1KB",
-      "spark.sql.adaptive.coalescePartitions.minPartitionSize" -> "1B") {
-
-      println("\n=== CBO Configuration ===")
-      println(s"COMET_ENABLED: ${spark.conf.get(CometConf.COMET_ENABLED.key)}")
-      println(s"COMET_COST_BASED_OPTIMIZATION_ENABLED: ${spark.conf.get(
-          CometConf.COMET_COST_BASED_OPTIMIZATION_ENABLED.key)}")
-      println(
-        s"ADAPTIVE_EXECUTION_ENABLED: ${spark.conf.get(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key)}")
-      println(s"COMET_EXEC_ENABLED: ${spark.conf.get(CometConf.COMET_EXEC_ENABLED.key)}")
-      println(
-        s"COMET_EXEC_PROJECT_ENABLED: ${spark.conf.get(CometConf.COMET_EXEC_PROJECT_ENABLED.key)}")
-
-      // Check if custom cost evaluator is set
-      val costEvaluator = spark.conf.getOption("spark.sql.adaptive.customCostEvaluatorClass")
-      println(s"Custom cost evaluator: ${costEvaluator.getOrElse("None")}")
-
-      f
-    }
-  }
-
-  /** Helper method to run tests with CBO disabled */
-  private def withCBODisabled(f: => Unit): Unit = {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_COST_BASED_OPTIMIZATION_ENABLED.key -> "false",
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true") {
-      f
     }
   }
 
@@ -146,60 +100,24 @@ class CometCostModelSuite extends CometTestBase {
       expectedClass: Class[_],
       message: String): Unit = {
 
-    println("\n=== Executing Query ===")
-    println(s"Query: $query")
-    println(s"Expected class: ${expectedClass.getSimpleName}")
-
     val result = sql(query)
-
-    println("\n=== Pre-execution Plans ===")
-    println("Logical Plan:")
-    println(result.queryExecution.logical)
-    println("\nOptimized Plan:")
-    println(result.queryExecution.optimizedPlan)
-    println("\nSpark Plan:")
-    println(result.queryExecution.sparkPlan)
-
     result.collect() // Materialize the plan
 
-    println("\n=== Post-execution Plans ===")
-    println("Executed Plan (with AQE wrappers):")
-    println(result.queryExecution.executedPlan)
-
     val executedPlan = stripAQEPlan(result.queryExecution.executedPlan)
-    println("\nExecuted Plan (stripped AQE):")
-    println(executedPlan)
-
-    // Enhanced debugging: show complete plan tree structure
-    println("\n=== Plan Tree Analysis ===")
-    debugPlanTree(executedPlan, 0)
 
     val hasProjectExec = findProjectExec(executedPlan)
-
-    println("\n=== Project Analysis ===")
-    println(s"Found project exec: ${hasProjectExec.isDefined}")
-    if (hasProjectExec.isDefined) {
-      println(s"Actual class: ${hasProjectExec.get.getClass.getSimpleName}")
-      println(s"Expected class: ${expectedClass.getSimpleName}")
-      println(s"Is expected type: ${expectedClass.isInstance(hasProjectExec.get)}")
-    }
 
     assert(hasProjectExec.isDefined, "Should have a project operator")
     assert(
       expectedClass.isInstance(hasProjectExec.get),
       s"$message, got ${hasProjectExec.get.getClass.getSimpleName}")
-
-    println("=== Test PASSED ===\n")
   }
 
   /** Helper method to find ProjectExec or CometProjectExec in the plan tree */
   private def findProjectExec(plan: SparkPlan): Option[SparkPlan] = {
     // More robust recursive search that handles deep nesting
     def searchPlan(node: SparkPlan): Option[SparkPlan] = {
-      println(s"[findProjectExec] Checking node: ${node.getClass.getSimpleName}")
-
       if (node.isInstanceOf[ProjectExec] || node.isInstanceOf[CometProjectExec]) {
-        println(s"[findProjectExec] Found project operator: ${node.getClass.getSimpleName}")
         Some(node)
       } else {
         // Search all children recursively
@@ -216,22 +134,8 @@ class CometCostModelSuite extends CometTestBase {
     searchPlan(plan)
   }
 
-  /** Debug method to print complete plan tree structure */
-  private def debugPlanTree(plan: SparkPlan, depth: Int): Unit = {
-    val indent = "  " * depth
-    println(s"$indent${plan.getClass.getSimpleName}")
-
-    // Also show if this is a project operator
-    if (plan.isInstanceOf[ProjectExec] || plan.isInstanceOf[CometProjectExec]) {
-      println(s"$indent  -> PROJECT OPERATOR FOUND!")
-    }
-
-    // Recursively print children
-    plan.children.foreach(child => debugPlanTree(child, depth + 1))
-  }
-
   test("Direct cost model test - fast vs slow expressions") {
-    withCBOEnabled {
+    withSQLConf(CometConf.COMET_COST_BASED_OPTIMIZATION_ENABLED.key -> "true") {
       withTempView("test_data") {
         createSimpleTestData()
 
