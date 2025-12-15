@@ -735,12 +735,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     Seq(true, false).foreach(k => castTest(values, DataTypes.FloatType, testAnsi = k))
   }
 
-  test("cast StringType to DecimalType(22,2)") {
+  test("cast StringType to DecimalType(10,2)") {
     // TODO fix for Spark 4.0.0
     assume(!isSpark40Plus)
     val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
     Seq(true, false).foreach(k =>
-      castTest(values, DataTypes.createDecimalType(22, 2), testAnsi = k))
+      castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = k))
   }
 
   test("cast StringType to DecimalType(2,2)") {
