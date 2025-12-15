@@ -199,7 +199,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Download fallback log artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           path: fallback-logs/
       - name: Merge fallback logs
