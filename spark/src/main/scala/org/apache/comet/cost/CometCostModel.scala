@@ -26,7 +26,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.execution.SparkPlan
 
 import org.apache.comet.DataTypeSupport
-import org.apache.comet.serde.{ExprOuterClass, OperatorOuterClass}
+import org.apache.comet.serde.ExprOuterClass
 
 case class CometCostEstimate(acceleration: Double)
 
@@ -71,6 +71,10 @@ class DefaultCometCostModel extends CometCostModel {
   /** Estimate the cost of a single operator */
   private def estimateOperatorCost(plan: SparkPlan): CometCostEstimate = {
     plan match {
+      case op: CometProjectExec =>
+        val expressions = op.nativeOp.getProjection.getProjectListList.asScala
+        val total: Double = expressions.map(estimateCometExpressionCost).sum
+        CometCostEstimate(total / expressions.length.toDouble)
       case op: CometShuffleExchangeExec =>
         op.shuffleType match {
           case CometNativeShuffle => CometCostEstimate(1.5)
@@ -83,14 +87,6 @@ class DefaultCometCostModel extends CometCostModel {
         }
       case _: CometColumnarToRowExec =>
         CometCostEstimate(1.0)
-      case op: CometProjectExec =>
-        // Cast nativeOp to Operator and extract projection expressions
-        val operator = op.nativeOp.asInstanceOf[OperatorOuterClass.Operator]
-        val projection = operator.getProjection
-        val expressions = projection.getProjectListList.asScala
-
-        val total: Double = expressions.map(estimateCometExpressionCost).sum
-        CometCostEstimate(total / expressions.length.toDouble)
       case _: CometPlan =>
         CometCostEstimate(defaultAcceleration)
       case _ =>
