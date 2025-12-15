@@ -20,7 +20,6 @@
 package org.apache.spark.sql.benchmark
 
 import java.text.SimpleDateFormat
-import java.util.concurrent.atomic.AtomicLong
 
 import scala.util.Random
 
