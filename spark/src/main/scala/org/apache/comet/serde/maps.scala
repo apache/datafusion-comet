@@ -19,12 +19,9 @@
 
 package org.apache.comet.serde
 
-import scala.annotation.tailrec
-
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, MapType, StructType}
+import org.apache.spark.sql.types._
 
-import org.apache.comet.serde.CometArrayReverse.containsBinary
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
