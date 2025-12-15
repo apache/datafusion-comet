@@ -33,12 +33,13 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
+// spotless:off
 /**
  * Benchmark to measure Comet shuffle performance. To run this benchmark:
- * `SPARK_GENERATE_BENCHMARK_FILES=1 make
- * benchmark-org.apache.spark.sql.benchmark.CometShuffleBenchmark` Results will be written to
- * "spark/benchmarks/CometShuffleBenchmark-**results.txt".
+ * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometShuffleBenchmark`
+ * Results will be written to "spark/benchmarks/CometShuffleBenchmark-**results.txt".
  */
+// spotless:on
 object CometShuffleBenchmark extends CometBenchmarkBase {
 
   override def getSparkSession: SparkSession = {
