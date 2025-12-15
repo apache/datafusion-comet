@@ -42,8 +42,6 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOpt
  */
 object CometShuffleBenchmark extends CometBenchmarkBase {
 
-  new AtomicLong()
-
   override def getSparkSession: SparkSession = {
     val conf = new SparkConf()
       .setAppName("CometShuffleBenchmark")
@@ -106,7 +104,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet (Comet Arrow Shuffle)") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Comet JVM Shuffle)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -163,7 +161,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet (Comet Arrow Shuffle)") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Comet JVM Shuffle)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -218,7 +216,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet (Comet Arrow Shuffle)") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Comet JVM Shuffle)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -233,7 +231,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet (Comet Arrow Shuffle + Prefer Dictionary)") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Comet JVM Shuffle + Prefer Dictionary)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -248,7 +246,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet (Comet Arrow Shuffle + Fallback to string)") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Comet JVM Shuffle + Fallback to string)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -314,7 +312,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet (Comet Arrow Shuffle)") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Comet JVM Shuffle)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -328,7 +326,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet (Comet Async Arrow Shuffle)") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Comet Async JVM Shuffle)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -398,7 +396,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet (Comet Arrow Shuffle)") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Comet JVM Shuffle)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -411,7 +409,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet (Comet Shuffle)") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Comet Native Shuffle)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -468,7 +466,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet (Comet Arrow Shuffle)") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Comet JVM Shuffle)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
@@ -481,7 +479,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           }
         }
 
-        benchmark.addCase("SQL Parquet - Comet (Comet Shuffle)") { _ =>
+        benchmark.addCase("SQL Parquet - Comet (Comet Native Shuffle)") { _ =>
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
