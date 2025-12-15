@@ -19,7 +19,7 @@
 
 package org.apache.comet
 
-import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.ProjectExec
 import org.apache.spark.sql.execution.SparkPlan
@@ -79,7 +79,7 @@ class CometCostModelSuite extends CometTestBase {
       "spark.sql.adaptive.advisoryPartitionSizeInBytes" -> "1KB",
       "spark.sql.adaptive.coalescePartitions.minPartitionSize" -> "1B") {
 
-      println(s"\n=== CBO Configuration ===")
+      println("\n=== CBO Configuration ===")
       println(s"COMET_ENABLED: ${spark.conf.get(CometConf.COMET_ENABLED.key)}")
       println(s"COMET_COST_BASED_OPTIMIZATION_ENABLED: ${spark.conf.get(
           CometConf.COMET_COST_BASED_OPTIMIZATION_ENABLED.key)}")
@@ -148,13 +148,13 @@ class CometCostModelSuite extends CometTestBase {
       expectedClass: Class[_],
       message: String): Unit = {
 
-    println(s"\n=== Executing Query ===")
+    println("\n=== Executing Query ===")
     println(s"Query: $query")
     println(s"Expected class: ${expectedClass.getSimpleName}")
 
     val result = sql(query)
 
-    println(s"\n=== Pre-execution Plans ===")
+    println("\n=== Pre-execution Plans ===")
     println("Logical Plan:")
     println(result.queryExecution.logical)
     println("\nOptimized Plan:")
@@ -164,7 +164,7 @@ class CometCostModelSuite extends CometTestBase {
 
     result.collect() // Materialize the plan
 
-    println(s"\n=== Post-execution Plans ===")
+    println("\n=== Post-execution Plans ===")
     println("Executed Plan (with AQE wrappers):")
     println(result.queryExecution.executedPlan)
 
@@ -178,7 +178,7 @@ class CometCostModelSuite extends CometTestBase {
 
     val hasProjectExec = findProjectExec(executedPlan)
 
-    println(s"\n=== Project Analysis ===")
+    println("\n=== Project Analysis ===")
     println(s"Found project exec: ${hasProjectExec.isDefined}")
     if (hasProjectExec.isDefined) {
       println(s"Actual class: ${hasProjectExec.get.getClass.getSimpleName}")
@@ -191,7 +191,7 @@ class CometCostModelSuite extends CometTestBase {
       expectedClass.isInstance(hasProjectExec.get),
       s"$message, got ${hasProjectExec.get.getClass.getSimpleName}")
 
-    println(s"=== Test PASSED ===\n")
+    println("=== Test PASSED ===\n")
   }
 
   /** Helper method to find ProjectExec or CometProjectExec in the plan tree */
