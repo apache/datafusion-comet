@@ -229,8 +229,10 @@ object Meta {
     createFunctionWithInputTypes(
       "map_from_entries",
       Seq(
-        SparkArrayType(SparkStructType(
-          Seq(SparkTypeOneOf(primitiveSparkTypes), SparkTypeOneOf(primitiveSparkTypes)))))))
+        SparkArrayType(
+          SparkStructType(Seq(
+            SparkTypeOneOf(primitiveSparkTypes.filterNot(_ == SparkBinaryType)),
+            SparkTypeOneOf(primitiveSparkTypes.filterNot(_ == SparkBinaryType))))))))
 
   // Predicate expressions (corresponds to predicateExpressions in QueryPlanSerde)
   val predicateScalarFunc: Seq[Function] = Seq(
