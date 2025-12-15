@@ -50,7 +50,7 @@ case class Function(name: String, signatures: Seq[FunctionSignature])
 
 object Meta {
 
-  val primitiveSparkTypes = Seq(
+  val primitiveSparkTypes: Seq[SparkType] = Seq(
     SparkBooleanType,
     SparkBinaryType,
     SparkStringType,
