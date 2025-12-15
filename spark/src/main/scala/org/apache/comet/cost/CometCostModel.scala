@@ -26,7 +26,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.execution.SparkPlan
 
 import org.apache.comet.DataTypeSupport
-import org.apache.comet.serde.ExprOuterClass
+import org.apache.comet.serde.{ExprOuterClass, OperatorOuterClass}
 
 case class CometCostEstimate(acceleration: Double)
 
@@ -48,6 +48,11 @@ class DefaultCometCostModel extends CometCostModel {
 
     def collectOperatorCosts(node: SparkPlan): Unit = {
       val operatorCost = estimateOperatorCost(node)
+      // scalastyle:off println
+      println(
+        s"[CostModel] Operator: ${node.getClass.getSimpleName}, " +
+          s"Cost: ${operatorCost.acceleration}")
+      // scalastyle:on println
       totalAcceleration += operatorCost.acceleration
       operatorCount += 1
 
@@ -65,16 +70,44 @@ class DefaultCometCostModel extends CometCostModel {
       1.0 // No acceleration if no operators
     }
 
+    // scalastyle:off println
+    println(
+      s"[CostModel] Plan: ${plan.getClass.getSimpleName}, Total operators: $operatorCount, " +
+        s"Average acceleration: $averageAcceleration")
+    // scalastyle:on println
+
     CometCostEstimate(averageAcceleration)
   }
 
   /** Estimate the cost of a single operator */
   private def estimateOperatorCost(plan: SparkPlan): CometCostEstimate = {
-    plan match {
+    val result = plan match {
       case op: CometProjectExec =>
-        val expressions = op.nativeOp.getProjection.getProjectListList.asScala
-        val total: Double = expressions.map(estimateCometExpressionCost).sum
-        CometCostEstimate(total / expressions.length.toDouble)
+        // scalastyle:off println
+        println(s"[CostModel] CometProjectExec found - evaluating expressions")
+        // scalastyle:on println
+        // Cast nativeOp to Operator and extract projection expressions
+        val operator = op.nativeOp.asInstanceOf[OperatorOuterClass.Operator]
+        val projection = operator.getProjection
+        val expressions = projection.getProjectListList.asScala
+        // scalastyle:off println
+        println(s"[CostModel] Found ${expressions.length} expressions in projection")
+        // scalastyle:on println
+
+        val costs = expressions.map { expr =>
+          val cost = estimateCometExpressionCost(expr)
+          // scalastyle:off println
+          println(s"[CostModel] Expression cost: $cost")
+          // scalastyle:on println
+          cost
+        }
+        val total = costs.sum
+        val average = total / expressions.length.toDouble
+        // scalastyle:off println
+        println(s"[CostModel] CometProjectExec total cost: $total, average: $average")
+        // scalastyle:on println
+        CometCostEstimate(average)
+
       case op: CometShuffleExchangeExec =>
         op.shuffleType match {
           case CometNativeShuffle => CometCostEstimate(1.5)
@@ -88,22 +121,38 @@ class DefaultCometCostModel extends CometCostModel {
       case _: CometColumnarToRowExec =>
         CometCostEstimate(1.0)
       case _: CometPlan =>
+        // scalastyle:off println
+        println(s"[CostModel] Generic CometPlan: ${plan.getClass.getSimpleName}")
+        // scalastyle:on println
         CometCostEstimate(defaultAcceleration)
       case _ =>
+        // scalastyle:off println
+        println(s"[CostModel] Non-Comet operator: ${plan.getClass.getSimpleName}")
+        // scalastyle:on println
         // Spark operator
         CometCostEstimate(1.0)
     }
+
+    // scalastyle:off println
+    println(s"[CostModel] ${plan.getClass.getSimpleName} -> acceleration: ${result.acceleration}")
+    // scalastyle:on println
+    result
   }
 
   /** Estimate the cost of a Comet protobuf expression */
   private def estimateCometExpressionCost(expr: ExprOuterClass.Expr): Double = {
-    expr.getExprStructCase match {
+    val result = expr.getExprStructCase match {
       // Handle specialized expression types
-      case ExprOuterClass.Expr.ExprStructCase.SUBSTRING => 6.3
+      case ExprOuterClass.Expr.ExprStructCase.SUBSTRING =>
+        // scalastyle:off println
+        println(s"[CostModel] Expression: SUBSTRING -> 6.3")
+        // scalastyle:on println
+        6.3
 
       // Handle generic scalar functions
       case ExprOuterClass.Expr.ExprStructCase.SCALARFUNC =>
-        expr.getScalarFunc.getFunc match {
+        val funcName = expr.getScalarFunc.getFunc
+        val cost = funcName match {
           // String expression numbers from CometStringExpressionBenchmark
           case "ascii" => 0.6
           case "octet_length" => 0.6
@@ -122,9 +171,20 @@ class DefaultCometCostModel extends CometCostModel {
           case "translate" => 0.8
           case _ => defaultAcceleration
         }
+        // scalastyle:off println
+        println(s"[CostModel] Expression: SCALARFUNC($funcName) -> $cost")
+        // scalastyle:on println
+        cost
 
-      case _ => defaultAcceleration
+      case _ =>
+        // scalastyle:off println
+        println(
+          s"[CostModel] Expression: Unknown type ${expr.getExprStructCase} -> " +
+            s"$defaultAcceleration")
+        // scalastyle:on println
+        defaultAcceleration
     }
+    result
   }
 
 }

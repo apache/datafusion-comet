@@ -88,9 +88,11 @@ class CometCostEvaluator extends CostEvaluator with Logging {
     //   - 0.8x acceleration -> cost = 1.25 (25% more cost)
     val costValue = 1.0 / estimate.acceleration
 
-    logDebug(
-      s"Cost evaluation for ${plan.getClass.getSimpleName}: " +
+    // scalastyle:off println
+    println(
+      s"[CostEvaluator] Plan: ${plan.getClass.getSimpleName}, " +
         s"acceleration=${estimate.acceleration}, cost=$costValue")
+    // scalastyle:on println
 
     // Create Cost object with the calculated value
     CometCost(costValue)
