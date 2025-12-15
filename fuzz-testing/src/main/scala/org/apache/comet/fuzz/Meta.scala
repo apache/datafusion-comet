@@ -50,6 +50,19 @@ case class Function(name: String, signatures: Seq[FunctionSignature])
 
 object Meta {
 
+  val primitiveSparkTypes = Seq(
+    SparkBooleanType,
+    SparkBinaryType,
+    SparkStringType,
+    SparkByteType,
+    SparkShortType,
+    SparkIntType,
+    SparkLongType,
+    SparkFloatType,
+    SparkDoubleType,
+    SparkDateType,
+    SparkTimestampType)
+
   val dataTypes: Seq[(DataType, Double)] = Seq(
     (DataTypes.BooleanType, 0.1),
     (DataTypes.ByteType, 0.2),
@@ -212,7 +225,12 @@ object Meta {
     createFunctionWithInputTypes("map_values", Seq(SparkMapType(SparkAnyType, SparkAnyType))),
     createFunctionWithInputTypes(
       "map_from_arrays",
-      Seq(SparkArrayType(SparkAnyType), SparkArrayType(SparkAnyType))))
+      Seq(SparkArrayType(SparkAnyType), SparkArrayType(SparkAnyType))),
+    createFunctionWithInputTypes(
+      "map_from_entries",
+      Seq(
+        SparkArrayType(SparkStructType(
+          Seq(SparkTypeOneOf(primitiveSparkTypes), SparkTypeOneOf(primitiveSparkTypes)))))))
 
   // Predicate expressions (corresponds to predicateExpressions in QueryPlanSerde)
   val predicateScalarFunc: Seq[Function] = Seq(
