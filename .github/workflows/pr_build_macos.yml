@@ -83,6 +83,7 @@ jobs:
               org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
           - name: "parquet"
             value: |
+              org.apache.comet.parquet.CometParquetWriterSuite
               org.apache.comet.parquet.ParquetReadV1Suite
               org.apache.comet.parquet.ParquetReadV2Suite
               org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite
@@ -96,6 +97,7 @@ jobs:
               org.apache.comet.exec.CometAggregateSuite
               org.apache.comet.exec.CometExec3_4PlusSuite
               org.apache.comet.exec.CometExecSuite
+              org.apache.comet.exec.CometGenerateExecSuite
               org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
               org.apache.comet.CometNativeSuite
@@ -104,6 +106,8 @@ jobs:
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsNonOverrideSuite
               org.apache.spark.CometPluginsUnifiedModeOverrideSuite
+              org.apache.comet.rules.CometScanRuleSuite
+              org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
               org.apache.spark.sql.CometTPCHQuerySuite
@@ -132,7 +136,7 @@ jobs:
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-macos-builder
         with:

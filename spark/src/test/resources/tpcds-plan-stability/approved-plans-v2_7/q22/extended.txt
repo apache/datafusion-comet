@@ -5,7 +5,7 @@ TakeOrderedAndProject
          +- HashAggregate
             +- Expand
                +- Project
-                  +- BroadcastNestedLoopJoin
+                  +-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
                      :- CometColumnarToRow
                      :  +- CometProject
                      :     +- CometBroadcastHashJoin
