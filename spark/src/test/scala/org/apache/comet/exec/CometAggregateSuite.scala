@@ -1495,7 +1495,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val res = sql("SELECT _2, avg(_1) FROM tbl GROUP BY _2")
           checkSparkAnswerAndOperator(res)
         }
-
       })
 
       // try_avg without GROUP BY
@@ -1505,6 +1504,10 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // try_avg with GROUP BY
       val resTryGroup = sql("SELECT _2, try_avg(_1) FROM tbl GROUP BY _2")
       checkSparkAnswerAndOperator(resTryGroup)
+
+    }
+  }
+
   test("ANSI support for decimal sum - null test") {
     Seq(true, false).foreach { ansiEnabled =>
       withSQLConf(
