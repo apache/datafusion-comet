@@ -73,8 +73,6 @@ class CometCostModelSuite extends CometTestBase {
       CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
       CometConf.COMET_EXEC_AGGREGATE_ENABLED.key -> "true", // Enable aggregation for GROUP BY
       CometConf.COMET_EXEC_HASH_JOIN_ENABLED.key -> "true", // Enable joins
-      // Manually set the custom cost evaluator since plugin might not be loaded
-      "spark.sql.adaptive.customCostEvaluatorClass" -> "org.apache.comet.cost.CometCostEvaluator",
       // Lower AQE thresholds to ensure it triggers on small test data
       "spark.sql.adaptive.advisoryPartitionSizeInBytes" -> "1KB",
       "spark.sql.adaptive.coalescePartitions.minPartitionSize" -> "1B") {

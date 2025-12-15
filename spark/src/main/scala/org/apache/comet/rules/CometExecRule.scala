@@ -49,6 +49,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
+import org.apache.comet.cost.DefaultCometCostModel
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, Unsupported}
 import org.apache.comet.serde.operator._
@@ -344,7 +345,19 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
   }
 
   override def apply(plan: SparkPlan): SparkPlan = {
-    val newPlan = _apply(plan)
+    val candidatePlan = _apply(plan)
+
+    // TODO load cost model via config and reflection
+    val costModel = new DefaultCometCostModel
+    val costBefore = costModel.estimateCost(plan)
+    val costAfter = costModel.estimateCost(candidatePlan)
+
+    val newPlan = if (costAfter.acceleration > costBefore.acceleration) {
+      candidatePlan
+    } else {
+      plan
+    }
+
     if (showTransformations && !newPlan.fastEquals(plan)) {
       logInfo(s"""
            |=== Applying Rule $ruleName ===
