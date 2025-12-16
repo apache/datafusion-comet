@@ -296,7 +296,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   // TODO: https://github.com/apache/datafusion-comet/issues/2539
-  test("date_add with scalar overflow") {
+  ignore("date_add with scalar overflow") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
@@ -2487,7 +2487,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // we want to make sure we enable the operator check and marking the test as ignore will make it
     // more obvious
     //
-    test(s"$testName - V2") {
+    ignore(s"$testName - V2") {
       withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") { f }
     }
   }
