@@ -1773,7 +1773,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("Decimal random number tests") {
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     def makeNum(p: Int, s: Int): String = {
       val int1 = rand.nextLong()
       val int2 = rand.nextLong().abs
