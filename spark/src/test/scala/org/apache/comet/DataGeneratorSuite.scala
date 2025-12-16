@@ -19,10 +19,38 @@
 
 package org.apache.comet
 
+import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{ArrayType, DataType, StructType}
+
+import scala.util.Random
 
 class DataGeneratorSuite extends CometTestBase {
+
+  test("generate nested schema has at least minDepth levels") {
+    val minDepth = 3
+    val schema = FuzzDataGenerator.generateNestedSchema(
+      new Random(42),
+      4,
+      minDepth,
+      minDepth + 1,
+      SchemaGenOptions())
+
+    def calculateDepth(dataType: DataType): Int = {
+      dataType match {
+        case ArrayType(elementType, _) => 1 + calculateDepth(elementType)
+        case StructType(fields) =>
+          if (fields.isEmpty) 1
+          else 1 + fields.map(f => calculateDepth(f.dataType)).max
+        case _ => 0 // primitive types have depth 0
+      }
+    }
+
+    val actualDepth = schema.fields.map(f => calculateDepth(f.dataType)).max
+    assert(
+      actualDepth >= minDepth,
+      s"Generated schema depth $actualDepth is less than required minimum depth $minDepth")
+  }
 
   test("test configurable stringGen in row generator") {
     val gen = DataGenerator.DEFAULT
