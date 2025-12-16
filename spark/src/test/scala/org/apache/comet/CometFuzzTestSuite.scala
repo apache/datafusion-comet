@@ -28,10 +28,35 @@ import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 import org.apache.comet.testing.FuzzDataGenerator.{doubleNaNLiteral, floatNaNLiteral}
 
 class CometFuzzTestSuite extends CometFuzzTestBase {
+
+  test("generate nested schema has at least minDepth levels") {
+    val minDepth = 3
+    val schema = FuzzDataGenerator.generateNestedSchema(
+      new Random(42),
+      4,
+      minDepth,
+      minDepth + 1,
+      SchemaGenOptions())
+
+    def calculateDepth(dataType: DataType): Int = {
+      dataType match {
+        case ArrayType(elementType, _) => 1 + calculateDepth(elementType)
+        case StructType(fields) =>
+          if (fields.isEmpty) 1
+          else 1 + fields.map(f => calculateDepth(f.dataType)).max
+        case _ => 0 // primitive types have depth 0
+      }
+    }
+
+    val actualDepth = schema.fields.map(f => calculateDepth(f.dataType)).max
+    assert(
+      actualDepth >= minDepth,
+      s"Generated schema depth $actualDepth is less than required minimum depth $minDepth")
+  }
 
   test("select *") {
     val df = spark.read.parquet(filename)

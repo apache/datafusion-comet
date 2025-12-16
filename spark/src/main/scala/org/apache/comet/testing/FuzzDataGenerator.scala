@@ -92,6 +92,7 @@ object FuzzDataGenerator {
   def generateNestedSchema(
       r: Random,
       numCols: Int,
+      minDepth: Int,
       maxDepth: Int,
       options: SchemaGenOptions): StructType = {
     assert(
@@ -108,7 +109,7 @@ object FuzzDataGenerator {
 
     def genField(r: Random, depth: Int, maxDepth: Int): StructField = {
       val name = generateFieldName()
-      r.nextInt(3) match {
+      r.nextInt(if (depth < minDepth) 2 else 3) match {
         case 0 if options.generateArray && depth < maxDepth =>
           // array
           val element = genField(r, depth + 1, maxDepth)
