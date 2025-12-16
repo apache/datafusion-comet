@@ -95,11 +95,13 @@ object FuzzDataGenerator {
       minDepth: Int,
       maxDepth: Int,
       options: SchemaGenOptions): StructType = {
+    assert(numCols > 0)
+    assert(minDepth >= 0)
+    assert(maxDepth >= 0)
+    assert(minDepth <= maxDepth)
     assert(
-      options.generateArray || options.generateStruct,
-      "cannot generate nested schema if options do not include generating arrays or structs")
-
-    assert(!options.generateMap, "this method does not support maps")
+      options.generateArray || options.generateStruct || options.generateMap,
+      "cannot generate nested schema if options do not include generating complex types")
 
     val counter = new AtomicLong
 
@@ -107,25 +109,46 @@ object FuzzDataGenerator {
       s"c_${counter.incrementAndGet()}"
     }
 
-    def genField(r: Random, depth: Int, maxDepth: Int): StructField = {
-      val name = generateFieldName()
-      r.nextInt(if (depth < minDepth) 2 else 3) match {
-        case 0 if options.generateArray && depth < maxDepth =>
-          // array
-          val element = genField(r, depth + 1, maxDepth)
-          StructField(name, DataTypes.createArrayType(element.dataType, true))
-        case 1 if options.generateStruct && depth < maxDepth =>
-          // struct
-          val fields =
-            Range(1, 2 + r.nextInt(10)).map(_ => genField(r, depth + 1, maxDepth)).toArray
-          StructField(name, DataTypes.createStructType(fields))
-        case _ =>
-          // primitive
-          StructField(name, randomChoice(options.primitiveTypes, r))
-      }
+    def generateArray(depth: Int, name: String) = {
+      val element = genField(r, depth + 1)
+      StructField(name, DataTypes.createArrayType(element.dataType, true))
     }
 
-    StructType(Range(1, numCols).map(_ => genField(r, 0, maxDepth)))
+    def generateStruct(depth: Int, name: String) = {
+      val fields =
+        Range(1, 2 + r.nextInt(10)).map(_ => genField(r, depth + 1)).toArray
+      StructField(name, DataTypes.createStructType(fields))
+    }
+
+    def generateMap(depth: Int, name: String) = {
+      val keyField = genField(r, depth + 1)
+      val valueField = genField(r, depth + 1)
+      StructField(name, DataTypes.createMapType(keyField.dataType, valueField.dataType))
+    }
+
+    def generatePrimitive(name: String) = {
+      StructField(name, randomChoice(options.primitiveTypes, r))
+    }
+
+    def genField(r: Random, depth: Int): StructField = {
+      val name = generateFieldName()
+      val generators = new ListBuffer[() => StructField]()
+      if (options.generateArray && depth < maxDepth) {
+        generators += (() => generateArray(depth + 1, name))
+      }
+      if (options.generateStruct && depth < maxDepth) {
+        generators += (() => generateStruct(depth + 1, name))
+      }
+      if (options.generateMap && depth < maxDepth) {
+        generators += (() => generateMap(depth, name))
+      }
+      if (depth >= minDepth) {
+        generators += (() => generatePrimitive(name))
+      }
+      randomChoice(generators, r)()
+    }
+
+    StructType(Range(1, numCols).map(_ => genField(r, 0)))
   }
 
   def generateDataFrame(

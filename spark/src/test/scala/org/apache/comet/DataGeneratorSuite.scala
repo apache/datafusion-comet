@@ -19,11 +19,12 @@
 
 package org.apache.comet
 
-import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
-import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.types.{ArrayType, DataType, StructType}
-
 import scala.util.Random
+
+import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType}
+
+import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
 class DataGeneratorSuite extends CometTestBase {
 
@@ -31,10 +32,10 @@ class DataGeneratorSuite extends CometTestBase {
     val minDepth = 3
     val schema = FuzzDataGenerator.generateNestedSchema(
       new Random(42),
-      4,
-      minDepth,
-      minDepth + 1,
-      SchemaGenOptions())
+      numCols = 4,
+      minDepth = minDepth,
+      maxDepth = minDepth + 1,
+      options = SchemaGenOptions(generateMap = true, generateArray = true, generateStruct = true))
 
     def calculateDepth(dataType: DataType): Int = {
       dataType match {
@@ -42,7 +43,11 @@ class DataGeneratorSuite extends CometTestBase {
         case StructType(fields) =>
           if (fields.isEmpty) 1
           else 1 + fields.map(f => calculateDepth(f.dataType)).max
-        case _ => 0 // primitive types have depth 0
+        case MapType(k, v, _) =>
+          calculateDepth(k).max(calculateDepth(v))
+        case _ =>
+          // primitive type
+          1
       }
     }
 
