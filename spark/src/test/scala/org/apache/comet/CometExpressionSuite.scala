@@ -1781,7 +1781,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "70948216565.90127985418365471)")
       withSQLConf(
         "spark.comet.enabled" -> "true",
-        "spark.comet.explain.native.enabled" -> "true",
         "spark.sql.decimalOperations.allowPrecisionLoss" -> "true") {
         val df = sql("select a, b, a % b from test")
         df.collect()
