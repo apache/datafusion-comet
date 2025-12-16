@@ -799,11 +799,10 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
     }
   }
 
-  private def createDeeplyNestedParquetFile(
-      numRows: Int,
-      maxDepth: Int): String = {
+  private def createDeeplyNestedParquetFile(numRows: Int, maxDepth: Int): String = {
     val r = new Random(42)
-    val options = SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = true)
+    val options =
+      SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = true)
     val schema = FuzzDataGenerator.generateNestedSchema(r, 100, maxDepth - 1, maxDepth, options)
     val tempDir = System.getProperty("java.io.tmpdir")
     val filename = s"$tempDir/CometShuffleBenchmark_${System.currentTimeMillis()}.parquet"
