@@ -551,23 +551,16 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
 
     // nested type shuffle
     val numRows = 1000
-    for (generateArray <- Seq(true, false)) {
-      for (generateStruct <- Seq(true, false)) {
-        if (generateArray || generateStruct) {
-          for (maxDepth <- Seq(2, 4)) {
-            val filename =
-              createDeeplyNestedParquetFile(numRows, maxDepth, generateArray, generateStruct)
-            try {
-              for (partitionNum <- Seq(5, 201)) {
-                val name = s"array=$generateArray, struct=$generateStruct, maxDepth=$maxDepth, " +
-                  s"partitionNum=$partitionNum"
-                shuffleDeeplyNestedBenchmark(name, filename, numRows, partitionNum)
-              }
-            } finally {
-              new java.io.File(filename).delete()
-            }
-          }
+    for (maxDepth <- Seq(2, 6)) {
+      val filename =
+        createDeeplyNestedParquetFile(numRows, maxDepth)
+      try {
+        for (partitionNum <- Seq(5, 201)) {
+          val name = s"maxDepth=$maxDepth, partitionNum=$partitionNum"
+          shuffleDeeplyNestedBenchmark(name, filename, numRows, partitionNum)
         }
+      } finally {
+        new java.io.File(filename).delete()
       }
     }
 
@@ -808,11 +801,9 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
 
   private def createDeeplyNestedParquetFile(
       numRows: Int,
-      maxDepth: Int,
-      generateArray: Boolean,
-      generateStruct: Boolean): String = {
+      maxDepth: Int): String = {
     val r = new Random(42)
-    val options = SchemaGenOptions(generateArray = generateArray, generateStruct = generateStruct)
+    val options = SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = true)
     val schema = FuzzDataGenerator.generateNestedSchema(r, 100, maxDepth - 1, maxDepth, options)
     val tempDir = System.getProperty("java.io.tmpdir")
     val filename = s"$tempDir/CometShuffleBenchmark_${System.currentTimeMillis()}.parquet"

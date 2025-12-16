@@ -140,7 +140,7 @@ object FuzzDataGenerator {
         generators += (() => generateStruct(depth + 1, name))
       }
       if (options.generateMap && depth < maxDepth) {
-        generators += (() => generateMap(depth, name))
+        generators += (() => generateMap(depth + 1, name))
       }
       if (depth >= minDepth) {
         generators += (() => generatePrimitive(name))
