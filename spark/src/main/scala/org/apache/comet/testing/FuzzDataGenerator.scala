@@ -145,7 +145,7 @@ object FuzzDataGenerator {
       if (depth >= minDepth) {
         generators += (() => generatePrimitive(name))
       }
-      randomChoice(generators, r)()
+      randomChoice(generators.toSeq, r)()
     }
 
     StructType(Range(1, numCols).map(_ => genField(r, 0)))
