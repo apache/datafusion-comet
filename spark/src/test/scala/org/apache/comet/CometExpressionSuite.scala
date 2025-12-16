@@ -1773,6 +1773,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("Decimal modulus with Decimal256 intermediate type") {
+    // regression test for https://github.com/apache/datafusion-comet/issues/2911
     withTable("test") {
       sql("create table test(a decimal(33, 29), b decimal(28, 17)) using parquet")
       sql(
@@ -1783,7 +1784,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         "spark.comet.explain.native.enabled" -> "true",
         "spark.sql.decimalOperations.allowPrecisionLoss" -> "true") {
         val df = sql("select a, b, a % b from test")
-        println(df.queryExecution.executedPlan)
         df.collect()
       }
     }
