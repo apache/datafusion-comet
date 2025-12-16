@@ -156,25 +156,22 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-
-  // scalastyle:off
-  // spotless:off
   test("Decimal random number tests repro") {
     withTable("test") {
-      sql(s"create table test(a decimal(33, 29), b decimal(28, 17)) using parquet")
-      sql(s"insert into test values (-6788.53035340376888409034576923353, 70948216565.90127985418365471)")
+      sql("create table test(a decimal(33, 29), b decimal(28, 17)) using parquet")
+      sql(
+        "insert into test values (-6788.53035340376888409034576923353, " +
+          "70948216565.90127985418365471)")
       withSQLConf(
         "spark.comet.enabled" -> "true",
         "spark.comet.explain.native.enabled" -> "true",
         "spark.sql.decimalOperations.allowPrecisionLoss" -> "true") {
-        val df = sql(s"select a, b, a % b from test")
+        val df = sql("select a, b, a % b from test")
         println(df.queryExecution.executedPlan)
         df.collect()
       }
     }
   }
-  // spotless:on
-  // scalastyle:on
 
   ignore("decimals divide by zero") {
     Seq(true, false).foreach { dictionary =>
