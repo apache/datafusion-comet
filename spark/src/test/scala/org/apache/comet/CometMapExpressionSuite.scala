@@ -25,9 +25,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.BinaryType
 
-import org.apache.comet.serde.CometMapFromEntries
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometMapExpressionSuite extends CometTestBase {
@@ -124,49 +122,6 @@ class CometMapExpressionSuite extends CometTestBase {
       spark.read.parquet(filename).createOrReplaceTempView("t1")
       val df = spark.sql("SELECT map_from_arrays(array(c12), array(c3)) FROM t1")
       checkSparkAnswerAndOperator(df)
-    }
-  }
-
-  test("map_from_entries") {
-    withTempDir { dir =>
-      val path = new Path(dir.toURI.toString, "test.parquet")
-      val filename = path.toString
-      val random = new Random(42)
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        val schemaGenOptions =
-          SchemaGenOptions(
-            generateArray = true,
-            generateStruct = true,
-            primitiveTypes = SchemaGenOptions.defaultPrimitiveTypes.filterNot(_ == BinaryType))
-        val dataGenOptions = DataGenOptions(allowNull = false, generateNegativeZero = false)
-        ParquetGenerator.makeParquetFile(
-          random,
-          spark,
-          filename,
-          100,
-          schemaGenOptions,
-          dataGenOptions)
-      }
-      val df = spark.read.parquet(filename)
-      df.createOrReplaceTempView("t1")
-      for (field <- df.schema.fieldNames) {
-        checkSparkAnswerAndOperator(
-          spark.sql(s"SELECT map_from_entries(array(struct($field as a, $field as b))) FROM t1"))
-      }
-    }
-  }
-
-  test("map_from_entries - fallback for binary type") {
-    val table = "t2"
-    withTable(table) {
-      sql(
-        s"create table $table using parquet as select cast(array() as array<binary>) as c1 from range(10)")
-      checkSparkAnswerAndFallbackReason(
-        sql(s"select map_from_entries(array(struct(c1, 0))) from $table"),
-        CometMapFromEntries.keyUnsupportedReason)
-      checkSparkAnswerAndFallbackReason(
-        sql(s"select map_from_entries(array(struct(0, c1))) from $table"),
-        CometMapFromEntries.valueUnsupportedReason)
     }
   }
 
