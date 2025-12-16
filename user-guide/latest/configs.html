@@ -700,19 +700,23 @@ under the License.
 <td><p>Whether to enable Comet native shuffle. Note that this requires setting <code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code> to <code class="docutils literal notranslate"><span class="pre">org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager</span></code>. <code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code> must be set before starting the Spark application and cannot be changed during the application.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.native.shuffle.partitioning.hash.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.writeBufferSize</span></code></p></td>
+<td><p>Size of the write buffer in bytes used by the native shuffle writer when writing shuffle data to disk. Larger values may improve write performance by reducing the number of system calls, but will use more memory. The default is 1MB which provides a good balance between performance and memory usage.</p></td>
+<td><p>1048576b</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.native.shuffle.partitioning.hash.enabled</span></code></p></td>
 <td><p>Whether to enable hash partitioning for Comet native shuffle.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.native.shuffle.partitioning.range.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.native.shuffle.partitioning.range.enabled</span></code></p></td>
 <td><p>Whether to enable range partitioning for Comet native shuffle.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.preferDictionary.ratio</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.preferDictionary.ratio</span></code></p></td>
 <td><p>The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. Note that this config is only used when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> is <code class="docutils literal notranslate"><span class="pre">jvm</span></code>.</p></td>
 <td><p>10.0</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.sizeInBytesMultiplier</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.sizeInBytesMultiplier</span></code></p></td>
 <td><p>Comet reports smaller sizes for shuffle due to using Arrow’s columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy.</p></td>
 <td><p>1.0</p></td>
 </tr>
