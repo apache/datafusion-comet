@@ -1772,7 +1772,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("Decimal module with Decimal256 intermediate type") {
+  test("Decimal modulus with Decimal256 intermediate type") {
     withTable("test") {
       sql("create table test(a decimal(33, 29), b decimal(28, 17)) using parquet")
       sql(
