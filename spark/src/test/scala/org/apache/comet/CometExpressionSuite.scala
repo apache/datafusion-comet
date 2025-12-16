@@ -157,6 +157,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
 
+  // scalastyle:off
   // spotless:off
   test("Decimal random number tests repro") {
     withTable("test") {
@@ -173,7 +174,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
   // spotless:on
-  
+  // scalastyle:on
+
   ignore("decimals divide by zero") {
     Seq(true, false).foreach { dictionary =>
       withSQLConf(
