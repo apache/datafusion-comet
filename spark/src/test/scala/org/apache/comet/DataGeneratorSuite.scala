@@ -30,12 +30,14 @@ class DataGeneratorSuite extends CometTestBase {
 
   test("generate nested schema has at least minDepth levels") {
     val minDepth = 3
+    val numCols = 4
     val schema = FuzzDataGenerator.generateNestedSchema(
       new Random(42),
-      numCols = 4,
+      numCols,
       minDepth = minDepth,
       maxDepth = minDepth + 1,
       options = SchemaGenOptions(generateMap = true, generateArray = true, generateStruct = true))
+    assert(schema.fields.length == numCols)
 
     def calculateDepth(dataType: DataType): Int = {
       dataType match {

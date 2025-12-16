@@ -148,7 +148,7 @@ object FuzzDataGenerator {
       randomChoice(generators.toSeq, r)()
     }
 
-    StructType(Range(1, numCols).map(_ => genField(r, 0)))
+    StructType(Range(0, numCols).map(_ => genField(r, 0)))
   }
 
   def generateDataFrame(
