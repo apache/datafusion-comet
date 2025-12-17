@@ -1,6 +1,6 @@
 == Physical Plan ==
-* HashAggregate (51)
-+- * CometColumnarToRow (50)
+* CometColumnarToRow (51)
++- CometHashAggregate (50)
    +- CometColumnarExchange (49)
       +- * HashAggregate (48)
          +- * Project (47)
@@ -278,15 +278,13 @@ Results [1]: [count#29]
 Input [1]: [count#29]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=6]
 
-(50) CometColumnarToRow [codegen id : 4]
-Input [1]: [count#29]
-
-(51) HashAggregate [codegen id : 4]
+(50) CometHashAggregate
 Input [1]: [count#29]
 Keys: []
 Functions [1]: [count(1)]
-Aggregate Attributes [1]: [count(1)#30]
-Results [1]: [count(1)#30 AS count(1)#31]
+
+(51) CometColumnarToRow [codegen id : 4]
+Input [1]: [count(1)#30]
 
 ===== Subqueries =====
 

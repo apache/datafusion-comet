@@ -1,7 +1,7 @@
 == Physical Plan ==
-TakeOrderedAndProject (85)
-+- * HashAggregate (84)
-   +- * CometColumnarToRow (83)
+* CometColumnarToRow (85)
++- CometTakeOrderedAndProject (84)
+   +- CometHashAggregate (83)
       +- CometColumnarExchange (82)
          +- * HashAggregate (81)
             +- * Expand (80)
@@ -459,19 +459,17 @@ Results [9]: [channel#76, id#77, spark_grouping_id#78, sum#85, isEmpty#86, sum#8
 Input [9]: [channel#76, id#77, spark_grouping_id#78, sum#85, isEmpty#86, sum#87, isEmpty#88, sum#89, isEmpty#90]
 Arguments: hashpartitioning(channel#76, id#77, spark_grouping_id#78, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=8]
 
-(83) CometColumnarToRow [codegen id : 6]
-Input [9]: [channel#76, id#77, spark_grouping_id#78, sum#85, isEmpty#86, sum#87, isEmpty#88, sum#89, isEmpty#90]
-
-(84) HashAggregate [codegen id : 6]
+(83) CometHashAggregate
 Input [9]: [channel#76, id#77, spark_grouping_id#78, sum#85, isEmpty#86, sum#87, isEmpty#88, sum#89, isEmpty#90]
 Keys [3]: [channel#76, id#77, spark_grouping_id#78]
 Functions [3]: [sum(sales#22), sum(returns#24), sum(profit#25)]
-Aggregate Attributes [3]: [sum(sales#22)#91, sum(returns#24)#92, sum(profit#25)#93]
-Results [5]: [channel#76, id#77, sum(sales#22)#91 AS sales#94, sum(returns#24)#92 AS returns#95, sum(profit#25)#93 AS profit#96]
 
-(85) TakeOrderedAndProject
-Input [5]: [channel#76, id#77, sales#94, returns#95, profit#96]
-Arguments: 100, [channel#76 ASC NULLS FIRST, id#77 ASC NULLS FIRST], [channel#76, id#77, sales#94, returns#95, profit#96]
+(84) CometTakeOrderedAndProject
+Input [5]: [channel#76, id#77, sales#91, returns#92, profit#93]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#76 ASC NULLS FIRST,id#77 ASC NULLS FIRST], output=[channel#76,id#77,sales#91,returns#92,profit#93]), [channel#76, id#77, sales#91, returns#92, profit#93], 100, 0, [channel#76 ASC NULLS FIRST, id#77 ASC NULLS FIRST], [channel#76, id#77, sales#91, returns#92, profit#93]
+
+(85) CometColumnarToRow [codegen id : 6]
+Input [5]: [channel#76, id#77, sales#91, returns#92, profit#93]
 
 ===== Subqueries =====
 

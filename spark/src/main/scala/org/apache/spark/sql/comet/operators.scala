@@ -31,7 +31,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Final, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, BloomFilterAggregate, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -1064,15 +1064,33 @@ trait CometBaseAggregate {
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
 
-    val modes = aggregate.aggregateExpressions.map(_.mode).distinct
     // In distinct aggregates there can be a combination of modes
-    val multiMode = modes.size > 1
-    // For a final mode HashAggregate, we only need to transform the HashAggregate
-    // if there is Comet partial aggregation.
-    val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
-
-    if (multiMode || sparkFinalMode) {
+    val modes = aggregate.aggregateExpressions.map(_.mode).distinct
+    if (modes.size > 1) {
       return None
+    }
+
+    if (modes.contains(Final)) {
+      // in most cases, Comet partial aggregates are compatible with Spark final
+      // aggregates, but there are some exceptions
+      findPartialAgg(aggregate.child) match {
+        case Some(agg: HashAggregateExec) if agg.conf.ansiEnabled =>
+          withInfo(
+            aggregate,
+            "Cannot perform final aggregate in Comet because " +
+              "incompatible partial aggregate ran in Spark")
+          return None
+        case Some(child: ObjectHashAggregateExec) =>
+          if (child.aggregateExpressions.exists(
+              _.aggregateFunction.isInstanceOf[BloomFilterAggregate])) {
+            withInfo(
+              aggregate,
+              "Cannot perform final aggregate in Comet because " +
+                "incompatible partial aggregate ran in Spark")
+            return None
+          }
+        case _ =>
+      }
     }
 
     val groupingExpressions = aggregate.groupingExpressions
@@ -1210,18 +1228,16 @@ trait CometBaseAggregate {
   }
 
   /**
-   * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate with
-   * partial mode, it will return None.
+   * Find the first partial aggregate in the plan.
    */
-  private def findCometPartialAgg(plan: SparkPlan): Option[CometHashAggregateExec] = {
+  private def findPartialAgg(plan: SparkPlan): Option[SparkPlan] = {
     plan.collectFirst {
       case agg: CometHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
         Some(agg)
-      case agg: HashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) => None
-      case agg: ObjectHashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
-        None
-      case a: AQEShuffleReadExec => findCometPartialAgg(a.child)
-      case s: ShuffleQueryStageExec => findCometPartialAgg(s.plan)
+      case agg: BaseAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) =>
+        Some(agg)
+      case a: AQEShuffleReadExec => findPartialAgg(a.child)
+      case s: ShuffleQueryStageExec => findPartialAgg(s.plan)
     }.flatten
   }
 
