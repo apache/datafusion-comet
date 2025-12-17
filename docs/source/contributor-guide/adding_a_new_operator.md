@@ -326,50 +326,200 @@ Run `make` to update the user guide. The new configuration option will be added 
 
 ### Step 5: Implement the Native Operator in Rust
 
-#### Update the Planner
+Comet now uses a modular operator registry pattern that provides better organization and type safety compared to monolithic match statements.
 
-In `native/core/src/execution/planner.rs`, add a match case in the operator deserialization logic to handle your new protobuf message:
+#### File Organization
+
+The operator-related code is organized as follows:
+
+- `native/core/src/execution/planner/operator_registry.rs` - Contains `OperatorBuilder` trait, `OperatorType` enum, and `OperatorRegistry`
+- `native/core/src/execution/planner/expression_registry.rs` - Contains `ExpressionBuilder` trait, `ExpressionType` enum, and `ExpressionRegistry`
+- `native/core/src/execution/planner/macros.rs` - Contains shared macros (`extract_op!`, `extract_expr!`, etc.)
+- `native/core/src/execution/operators/` - Individual operator builder implementations
+
+#### Option A: Using the Operator Registry (Recommended)
+
+The recommended approach is to create an `OperatorBuilder` and register it with the `OperatorRegistry`.
+
+**Note**: See `native/core/src/execution/operators/projection.rs` for a complete working example of `ProjectionBuilder` that follows this pattern.
+
+##### Create an OperatorBuilder
+
+Create a new file in `native/core/src/execution/operators/` (e.g., `your_operator.rs`):
 
 ```rust
-use datafusion_comet_proto::spark_operator::operator::OpStruct;
+use std::sync::Arc;
 
-// In the create_plan or similar method:
-match op.op_struct.as_ref() {
-    Some(OpStruct::Scan(scan)) => {
-        // ... existing cases ...
+use datafusion::physical_plan::your_operator::YourDataFusionExec;
+use datafusion_comet_proto::spark_operator::Operator;
+use jni::objects::GlobalRef;
+
+use crate::{
+    execution::{
+        operators::{ExecutionError, ScanExec},
+        planner::{operator_registry::OperatorBuilder, PhysicalPlanner},
+        spark_plan::SparkPlan,
+    },
+    extract_op,
+};
+
+/// Builder for YourNewOperator operators
+pub struct YourOperatorBuilder;
+
+impl OperatorBuilder for YourOperatorBuilder {
+    fn build(
+        &self,
+        spark_plan: &Operator,
+        inputs: &mut Vec<Arc<GlobalRef>>,
+        partition_count: usize,
+        planner: &PhysicalPlanner,
+    ) -> Result<(Vec<ScanExec>, Arc<SparkPlan>), ExecutionError> {
+        // Use extract_op! macro for type-safe extraction
+        let your_op = extract_op!(spark_plan, YourNewOperator);
+        let children = &spark_plan.children;
+
+        assert_eq!(children.len(), 1); // Adjust based on your operator's arity
+        let (scans, child) = planner.create_plan(&children[0], inputs, partition_count)?;
+
+        // Convert protobuf fields to DataFusion components
+        let expressions: Result<Vec<_>, _> = your_op
+            .expressions
+            .iter()
+            .map(|expr| planner.create_expr(expr, child.schema()))
+            .collect();
+
+        // Create DataFusion operator
+        let datafusion_exec = Arc::new(YourDataFusionExec::try_new(
+            expressions?,
+            Arc::clone(&child.native_plan),
+        )?);
+
+        Ok((
+            scans,
+            Arc::new(SparkPlan::new(spark_plan.plan_id, datafusion_exec, vec![child])),
+        ))
     }
-    Some(OpStruct::YourNewOperator(your_op)) => {
-        create_your_operator_exec(your_op, children, session_ctx)
-    }
-    // ... other cases ...
 }
 ```
 
-#### Implement the Operator
+##### Register the OperatorBuilder
 
-Create the operator implementation, either in an existing file or a new file in `native/core/src/execution/operators/`:
+Add the OperatorType to the enum in `native/core/src/execution/planner/operator_registry.rs`:
+
+```rust
+/// Enum to identify different operator types for registry dispatch
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OperatorType {
+    Scan,
+    NativeScan,
+    IcebergScan,
+    Projection,
+    Filter,
+    HashAgg,
+    Limit,
+    Sort,
+    ShuffleWriter,
+    ParquetWriter,
+    Expand,
+    SortMergeJoin,
+    HashJoin,
+    Window,
+    YourNewOperator, // Add your operator type here
+}
+```
+
+Update the `get_operator_type` function in the same file:
+
+```rust
+fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
+    use datafusion_comet_proto::spark_operator::operator::OpStruct;
+
+    match spark_operator.op_struct.as_ref()? {
+        OpStruct::Projection(_) => Some(OperatorType::Projection),
+        OpStruct::Filter(_) => Some(OperatorType::Filter),
+        // ... existing operators ...
+        OpStruct::YourNewOperator(_) => Some(OperatorType::YourNewOperator),
+        OpStruct::Explode(_) => None, // Not yet in OperatorType enum
+    }
+}
+```
+
+Register your builder in the `OperatorRegistry` implementation:
+
+```rust
+/// Register all operator builders
+fn register_all_operators(&mut self) {
+    self.register_projection_operators();
+    self.register_your_operator(); // Add this line
+}
+
+/// Register your new operator
+fn register_your_operator(&mut self) {
+    use crate::execution::operators::your_operator::YourOperatorBuilder;
+
+    self.builders
+        .insert(OperatorType::YourNewOperator, Box::new(YourOperatorBuilder));
+}
+```
+
+##### Add the module declaration
+
+Add your new module to `native/core/src/execution/operators/mod.rs`:
+
+```rust
+pub mod your_operator;
+```
+
+#### Option B: Using the Fallback Match (Legacy)
+
+If you prefer not to use the registry pattern (or for complex operators that don't fit the pattern), you can still add a match case in the fallback logic in `native/core/src/execution/planner.rs`:
+
+```rust
+// In the create_plan method's fallback match statement:
+match spark_plan.op_struct.as_ref().unwrap() {
+    OpStruct::Filter(filter) => {
+        // ... existing cases ...
+    }
+    OpStruct::YourNewOperator(your_op) => {
+        create_your_operator_exec(your_op, children, partition_count)
+    }
+    _ => Err(GeneralError(format!(
+        "Unsupported or unregistered operator type: {:?}",
+        spark_plan.op_struct
+    ))),
+}
+```
+
+However, the registry approach (Option A) is strongly recommended because it provides:
+
+- **Better organization**: Each operator's logic is isolated
+- **Type safety**: The `extract_op!` macro ensures compile-time correctness
+- **Extensibility**: New operators can be added without modifying core planner logic
+- **Consistency**: Follows the established pattern for expressions
+
+#### Custom Operator Implementation
+
+If your operator doesn't have a direct DataFusion equivalent, you'll need to implement a custom operator. See `native/core/src/execution/operators/expand.rs` for a complete example:
 
 ```rust
 use datafusion::physical_plan::{ExecutionPlan, ...};
-use datafusion_comet_proto::spark_operator::YourNewOperator;
 
-pub fn create_your_operator_exec(
-    op: &YourNewOperator,
-    children: Vec<Arc<dyn ExecutionPlan>>,
-    session_ctx: &SessionContext,
-) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
-    // Deserialize expressions and configuration
-    // Create and return the execution plan
+#[derive(Debug)]
+pub struct YourCustomExec {
+    // Your operator's fields
+}
 
-    // Option 1: Use existing DataFusion operator
-    // Ok(Arc::new(SomeDataFusionExec::try_new(...)?))
-
-    // Option 2: Implement custom operator (see ExpandExec for example)
-    // Ok(Arc::new(YourCustomExec::new(...)))
+impl ExecutionPlan for YourCustomExec {
+    // Implement required methods
+    fn as_any(&self) -> &dyn Any { self }
+    fn schema(&self) -> SchemaRef { /* ... */ }
+    fn output_partitioning(&self) -> Partitioning { /* ... */ }
+    fn output_ordering(&self) -> Option<&[PhysicalSortExpr]> { /* ... */ }
+    fn children(&self) -> Vec<Arc<dyn ExecutionPlan>> { /* ... */ }
+    fn with_new_children(&self, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> { /* ... */ }
+    fn execute(&self, partition: usize, context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> { /* ... */ }
 }
 ```
-
-For custom operators, you'll need to implement the `ExecutionPlan` trait. See `native/core/src/execution/operators/expand.rs` or `scan.rs` for examples.
 
 ### Step 6: Add Tests
 
