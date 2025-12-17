@@ -25,7 +25,7 @@ use arrow::array::{
 };
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{
-    i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, GenericBinaryType,
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, GenericBinaryType,
     Schema,
 };
 use arrow::{
@@ -972,12 +972,6 @@ fn cast_array(
         }
         (Utf8, Date32) => cast_string_to_date(&array, to_type, eval_mode),
         (Utf8, Float16 | Float32 | Float64) => cast_string_to_float(&array, to_type, eval_mode),
-        (Utf8 | LargeUtf8, Decimal128(precision, scale)) => {
-            cast_string_to_decimal(&array, to_type, precision, scale, eval_mode)
-        }
-        (Utf8 | LargeUtf8, Decimal256(precision, scale)) => {
-            cast_string_to_decimal(&array, to_type, precision, scale, eval_mode)
-        }
         (Int64, Int32)
         | (Int64, Int16)
         | (Int64, Int8)
