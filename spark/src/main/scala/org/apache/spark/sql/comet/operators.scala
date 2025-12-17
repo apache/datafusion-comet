@@ -31,7 +31,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Final, Partial}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -1233,6 +1233,20 @@ object CometHashAggregateExec
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_AGGREGATE_ENABLED)
+
+  override def getSupportLevel(op: HashAggregateExec): SupportLevel = {
+    // some unit tests need to disable partial or final hash aggregate support to test that
+    // CometExecRule does not allow mixed Spark/Comet aggregates
+    if (!CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf) &&
+      op.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)) {
+      return Unsupported(Some("Partial aggregates disabled via test config"))
+    }
+    if (!CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf) &&
+      op.aggregateExpressions.exists(_.mode == Final)) {
+      return Unsupported(Some("Final aggregates disabled via test config"))
+    }
+    Compatible()
+  }
 
   override def convert(
       aggregate: HashAggregateExec,

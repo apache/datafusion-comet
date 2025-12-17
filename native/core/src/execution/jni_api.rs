@@ -41,11 +41,13 @@ use datafusion::{
 };
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
+use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
 use datafusion_spark::function::datetime::date_sub::SparkDateSub;
 use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::math::expm1::SparkExpm1;
+use datafusion_spark::function::math::hex::SparkHex;
 use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
 use futures::poll;
@@ -335,6 +337,8 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkHex::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -534,7 +538,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                                 .indent(true);
                                 info!(
                                     "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
-                                \n plan creation (including CometScans fetching first batches) took {:?}:\
+                                \n plan creation took {:?}:\
                                 \n{formatted_plan_str:}",
                                     plan.plan_id, stage_id, partition, exec_context.plan_creation_time
                                 );

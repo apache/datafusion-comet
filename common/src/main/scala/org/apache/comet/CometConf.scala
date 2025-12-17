@@ -52,7 +52,7 @@ object CometConf extends ShimCometConf {
     "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
 
   private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
-    "Guide (https://datafusion.apache.org/comet/user-guide/tracing.html)"
+    "Guide (https://datafusion.apache.org/comet/contributor-guide/tracing.html)"
 
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
@@ -441,6 +441,17 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(8192)
 
+  val COMET_SHUFFLE_WRITE_BUFFER_SIZE: ConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.writeBufferSize")
+      .category(CATEGORY_SHUFFLE)
+      .doc("Size of the write buffer in bytes used by the native shuffle writer when writing " +
+        "shuffle data to disk. Larger values may improve write performance by reducing " +
+        "the number of system calls, but will use more memory. " +
+        "The default is 1MB which provides a good balance between performance and memory usage.")
+      .bytesConf(ByteUnit.MiB)
+      .checkValue(v => v > 0, "Write buffer size must be positive")
+      .createWithDefault(1)
+
   val COMET_SHUFFLE_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
     "spark.comet.shuffle.preferDictionary.ratio")
     .category(CATEGORY_SHUFFLE)
@@ -653,6 +664,22 @@ object CometConf extends ShimCometConf {
         "enabled when reading from Iceberg tables.")
       .booleanConf
       .createWithDefault(COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT)
+
+  val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
+    conf("spark.comet.testing.aggregate.partialMode.enabled")
+      .internal()
+      .category(CATEGORY_TESTING)
+      .doc("This setting is used in unit tests")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_ENABLE_FINAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
+    conf("spark.comet.testing.aggregate.finalMode.enabled")
+      .internal()
+      .category(CATEGORY_TESTING)
+      .doc("This setting is used in unit tests")
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")

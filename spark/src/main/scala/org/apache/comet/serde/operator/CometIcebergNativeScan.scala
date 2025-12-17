@@ -21,6 +21,10 @@ package org.apache.comet.serde.operator
 
 import scala.jdk.CollectionConverters._
 
+import org.json4s._
+import org.json4s.JsonDSL._
+import org.json4s.jackson.JsonMethods._
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
@@ -61,6 +65,84 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val AND = "And"
       val OR = "Or"
       val NOT = "Not"
+    }
+  }
+
+  /**
+   * Converts an Iceberg partition value to JSON format expected by iceberg-rust.
+   *
+   * iceberg-rust's Literal::try_from_json() expects specific formats for certain types:
+   *   - Timestamps: ISO string format "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+   *   - Dates: ISO string format "YYYY-MM-DD"
+   *   - Decimals: String representation
+   *
+   * See: iceberg-rust/crates/iceberg/src/spec/values/literal.rs
+   */
+  private def partitionValueToJson(fieldTypeStr: String, value: Any): JValue = {
+    fieldTypeStr match {
+      case t if t.startsWith("timestamp") =>
+        val micros = value match {
+          case l: java.lang.Long => l.longValue()
+          case i: java.lang.Integer => i.longValue()
+          case _ => value.toString.toLong
+        }
+        val instant = java.time.Instant.ofEpochSecond(micros / 1000000, (micros % 1000000) * 1000)
+        val formatted = java.time.format.DateTimeFormatter
+          .ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS")
+          .withZone(java.time.ZoneOffset.UTC)
+          .format(instant)
+        JString(formatted)
+
+      case "date" =>
+        val days = value.asInstanceOf[java.lang.Integer].intValue()
+        val localDate = java.time.LocalDate.ofEpochDay(days.toLong)
+        JString(localDate.toString)
+
+      case d if d.startsWith("decimal(") =>
+        JString(value.toString)
+
+      case "string" =>
+        JString(value.toString)
+
+      case "int" | "long" =>
+        value match {
+          case i: java.lang.Integer => JInt(BigInt(i.intValue()))
+          case l: java.lang.Long => JInt(BigInt(l.longValue()))
+          case _ => JDecimal(BigDecimal(value.toString))
+        }
+
+      case "float" | "double" =>
+        value match {
+          // NaN/Infinity are not valid JSON numbers - serialize as strings
+          case f: java.lang.Float if f.isNaN || f.isInfinite =>
+            JString(f.toString)
+          case d: java.lang.Double if d.isNaN || d.isInfinite =>
+            JString(d.toString)
+          case f: java.lang.Float => JDouble(f.doubleValue())
+          case d: java.lang.Double => JDouble(d.doubleValue())
+          case _ => JDecimal(BigDecimal(value.toString))
+        }
+
+      case "boolean" =>
+        value match {
+          case b: java.lang.Boolean => JBool(b.booleanValue())
+          case _ => JBool(value.toString.toBoolean)
+        }
+
+      case "uuid" =>
+        JString(value.toString)
+
+      // Fallback: infer JSON type from Java type
+      case _ =>
+        value match {
+          case s: String => JString(s)
+          case i: java.lang.Integer => JInt(BigInt(i.intValue()))
+          case l: java.lang.Long => JInt(BigInt(l.longValue()))
+          case d: java.lang.Double => JDouble(d.doubleValue())
+          case f: java.lang.Float => JDouble(f.doubleValue())
+          case b: java.lang.Boolean => JBool(b.booleanValue())
+          case other => JString(other.toString)
+        }
     }
   }
 
@@ -230,8 +312,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               // metadata (e.g., "schema-id") that iceberg-rust's StructType
               // deserializer rejects. We need pure StructType format:
               // {"type":"struct","fields":[...]}
-              import org.json4s.JsonDSL._
-              import org.json4s.jackson.JsonMethods._
 
               // Filter out fields with unknown types (dropped partition fields).
               // Unknown type fields represent partition columns that have been dropped
@@ -286,8 +366,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           // mechanism for providing partition values to identity-transformed
           // partition columns. Non-identity transforms (bucket, truncate, days,
           // etc.) read values from data files.
-          import org.json4s._
-          import org.json4s.jackson.JsonMethods._
+          //
+          // IMPORTANT: Use the same field IDs as partition_type_json (partition field IDs,
+          // not source field IDs) so that JSON deserialization matches correctly.
 
           // Filter out fields with unknown type (same as partition type filtering)
           val partitionDataMap: Map[String, JValue] =
@@ -298,6 +379,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               if (fieldTypeStr == IcebergReflection.TypeNames.UNKNOWN) {
                 None
               } else {
+                // Use the partition type's field ID (same as in partition_type_json)
                 val fieldIdMethod = field.getClass.getMethod("fieldId")
                 val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
 
@@ -305,26 +387,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   partitionData.getClass.getMethod("get", classOf[Int], classOf[Class[_]])
                 val value = getMethod.invoke(partitionData, Integer.valueOf(idx), classOf[Object])
 
-                val jsonValue: JValue = if (value == null) {
+                val jsonValue = if (value == null) {
                   JNull
                 } else {
-                  value match {
-                    case s: String => JString(s)
-                    // NaN/Infinity are not valid JSON number literals per the
-                    // JSON spec. Serialize as strings (e.g., "NaN", "Infinity")
-                    // which are valid JSON and can be parsed by Rust's
-                    // f32/f64::from_str().
-                    case f: java.lang.Float if f.isNaN || f.isInfinite =>
-                      JString(f.toString)
-                    case d: java.lang.Double if d.isNaN || d.isInfinite =>
-                      JString(d.toString)
-                    case n: Number => JDecimal(BigDecimal(n.toString))
-                    case b: java.lang.Boolean =>
-                      JBool(b.booleanValue())
-                    case other => JString(other.toString)
-                  }
+                  partitionValueToJson(fieldTypeStr, value)
                 }
-
                 Some(fieldId.toString -> jsonValue)
               }
             }.toMap
@@ -359,6 +426,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         // Global S3A configuration keys
         case "fs.s3a.access.key" => Some("s3.access-key-id" -> value)
         case "fs.s3a.secret.key" => Some("s3.secret-access-key" -> value)
+        case "fs.s3a.session.token" => Some("s3.session-token" -> value)
         case "fs.s3a.endpoint" => Some("s3.endpoint" -> value)
         case "fs.s3a.path.style.access" => Some("s3.path-style-access" -> value)
         case "fs.s3a.endpoint.region" => Some("s3.region" -> value)
@@ -373,6 +441,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             property match {
               case "access.key" => Some(s"s3.bucket.$bucket.access-key-id" -> value)
               case "secret.key" => Some(s"s3.bucket.$bucket.secret-access-key" -> value)
+              case "session.token" => Some(s"s3.bucket.$bucket.session.token" -> value)
               case "endpoint" => Some(s"s3.bucket.$bucket.endpoint" -> value)
               case "path.style.access" => Some(s"s3.bucket.$bucket.path-style-access" -> value)
               case "endpoint.region" => Some(s"s3.bucket.$bucket.region" -> value)
@@ -649,8 +718,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                           val partitionSpec = specMethod.invoke(task)
 
                           // Build JSON representation of partition values using json4s
-                          import org.json4s._
-                          import org.json4s.jackson.JsonMethods._
 
                           val partitionMap = scala.collection.mutable.Map[String, JValue]()
 
@@ -682,22 +749,30 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                                 val sourceFieldId =
                                   sourceIdMethod.invoke(partitionField).asInstanceOf[Int]
 
-                                // Convert value to appropriate JValue type
-                                val jsonValue: JValue = if (value == null) {
+                                val jsonValue = if (value == null) {
                                   JNull
                                 } else {
-                                  value match {
-                                    case s: String => JString(s)
-                                    case i: java.lang.Integer => JInt(BigInt(i.intValue()))
-                                    case l: java.lang.Long => JInt(BigInt(l.longValue()))
-                                    case d: java.lang.Double => JDouble(d.doubleValue())
-                                    case f: java.lang.Float => JDouble(f.doubleValue())
-                                    case b: java.lang.Boolean => JBool(b.booleanValue())
-                                    case n: Number => JDecimal(BigDecimal(n.toString))
-                                    case other => JString(other.toString)
-                                  }
-                                }
+                                  // Get field type from schema to serialize correctly
+                                  val fieldTypeStr =
+                                    try {
+                                      val findFieldMethod =
+                                        metadata.tableSchema.getClass
+                                          .getMethod("findField", classOf[Int])
+                                      val field = findFieldMethod.invoke(
+                                        metadata.tableSchema,
+                                        sourceFieldId.asInstanceOf[Object])
+                                      if (field != null) {
+                                        val typeMethod = field.getClass.getMethod("type")
+                                        typeMethod.invoke(field).toString
+                                      } else {
+                                        "unknown"
+                                      }
+                                    } catch {
+                                      case _: Exception => "unknown"
+                                    }
 
+                                  partitionValueToJson(fieldTypeStr, value)
+                                }
                                 partitionMap(sourceFieldId.toString) = jsonValue
                               }
                             }
@@ -734,12 +809,47 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                         IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
                       val hasDeletes = !deletes.isEmpty
 
-                      // Use pre-extracted scanSchema for schema evolution support
+                      // Schema to pass to iceberg-rust's FileScanTask.
+                      // This is used by RecordBatchTransformer for field type lookups (e.g., in
+                      // constants_map) and default value generation. The actual projection is
+                      // controlled by project_field_ids.
+                      //
+                      // Schema selection logic:
+                      // 1. If hasDeletes=true: Use taskSchema (file-specific schema) because
+                      // delete files reference specific schema versions and we need exact schema
+                      // matching for MOR.
+                      // 2. Else if scanSchema contains columns not in tableSchema: Use scanSchema
+                      // because this is a VERSION AS OF query reading a historical snapshot with
+                      // different schema (e.g., after column drop, scanSchema has old columns
+                      // that tableSchema doesn't)
+                      // 3. Else: Use tableSchema because scanSchema is the query OUTPUT schema
+                      // (e.g., for aggregates like "SELECT count(*)", scanSchema only has
+                      // aggregate fields and doesn't contain partition columns needed by
+                      // constants_map)
                       val schema: AnyRef =
                         if (hasDeletes) {
                           taskSchema
                         } else {
-                          metadata.scanSchema.asInstanceOf[AnyRef]
+                          // Check if scanSchema has columns that tableSchema doesn't have
+                          // (VERSION AS OF case)
+                          val scanSchemaFieldIds = IcebergReflection
+                            .buildFieldIdMapping(metadata.scanSchema)
+                            .values
+                            .toSet
+                          val tableSchemaFieldIds = IcebergReflection
+                            .buildFieldIdMapping(metadata.tableSchema)
+                            .values
+                            .toSet
+                          val hasHistoricalColumns =
+                            scanSchemaFieldIds.exists(id => !tableSchemaFieldIds.contains(id))
+
+                          if (hasHistoricalColumns) {
+                            // VERSION AS OF: scanSchema has columns that current table doesn't have
+                            metadata.scanSchema.asInstanceOf[AnyRef]
+                          } else {
+                            // Regular query: use tableSchema for partition field lookups
+                            metadata.tableSchema.asInstanceOf[AnyRef]
+                          }
                         }
 
                       // scalastyle:off classforname

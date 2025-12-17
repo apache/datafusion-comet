@@ -271,7 +271,8 @@ How this works is somewhat dependent on the type of expression you're adding. Ex
 If you're adding a new expression that requires custom protobuf serialization, you may need to:
 
 1. Add a new message to the protobuf definition in `native/proto/src/proto/expr.proto`
-2. Update the Rust deserialization code to handle the new protobuf message type
+2. Add a native expression handler in `expression_registry.rs` to deserialize the new protobuf message type and
+   create a native expression
 
 For most expressions, you can skip this step if you're using the existing scalar function infrastructure.
 

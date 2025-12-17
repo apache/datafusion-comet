@@ -141,6 +141,8 @@ jobs:
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsNonOverrideSuite
               org.apache.spark.CometPluginsUnifiedModeOverrideSuite
+              org.apache.comet.rules.CometScanRuleSuite
+              org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
               org.apache.spark.sql.CometTPCHQuerySuite

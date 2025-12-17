@@ -19,6 +19,12 @@
 
 package org.apache.comet.parquet
 
+import java.nio.charset.StandardCharsets
+import java.util.Base64
+
+import org.apache.parquet.crypto.DecryptionPropertiesFactory
+import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFactory}
+import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
 import org.apache.spark.sql.{DataFrame, SaveMode}
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -29,6 +35,15 @@ import org.apache.comet.CometS3TestBase
 class ParquetReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelper {
 
   override protected val testBucketName = "test-bucket"
+
+  // Encryption keys for testing parquet encryption
+  private val encoder = Base64.getEncoder
+  private val footerKey =
+    encoder.encodeToString("0123456789012345".getBytes(StandardCharsets.UTF_8))
+  private val key1 = encoder.encodeToString("1234567890123450".getBytes(StandardCharsets.UTF_8))
+  private val key2 = encoder.encodeToString("1234567890123451".getBytes(StandardCharsets.UTF_8))
+  private val cryptoFactoryClass =
+    "org.apache.parquet.crypto.keytools.PropertiesDrivenCryptoFactory"
 
   private def writeTestParquetFile(filePath: String): Unit = {
     val df = spark.range(0, 1000)
@@ -75,5 +90,33 @@ class ParquetReadFromS3Suite extends CometS3TestBase with AdaptiveSparkPlanHelpe
     val df = spark.read.format("parquet").load(testFilePath).agg(sum(col("id")))
     assertCometScan(df)
     assert(df.first().getLong(0) == 499500)
+  }
+
+  test("write and read encrypted parquet from S3") {
+    import testImplicits._
+
+    withSQLConf(
+      DecryptionPropertiesFactory.CRYPTO_FACTORY_CLASS_PROPERTY_NAME -> cryptoFactoryClass,
+      KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
+        "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
+      InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
+        s"footerKey: ${footerKey}, key1: ${key1}, key2: ${key2}") {
+
+      val inputDF = spark
+        .range(0, 1000)
+        .map(i => (i, i.toString, i.toFloat))
+        .repartition(5)
+        .toDF("a", "b", "c")
+
+      val testFilePath = s"s3a://$testBucketName/data/encrypted-test.parquet"
+      inputDF.write
+        .option(PropertiesDrivenCryptoFactory.COLUMN_KEYS_PROPERTY_NAME, "key1: a, b; key2: c")
+        .option(PropertiesDrivenCryptoFactory.FOOTER_KEY_PROPERTY_NAME, "footerKey")
+        .parquet(testFilePath)
+
+      val df = spark.read.parquet(testFilePath).agg(sum(col("a")))
+      assertCometScan(df)
+      assert(df.first().getLong(0) == 499500)
+    }
   }
 }
