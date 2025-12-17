@@ -451,6 +451,17 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(8192)
 
+  val COMET_SHUFFLE_WRITE_BUFFER_SIZE: ConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.writeBufferSize")
+      .category(CATEGORY_SHUFFLE)
+      .doc("Size of the write buffer in bytes used by the native shuffle writer when writing " +
+        "shuffle data to disk. Larger values may improve write performance by reducing " +
+        "the number of system calls, but will use more memory. " +
+        "The default is 1MB which provides a good balance between performance and memory usage.")
+      .bytesConf(ByteUnit.MiB)
+      .checkValue(v => v > 0, "Write buffer size must be positive")
+      .createWithDefault(1)
+
   val COMET_SHUFFLE_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
     "spark.comet.shuffle.preferDictionary.ratio")
     .category(CATEGORY_SHUFFLE)

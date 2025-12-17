@@ -307,22 +307,56 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         // Extract all Iceberg metadata once using reflection.
         // If any required reflection fails, this returns None, and we fall back to Spark.
         // First get metadataLocation and catalogProperties which are needed by the factory.
-        val metadataLocationOpt = IcebergReflection
-          .getTable(scanExec.scan)
-          .flatMap(IcebergReflection.getMetadataLocation)
+        val tableOpt = IcebergReflection.getTable(scanExec.scan)
+
+        val metadataLocationOpt = tableOpt.flatMap { table =>
+          IcebergReflection.getMetadataLocation(table)
+        }
 
         val metadataOpt = metadataLocationOpt.flatMap { metadataLocation =>
           try {
             val session = org.apache.spark.sql.SparkSession.active
             val hadoopConf = session.sessionState.newHadoopConf()
+
+            // For REST catalogs, the metadata file may not exist on disk since metadata
+            // is fetched via HTTP. Check if file exists; if not, use table location instead.
             val metadataUri = new java.net.URI(metadataLocation)
-            val hadoopS3Options = NativeConfig.extractObjectStoreOptions(hadoopConf, metadataUri)
+
+            val metadataFile = new java.io.File(metadataUri.getPath)
+
+            val effectiveLocation =
+              if (!metadataFile.exists() && metadataUri.getScheme == "file") {
+                // Metadata file doesn't exist (REST catalog with InMemoryFileIO or similar)
+                // Use table location instead for FileIO initialization
+
+                tableOpt
+                  .flatMap { table =>
+                    try {
+                      val locationMethod = table.getClass.getMethod("location")
+                      val tableLocation = locationMethod.invoke(table).asInstanceOf[String]
+                      Some(tableLocation)
+                    } catch {
+                      case _: Exception =>
+                        Some(metadataLocation)
+                    }
+                  }
+                  .getOrElse(metadataLocation)
+              } else {
+                metadataLocation
+              }
+
+            val effectiveUri = new java.net.URI(effectiveLocation)
+
+            val hadoopS3Options = NativeConfig.extractObjectStoreOptions(hadoopConf, effectiveUri)
+
             val catalogProperties =
               org.apache.comet.serde.operator.CometIcebergNativeScan
                 .hadoopToIcebergS3Properties(hadoopS3Options)
 
-            CometIcebergNativeScanMetadata
-              .extract(scanExec.scan, metadataLocation, catalogProperties)
+            val result = CometIcebergNativeScanMetadata
+              .extract(scanExec.scan, effectiveLocation, catalogProperties)
+
+            result
           } catch {
             case e: Exception =>
               logError(
@@ -342,21 +376,18 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
         // Now perform all validation using the pre-extracted metadata
         // Check if table uses a FileIO implementation compatible with iceberg-rust
+
         val fileIOCompatible = IcebergReflection.getFileIO(metadata.table) match {
-          case Some(fileIO) =>
-            val fileIOClassName = fileIO.getClass.getName
-            if (fileIOClassName == "org.apache.iceberg.inmemory.InMemoryFileIO") {
-              fallbackReasons += "Comet does not support InMemoryFileIO table locations"
-              false
-            } else {
-              true
-            }
+          case Some(_) =>
+            // InMemoryFileIO is now supported with table location fallback for REST catalogs
+            true
           case None =>
             fallbackReasons += "Could not check FileIO compatibility"
             false
         }
 
         // Check Iceberg table format version
+
         val formatVersionSupported = IcebergReflection.getFormatVersion(metadata.table) match {
           case Some(formatVersion) =>
             if (formatVersion > 2) {

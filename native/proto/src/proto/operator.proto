@@ -273,6 +273,9 @@ message ShuffleWriter {
   CompressionCodec codec = 5;
   int32 compression_level = 6;
   bool tracing_enabled = 7;
+  // Size of the write buffer in bytes used when writing shuffle data to disk.
+  // Larger values may improve write performance but use more memory.
+  int32 write_buffer_size = 8;
 }
 
 message ParquetWriter {
