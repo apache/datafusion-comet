@@ -369,9 +369,11 @@ fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>) -> 
     }
 }
 
-// Mirrors object_store::parse::parse_url for the hdfs object store
+// Creates an HDFS object store from a URL using the native HDFS implementation
 #[cfg(feature = "hdfs")]
-fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+fn create_hdfs_object_store(
+    url: &Url,
+) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
     match datafusion_comet_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new(url.as_ref())
     {
         Some(object_store) => {
@@ -385,8 +387,11 @@ fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_stor
     }
 }
 
+// Creates an HDFS object store from a URL using OpenDAL
 #[cfg(feature = "hdfs-opendal")]
-fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+fn create_hdfs_object_store(
+    url: &Url,
+) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
     let name_node = get_name_node_uri(url)?;
     let builder = opendal::services::Hdfs::default().name_node(&name_node);
 
@@ -399,6 +404,51 @@ fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_stor
     let store = object_store_opendal::OpendalStore::new(op);
     let path = Path::parse(url.path())?;
     Ok((Box::new(store), path))
+}
+
+/// Writes data to HDFS using OpenDAL via ObjectStore trait (asynchronous version)
+///
+/// # Arguments
+/// * `url` - The HDFS URL (e.g., hdfs://namenode:port/path/to/file)
+/// * `data` - The bytes to write to the file
+///
+/// # Returns
+/// * `Ok(())` on success
+/// * `Err(object_store::Error)` on failure
+///
+/// # Example
+/// ```ignore
+/// use url::Url;
+/// use bytes::Bytes;
+///
+/// let url = Url::parse("hdfs://namenode:9000/path/to/file.parquet")?;
+/// let data = Bytes::from("file contents");
+/// write_to_hdfs_with_opendal_async(&url, data).await?;
+/// ```
+#[cfg(feature = "hdfs-opendal")]
+pub async fn write_to_hdfs_with_opendal_async(
+    url: &Url,
+    data: bytes::Bytes,
+) -> Result<(), object_store::Error> {
+    // Create the HDFS object store using OpenDAL
+    let (object_store, path) = create_hdfs_object_store(url)?;
+
+    // Use the ObjectStore trait's put method to write the data
+    object_store.put(&path, data.into()).await?;
+
+    Ok(())
+}
+
+/// Stub implementation when hdfs-opendal feature is not enabled
+#[cfg(not(feature = "hdfs-opendal"))]
+pub async fn write_to_hdfs_with_opendal_async(
+    _url: &Url,
+    _data: bytes::Bytes,
+) -> Result<(), object_store::Error> {
+    Err(object_store::Error::Generic {
+        store: "hdfs-opendal",
+        source: "HDFS OpenDAL support is not enabled in this build".into(),
+    })
 }
 
 #[cfg(feature = "hdfs-opendal")]
@@ -422,8 +472,11 @@ fn get_name_node_uri(url: &Url) -> Result<String, object_store::Error> {
     }
 }
 
+// Stub implementation when HDFS support is not enabled
 #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
-fn parse_hdfs_url(_url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+fn create_hdfs_object_store(
+    _url: &Url,
+) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
     Err(object_store::Error::Generic {
         store: "HadoopFileSystem",
         source: "Hdfs support is not enabled in this build".into(),
@@ -454,7 +507,7 @@ pub(crate) fn prepare_object_store_with_configs(
     );
 
     let (object_store, object_store_path): (Box<dyn ObjectStore>, Path) = if is_hdfs_scheme {
-        parse_hdfs_url(&url)
+        create_hdfs_object_store(&url)
     } else if scheme == "s3" {
         objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
     } else {

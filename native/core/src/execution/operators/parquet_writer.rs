@@ -22,8 +22,12 @@ use std::{
     fmt,
     fmt::{Debug, Formatter},
     fs::File,
+    io::Cursor,
     sync::Arc,
 };
+
+use bytes::Bytes;
+use url::Url;
 
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
@@ -48,6 +52,71 @@ use parquet::{
 };
 
 use crate::execution::shuffle::CompressionCodec;
+use crate::parquet::parquet_support::write_to_hdfs_with_opendal_async;
+
+/// Enum representing different types of Arrow writers based on storage backend
+enum ParquetWriter {
+    /// Writer for local file system
+    LocalFile(ArrowWriter<File>),
+    /// Writer for HDFS or other remote storage (writes to in-memory buffer)
+    /// Contains the writer and the destination HDFS path
+    Remote(ArrowWriter<Cursor<Vec<u8>>>, String),
+}
+
+impl ParquetWriter {
+    /// Write a RecordBatch to the underlying writer
+    async fn write(&mut self, batch: &RecordBatch) -> std::result::Result<(), parquet::errors::ParquetError> {
+        match self {
+            ParquetWriter::LocalFile(writer) => writer.write(batch),
+            ParquetWriter::Remote(writer, output_path) => {
+                // Write batch to in-memory buffer
+                writer.write(batch)?;
+
+                // Flush and get the current buffer content
+                writer.flush()?;
+                let cursor = writer.inner_mut();
+                let buffer = cursor.get_ref().clone();
+
+                // Upload
+                let url = Url::parse(output_path).map_err(|e| {
+                    parquet::errors::ParquetError::General(format!(
+                        "Failed to parse URL '{}': {}",
+                        output_path, e
+                    ))
+                })?;
+                
+                write_to_hdfs_with_opendal_async(&url, Bytes::from(buffer))
+                    .await
+                    .map_err(|e| {
+                        parquet::errors::ParquetError::General(format!(
+                            "Failed to upload to '{}': {}",
+                            output_path, e
+                        ))
+                    })?;
+
+                // Clear the buffer after upload
+                cursor.get_mut().clear();
+                cursor.set_position(0);
+
+                Ok(())
+            },
+        }
+    }
+
+    /// Close the writer and return the buffer for remote writers
+    fn close(self) -> std::result::Result<Option<(Vec<u8>, String)>, parquet::errors::ParquetError> {
+        match self {
+            ParquetWriter::LocalFile(writer) => {
+                writer.close()?;
+                Ok(None)
+            }
+            ParquetWriter::Remote(writer, path) => {
+                let cursor = writer.into_inner()?;
+                Ok(Some((cursor.into_inner(), path)))
+            }
+        }
+    }
+}
 
 /// Parquet writer operator that writes input batches to a Parquet file
 #[derive(Debug)]
@@ -117,6 +186,59 @@ impl ParquetWriterExec {
             CompressionCodec::Zstd(level) => Ok(Compression::ZSTD(ZstdLevel::try_new(level)?)),
             CompressionCodec::Lz4Frame => Ok(Compression::LZ4),
             CompressionCodec::Snappy => Ok(Compression::SNAPPY),
+        }
+    }
+
+    /// Create an Arrow writer based on the storage scheme
+    ///
+    /// # Arguments
+    /// * `storage_scheme` - The storage backend ("hdfs", "s3", or "local")
+    /// * `output_file_path` - The full path to the output file
+    /// * `schema` - The Arrow schema for the Parquet file
+    /// * `props` - Writer properties including compression
+    ///
+    /// # Returns
+    /// * `Ok(ParquetWriter)` - A writer appropriate for the storage scheme
+    /// * `Err(DataFusionError)` - If writer creation fails
+    fn create_arrow_writer(
+        storage_scheme: &str,
+        output_file_path: &str,
+        schema: SchemaRef,
+        props: WriterProperties,
+    ) -> Result<ParquetWriter> {
+        match storage_scheme {
+            "hdfs" | "s3" => {
+                // For remote storage (HDFS, S3), write to an in-memory buffer
+                let buffer = Vec::new();
+                let cursor = Cursor::new(buffer);
+                let writer = ArrowWriter::try_new(cursor, schema, Some(props))
+                    .map_err(|e| DataFusionError::Execution(format!(
+                        "Failed to create {} writer: {}", storage_scheme, e
+                    )))?;
+                Ok(ParquetWriter::Remote(writer, output_file_path.to_string()))
+            }
+            "local" => {
+                // For local file system, write directly to file
+                // Strip file:// or file: prefix if present
+                let local_path = output_file_path
+                    .strip_prefix("file://")
+                    .or_else(|| output_file_path.strip_prefix("file:"))
+                    .unwrap_or(output_file_path);
+
+                let file = File::create(local_path).map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Failed to create output file '{}': {}",
+                        local_path, e
+                    ))
+                })?;
+
+                let writer = ArrowWriter::try_new(file, schema, Some(props))
+                    .map_err(|e| DataFusionError::Execution(format!("Failed to create local file writer: {}", e)))?;
+                Ok(ParquetWriter::LocalFile(writer))
+            }
+            _ => Err(DataFusionError::Execution(format!(
+                "Unsupported storage scheme: {}", storage_scheme
+            ))),
         }
     }
 }
@@ -217,6 +339,15 @@ impl ExecutionPlan for ParquetWriterExec {
             .collect();
         let output_schema = Arc::new(arrow::datatypes::Schema::new(fields));
 
+        // Determine storage scheme from work_dir
+        let storage_scheme = if work_dir.starts_with("hdfs://") {
+            "hdfs"
+        } else if work_dir.starts_with("s3://") || work_dir.starts_with("s3a://") {
+            "s3"
+        } else {
+            "local"
+        };
+
         // Strip file:// or file: prefix if present
         let local_path = work_dir
             .strip_prefix("file://")
@@ -243,21 +374,12 @@ impl ExecutionPlan for ParquetWriterExec {
             format!("{}/part-{:05}.parquet", local_path, self.partition_id)
         };
 
-        // Create the Parquet file
-        let file = File::create(&part_file).map_err(|e| {
-            DataFusionError::Execution(format!(
-                "Failed to create output file '{}': {}",
-                part_file, e
-            ))
-        })?;
-
         // Configure writer properties
         let props = WriterProperties::builder()
             .set_compression(compression)
             .build();
 
-        let mut writer = ArrowWriter::try_new(file, Arc::clone(&output_schema), Some(props))
-            .map_err(|e| DataFusionError::Execution(format!("Failed to create writer: {}", e)))?;
+        let mut writer = Self::create_arrow_writer(storage_scheme, &part_file, Arc::clone(&output_schema), props)?;
 
         // Clone schema for use in async closure
         let schema_for_write = Arc::clone(&output_schema);
@@ -286,7 +408,7 @@ impl ExecutionPlan for ParquetWriterExec {
                     batch
                 };
 
-                writer.write(&renamed_batch).map_err(|e| {
+                writer.write(&renamed_batch).await.map_err(|e| {
                     DataFusionError::Execution(format!("Failed to write batch: {}", e))
                 })?;
             }
