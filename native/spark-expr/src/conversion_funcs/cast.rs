@@ -20,12 +20,13 @@ use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
 use arrow::array::{
-    BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray, StringArray,
-    StructArray,
+    BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray,
+    PrimitiveBuilder, StringArray, StructArray,
 };
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, DataType, GenericBinaryType, Schema,
+    i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, GenericBinaryType,
+    Schema,
 };
 use arrow::{
     array::{
@@ -220,6 +221,11 @@ fn can_cast_from_string(to_type: &DataType, options: &SparkCastOptions) -> bool 
             // https://github.com/apache/datafusion-comet/issues/326
             // Does not support inputs ending with 'd' or 'f'. Does not support 'inf'.
             // Does not support ANSI mode.
+            options.allow_incompat
+        }
+        Decimal128(_, _) => {
+            // https://github.com/apache/datafusion-comet/issues/325
+            // Does not support fullwidth digits and null byte handling.
             options.allow_incompat
         }
         Date32 | Date64 => {

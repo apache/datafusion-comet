@@ -190,6 +190,10 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
           Some(
             "Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. " +
               "Does not support ANSI mode."))
+      case _: DecimalType =>
+        // https://github.com/apache/datafusion-comet/issues/325
+        Incompatible(Some(
+          """Does not support fullwidth unicode digits (e.g \\uFF10) or strings containing null bytes (e.g \\u0000)""".stripMargin))
       case DataTypes.DateType =>
         // https://github.com/apache/datafusion-comet/issues/327
         Compatible(Some("Only supports years between 262143 BC and 262142 AD"))
