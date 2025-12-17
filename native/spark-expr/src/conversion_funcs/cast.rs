@@ -25,8 +25,7 @@ use arrow::array::{
 };
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, DataType, GenericBinaryType,
-    Schema,
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, GenericBinaryType, Schema,
 };
 use arrow::{
     array::{
