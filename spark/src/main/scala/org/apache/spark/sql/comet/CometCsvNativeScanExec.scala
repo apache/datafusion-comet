@@ -60,6 +60,8 @@ case class CometCsvNativeScanExec(
 
 object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
 
+  private val DEFAULT_DATE_FORMAT = "yyyy-MM-dd"
+
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_CSV_V2_NATIVE_ENABLED)
 
@@ -69,7 +71,7 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
       childOp: Operator*): Option[Operator] = {
     val csvScanBuilder = OperatorOuterClass.CsvScan.newBuilder()
     val csvScan = op.wrapped.scan.asInstanceOf[CSVScan]
-    csvOptions2Proto(csvScan.options)
+    csvOptions2Proto(csvScan.options, true, "")
     val schemaProto = schema2Proto(op.schema.fields)
     val partitionsProto =
       op.inputPartitions.map(partition => partition2Proto(partition.asInstanceOf[FilePartition]))
@@ -99,8 +101,15 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
       timeZone: String): OperatorOuterClass.CsvOptions = {
     val csvOptionsBuilder = OperatorOuterClass.CsvOptions.newBuilder()
     val options = new CSVOptions(parameters.asScala.toMap, columnPruning, timeZone)
-    csvOptionsBuilder.setDelimiter(ByteString.copyFromUtf8(options.delimiter))
-    csvOptionsBuilder.setHasHeader()
+    csvOptionsBuilder.setDelimiter(options.delimiter)
+    csvOptionsBuilder.setHasHeader(options.headerFlag)
+    csvOptionsBuilder.setQuote(options.quote.toString)
+    csvOptionsBuilder.setEscape(options.escape.toString)
+    csvOptionsBuilder.setNullValue(options.nullValue)
+    if (options.isCommentSet) {
+      csvOptionsBuilder.setComment(options.comment.toString)
+    }
+    csvOptionsBuilder.setDateFormat(options.dateFormatInRead.getOrElse(DEFAULT_DATE_FORMAT))
     csvOptionsBuilder.build()
   }
 
