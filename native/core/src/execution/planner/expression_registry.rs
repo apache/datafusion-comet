@@ -177,8 +177,10 @@ impl ExpressionRegistry {
         // Register null check expressions
         self.register_null_check_expressions();
 
+        // Register string expressions
+        self.register_string_expressions();
+
         // TODO: Register other expression categories in future phases
-        // self.register_string_expressions();
         // self.register_temporal_expressions();
         // etc.
     }
@@ -267,6 +269,18 @@ impl ExpressionRegistry {
             .insert(ExpressionType::IsNull, Box::new(IsNullBuilder));
         self.builders
             .insert(ExpressionType::IsNotNull, Box::new(IsNotNullBuilder));
+    }
+
+    /// Register string expression builders
+    fn register_string_expressions(&mut self) {
+        use crate::execution::expressions::strings::*;
+
+        self.builders
+            .insert(ExpressionType::Substring, Box::new(SubstringBuilder));
+        self.builders
+            .insert(ExpressionType::Like, Box::new(LikeBuilder));
+        self.builders
+            .insert(ExpressionType::Rlike, Box::new(RlikeBuilder));
     }
 
     /// Extract expression type from Spark protobuf expression
