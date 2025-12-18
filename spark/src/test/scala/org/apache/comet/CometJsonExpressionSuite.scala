@@ -127,4 +127,25 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       }
     }
   }
+
+  test("from_json - nested struct") {
+    assume(!isSpark40Plus)
+
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        (0 until 50).map(i => {
+          val json = s"""{"outer":{"inner_a":$i,"inner_b":"nested_$i"},"top_level":${i * 10}}"""
+          (i, json)
+        }),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+
+        val schema = "outer STRUCT<inner_a: INT, inner_b: STRING>, top_level INT"
+        checkSparkAnswerAndOperator(s"SELECT from_json(_2, '$schema') FROM tbl")
+        checkSparkAnswerAndOperator(s"SELECT from_json(_2, '$schema').outer FROM tbl")
+        checkSparkAnswerAndOperator(s"SELECT from_json(_2, '$schema').outer.inner_a FROM tbl")
+        checkSparkAnswerAndOperator(s"SELECT from_json(_2, '$schema').top_level FROM tbl")
+      }
+    }
+  }
 }

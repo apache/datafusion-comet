@@ -212,6 +212,11 @@ enum FieldBuilder {
     Float64(Float64Builder),
     Boolean(BooleanBuilder),
     String(StringBuilder),
+    Struct {
+        fields: arrow::datatypes::Fields,
+        builders: Vec<FieldBuilder>,
+        null_buffer: Vec<bool>,
+    },
 }
 
 fn create_field_builders(
@@ -236,6 +241,14 @@ fn create_field_builders(
                 capacity,
                 capacity * 16,
             ))),
+            DataType::Struct(nested_fields) => {
+                let nested_builders = create_field_builders(nested_fields, capacity)?;
+                Ok(FieldBuilder::Struct {
+                    fields: nested_fields.clone(),
+                    builders: nested_builders,
+                    null_buffer: Vec::with_capacity(capacity),
+                })
+            }
             dt => Err(datafusion::common::DataFusionError::Execution(format!(
                 "Unsupported field type in from_json: {:?}",
                 dt
@@ -253,6 +266,15 @@ fn append_null_to_all_builders(builders: &mut [FieldBuilder]) {
             FieldBuilder::Float64(b) => b.append_null(),
             FieldBuilder::Boolean(b) => b.append_null(),
             FieldBuilder::String(b) => b.append_null(),
+            FieldBuilder::Struct {
+                builders: nested_builders,
+                null_buffer,
+                ..
+            } => {
+                // Append null to nested struct
+                null_buffer.push(false);
+                append_null_to_all_builders(nested_builders);
+            }
         }
     }
 }
@@ -274,6 +296,14 @@ fn append_field_value(
                 FieldBuilder::Float64(b) => b.append_null(),
                 FieldBuilder::Boolean(b) => b.append_null(),
                 FieldBuilder::String(b) => b.append_null(),
+                FieldBuilder::Struct {
+                    builders: nested_builders,
+                    null_buffer,
+                    ..
+                } => {
+                    null_buffer.push(false);
+                    append_null_to_all_builders(nested_builders);
+                }
             }
             return Ok(());
         }
@@ -328,6 +358,30 @@ fn append_field_value(
                 b.append_value(value.to_string());
             }
         }
+        (
+            FieldBuilder::Struct {
+                fields: nested_fields,
+                builders: nested_builders,
+                null_buffer,
+            },
+            DataType::Struct(_),
+        ) => {
+            // Handle nested struct
+            if let Some(obj) = value.as_object() {
+                // Non-null nested struct
+                null_buffer.push(true);
+                for (nested_field, nested_builder) in
+                    nested_fields.iter().zip(nested_builders.iter_mut())
+                {
+                    let nested_value = obj.get(nested_field.name());
+                    append_field_value(nested_builder, nested_field, nested_value)?;
+                }
+            } else {
+                // Not an object -> null nested struct
+                null_buffer.push(false);
+                append_null_to_all_builders(nested_builders);
+            }
+        }
         _ => {
             return Err(datafusion::common::DataFusionError::Execution(
                 "Type mismatch in from_json".to_string(),
@@ -346,6 +400,18 @@ fn finish_builder(builder: FieldBuilder) -> Result<ArrayRef> {
         FieldBuilder::Float64(mut b) => Arc::new(b.finish()),
         FieldBuilder::Boolean(mut b) => Arc::new(b.finish()),
         FieldBuilder::String(mut b) => Arc::new(b.finish()),
+        FieldBuilder::Struct {
+            fields,
+            builders,
+            null_buffer,
+        } => {
+            let nested_arrays: Vec<ArrayRef> = builders
+                .into_iter()
+                .map(finish_builder)
+                .collect::<Result<Vec<_>>>()?;
+            let null_buf = arrow::buffer::NullBuffer::from(null_buffer);
+            Arc::new(StructArray::new(fields, nested_arrays, Some(null_buf)))
+        }
     })
 }
 
@@ -509,6 +575,77 @@ mod tests {
             assert!(a_array.is_null(i), "Row {} field a should be null", i);
             assert!(b_array.is_null(i), "Row {} field b should be null", i);
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_struct() -> Result<()> {
+        let schema = DataType::Struct(Fields::from(vec![
+            Field::new(
+                "outer",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("inner_a", DataType::Int32, true),
+                    Field::new("inner_b", DataType::Utf8, true),
+                ])),
+                true,
+            ),
+            Field::new("top_level", DataType::Int32, true),
+        ]));
+
+        let input: Arc<dyn Array> = Arc::new(StringArray::from(vec![
+            Some(r#"{"outer":{"inner_a":123,"inner_b":"hello"},"top_level":999}"#),
+            Some(r#"{"outer":{"inner_a":456},"top_level":888}"#), // Missing nested field
+            Some(r#"{"outer":null,"top_level":777}"#),            // Null nested struct
+            Some(r#"{"top_level":666}"#),                         // Missing nested struct
+        ]));
+
+        let result = json_string_to_struct(&input, &schema)?;
+        let struct_array = result.as_any().downcast_ref::<StructArray>().unwrap();
+
+        assert_eq!(struct_array.len(), 4);
+
+        // Check outer struct
+        let outer_array = struct_array
+            .column(0)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+        let top_level_array = struct_array
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+
+        // Row 0: Valid nested struct
+        assert!(!outer_array.is_null(0), "Nested struct should not be null");
+        let inner_a_array = outer_array
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let inner_b_array = outer_array
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(inner_a_array.value(0), 123);
+        assert_eq!(inner_b_array.value(0), "hello");
+        assert_eq!(top_level_array.value(0), 999);
+
+        // Row 1: Missing nested field
+        assert!(!outer_array.is_null(1));
+        assert_eq!(inner_a_array.value(1), 456);
+        assert!(inner_b_array.is_null(1));
+        assert_eq!(top_level_array.value(1), 888);
+
+        // Row 2: Null nested struct
+        assert!(outer_array.is_null(2), "Nested struct should be null");
+        assert_eq!(top_level_array.value(2), 777);
+
+        // Row 3: Missing nested struct
+        assert!(outer_array.is_null(3), "Nested struct should be null");
+        assert_eq!(top_level_array.value(3), 666);
 
         Ok(())
     }
