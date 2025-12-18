@@ -155,10 +155,10 @@ fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<Arra
     let mut struct_nulls = vec![true; num_rows];
 
     // Parse each row
-    for row_idx in 0..num_rows {
+    for (row_idx, struct_null) in struct_nulls.iter_mut().enumerate() {
         if string_array.is_null(row_idx) {
             // Null input -> null struct
-            struct_nulls[row_idx] = false;
+            *struct_null = false;
             append_null_to_all_builders(&mut field_builders);
         } else {
             let json_str = string_array.value(row_idx);
@@ -168,20 +168,20 @@ fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<Arra
                 Ok(json_value) => {
                     if let serde_json::Value::Object(obj) = json_value {
                         // Struct is not null, extract each field
-                        struct_nulls[row_idx] = true;
+                        *struct_null = true;
                         for (field, builder) in fields.iter().zip(field_builders.iter_mut()) {
                             let field_value = obj.get(field.name());
                             append_field_value(builder, field, field_value)?;
                         }
                     } else {
                         // Not an object -> struct with null fields
-                        struct_nulls[row_idx] = true;
+                        *struct_null = true;
                         append_null_to_all_builders(&mut field_builders);
                     }
                 }
                 Err(_) => {
                     // Parse error -> struct with null fields (PERMISSIVE mode)
-                    struct_nulls[row_idx] = true;
+                    *struct_null = true;
                     append_null_to_all_builders(&mut field_builders);
                 }
             }
