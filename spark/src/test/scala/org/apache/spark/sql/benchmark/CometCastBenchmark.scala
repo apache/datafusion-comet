@@ -24,7 +24,7 @@ import scala.util.Try
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, DecimalType, LongType, StringType}
+import org.apache.spark.sql.types.{DataType, LongType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
@@ -60,6 +60,8 @@ object CometCastBenchmark extends CometBenchmarkBase {
   private val castExpressionList = CometCast.supportedTypes.map(BenchCastExpression(_))
 
   override def runCometBenchmark(args: Array[String]): Unit = {
+
+    //  TODO : Create all possible input datatypes. We only have Long inputs for now
     castExpressionList.foreach { castExpr =>
       Seq(true, false).foreach { k =>
         CometCast.isSupported(
@@ -78,26 +80,19 @@ object CometCastBenchmark extends CometBenchmarkBase {
     }
   }
 
-  def castBenchmark(values: Int, castFunction: BenchCastExpression, isAnsiMode: Boolean): Unit = {
+  def castBenchmark(values: Int, castExpr: BenchCastExpression, isAnsiMode: Boolean): Unit = {
 
     val benchmark =
       new Benchmark(
-        s"Cast function to : ${castFunction} , ansi mode enabled : ${isAnsiMode}",
+        s"Cast function to : ${castExpr} , ansi mode enabled : ${isAnsiMode}",
         values,
         output = output)
 
-    // Int inputs (TODO : Create all possible input data)
-    val functionSQL = castExprSQL(castFunction, "value")
+    val functionSQL = castExprSQL(castExpr, "value")
     val query = s"SELECT $functionSQL FROM $tbl"
 
-    // Decimal inputs
-    val df = makeDecimalDataFrame(values, DecimalType(18, 10), false)
-    df.createOrReplaceTempView("decimalTbl")
-    val decimalInput = castExprSQL(castFunction, "dec")
-    val decimalQuery = s"SELECT cast(value as string) FROM decimalTbl"
-
     benchmark.addCase(
-      s"SQL Parquet - Spark Cast function to : ${castFunction} , ansi mode enabled : ${isAnsiMode}") {
+      s"SQL Parquet - Spark Cast expr to : ${castExpr} , ansi mode enabled : ${isAnsiMode}") {
       _ =>
         withSQLConf(SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
           Try { spark.sql(query).noop() }
@@ -105,7 +100,7 @@ object CometCastBenchmark extends CometBenchmarkBase {
     }
 
     benchmark.addCase(
-      s"SQL Parquet - Comet Cast function to : ${castFunction} , ansi mode enabled : ${isAnsiMode}") {
+      s"SQL Parquet - Comet Cast expr to : ${castExpr} , ansi mode enabled : ${isAnsiMode}") {
       _ =>
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
@@ -117,4 +112,5 @@ object CometCastBenchmark extends CometBenchmarkBase {
 
     benchmark.run()
   }
+
 }
