@@ -2810,7 +2810,7 @@ fn parse_file_scan_tasks(
                 proto_scan
                     .residual_pool
                     .get(idx as usize)
-                    .and_then(|residual_expr| convert_spark_expr_to_predicate(residual_expr))
+                    .and_then(convert_spark_expr_to_predicate)
                     .map(
                         |pred| -> Result<iceberg::expr::BoundPredicate, ExecutionError> {
                             pred.bind(Arc::clone(&schema_ref), true).map_err(|e| {
