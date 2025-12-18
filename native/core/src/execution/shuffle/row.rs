@@ -765,7 +765,6 @@ pub fn process_sorted_row_partition(
     initial_checksum: Option<u32>,
     codec: &CompressionCodec,
 ) -> Result<(i64, Option<u32>), CometError> {
-
     // The current row number we are reading
     let mut current_row = 0;
     // Total number of bytes written
