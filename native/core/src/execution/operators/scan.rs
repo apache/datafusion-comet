@@ -190,8 +190,7 @@ impl ScanExec {
         // JVM via FFI
         // Selection vectors can be provided by, for instance, Iceberg to
         // remove rows that have been deleted.
-        let selection_indices_arrays =
-            Self::get_selection_indices(&mut env, iter, num_cols)?;
+        let selection_indices_arrays = Self::get_selection_indices(&mut env, iter, num_cols)?;
 
         // fetch batch data from JVM via FFI
         let (num_rows, array_addrs, schema_addrs) =
