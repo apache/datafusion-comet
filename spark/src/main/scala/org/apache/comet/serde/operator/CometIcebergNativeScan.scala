@@ -258,9 +258,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       fileScanTaskClass: Class[_],
       taskBuilder: OperatorOuterClass.IcebergFileScanTask.Builder,
       icebergScanBuilder: OperatorOuterClass.IcebergScan.Builder,
-      partitionTypeMap: scala.collection.mutable.HashMap[String, Int],
-      partitionSpecMap: scala.collection.mutable.HashMap[String, Int],
-      partitionDataDedupMap: scala.collection.mutable.HashMap[String, Int]): Unit = {
+      partitionTypeToPoolIndex: scala.collection.mutable.HashMap[String, Int],
+      partitionSpecToPoolIndex: scala.collection.mutable.HashMap[String, Int],
+      partitionDataToPoolIndex: scala.collection.mutable.HashMap[String, Int]): Unit = {
     try {
       val specMethod = fileScanTaskClass.getMethod("spec")
       val spec = specMethod.invoke(task)
@@ -279,9 +279,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             .invoke(null, spec)
             .asInstanceOf[String]
 
-          val specIdx = partitionSpecMap.getOrElseUpdate(
+          val specIdx = partitionSpecToPoolIndex.getOrElseUpdate(
             partitionSpecJson, {
-              val idx = partitionSpecMap.size
+              val idx = partitionSpecToPoolIndex.size
               icebergScanBuilder.addPartitionSpecPool(partitionSpecJson)
               idx
             })
@@ -360,9 +360,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     ("type" -> "struct") ~
                       ("fields" -> fieldsJson)))
 
-                val typeIdx = partitionTypeMap.getOrElseUpdate(
+                val typeIdx = partitionTypeToPoolIndex.getOrElseUpdate(
                   partitionTypeJson, {
-                    val idx = partitionTypeMap.size
+                    val idx = partitionTypeToPoolIndex.size
                     icebergScanBuilder.addPartitionTypePool(partitionTypeJson)
                     idx
                   })
@@ -414,9 +414,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           if (partitionDataMap.nonEmpty) {
             val partitionJson = compact(render(JObject(partitionDataMap.toList)))
 
-            val partitionDataIdx = partitionDataDedupMap.getOrElseUpdate(
+            val partitionDataIdx = partitionDataToPoolIndex.getOrElseUpdate(
               partitionJson, {
-                val idx = partitionDataDedupMap.size
+                val idx = partitionDataToPoolIndex.size
                 icebergScanBuilder.addPartitionDataPool(partitionJson)
                 idx
               })
@@ -631,15 +631,15 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
 
     // Deduplication structures - map unique values to pool indices
-    val schemaMap = scala.collection.mutable.HashMap[AnyRef, Int]()
-    val partitionTypeMap = scala.collection.mutable.HashMap[String, Int]()
-    val partitionSpecMap = scala.collection.mutable.HashMap[String, Int]()
-    val nameMappingMap = scala.collection.mutable.HashMap[String, Int]()
-    val projectFieldIdsMap = scala.collection.mutable.HashMap[Seq[Int], Int]()
-    val partitionDataMap = scala.collection.mutable.HashMap[String, Int]()
-    val deleteFilesMap =
+    val schemaToPoolIndex = scala.collection.mutable.HashMap[AnyRef, Int]()
+    val partitionTypeToPoolIndex = scala.collection.mutable.HashMap[String, Int]()
+    val partitionSpecToPoolIndex = scala.collection.mutable.HashMap[String, Int]()
+    val nameMappingToPoolIndex = scala.collection.mutable.HashMap[String, Int]()
+    val projectFieldIdsToPoolIndex = scala.collection.mutable.HashMap[Seq[Int], Int]()
+    val partitionDataToPoolIndex = scala.collection.mutable.HashMap[String, Int]()
+    val deleteFilesToPoolIndex =
       scala.collection.mutable.HashMap[Seq[OperatorOuterClass.IcebergDeleteFile], Int]()
-    val residualMap = scala.collection.mutable.HashMap[Option[Expr], Int]()
+    val residualToPoolIndex = scala.collection.mutable.HashMap[Option[Expr], Int]()
 
     var totalTasks = 0
 
@@ -896,10 +896,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
                       toJsonMethod.setAccessible(true)
 
-                      // Deduplicate schema using object identity
-                      val schemaIdx = schemaMap.getOrElseUpdate(
+                      // Use object identity for deduplication: Iceberg Schema objects are immutable
+                      // and reused across tasks, making identity-based deduplication safe
+                      val schemaIdx = schemaToPoolIndex.getOrElseUpdate(
                         schema, {
-                          val idx = schemaMap.size
+                          val idx = schemaToPoolIndex.size
                           val schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
                           icebergScanBuilder.addSchemaPool(schemaJson)
                           idx
@@ -925,9 +926,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       }
 
                       // Deduplicate project field IDs
-                      val projectFieldIdsIdx = projectFieldIdsMap.getOrElseUpdate(
+                      val projectFieldIdsIdx = projectFieldIdsToPoolIndex.getOrElseUpdate(
                         projectFieldIds, {
-                          val idx = projectFieldIdsMap.size
+                          val idx = projectFieldIdsToPoolIndex.size
                           val listBuilder = OperatorOuterClass.ProjectFieldIdList.newBuilder()
                           projectFieldIds.foreach(id => listBuilder.addFieldIds(id))
                           icebergScanBuilder.addProjectFieldIdsPool(listBuilder.build())
@@ -948,9 +949,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     val deleteFilesList =
                       extractDeleteFilesList(task, contentFileClass, fileScanTaskClass)
                     if (deleteFilesList.nonEmpty) {
-                      val deleteFilesIdx = deleteFilesMap.getOrElseUpdate(
+                      val deleteFilesIdx = deleteFilesToPoolIndex.getOrElseUpdate(
                         deleteFilesList, {
-                          val idx = deleteFilesMap.size
+                          val idx = deleteFilesToPoolIndex.size
                           val listBuilder = OperatorOuterClass.DeleteFileList.newBuilder()
                           deleteFilesList.foreach(df => listBuilder.addDeleteFiles(df))
                           icebergScanBuilder.addDeleteFilesPool(listBuilder.build())
@@ -979,9 +980,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       }
 
                     residualExprOpt.foreach { residualExpr =>
-                      val residualIdx = residualMap.getOrElseUpdate(
+                      val residualIdx = residualToPoolIndex.getOrElseUpdate(
                         Some(residualExpr), {
-                          val idx = residualMap.size
+                          val idx = residualToPoolIndex.size
                           icebergScanBuilder.addResidualPool(residualExpr)
                           idx
                         })
@@ -995,15 +996,15 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       fileScanTaskClass,
                       taskBuilder,
                       icebergScanBuilder,
-                      partitionTypeMap,
-                      partitionSpecMap,
-                      partitionDataMap)
+                      partitionTypeToPoolIndex,
+                      partitionSpecToPoolIndex,
+                      partitionDataToPoolIndex)
 
                     // Deduplicate name mapping
                     metadata.nameMapping.foreach { nm =>
-                      val nmIdx = nameMappingMap.getOrElseUpdate(
+                      val nmIdx = nameMappingToPoolIndex.getOrElseUpdate(
                         nm, {
-                          val idx = nameMappingMap.size
+                          val idx = nameMappingToPoolIndex.size
                           icebergScanBuilder.addNameMappingPool(nm)
                           idx
                         })
@@ -1030,30 +1031,31 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         return None
     }
 
-    // Log deduplication effectiveness
-    def dedupeRatio(total: Int, unique: Int): String = {
-      if (total == 0) "0.0"
-      else f"${(1.0 - unique.toDouble / total) * 100}%.1f"
+    // Log deduplication summary
+    val allPoolSizes = Seq(
+      schemaToPoolIndex.size,
+      partitionTypeToPoolIndex.size,
+      partitionSpecToPoolIndex.size,
+      nameMappingToPoolIndex.size,
+      projectFieldIdsToPoolIndex.size,
+      partitionDataToPoolIndex.size,
+      deleteFilesToPoolIndex.size,
+      residualToPoolIndex.size)
+
+    val avgDedup = if (totalTasks == 0) {
+      "0.0"
+    } else {
+      // Filter out empty pools - they shouldn't count as 100% dedup
+      val nonEmptyPools = allPoolSizes.filter(_ > 0)
+      if (nonEmptyPools.isEmpty) {
+        "0.0"
+      } else {
+        val avgUnique = nonEmptyPools.sum.toDouble / nonEmptyPools.length
+        f"${(1.0 - avgUnique / totalTasks) * 100}%.1f"
+      }
     }
 
-    logInfo(
-      s"IcebergScan deduplication stats for $totalTasks tasks:\n" +
-        s"  Schemas: ${schemaMap.size} unique " +
-        s"(${dedupeRatio(totalTasks, schemaMap.size)}% dedup)\n" +
-        s"  Partition types: ${partitionTypeMap.size} unique " +
-        s"(${dedupeRatio(totalTasks, partitionTypeMap.size)}% dedup)\n" +
-        s"  Partition specs: ${partitionSpecMap.size} unique " +
-        s"(${dedupeRatio(totalTasks, partitionSpecMap.size)}% dedup)\n" +
-        s"  Name mappings: ${nameMappingMap.size} unique " +
-        s"(${dedupeRatio(totalTasks, nameMappingMap.size)}% dedup)\n" +
-        s"  Project field IDs: ${projectFieldIdsMap.size} unique " +
-        s"(${dedupeRatio(totalTasks, projectFieldIdsMap.size)}% dedup)\n" +
-        s"  Partition data: ${partitionDataMap.size} unique " +
-        s"(${dedupeRatio(totalTasks, partitionDataMap.size)}% dedup)\n" +
-        s"  Delete file lists: ${deleteFilesMap.size} unique " +
-        s"(${dedupeRatio(totalTasks, deleteFilesMap.size)}% dedup)\n" +
-        s"  Residuals: ${residualMap.size} unique " +
-        s"(${dedupeRatio(totalTasks, residualMap.size)}% dedup)")
+    logInfo(s"IcebergScan: $totalTasks tasks, ${allPoolSizes.size} pools ($avgDedup% avg dedup)")
 
     builder.clearChildren()
     Some(builder.setIcebergScan(icebergScanBuilder).build())

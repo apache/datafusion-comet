@@ -2680,7 +2680,8 @@ fn parse_file_scan_tasks(
     proto_scan: &spark_operator::IcebergScan,
     proto_tasks: &[spark_operator::IcebergFileScanTask],
 ) -> Result<Vec<iceberg::scan::FileScanTask>, ExecutionError> {
-    // Parse all deduplication pools upfront to avoid redundant parsing
+    // Build caches upfront: for 10K tasks with 1 schema, this parses the schema
+    // once instead of 10K times, eliminating redundant JSON deserialization
     let schema_cache: Vec<Arc<iceberg::spec::Schema>> = proto_scan
         .schema_pool
         .iter()
@@ -2760,88 +2761,86 @@ fn parse_file_scan_tasks(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Log cache statistics
-    eprintln!(
-        "IcebergScan cache initialized for {} tasks:\n\
-         Cached schemas: {}\n\
-         Cached partition types: {}\n\
-         Cached partition specs: {}\n\
-         Cached name mappings: {}\n\
-         Cached project field ID lists: {}\n\
-         Cached partition data: {}\n\
-         Cached delete file lists: {}\n\
-         Cached residuals: {}",
-        proto_tasks.len(),
-        schema_cache.len(),
-        partition_type_cache.len(),
-        partition_spec_cache.len(),
-        name_mapping_cache.len(),
-        proto_scan.project_field_ids_pool.len(),
-        proto_scan.partition_data_pool.len(),
-        delete_files_cache.len(),
-        proto_scan.residual_pool.len()
-    );
     let results: Result<Vec<_>, _> = proto_tasks
         .iter()
         .map(|proto_task| {
-            // Use cached schema via index lookup
-            let schema_ref = Arc::clone(schema_cache.get(proto_task.schema_idx as usize)
-                .ok_or_else(|| ExecutionError::GeneralError(format!(
-                    "Invalid schema_idx: {} (pool size: {})",
-                    proto_task.schema_idx, schema_cache.len()
-                )))?);
+            let schema_ref = Arc::clone(
+                schema_cache
+                    .get(proto_task.schema_idx as usize)
+                    .ok_or_else(|| {
+                        ExecutionError::GeneralError(format!(
+                            "Invalid schema_idx: {} (pool size: {})",
+                            proto_task.schema_idx,
+                            schema_cache.len()
+                        ))
+                    })?,
+            );
 
             let data_file_format = iceberg::spec::DataFileFormat::Parquet;
 
-            // Use cached delete files via index lookup
             let deletes = if let Some(idx) = proto_task.delete_files_idx {
-                delete_files_cache.get(idx as usize)
-                    .ok_or_else(|| ExecutionError::GeneralError(format!(
-                        "Invalid delete_files_idx: {} (pool size: {})",
-                        idx, delete_files_cache.len()
-                    )))?
+                delete_files_cache
+                    .get(idx as usize)
+                    .ok_or_else(|| {
+                        ExecutionError::GeneralError(format!(
+                            "Invalid delete_files_idx: {} (pool size: {})",
+                            idx,
+                            delete_files_cache.len()
+                        ))
+                    })?
                     .clone()
             } else {
                 vec![]
             };
 
-            // Use cached residual via index lookup
             let bound_predicate = if let Some(idx) = proto_task.residual_idx {
-                proto_scan.residual_pool.get(idx as usize)
-                    .and_then(|residual_expr| {
-                        convert_spark_expr_to_predicate(residual_expr)
-                    })
-                    .map(|pred| -> Result<iceberg::expr::BoundPredicate, ExecutionError> {
-                        pred.bind(Arc::clone(&schema_ref), true).map_err(|e| {
-                            ExecutionError::GeneralError(format!(
-                                "Failed to bind predicate to schema: {}",
-                                e
-                            ))
-                        })
-                    })
+                proto_scan
+                    .residual_pool
+                    .get(idx as usize)
+                    .and_then(|residual_expr| convert_spark_expr_to_predicate(residual_expr))
+                    .map(
+                        |pred| -> Result<iceberg::expr::BoundPredicate, ExecutionError> {
+                            pred.bind(Arc::clone(&schema_ref), true).map_err(|e| {
+                                ExecutionError::GeneralError(format!(
+                                    "Failed to bind predicate to schema: {}",
+                                    e
+                                ))
+                            })
+                        },
+                    )
                     .transpose()?
             } else {
                 None
             };
 
-            // Use cached partition data via index lookup
             let partition = if let Some(partition_data_idx) = proto_task.partition_data_idx {
-                let partition_type_idx = proto_task.partition_type_idx
-                    .ok_or_else(|| ExecutionError::GeneralError(
-                        "partition_type_idx is required when partition_data_idx is present".to_string()
-                    ))?;
+                let partition_type_idx = proto_task.partition_type_idx.ok_or_else(|| {
+                    ExecutionError::GeneralError(
+                        "partition_type_idx is required when partition_data_idx is present"
+                            .to_string(),
+                    )
+                })?;
 
-                let partition_json = proto_scan.partition_data_pool.get(partition_data_idx as usize)
-                    .ok_or_else(|| ExecutionError::GeneralError(format!(
-                        "Invalid partition_data_idx: {} (pool size: {})",
-                        partition_data_idx, proto_scan.partition_data_pool.len()
-                    )))?;
+                let partition_json = proto_scan
+                    .partition_data_pool
+                    .get(partition_data_idx as usize)
+                    .ok_or_else(|| {
+                        ExecutionError::GeneralError(format!(
+                            "Invalid partition_data_idx: {} (pool size: {})",
+                            partition_data_idx,
+                            proto_scan.partition_data_pool.len()
+                        ))
+                    })?;
 
-                let partition_type = partition_type_cache.get(partition_type_idx as usize)
-                    .ok_or_else(|| ExecutionError::GeneralError(format!(
-                        "Invalid partition_type_idx: {} (cache size: {})",
-                        partition_type_idx, partition_type_cache.len()
-                    )))?;
+                let partition_type = partition_type_cache
+                    .get(partition_type_idx as usize)
+                    .ok_or_else(|| {
+                        ExecutionError::GeneralError(format!(
+                            "Invalid partition_type_idx: {} (cache size: {})",
+                            partition_type_idx,
+                            partition_type_cache.len()
+                        ))
+                    })?;
 
                 let partition_data_value: serde_json::Value = serde_json::from_str(partition_json)
                     .map_err(|e| {
@@ -2874,23 +2873,26 @@ fn parse_file_scan_tasks(
                 None
             };
 
-            // Use cached partition spec via index lookup
-            let partition_spec = proto_task.partition_spec_idx
+            let partition_spec = proto_task
+                .partition_spec_idx
                 .and_then(|idx| partition_spec_cache.get(idx as usize))
                 .and_then(|opt| opt.clone());
 
-            // Use cached name mapping via index lookup
-            let name_mapping = proto_task.name_mapping_idx
+            let name_mapping = proto_task
+                .name_mapping_idx
                 .and_then(|idx| name_mapping_cache.get(idx as usize))
                 .and_then(|opt| opt.clone());
 
-            // Use cached project_field_ids via index lookup
-            let project_field_ids = proto_scan.project_field_ids_pool
+            let project_field_ids = proto_scan
+                .project_field_ids_pool
                 .get(proto_task.project_field_ids_idx as usize)
-                .ok_or_else(|| ExecutionError::GeneralError(format!(
-                    "Invalid project_field_ids_idx: {} (pool size: {})",
-                    proto_task.project_field_ids_idx, proto_scan.project_field_ids_pool.len()
-                )))?
+                .ok_or_else(|| {
+                    ExecutionError::GeneralError(format!(
+                        "Invalid project_field_ids_idx: {} (pool size: {})",
+                        proto_task.project_field_ids_idx,
+                        proto_scan.project_field_ids_pool.len()
+                    ))
+                })?
                 .field_ids
                 .clone();
 
