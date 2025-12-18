@@ -24,7 +24,6 @@ import java.nio.charset.Charset
 import java.sql.Timestamp
 import java.text.SimpleDateFormat
 import java.time.{Instant, LocalDateTime, ZoneId}
-import java.util.concurrent.atomic.AtomicLong
 
 import scala.collection.mutable.ListBuffer
 import scala.util.Random
@@ -103,10 +102,12 @@ object FuzzDataGenerator {
       options.generateArray || options.generateStruct || options.generateMap,
       "cannot generate nested schema if options do not include generating complex types")
 
-    val counter = new AtomicLong
+    var counter = 0
 
     def generateFieldName() = {
-      s"c_${counter.incrementAndGet()}"
+      val name = s"c_$counter"
+      counter += 1
+      name
     }
 
     def generateArray(depth: Int, name: String) = {
