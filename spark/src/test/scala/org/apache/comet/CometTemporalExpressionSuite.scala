@@ -114,13 +114,14 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
-  test("unix_timestamp") {
+  test("unix_timestamp - UTC") {
     createTimestampTestData.createOrReplaceTempView("tbl")
-
     withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
       checkSparkAnswerAndOperator("SELECT c0, unix_timestamp(c0) from tbl order by c0")
     }
+  }
 
+  test("unix_timestamp - non-UTC") {
     val r = new Random(42)
     val dateSchema = StructType(Seq(StructField("d", DataTypes.DateType, true)))
     val dateDF = FuzzDataGenerator.generateDataFrame(r, spark, dateSchema, 100, DataGenOptions())
