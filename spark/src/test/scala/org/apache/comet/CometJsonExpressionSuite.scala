@@ -28,7 +28,6 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
-  import testImplicits._
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
