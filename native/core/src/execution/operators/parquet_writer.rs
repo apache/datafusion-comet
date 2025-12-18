@@ -27,6 +27,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use opendal::{services::Hdfs, Operator};
 use url::Url;
 
 use arrow::datatypes::{Schema, SchemaRef};
@@ -52,7 +53,6 @@ use parquet::{
 };
 
 use crate::execution::shuffle::CompressionCodec;
-use crate::parquet::parquet_support::write_to_hdfs_with_opendal_async;
 
 #[cfg(all(test, feature = "hdfs-opendal"))]
 use crate::parquet::parquet_support::write_record_batch_to_hdfs;
@@ -62,8 +62,9 @@ enum ParquetWriter {
     /// Writer for local file system
     LocalFile(ArrowWriter<File>),
     /// Writer for HDFS or other remote storage (writes to in-memory buffer)
-    /// Contains the writer and the destination HDFS path
-    Remote(ArrowWriter<Cursor<Vec<u8>>>, String),
+    /// Contains the arrow writer, HDFS operator, and destination path
+    /// The opendal::Writer is created lazily on first write
+    Remote(ArrowWriter<Cursor<Vec<u8>>>, Option<opendal::Writer>, Operator, String),
 }
 
 impl ParquetWriter {
@@ -74,31 +75,33 @@ impl ParquetWriter {
     ) -> std::result::Result<(), parquet::errors::ParquetError> {
         match self {
             ParquetWriter::LocalFile(writer) => writer.write(batch),
-            ParquetWriter::Remote(writer, output_path) => {
+            ParquetWriter::Remote(arrow_parquet_buffer_writer, hdfs_writer_opt, op, output_path) => {
                 // Write batch to in-memory buffer
-                writer.write(batch)?;
+                arrow_parquet_buffer_writer.write(batch)?;
 
                 // Flush and get the current buffer content
-                writer.flush()?;
-                let cursor = writer.inner_mut();
-                let buffer = cursor.get_ref().clone();
+                arrow_parquet_buffer_writer.flush()?;
+                let cursor = arrow_parquet_buffer_writer.inner_mut();
+                let current_data = cursor.get_ref().clone();
 
-                // Upload
-                let url = Url::parse(output_path).map_err(|e| {
-                    parquet::errors::ParquetError::General(format!(
-                        "Failed to parse URL '{}': {}",
-                        output_path, e
-                    ))
-                })?;
-
-                write_to_hdfs_with_opendal_async(&url, Bytes::from(buffer))
-                    .await
-                    .map_err(|e| {
-                        parquet::errors::ParquetError::General(format!(
-                            "Failed to upload to '{}': {}",
-                            output_path, e
-                        ))
+                // Create HDFS writer lazily on first write
+                if hdfs_writer_opt.is_none() {
+                    let writer = op.writer(output_path.as_str()).await.map_err(|e| {
+                        parquet::errors::ParquetError::External(
+                            format!("Failed to create HDFS writer: {}", e).into()
+                        )
                     })?;
+                    *hdfs_writer_opt = Some(writer);
+                }
+
+                // Write the accumulated data to HDFS
+                if let Some(hdfs_writer) = hdfs_writer_opt {
+                    hdfs_writer.write(current_data).await.map_err(|e| {
+                        parquet::errors::ParquetError::External(
+                            format!("Failed to write batch to HDFS: {}", e).into()
+                        )
+                    })?;
+                }
 
                 // Clear the buffer after upload
                 cursor.get_mut().clear();
@@ -109,18 +112,49 @@ impl ParquetWriter {
         }
     }
 
-    /// Close the writer and return the buffer for remote writers
-    fn close(
+    /// Close the writer and finalize the file
+    async fn close(
         self,
-    ) -> std::result::Result<Option<(Vec<u8>, String)>, parquet::errors::ParquetError> {
+    ) -> std::result::Result<(), parquet::errors::ParquetError> {
         match self {
             ParquetWriter::LocalFile(writer) => {
                 writer.close()?;
-                Ok(None)
+                Ok(())
             }
-            ParquetWriter::Remote(writer, path) => {
-                let cursor = writer.into_inner()?;
-                Ok(Some((cursor.into_inner(), path)))
+            ParquetWriter::Remote(arrow_parquet_buffer_writer, mut hdfs_writer_opt, op, output_path) => {
+                // Close the arrow writer to finalize parquet format
+                let cursor = arrow_parquet_buffer_writer.into_inner()?;
+                let final_data = cursor.into_inner();
+
+                // Create HDFS writer if not already created
+                if hdfs_writer_opt.is_none() && !final_data.is_empty() {
+                    let writer = op.writer(output_path.as_str()).await.map_err(|e| {
+                        parquet::errors::ParquetError::External(
+                            format!("Failed to create HDFS writer: {}", e).into()
+                        )
+                    })?;
+                    hdfs_writer_opt = Some(writer);
+                }
+
+                // Write any remaining data
+                if !final_data.is_empty() {
+                    if let Some(mut hdfs_writer) = hdfs_writer_opt {
+                        hdfs_writer.write(final_data).await.map_err(|e| {
+                            parquet::errors::ParquetError::External(
+                                format!("Failed to write final data to HDFS: {}", e).into()
+                            )
+                        })?;
+
+                        // Close the HDFS writer
+                        hdfs_writer.close().await.map_err(|e| {
+                            parquet::errors::ParquetError::External(
+                                format!("Failed to close HDFS writer: {}", e).into()
+                            )
+                        })?;
+                    }
+                }
+
+                Ok(())
             }
         }
     }
@@ -219,13 +253,28 @@ impl ParquetWriterExec {
                 // For remote storage (HDFS, S3), write to an in-memory buffer
                 let buffer = Vec::new();
                 let cursor = Cursor::new(buffer);
-                let writer = ArrowWriter::try_new(cursor, schema, Some(props)).map_err(|e| {
-                    DataFusionError::Execution(format!(
-                        "Failed to create {} writer: {}",
-                        storage_scheme, e
-                    ))
-                })?;
-                Ok(ParquetWriter::Remote(writer, output_file_path.to_string()))
+                let arrow_parquet_buffer_writer = ArrowWriter::try_new(cursor, schema, Some(props))
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "Failed to create {} writer: {}",
+                            storage_scheme, e
+                        ))
+                    })?;
+
+                let builder = Hdfs::default().name_node("hdfs://namenode:9000");
+                let op = Operator::new(builder)
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!("Failed to create HDFS operator: {}", e))
+                    })?
+                    .finish();
+
+                // HDFS writer will be created lazily on first write
+                Ok(ParquetWriter::Remote(
+                    arrow_parquet_buffer_writer,
+                    None,
+                    op,
+                    output_file_path.to_string(),
+                ))
             }
             "local" => {
                 // For local file system, write directly to file
@@ -430,7 +479,7 @@ impl ExecutionPlan for ParquetWriterExec {
                 })?;
             }
 
-            writer.close().map_err(|e| {
+            writer.close().await.map_err(|e| {
                 DataFusionError::Execution(format!("Failed to close writer: {}", e))
             })?;
 
@@ -467,61 +516,205 @@ mod tests {
     use super::*;
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch;
     use std::sync::Arc;
 
     /// Helper function to create a test RecordBatch with 1000 rows of (int, string) data
-    fn create_test_record_batch() -> Result<RecordBatch> {
-        let num_rows = 1000;
-        
-        // Create int column with values 0..1000
-        let int_array = Int32Array::from_iter_values(0..num_rows);
-        
-        // Create string column with values "value_0", "value_1", ..., "value_999"
-        let string_values: Vec<String> = (0..num_rows)
+    fn create_test_record_batch(batch_id: i32) -> Result<RecordBatch> {
+        assert!(batch_id > 0, "batch_id must be greater than 0");
+        let num_rows = batch_id * 1000;
+
+        let int_array = Int32Array::from_iter_values(((batch_id - 1) * 1000)..num_rows);
+
+        let string_values: Vec<String> = (((batch_id - 1) * 1000)..num_rows)
             .map(|i| format!("value_{}", i))
             .collect();
         let string_array = StringArray::from(string_values);
-        
+
         // Define schema
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
             Field::new("name", DataType::Utf8, false),
         ]));
-        
+
         // Create RecordBatch
-        RecordBatch::try_new(
-            schema,
-            vec![Arc::new(int_array), Arc::new(string_array)],
-        )
-        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+        RecordBatch::try_new(schema, vec![Arc::new(int_array), Arc::new(string_array)])
+            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
     }
 
     #[tokio::test]
-    //#[cfg(feature = "hdfs-opendal")]
-    async fn test_write_to_hdfs() -> Result<()> {
+    #[cfg(feature = "hdfs-opendal")]
+    async fn test_write_to_hdfs_sync() -> Result<()> {
         use opendal::services::Hdfs;
         use opendal::Operator;
-        
-        // Create test data
-        let batch = create_test_record_batch()?;
-        
+
         // Configure HDFS connection
         let namenode = "hdfs://namenode:9000";
         let output_path = "/user/test_write/data.parquet";
-        
+
         // Create OpenDAL HDFS operator
         let builder = Hdfs::default().name_node(namenode);
         let op = Operator::new(builder)
-            .map_err(|e| DataFusionError::Execution(format!("Failed to create HDFS operator: {}", e)))?
+            .map_err(|e| {
+                DataFusionError::Execution(format!("Failed to create HDFS operator: {}", e))
+            })?
             .finish();
-        
-        // Write the batch using write_record_batch_to_hdfs
-        write_record_batch_to_hdfs(&op, output_path, batch)
-            .await
-            .map_err(|e| DataFusionError::Execution(format!("Failed to write to HDFS: {}", e)))?;
-        
-        println!("Successfully wrote 1000 rows to HDFS at {}{}", namenode, output_path);
-        
+
+        let mut hdfs_writer = op.writer(output_path).await.map_err(|e| {
+            DataFusionError::Execution(format!("Failed to create HDFS writer: {}", e))
+        })?;
+
+        let mut buffer = Cursor::new(Vec::new());
+        let mut writer =
+            ArrowWriter::try_new(&mut buffer, create_test_record_batch(1)?.schema(), None)?;
+
+        for i in 1..=5 {
+            let record_batch = create_test_record_batch(i)?;
+
+            writer.write(&record_batch)?;
+
+            println!(
+                "Successfully wrote 1000 rows to HDFS at {}{}",
+                namenode, output_path
+            );
+        }
+
+        writer.close()?;
+
+        hdfs_writer.write(buffer.into_inner()).await.map_err(|e| {
+            DataFusionError::Execution(format!("Failed to write with HDFS writer: {}", e))
+        })?;
+
+        hdfs_writer.close().await.map_err(|e| {
+            DataFusionError::Execution(format!("Failed to close HDFS writer: {}", e))
+        })?;
+
         Ok(())
-    }  
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "hdfs-opendal")]
+    async fn test_write_to_hdfs_streaming() -> Result<()> {
+        use opendal::services::Hdfs;
+        use opendal::Operator;
+
+        // Configure HDFS connection
+        let namenode = "hdfs://namenode:9000";
+        let output_path = "/user/test_write_streaming/data.parquet";
+
+        // Create OpenDAL HDFS operator
+        let builder = Hdfs::default().name_node(namenode);
+        let op = Operator::new(builder)
+            .map_err(|e| {
+                DataFusionError::Execution(format!("Failed to create HDFS operator: {}", e))
+            })?
+            .finish();
+
+        // Create a single HDFS writer for the entire file
+        let mut hdfs_writer = op.writer(output_path).await.map_err(|e| {
+            DataFusionError::Execution(format!("Failed to create HDFS writer: {}", e))
+        })?;
+
+        // Create a single ArrowWriter that will be used for all batches
+        let buffer = Cursor::new(Vec::new());
+        let mut writer = ArrowWriter::try_new(buffer, create_test_record_batch(1)?.schema(), None)?;
+
+        // Write each batch and upload to HDFS immediately (streaming approach)
+        for i in 1..=5 {
+            let record_batch = create_test_record_batch(i)?;
+
+            // Write the batch to the parquet writer
+            writer.write(&record_batch)?;
+
+            // Flush the writer to ensure data is written to the buffer
+            writer.flush()?;
+
+            // Get the current buffer content through the writer
+            let cursor = writer.inner_mut();
+            let current_data = cursor.get_ref().clone();
+
+            // Write the accumulated data to HDFS
+            hdfs_writer.write(current_data).await.map_err(|e| {
+                DataFusionError::Execution(format!("Failed to write batch {} to HDFS: {}", i, e))
+            })?;
+
+            // Clear the buffer for the next iteration
+            cursor.get_mut().clear();
+            cursor.set_position(0);
+
+            println!(
+                "Successfully streamed batch {} (1000 rows) to HDFS at {}{}",
+                i, namenode, output_path
+            );
+        }
+
+        // Close the ArrowWriter to finalize the parquet file
+        let cursor = writer.into_inner()?;
+
+        // Write any remaining data from closing the writer
+        let final_data = cursor.into_inner();
+        if !final_data.is_empty() {
+            hdfs_writer.write(final_data).await.map_err(|e| {
+                DataFusionError::Execution(format!("Failed to write final data to HDFS: {}", e))
+            })?;
+        }
+
+        // Close the HDFS writer
+        hdfs_writer.close().await.map_err(|e| {
+            DataFusionError::Execution(format!("Failed to close HDFS writer: {}", e))
+        })?;
+
+        println!(
+            "Successfully completed streaming write of 5 batches (5000 total rows) to HDFS at {}{}",
+            namenode, output_path
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "hdfs-opendal")]
+    async fn test_parquet_writer_streaming() -> Result<()> {
+        // Configure output path
+        let output_path = "/user/test_parquet_writer_streaming/data.parquet";
+
+        // Configure writer properties
+        let props = WriterProperties::builder()
+            .set_compression(Compression::UNCOMPRESSED)
+            .build();
+
+        // Create ParquetWriter using the create_arrow_writer method
+        let mut writer = ParquetWriterExec::create_arrow_writer(
+            "hdfs",
+            output_path,
+            create_test_record_batch(1)?.schema(),
+            props,
+        )?;
+
+        // Write 5 batches in a loop
+        for i in 1..=5 {
+            let record_batch = create_test_record_batch(i)?;
+            
+            writer.write(&record_batch).await.map_err(|e| {
+                DataFusionError::Execution(format!("Failed to write batch {}: {}", i, e))
+            })?;
+
+            println!(
+                "Successfully wrote batch {} (1000 rows) using ParquetWriter",
+                i
+            );
+        }
+
+        // Close the writer
+        writer.close().await.map_err(|e| {
+            DataFusionError::Execution(format!("Failed to close writer: {}", e))
+        })?;
+
+        println!(
+            "Successfully completed ParquetWriter streaming write of 5 batches (5000 total rows) to HDFS at {}",
+            output_path
+        );
+
+        Ok(())
+    }
 }
