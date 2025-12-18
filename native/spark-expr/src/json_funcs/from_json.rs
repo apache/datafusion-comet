@@ -501,7 +501,11 @@ mod tests {
 
         // All rows should have non-null structs with null field values
         for i in 0..4 {
-            assert!(!struct_array.is_null(i), "Row {} struct should not be null", i);
+            assert!(
+                !struct_array.is_null(i),
+                "Row {} struct should not be null",
+                i
+            );
             assert!(a_array.is_null(i), "Row {} field a should be null", i);
             assert!(b_array.is_null(i), "Row {} field b should be null", i);
         }

@@ -112,16 +112,15 @@ impl ExpressionBuilder for FromJsonBuilder {
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         let expr = extract_expr!(spark_expr, FromJson);
         let child = planner.create_expr(
-            expr.child
-                .as_ref()
-                .ok_or_else(|| ExecutionError::GeneralError("FromJson missing child".to_string()))?,
+            expr.child.as_ref().ok_or_else(|| {
+                ExecutionError::GeneralError("FromJson missing child".to_string())
+            })?,
             input_schema,
         )?;
-        let schema = to_arrow_datatype(
-            expr.schema
-                .as_ref()
-                .ok_or_else(|| ExecutionError::GeneralError("FromJson missing schema".to_string()))?,
-        );
+        let schema =
+            to_arrow_datatype(expr.schema.as_ref().ok_or_else(|| {
+                ExecutionError::GeneralError("FromJson missing schema".to_string())
+            })?);
         Ok(Arc::new(FromJson::new(child, schema, &expr.timezone)))
     }
 }

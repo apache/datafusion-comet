@@ -33,8 +33,7 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(
-        CometConf.getExprAllowIncompatConfigKey(classOf[JsonToStructs]) -> "true") {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[JsonToStructs]) -> "true") {
         testFun
       }
     }
