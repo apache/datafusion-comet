@@ -2789,6 +2789,7 @@ fn parse_file_scan_tasks(
                 partition,
                 partition_spec,
                 name_mapping,
+                case_sensitive: false,
             })
         })
         .collect();
