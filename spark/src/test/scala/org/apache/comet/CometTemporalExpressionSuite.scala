@@ -114,25 +114,27 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
-  test("unix_timestamp - UTC") {
+  test("unix_timestamp - timestamp input") {
     createTimestampTestData.createOrReplaceTempView("tbl")
-    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
-      checkSparkAnswerAndOperator("SELECT c0, unix_timestamp(c0) from tbl order by c0")
+    for (timezone <- Seq("UTC", "America/Los_Angeles")) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
+        checkSparkAnswerAndOperator("SELECT c0, unix_timestamp(c0) from tbl order by c0")
+      }
     }
   }
 
-  test("unix_timestamp - non-UTC") {
+  test("unix_timestamp - date input") {
     val r = new Random(42)
     val dateSchema = StructType(Seq(StructField("d", DataTypes.DateType, true)))
     val dateDF = FuzzDataGenerator.generateDataFrame(r, spark, dateSchema, 100, DataGenOptions())
     dateDF.createOrReplaceTempView("date_tbl")
-    checkSparkAnswerAndOperator("SELECT d, unix_timestamp(d) from date_tbl order by d")
-
-    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles") {
-      createTimestampTestData.createOrReplaceTempView("tbl2")
-      checkSparkAnswerAndOperator("SELECT c0, unix_timestamp(c0) from tbl2 order by c0")
+    for (timezone <- Seq("UTC", "America/Los_Angeles")) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
+        checkSparkAnswerAndOperator("SELECT d, unix_timestamp(d) from date_tbl order by d")
+      }
     }
   }
+
 
   private def createTimestampTestData = {
     val r = new Random(42)

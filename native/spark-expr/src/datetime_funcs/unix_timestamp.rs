@@ -85,7 +85,7 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
                             self.timezone.clone(),
                             Some(&DataType::Timestamp(
                                 Microsecond,
-                                Some(self.timezone.clone().into()),
+                                Some("UTC".into()),
                             )),
                         )?;
 
