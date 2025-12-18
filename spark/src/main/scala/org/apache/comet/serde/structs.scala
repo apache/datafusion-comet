@@ -169,18 +169,22 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
 }
 
 object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
+
+  override def getSupportLevel(expr: JsonToStructs): SupportLevel = {
+    // this feature is partially implemented and not comprehensively tested yet
+    Incompatible()
+  }
+
   override def convert(
       expr: JsonToStructs,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
 
-    // Validate explicit schema required
     if (expr.schema == null) {
       withInfo(expr, "from_json requires explicit schema")
       return None
     }
 
-    // Validate supported types (primitives only)
     def isSupportedType(dt: DataType): Boolean = {
       dt match {
         case StructType(fields) =>
@@ -188,7 +192,6 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
         case DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
             DataTypes.DoubleType | DataTypes.BooleanType | DataTypes.StringType =>
           true
-        // Future: Add more types (dates, timestamps, nested structs, arrays, maps)
         case _ => false
       }
     }
@@ -199,7 +202,6 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
       return None
     }
 
-    // Check options (only PERMISSIVE mode supported)
     val options = expr.options
     if (options.nonEmpty) {
       val mode = options.getOrElse("mode", "PERMISSIVE")
@@ -207,7 +209,6 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
         withInfo(expr, s"from_json: Only PERMISSIVE mode supported, got: $mode")
         return None
       }
-      // Warn about unknown options but don't fail
       val knownOptions = Set("mode")
       val unknownOpts = options.keySet -- knownOptions
       if (unknownOpts.nonEmpty) {

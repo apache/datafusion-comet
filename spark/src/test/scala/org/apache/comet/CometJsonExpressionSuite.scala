@@ -24,6 +24,7 @@ import org.scalatest.Tag
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.catalyst.expressions.JsonToStructs
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
@@ -32,7 +33,9 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+      withSQLConf(
+        CometConf.getExprAllowIncompatConfigKey(classOf[JsonToStructs]) -> "true",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
         testFun
       }
     }
