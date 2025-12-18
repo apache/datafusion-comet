@@ -77,28 +77,32 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
     }
   }
 
-  def unixTimestampBenchmark(values: Int): Unit = {
+  def unixTimestampBenchmark(values: Int, timeZone: String): Unit = {
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         prepareTable(
           dir,
           spark.sql(s"select timestamp_micros(cast(value/100000 as integer)) as ts FROM $tbl"))
-        runWithComet(s"Unix Timestamp from Timestamp", values) {
-          spark.sql("select unix_timestamp(ts) from parquetV1Table").noop()
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timeZone) {
+          runWithComet(s"Unix Timestamp from Timestamp ($timeZone)", values) {
+            spark.sql("select unix_timestamp(ts) from parquetV1Table").noop()
+          }
         }
       }
     }
   }
 
-  def unixTimestampFromDateBenchmark(values: Int): Unit = {
+  def unixTimestampFromDateBenchmark(values: Int, timeZone: String): Unit = {
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         prepareTable(
           dir,
           spark.sql(
             s"select cast(timestamp_micros(cast(value/100000 as integer)) as date) as dt FROM $tbl"))
-        runWithComet(s"Unix Timestamp from Date", values) {
-          spark.sql("select unix_timestamp(dt) from parquetV1Table").noop()
+        withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timeZone) {
+          runWithComet(s"Unix Timestamp from Date ($timeZone)", values) {
+            spark.sql("select unix_timestamp(dt) from parquetV1Table").noop()
+          }
         }
       }
     }
@@ -106,6 +110,17 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024;
+
+    for (timeZone <- Seq("UTC", "America/Los_Angeles")) {
+      withSQLConf("spark.sql.parquet.datetimeRebaseModeInWrite" -> "CORRECTED") {
+        runBenchmarkWithTable(s"UnixTimestamp(timestamp) - $timeZone", values) { v =>
+          unixTimestampBenchmark(v, timeZone)
+        }
+        runBenchmarkWithTable(s"UnixTimestamp(date) - $timeZone", values) { v =>
+          unixTimestampFromDateBenchmark(v, timeZone)
+        }
+      }
+    }
 
     withDefaultTimeZone(LA) {
       withSQLConf(
@@ -123,12 +138,6 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
         }
         runBenchmarkWithTable("TimestampTrunc (Dictionary)", values, useDictionary = true) { v =>
           timestampTruncExprBenchmark(v, useDictionary = true)
-        }
-        runBenchmarkWithTable("UnixTimestamp(timestamp)", values) { v =>
-          unixTimestampBenchmark(v)
-        }
-        runBenchmarkWithTable("UnixTimestamp(date))", values) { v =>
-          unixTimestampFromDateBenchmark(v)
         }
       }
     }

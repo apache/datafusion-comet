@@ -16,9 +16,9 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
-use arrow::array::AsArray;
+use arrow::array::{Array, AsArray, PrimitiveArray};
 use arrow::compute::cast;
-use arrow::datatypes::{DataType, TimeUnit::Microsecond};
+use arrow::datatypes::{DataType, Int64Type, TimeUnit::Microsecond};
 use datafusion::common::{internal_datafusion_err, DataFusionError};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
@@ -79,35 +79,67 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
         match args {
             [ColumnarValue::Array(array)] => match array.data_type() {
                 DataType::Timestamp(_, _) => {
-                    let array = array_with_timezone(
-                        array,
-                        self.timezone.clone(),
-                        Some(&DataType::Timestamp(Microsecond, Some("UTC".into()))),
-                    )?;
+                    let is_utc = self.timezone == "UTC";
+                    let array = if is_utc
+                        && matches!(array.data_type(), DataType::Timestamp(Microsecond, Some(tz)) if tz.as_ref() == "UTC")
+                    {
+                        array
+                    } else {
+                        array_with_timezone(
+                            array,
+                            self.timezone.clone(),
+                            Some(&DataType::Timestamp(Microsecond, Some("UTC".into()))),
+                        )?
+                    };
 
                     let timestamp_array =
                         array.as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
-                    let result: arrow::array::Int64Array = timestamp_array
-                        .iter()
-                        .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
-                        .collect();
+
+                    let result: PrimitiveArray<Int64Type> = if timestamp_array.null_count() == 0 {
+                        timestamp_array
+                            .values()
+                            .iter()
+                            .map(|&micros| micros / MICROS_PER_SECOND)
+                            .collect()
+                    } else {
+                        timestamp_array
+                            .iter()
+                            .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
+                            .collect()
+                    };
+
                     Ok(ColumnarValue::Array(Arc::new(result)))
                 }
                 DataType::Date32 => {
                     let timestamp_array = cast(&array, &DataType::Timestamp(Microsecond, None))?;
 
-                    let array = array_with_timezone(
-                        timestamp_array,
-                        self.timezone.clone(),
-                        Some(&DataType::Timestamp(Microsecond, Some("UTC".into()))),
-                    )?;
+                    let is_utc = self.timezone == "UTC";
+                    let array = if is_utc {
+                        timestamp_array
+                    } else {
+                        array_with_timezone(
+                            timestamp_array,
+                            self.timezone.clone(),
+                            Some(&DataType::Timestamp(Microsecond, Some("UTC".into()))),
+                        )?
+                    };
 
                     let timestamp_array =
                         array.as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
-                    let result: arrow::array::Int64Array = timestamp_array
-                        .iter()
-                        .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
-                        .collect();
+
+                    let result: PrimitiveArray<Int64Type> = if timestamp_array.null_count() == 0 {
+                        timestamp_array
+                            .values()
+                            .iter()
+                            .map(|&micros| micros / MICROS_PER_SECOND)
+                            .collect()
+                    } else {
+                        timestamp_array
+                            .iter()
+                            .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
+                            .collect()
+                    };
+
                     Ok(ColumnarValue::Array(Arc::new(result)))
                 }
                 _ => Err(DataFusionError::Execution(format!(
@@ -130,6 +162,8 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
 mod tests {
     use super::*;
     use arrow::array::{Array, Date32Array, TimestampMicrosecondArray};
+    use arrow::datatypes::Field;
+    use datafusion::config::ConfigOptions;
     use std::sync::Arc;
 
     #[test]
