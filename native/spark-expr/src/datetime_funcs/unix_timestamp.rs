@@ -18,9 +18,8 @@
 use crate::utils::array_with_timezone;
 use arrow::array::AsArray;
 use arrow::compute::cast;
-use arrow::datatypes::{DataType, Field, TimeUnit::Microsecond};
+use arrow::datatypes::{DataType, TimeUnit::Microsecond};
 use datafusion::common::{internal_datafusion_err, DataFusionError};
-use datafusion::config::ConfigOptions;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };

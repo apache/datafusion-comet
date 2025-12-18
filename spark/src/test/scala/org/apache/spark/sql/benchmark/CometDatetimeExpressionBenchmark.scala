@@ -22,12 +22,13 @@ package org.apache.spark.sql.benchmark
 import org.apache.spark.sql.catalyst.util.DateTimeTestUtils.{withDefaultTimeZone, LA}
 import org.apache.spark.sql.internal.SQLConf
 
+// spotless:off
 /**
  * Benchmark to measure Comet execution performance. To run this benchmark:
- * `SPARK_GENERATE_BENCHMARK_FILES=1 make
- * benchmark-org.apache.spark.sql.benchmark.CometDatetimeExpressionBenchmark` Results will be
- * written to "spark/benchmarks/CometDatetimeExpressionBenchmark-**results.txt".
+ * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometDatetimeExpressionBenchmark`
+ * Results will be written to "spark/benchmarks/CometDatetimeExpressionBenchmark-**results.txt".
  */
+// spotless:on
 object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
 
   def dateTruncExprBenchmark(values: Int, useDictionary: Boolean): Unit = {
@@ -76,29 +77,27 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
     }
   }
 
-  def unixTimestampBenchmark(values: Int, useDictionary: Boolean): Unit = {
+  def unixTimestampBenchmark(values: Int): Unit = {
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         prepareTable(
           dir,
           spark.sql(s"select timestamp_micros(cast(value/100000 as integer)) as ts FROM $tbl"))
-        val isDictionary = if (useDictionary) "(Dictionary)" else ""
-        runWithComet(s"Unix Timestamp from Timestamp $isDictionary", values) {
+        runWithComet(s"Unix Timestamp from Timestamp", values) {
           spark.sql("select unix_timestamp(ts) from parquetV1Table").noop()
         }
       }
     }
   }
 
-  def unixTimestampFromDateBenchmark(values: Int, useDictionary: Boolean): Unit = {
+  def unixTimestampFromDateBenchmark(values: Int): Unit = {
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         prepareTable(
           dir,
           spark.sql(
             s"select cast(timestamp_micros(cast(value/100000 as integer)) as date) as dt FROM $tbl"))
-        val isDictionary = if (useDictionary) "(Dictionary)" else ""
-        runWithComet(s"Unix Timestamp from Date $isDictionary", values) {
+        runWithComet(s"Unix Timestamp from Date", values) {
           spark.sql("select unix_timestamp(dt) from parquetV1Table").noop()
         }
       }
@@ -125,20 +124,11 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
         runBenchmarkWithTable("TimestampTrunc (Dictionary)", values, useDictionary = true) { v =>
           timestampTruncExprBenchmark(v, useDictionary = true)
         }
-        runBenchmarkWithTable("UnixTimestamp", values) { v =>
-          unixTimestampBenchmark(v, useDictionary = false)
+        runBenchmarkWithTable("UnixTimestamp(timestamp)", values) { v =>
+          unixTimestampBenchmark(v)
         }
-        runBenchmarkWithTable("UnixTimestamp (Dictionary)", values, useDictionary = true) { v =>
-          unixTimestampBenchmark(v, useDictionary = true)
-        }
-        runBenchmarkWithTable("UnixTimestamp from Date", values) { v =>
-          unixTimestampFromDateBenchmark(v, useDictionary = false)
-        }
-        runBenchmarkWithTable(
-          "UnixTimestamp from Date (Dictionary)",
-          values,
-          useDictionary = true) { v =>
-          unixTimestampFromDateBenchmark(v, useDictionary = true)
+        runBenchmarkWithTable("UnixTimestamp(date))", values) { v =>
+          unixTimestampFromDateBenchmark(v)
         }
       }
     }
