@@ -80,7 +80,6 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
             [ColumnarValue::Array(array)] => {
                 match array.data_type() {
                     DataType::Timestamp(_, _) => {
-                        // Convert timestamp to have timezone information
                         let array = array_with_timezone(
                             array,
                             self.timezone.clone(),
@@ -90,7 +89,6 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
                             )),
                         )?;
 
-                        // Extract timestamp values and convert microseconds to seconds
                         let timestamp_array =
                             array.as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
                         let result: arrow::array::Int64Array = timestamp_array
@@ -100,8 +98,6 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
                         Ok(ColumnarValue::Array(Arc::new(result)))
                     }
                     DataType::Date32 => {
-                        // Date32 is stored as days since Unix epoch
-                        // Convert to seconds by multiplying by seconds per day
                         let date_array = array.as_primitive::<arrow::datatypes::Date32Type>();
                         let result: arrow::array::Int64Array = date_array
                             .iter()
@@ -184,7 +180,6 @@ mod tests {
 
     #[test]
     fn test_unix_timestamp_with_nulls() {
-        // Test null handling
         let input = TimestampMicrosecondArray::from(vec![Some(1577836800000000), None]);
         let udf = SparkUnixTimestamp::new("UTC".to_string());
 

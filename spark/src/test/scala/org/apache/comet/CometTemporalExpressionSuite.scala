@@ -121,14 +121,12 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       checkSparkAnswerAndOperator("SELECT c0, unix_timestamp(c0) from tbl order by c0")
     }
 
-    // Test with Date type
     val r = new Random(42)
     val dateSchema = StructType(Seq(StructField("d", DataTypes.DateType, true)))
     val dateDF = FuzzDataGenerator.generateDataFrame(r, spark, dateSchema, 100, DataGenOptions())
     dateDF.createOrReplaceTempView("date_tbl")
     checkSparkAnswerAndOperator("SELECT d, unix_timestamp(d) from date_tbl order by d")
 
-    // Test with different timezones
     withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles") {
       createTimestampTestData.createOrReplaceTempView("tbl2")
       checkSparkAnswerAndOperator("SELECT c0, unix_timestamp(c0) from tbl2 order by c0")
