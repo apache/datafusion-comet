@@ -48,30 +48,23 @@ object CometCastBenchmark extends CometBenchmarkBase {
     session
   }
 
-  // Wrapper on SQL cast function
-  case class BenchCastExpression(name: DataType) {
-    override def toString: String = s"${name.sql}"
+  def castExprSQL(toDataType: DataType, input: String): String = {
+    s"CAST ($input AS ${toDataType.sql})"
   }
-
-  def castExprSQL(castExpr: BenchCastExpression, input: String): String = {
-    s"CAST ($input AS $castExpr)"
-  }
-
-  private val castExpressionList = CometCast.supportedTypes.map(BenchCastExpression(_))
 
   override def runCometBenchmark(args: Array[String]): Unit = {
 
     //  TODO : Create all possible input datatypes. We only have Long inputs for now
-    castExpressionList.foreach { castExpr =>
-      Seq(true, false).foreach { k =>
+    CometCast.supportedTypes.foreach { toDataType =>
+      Seq(false, true).foreach { k =>
         CometCast.isSupported(
           LongType,
-          castExpr.name,
+          toDataType,
           None,
           if (k) CometEvalMode.ANSI else CometEvalMode.LEGACY) match {
           case Compatible(notes) =>
-            runBenchmarkWithTable(s"Running benchmark $castExpr)", 1024 * 1024 * 10) { v =>
-              castBenchmark(v, castExpr, isAnsiMode = k)
+            runBenchmarkWithTable(s"Running benchmark $toDataType)", 1024 * 1024 * 10) { v =>
+              castBenchmark(v, LongType, toDataType, isAnsiMode = k)
             }
           case Incompatible(notes) => None
           case Unsupported(notes) => None
@@ -80,37 +73,48 @@ object CometCastBenchmark extends CometBenchmarkBase {
     }
   }
 
-  def castBenchmark(values: Int, castExpr: BenchCastExpression, isAnsiMode: Boolean): Unit = {
+  def castBenchmark(
+      values: Int,
+      fromDataType: DataType,
+      toDataType: DataType,
+      isAnsiMode: Boolean): Unit = {
 
     val benchmark =
       new Benchmark(
-        s"Cast function to : ${castExpr} , ansi mode enabled : ${isAnsiMode}",
+        s"Cast function to : ${toDataType} , ansi mode enabled : ${isAnsiMode}",
         values,
         output = output)
 
-    val functionSQL = castExprSQL(castExpr, "value")
-    val query = s"SELECT $functionSQL FROM $tbl"
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(dir, spark.sql(s"SELECT value FROM $tbl"))
+        val functionSQL = castExprSQL(toDataType, "value")
+        val query = s"SELECT $functionSQL FROM parquetV1Table"
 
-    benchmark.addCase(
-      s"SQL Parquet - Spark Cast expr to : ${castExpr} , ansi mode enabled : ${isAnsiMode}") {
-      _ =>
-        withSQLConf(SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
-          Try { spark.sql(query).noop() }
+        benchmark.addCase(
+          s"SQL Parquet - Spark Cast expr from ${fromDataType.sql} to : ${toDataType.sql} , " +
+            s"ansi mode enabled : ${isAnsiMode}") {
+          _ =>
+            withSQLConf(SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
+              Try { spark.sql(query).noop() }
+            }
         }
+
+        benchmark.addCase(
+          s"SQL Parquet - Comet Cast expr from ${fromDataType.sql} to : ${toDataType.sql} , " +
+            s"ansi mode enabled : ${isAnsiMode}") {
+          _ =>
+            withSQLConf(
+              CometConf.COMET_ENABLED.key -> "true",
+              CometConf.COMET_EXEC_ENABLED.key -> "true",
+              SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
+              Try { spark.sql(query).noop() }
+            }
+        }
+        benchmark.run()
+      }
     }
 
-    benchmark.addCase(
-      s"SQL Parquet - Comet Cast expr to : ${castExpr} , ansi mode enabled : ${isAnsiMode}") {
-      _ =>
-        withSQLConf(
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_ENABLED.key -> "true",
-          SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
-          Try { spark.sql(query).noop() }
-        }
-    }
-
-    benchmark.run()
   }
 
 }
