@@ -236,6 +236,22 @@ impl Accumulator for SumIntegerAccumulator {
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> DFResult<()> {
+        let expected_state_len = if self.eval_mode == EvalMode::Try {
+            2
+        } else {
+            1
+        };
+        if expected_state_len != states.len() {
+            return Err(DataFusionError::Internal(
+                format!(
+                    "Invalid state while merging batch. Expected {} elements but found {}",
+                    expected_state_len,
+                    states.len()
+                )
+                .into(),
+            ));
+        }
+
         let that_sum_array = states[0].as_primitive::<Int64Type>();
         let that_sum = if that_sum_array.is_null(0) {
             None
@@ -480,6 +496,21 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
     ) -> DFResult<()> {
         debug_assert!(opt_filter.is_none(), "opt_filter is not supported yet");
 
+        let expected_state_len = if self.eval_mode == EvalMode::Try {
+            2
+        } else {
+            1
+        };
+        if expected_state_len != values.len() {
+            return Err(DataFusionError::Internal(
+                format!(
+                    "Invalid state while merging batch. Expected {} elements but found {}",
+                    expected_state_len,
+                    values.len()
+                )
+                .into(),
+            ));
+        }
         let that_sums = values[0].as_primitive::<Int64Type>();
 
         self.resize_helper(total_num_groups);
