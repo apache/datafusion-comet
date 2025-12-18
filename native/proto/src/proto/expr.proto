@@ -85,6 +85,7 @@ message Expr {
     Rand randn = 62;
     EmptyExpr spark_partition_id = 63;
     EmptyExpr monotonically_increasing_id = 64;
+    UnixTimestamp unix_timestamp = 65;
   }
 }
 
@@ -293,6 +294,11 @@ message Minute {
 }
 
 message Second {
+  Expr child = 1;
+  string timezone = 2;
+}
+
+message UnixTimestamp {
   Expr child = 1;
   string timezone = 2;
 }

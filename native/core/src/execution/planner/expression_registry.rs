@@ -108,6 +108,7 @@ pub enum ExpressionType {
     Minute,
     Second,
     TruncTimestamp,
+    UnixTimestamp,
 }
 
 /// Registry for expression builders
@@ -351,6 +352,7 @@ impl ExpressionRegistry {
             Some(ExprStruct::Minute(_)) => Ok(ExpressionType::Minute),
             Some(ExprStruct::Second(_)) => Ok(ExpressionType::Second),
             Some(ExprStruct::TruncTimestamp(_)) => Ok(ExpressionType::TruncTimestamp),
+            Some(ExprStruct::UnixTimestamp(_)) => Ok(ExpressionType::UnixTimestamp),
 
             Some(other) => Err(ExecutionError::GeneralError(format!(
                 "Unsupported expression type: {:?}",

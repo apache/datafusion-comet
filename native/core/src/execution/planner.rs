@@ -71,6 +71,7 @@ use datafusion::{
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
+    SparkUnixTimestamp,
 };
 use iceberg::expr::Bind;
 
@@ -418,6 +419,24 @@ impl PhysicalPlanner {
                 let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
                     "second",
                     comet_second,
+                    args,
+                    field_ref,
+                    Arc::new(ConfigOptions::default()),
+                );
+
+                Ok(Arc::new(expr))
+            }
+            ExprStruct::UnixTimestamp(expr) => {
+                let child =
+                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let timezone = expr.timezone.clone();
+                let args = vec![child];
+                let comet_unix_timestamp =
+                    Arc::new(ScalarUDF::new_from_impl(SparkUnixTimestamp::new(timezone)));
+                let field_ref = Arc::new(Field::new("unix_timestamp", DataType::Int64, true));
+                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
+                    "unix_timestamp",
+                    comet_unix_timestamp,
                     args,
                     field_ref,
                     Arc::new(ConfigOptions::default()),

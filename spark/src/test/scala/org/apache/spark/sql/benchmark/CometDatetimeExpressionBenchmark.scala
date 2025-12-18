@@ -76,6 +76,35 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
     }
   }
 
+  def unixTimestampBenchmark(values: Int, useDictionary: Boolean): Unit = {
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(
+          dir,
+          spark.sql(s"select timestamp_micros(cast(value/100000 as integer)) as ts FROM $tbl"))
+        val isDictionary = if (useDictionary) "(Dictionary)" else ""
+        runWithComet(s"Unix Timestamp from Timestamp $isDictionary", values) {
+          spark.sql(s"select unix_timestamp(ts) from parquetV1Table").noop()
+        }
+      }
+    }
+  }
+
+  def unixTimestampFromDateBenchmark(values: Int, useDictionary: Boolean): Unit = {
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(
+          dir,
+          spark.sql(
+            s"select cast(timestamp_micros(cast(value/100000 as integer)) as date) as dt FROM $tbl"))
+        val isDictionary = if (useDictionary) "(Dictionary)" else ""
+        runWithComet(s"Unix Timestamp from Date $isDictionary", values) {
+          spark.sql(s"select unix_timestamp(dt) from parquetV1Table").noop()
+        }
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024;
 
@@ -95,6 +124,21 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
         }
         runBenchmarkWithTable("TimestampTrunc (Dictionary)", values, useDictionary = true) { v =>
           timestampTruncExprBenchmark(v, useDictionary = true)
+        }
+        runBenchmarkWithTable("UnixTimestamp", values) { v =>
+          unixTimestampBenchmark(v, useDictionary = false)
+        }
+        runBenchmarkWithTable("UnixTimestamp (Dictionary)", values, useDictionary = true) { v =>
+          unixTimestampBenchmark(v, useDictionary = true)
+        }
+        runBenchmarkWithTable("UnixTimestamp from Date", values) { v =>
+          unixTimestampFromDateBenchmark(v, useDictionary = false)
+        }
+        runBenchmarkWithTable(
+          "UnixTimestamp from Date (Dictionary)",
+          values,
+          useDictionary = true) { v =>
+          unixTimestampFromDateBenchmark(v, useDictionary = true)
         }
       }
     }
