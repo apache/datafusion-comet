@@ -100,7 +100,6 @@ impl ExpressionBuilder for RlikeBuilder {
     }
 }
 
-/// Builder for FromJson expressions
 pub struct FromJsonBuilder;
 
 impl ExpressionBuilder for FromJsonBuilder {

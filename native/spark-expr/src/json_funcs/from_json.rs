@@ -133,28 +133,19 @@ fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<Arra
     use arrow::array::StringArray;
     use arrow::buffer::NullBuffer;
 
-    // Input must be string array
     let string_array = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
         datafusion::common::DataFusionError::Execution("from_json expects string input".to_string())
     })?;
 
-    // Schema must be struct
     let DataType::Struct(fields) = schema else {
         return Err(datafusion::common::DataFusionError::Execution(
             "from_json requires struct schema".to_string(),
         ));
     };
 
-    // Build struct array by parsing each JSON string
     let num_rows = string_array.len();
-
-    // Create builders for each field
     let mut field_builders = create_field_builders(fields, num_rows)?;
-
-    // Track which rows should be null at the struct level
     let mut struct_nulls = vec![true; num_rows];
-
-    // Parse each row
     for (row_idx, struct_null) in struct_nulls.iter_mut().enumerate() {
         if string_array.is_null(row_idx) {
             // Null input -> null struct
@@ -188,15 +179,11 @@ fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<Arra
         }
     }
 
-    // Finish builders
     let arrays: Vec<ArrayRef> = field_builders
         .into_iter()
         .map(finish_builder)
         .collect::<Result<Vec<_>>>()?;
-
-    // Create null buffer from struct_nulls
     let null_buffer = NullBuffer::from(struct_nulls);
-
     Ok(Arc::new(StructArray::new(
         fields.clone(),
         arrays,
