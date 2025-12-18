@@ -19,6 +19,7 @@
 
 package org.apache.comet.serde.operator
 
+import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
 import org.json4s._
@@ -258,9 +259,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       fileScanTaskClass: Class[_],
       taskBuilder: OperatorOuterClass.IcebergFileScanTask.Builder,
       icebergScanBuilder: OperatorOuterClass.IcebergScan.Builder,
-      partitionTypeToPoolIndex: scala.collection.mutable.HashMap[String, Int],
-      partitionSpecToPoolIndex: scala.collection.mutable.HashMap[String, Int],
-      partitionDataToPoolIndex: scala.collection.mutable.HashMap[String, Int]): Unit = {
+      partitionTypeToPoolIndex: mutable.HashMap[String, Int],
+      partitionSpecToPoolIndex: mutable.HashMap[String, Int],
+      partitionDataToPoolIndex: mutable.HashMap[String, Int]): Unit = {
     try {
       val specMethod = fileScanTaskClass.getMethod("spec")
       val spec = specMethod.invoke(task)
@@ -631,15 +632,15 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
 
     // Deduplication structures - map unique values to pool indices
-    val schemaToPoolIndex = scala.collection.mutable.HashMap[AnyRef, Int]()
-    val partitionTypeToPoolIndex = scala.collection.mutable.HashMap[String, Int]()
-    val partitionSpecToPoolIndex = scala.collection.mutable.HashMap[String, Int]()
-    val nameMappingToPoolIndex = scala.collection.mutable.HashMap[String, Int]()
-    val projectFieldIdsToPoolIndex = scala.collection.mutable.HashMap[Seq[Int], Int]()
-    val partitionDataToPoolIndex = scala.collection.mutable.HashMap[String, Int]()
+    val schemaToPoolIndex = mutable.HashMap[AnyRef, Int]()
+    val partitionTypeToPoolIndex = mutable.HashMap[String, Int]()
+    val partitionSpecToPoolIndex = mutable.HashMap[String, Int]()
+    val nameMappingToPoolIndex = mutable.HashMap[String, Int]()
+    val projectFieldIdsToPoolIndex = mutable.HashMap[Seq[Int], Int]()
+    val partitionDataToPoolIndex = mutable.HashMap[String, Int]()
     val deleteFilesToPoolIndex =
-      scala.collection.mutable.HashMap[Seq[OperatorOuterClass.IcebergDeleteFile], Int]()
-    val residualToPoolIndex = scala.collection.mutable.HashMap[Option[Expr], Int]()
+      mutable.HashMap[Seq[OperatorOuterClass.IcebergDeleteFile], Int]()
+    val residualToPoolIndex = mutable.HashMap[Option[Expr], Int]()
 
     var totalTasks = 0
 
