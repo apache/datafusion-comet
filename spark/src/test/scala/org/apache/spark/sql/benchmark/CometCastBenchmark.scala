@@ -56,15 +56,15 @@ object CometCastBenchmark extends CometBenchmarkBase {
 
     //  TODO : Create all possible input datatypes. We only have Long inputs for now
     CometCast.supportedTypes.foreach { toDataType =>
-      Seq(false, true).foreach { k =>
+      Seq(false, true).foreach { ansiMode =>
         CometCast.isSupported(
           LongType,
           toDataType,
           None,
-          if (k) CometEvalMode.ANSI else CometEvalMode.LEGACY) match {
+          if (ansiMode) CometEvalMode.ANSI else CometEvalMode.LEGACY) match {
           case Compatible(notes) =>
             runBenchmarkWithTable(s"Running benchmark $toDataType)", 1024 * 1024 * 10) { v =>
-              castBenchmark(v, LongType, toDataType, isAnsiMode = k)
+              castBenchmark(v, LongType, toDataType, isAnsiMode = ansiMode)
             }
           case Incompatible(notes) => None
           case Unsupported(notes) => None
