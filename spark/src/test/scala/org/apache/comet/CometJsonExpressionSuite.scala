@@ -34,8 +34,7 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
       withSQLConf(
-        CometConf.getExprAllowIncompatConfigKey(classOf[JsonToStructs]) -> "true",
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+        CometConf.getExprAllowIncompatConfigKey(classOf[JsonToStructs]) -> "true") {
         testFun
       }
     }
@@ -103,6 +102,29 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         checkSparkAnswerAndOperator(s"SELECT from_json(_2, '$schema') FROM tbl")
         checkSparkAnswerAndOperator(s"SELECT from_json(_2, '$schema').i32 FROM tbl")
         checkSparkAnswerAndOperator(s"SELECT from_json(_2, '$schema').str FROM tbl")
+      }
+    }
+  }
+
+  test("from_json - null input produces null struct") {
+    assume(!isSpark40Plus)
+
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        Seq(
+          (1, """{"a":1,"b":"x"}"""), // Valid JSON to establish column type
+          (2, null) // Null input
+        ),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+
+        val schema = "a INT, b STRING"
+        // Verify that null input produces a NULL struct (not a struct with null fields)
+        checkSparkAnswerAndOperator(
+          s"SELECT _1, from_json(_2, '$schema') IS NULL as struct_is_null FROM tbl WHERE _1 = 2")
+        // Field access on null struct should return null
+        checkSparkAnswerAndOperator(
+          s"SELECT _1, from_json(_2, '$schema').a FROM tbl WHERE _1 = 2")
       }
     }
   }

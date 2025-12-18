@@ -131,6 +131,7 @@ impl PhysicalExpr for FromJson {
 /// Parse JSON string array into struct array
 fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<ArrayRef> {
     use arrow::array::StringArray;
+    use arrow::buffer::NullBuffer;
 
     // Input must be string array
     let string_array = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
@@ -150,30 +151,37 @@ fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<Arra
     // Create builders for each field
     let mut field_builders = create_field_builders(fields, num_rows)?;
 
+    // Track which rows should be null at the struct level
+    let mut struct_nulls = vec![true; num_rows];
+
     // Parse each row
     for row_idx in 0..num_rows {
         if string_array.is_null(row_idx) {
-            // Null input -> null output
+            // Null input -> null struct
+            struct_nulls[row_idx] = false;
             append_null_to_all_builders(&mut field_builders);
         } else {
             let json_str = string_array.value(row_idx);
 
-            // Parse JSON (PERMISSIVE mode: return null on error)
+            // Parse JSON (PERMISSIVE mode: return null fields on error)
             match serde_json::from_str::<serde_json::Value>(json_str) {
                 Ok(json_value) => {
                     if let serde_json::Value::Object(obj) = json_value {
-                        // Extract each field
+                        // Struct is not null, extract each field
+                        struct_nulls[row_idx] = true;
                         for (field, builder) in fields.iter().zip(field_builders.iter_mut()) {
                             let field_value = obj.get(field.name());
                             append_field_value(builder, field, field_value)?;
                         }
                     } else {
-                        // Not an object -> null
+                        // Not an object -> struct with null fields
+                        struct_nulls[row_idx] = true;
                         append_null_to_all_builders(&mut field_builders);
                     }
                 }
                 Err(_) => {
-                    // Parse error -> null (PERMISSIVE mode)
+                    // Parse error -> struct with null fields (PERMISSIVE mode)
+                    struct_nulls[row_idx] = true;
                     append_null_to_all_builders(&mut field_builders);
                 }
             }
@@ -186,10 +194,13 @@ fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<Arra
         .map(finish_builder)
         .collect::<Result<Vec<_>>>()?;
 
+    // Create null buffer from struct_nulls
+    let null_buffer = NullBuffer::from(struct_nulls);
+
     Ok(Arc::new(StructArray::new(
         fields.clone(),
         arrays,
-        None, // No top-level nullability bitmap needed
+        Some(null_buffer),
     )))
 }
 
@@ -381,13 +392,13 @@ mod tests {
         assert_eq!(a_array.value(1), 456);
         assert!(b_array.is_null(1));
 
-        // Third row (parse error -> all nulls)
+        // Third row (parse error -> struct NOT null, all fields null)
+        assert!(!struct_array.is_null(2), "Struct should not be null");
         assert!(a_array.is_null(2));
         assert!(b_array.is_null(2));
 
-        // Fourth row (null input -> all nulls)
-        assert!(a_array.is_null(3));
-        assert!(b_array.is_null(3));
+        // Fourth row (null input -> struct IS null)
+        assert!(struct_array.is_null(3), "Struct itself should be null");
 
         Ok(())
     }
@@ -488,8 +499,9 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
 
-        // All rows should have null values for all fields
+        // All rows should have non-null structs with null field values
         for i in 0..4 {
+            assert!(!struct_array.is_null(i), "Row {} struct should not be null", i);
             assert!(a_array.is_null(i), "Row {} field a should be null", i);
             assert!(b_array.is_null(i), "Row {} field b should be null", i);
         }
