@@ -2336,6 +2336,87 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("from_json - basic primitives") {
+    assume(!isSpark40Plus)
+
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val schema = StructType(Seq(StructField("json_str", DataTypes.StringType, nullable = true)))
+
+      val jsonTestCases = Seq(
+        """{"a":123,"b":"hello"}""",
+        """{"a":456,"b":"world"}""",
+        """{"a":789}"""
+      ) // missing field
+
+      val df = FuzzDataGenerator.generateDataFrame(
+        new Random(42),
+        spark,
+        schema,
+        100,
+        DataGenOptions(customStrings = jsonTestCases))
+
+      df.createOrReplaceTempView("tbl")
+
+      val targetSchema = "a INT, b STRING"
+      checkSparkAnswerAndOperator(s"SELECT from_json(json_str, '$targetSchema') FROM tbl")
+      checkSparkAnswerAndOperator(s"SELECT from_json(json_str, '$targetSchema').a FROM tbl")
+      checkSparkAnswerAndOperator(s"SELECT from_json(json_str, '$targetSchema').b FROM tbl")
+    }
+  }
+
+  test("from_json - null and error handling") {
+    assume(!isSpark40Plus)
+
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val schema = StructType(Seq(StructField("json_str", DataTypes.StringType, nullable = true)))
+
+      val edgeCases = Seq(
+        """{"a":123,"b":"test"}""", // Valid JSON
+        """{"a":456}""", // Missing field b
+        """{"a":null}""", // Explicit null
+        """invalid json""", // Parse error
+        """{}""", // Empty object
+        """null"""
+      ) // JSON null
+
+      val df = FuzzDataGenerator.generateDataFrame(
+        new Random(42),
+        spark,
+        schema,
+        100,
+        DataGenOptions(customStrings = edgeCases))
+
+      df.createOrReplaceTempView("tbl")
+
+      val targetSchema = "a INT, b STRING"
+      checkSparkAnswerAndOperator(s"SELECT from_json(json_str, '$targetSchema') FROM tbl")
+    }
+  }
+
+  test("from_json - all primitive types") {
+    assume(!isSpark40Plus)
+
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val schema = StructType(Seq(StructField("json_str", DataTypes.StringType, nullable = true)))
+
+      val typeTestCases = Seq(
+        """{"i32":123,"i64":9999999999,"f32":1.5,"f64":2.5,"bool":true,"str":"hello"}""",
+        """{"i32":-456,"i64":-9999999999,"f32":-1.5,"f64":-2.5,"bool":false,"str":"world"}""")
+
+      val df = FuzzDataGenerator.generateDataFrame(
+        new Random(42),
+        spark,
+        schema,
+        50,
+        DataGenOptions(customStrings = typeTestCases))
+
+      df.createOrReplaceTempView("tbl")
+
+      val targetSchema = "i32 INT, i64 BIGINT, f32 FLOAT, f64 DOUBLE, bool BOOLEAN, str STRING"
+      checkSparkAnswerAndOperator(s"SELECT from_json(json_str, '$targetSchema') FROM tbl")
+    }
+  }
+
   test("struct and named_struct with dictionary") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(

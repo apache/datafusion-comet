@@ -25,12 +25,13 @@ use datafusion::common::ScalarValue;
 use datafusion::physical_expr::expressions::{LikeExpr, Literal};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_proto::spark_expression::Expr;
-use datafusion_comet_spark_expr::{RLike, SubstringExpr};
+use datafusion_comet_spark_expr::{FromJson, RLike, SubstringExpr};
 
 use crate::execution::{
     expressions::extract_expr,
     operators::ExecutionError,
     planner::{expression_registry::ExpressionBuilder, PhysicalPlanner},
+    serde::to_arrow_datatype,
 };
 
 /// Builder for Substring expressions
@@ -96,5 +97,22 @@ impl ExpressionBuilder for RlikeBuilder {
                 "RLike only supports scalar patterns".to_string(),
             )),
         }
+    }
+}
+
+/// Builder for FromJson expressions
+pub struct FromJsonBuilder;
+
+impl ExpressionBuilder for FromJsonBuilder {
+    fn build(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+        planner: &PhysicalPlanner,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let expr = extract_expr!(spark_expr, FromJson);
+        let child = planner.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+        let schema = to_arrow_datatype(expr.schema.as_ref().unwrap());
+        Ok(Arc::new(FromJson::new(child, schema, &expr.timezone)))
     }
 }
