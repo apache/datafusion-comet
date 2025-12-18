@@ -54,6 +54,9 @@ use parquet::{
 use crate::execution::shuffle::CompressionCodec;
 use crate::parquet::parquet_support::write_to_hdfs_with_opendal_async;
 
+#[cfg(all(test, feature = "hdfs-opendal"))]
+use crate::parquet::parquet_support::write_record_batch_to_hdfs;
+
 /// Enum representing different types of Arrow writers based on storage backend
 enum ParquetWriter {
     /// Writer for local file system
@@ -65,7 +68,10 @@ enum ParquetWriter {
 
 impl ParquetWriter {
     /// Write a RecordBatch to the underlying writer
-    async fn write(&mut self, batch: &RecordBatch) -> std::result::Result<(), parquet::errors::ParquetError> {
+    async fn write(
+        &mut self,
+        batch: &RecordBatch,
+    ) -> std::result::Result<(), parquet::errors::ParquetError> {
         match self {
             ParquetWriter::LocalFile(writer) => writer.write(batch),
             ParquetWriter::Remote(writer, output_path) => {
@@ -84,7 +90,7 @@ impl ParquetWriter {
                         output_path, e
                     ))
                 })?;
-                
+
                 write_to_hdfs_with_opendal_async(&url, Bytes::from(buffer))
                     .await
                     .map_err(|e| {
@@ -99,12 +105,14 @@ impl ParquetWriter {
                 cursor.set_position(0);
 
                 Ok(())
-            },
+            }
         }
     }
 
     /// Close the writer and return the buffer for remote writers
-    fn close(self) -> std::result::Result<Option<(Vec<u8>, String)>, parquet::errors::ParquetError> {
+    fn close(
+        self,
+    ) -> std::result::Result<Option<(Vec<u8>, String)>, parquet::errors::ParquetError> {
         match self {
             ParquetWriter::LocalFile(writer) => {
                 writer.close()?;
@@ -211,10 +219,12 @@ impl ParquetWriterExec {
                 // For remote storage (HDFS, S3), write to an in-memory buffer
                 let buffer = Vec::new();
                 let cursor = Cursor::new(buffer);
-                let writer = ArrowWriter::try_new(cursor, schema, Some(props))
-                    .map_err(|e| DataFusionError::Execution(format!(
-                        "Failed to create {} writer: {}", storage_scheme, e
-                    )))?;
+                let writer = ArrowWriter::try_new(cursor, schema, Some(props)).map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Failed to create {} writer: {}",
+                        storage_scheme, e
+                    ))
+                })?;
                 Ok(ParquetWriter::Remote(writer, output_file_path.to_string()))
             }
             "local" => {
@@ -232,12 +242,14 @@ impl ParquetWriterExec {
                     ))
                 })?;
 
-                let writer = ArrowWriter::try_new(file, schema, Some(props))
-                    .map_err(|e| DataFusionError::Execution(format!("Failed to create local file writer: {}", e)))?;
+                let writer = ArrowWriter::try_new(file, schema, Some(props)).map_err(|e| {
+                    DataFusionError::Execution(format!("Failed to create local file writer: {}", e))
+                })?;
                 Ok(ParquetWriter::LocalFile(writer))
             }
             _ => Err(DataFusionError::Execution(format!(
-                "Unsupported storage scheme: {}", storage_scheme
+                "Unsupported storage scheme: {}",
+                storage_scheme
             ))),
         }
     }
@@ -379,7 +391,12 @@ impl ExecutionPlan for ParquetWriterExec {
             .set_compression(compression)
             .build();
 
-        let mut writer = Self::create_arrow_writer(storage_scheme, &part_file, Arc::clone(&output_schema), props)?;
+        let mut writer = Self::create_arrow_writer(
+            storage_scheme,
+            &part_file,
+            Arc::clone(&output_schema),
+            props,
+        )?;
 
         // Clone schema for use in async closure
         let schema_for_write = Arc::clone(&output_schema);
@@ -443,4 +460,68 @@ impl ExecutionPlan for ParquetWriterExec {
             futures::stream::once(write_task).try_flatten(),
         )))
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Int32Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use std::sync::Arc;
+
+    /// Helper function to create a test RecordBatch with 1000 rows of (int, string) data
+    fn create_test_record_batch() -> Result<RecordBatch> {
+        let num_rows = 1000;
+        
+        // Create int column with values 0..1000
+        let int_array = Int32Array::from_iter_values(0..num_rows);
+        
+        // Create string column with values "value_0", "value_1", ..., "value_999"
+        let string_values: Vec<String> = (0..num_rows)
+            .map(|i| format!("value_{}", i))
+            .collect();
+        let string_array = StringArray::from(string_values);
+        
+        // Define schema
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        
+        // Create RecordBatch
+        RecordBatch::try_new(
+            schema,
+            vec![Arc::new(int_array), Arc::new(string_array)],
+        )
+        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))
+    }
+
+    #[tokio::test]
+    //#[cfg(feature = "hdfs-opendal")]
+    async fn test_write_to_hdfs() -> Result<()> {
+        use opendal::services::Hdfs;
+        use opendal::Operator;
+        
+        // Create test data
+        let batch = create_test_record_batch()?;
+        
+        // Configure HDFS connection
+        let namenode = "hdfs://namenode:9000";
+        let output_path = "/user/test_write/data.parquet";
+        
+        // Create OpenDAL HDFS operator
+        let builder = Hdfs::default().name_node(namenode);
+        let op = Operator::new(builder)
+            .map_err(|e| DataFusionError::Execution(format!("Failed to create HDFS operator: {}", e)))?
+            .finish();
+        
+        // Write the batch using write_record_batch_to_hdfs
+        write_record_batch_to_hdfs(&op, output_path, batch)
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("Failed to write to HDFS: {}", e)))?;
+        
+        println!("Successfully wrote 1000 rows to HDFS at {}{}", namenode, output_path);
+        
+        Ok(())
+    }  
 }

@@ -406,35 +406,82 @@ fn create_hdfs_object_store(
     Ok((Box::new(store), path))
 }
 
-/// Writes data to HDFS using OpenDAL via ObjectStore trait (asynchronous version)
-///
-/// # Arguments
-/// * `url` - The HDFS URL (e.g., hdfs://namenode:port/path/to/file)
-/// * `data` - The bytes to write to the file
-///
-/// # Returns
-/// * `Ok(())` on success
-/// * `Err(object_store::Error)` on failure
-///
-/// # Example
-/// ```ignore
-/// use url::Url;
-/// use bytes::Bytes;
-///
-/// let url = Url::parse("hdfs://namenode:9000/path/to/file.parquet")?;
-/// let data = Bytes::from("file contents");
-/// write_to_hdfs_with_opendal_async(&url, data).await?;
-/// ```
-#[cfg(feature = "hdfs-opendal")]
-pub async fn write_to_hdfs_with_opendal_async(
-    url: &Url,
-    data: bytes::Bytes,
-) -> Result<(), object_store::Error> {
-    // Create the HDFS object store using OpenDAL
-    let (object_store, path) = create_hdfs_object_store(url)?;
+use tokio::sync::mpsc;
 
-    // Use the ObjectStore trait's put method to write the data
-    object_store.put(&path, data.into()).await?;
+struct ChannelWriter {
+    sender: mpsc::Sender<Vec<u8>>,
+}
+
+impl std::io::Write for ChannelWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.sender
+            .blocking_send(buf.to_vec())
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "channel closed")
+            })?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "hdfs-opendal")]
+use opendal::Operator;
+use parquet::arrow::ArrowWriter;
+use arrow::record_batch::RecordBatch;
+use parquet::file::properties::WriterProperties;
+
+#[cfg(feature = "hdfs-opendal")]
+pub async fn write_record_batch_to_hdfs(
+    op: &Operator,
+    path: &str,
+    batch: RecordBatch,
+) -> Result<(), opendal::Error> {
+    // ------------------------------------------------------------
+    // 1. Open async HDFS writer
+    // ------------------------------------------------------------
+    let mut hdfs_writer = op.writer(path).await?;
+
+    // ------------------------------------------------------------
+    // 2. Channel between blocking and async worlds
+    // ------------------------------------------------------------
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
+
+    let schema = batch.schema();
+
+    // ------------------------------------------------------------
+    // 3. Blocking Parquet writer
+    // ------------------------------------------------------------
+    let parquet_task = tokio::task::spawn_blocking(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let props = WriterProperties::builder().build();
+        let channel_writer = ChannelWriter { sender: tx };
+
+        let mut writer = ArrowWriter::try_new(
+            channel_writer,
+            schema,
+            Some(props),
+        )?;
+
+        writer.write(&batch)?;
+        writer.close()?; // important to flush remaining data
+
+        Ok(())
+    });
+
+    // ------------------------------------------------------------
+    // 4. Async HDFS consumer
+    // ------------------------------------------------------------
+    while let Some(chunk) = rx.recv().await {
+        hdfs_writer.write(chunk).await?;
+    }
+
+    hdfs_writer.close().await?;
+    parquet_task
+        .await
+        .map_err(|e| opendal::Error::new(opendal::ErrorKind::Unexpected, &format!("task join failed: {}", e)))?
+        .map_err(|e| opendal::Error::new(opendal::ErrorKind::Unexpected, &format!("parquet write failed: {}", e)))?;
 
     Ok(())
 }
