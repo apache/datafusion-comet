@@ -17,6 +17,7 @@
 
 use crate::utils::array_with_timezone;
 use arrow::array::AsArray;
+use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, TimeUnit::Microsecond};
 use datafusion::common::{internal_datafusion_err, DataFusionError};
 use datafusion::config::ConfigOptions;
@@ -27,7 +28,6 @@ use num::integer::div_floor;
 use std::{any::Any, fmt::Debug, sync::Arc};
 
 const MICROS_PER_SECOND: i64 = 1_000_000;
-const SECONDS_PER_DAY: i64 = 86400;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkUnixTimestamp {
@@ -72,45 +72,50 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
         &self,
         args: ScalarFunctionArgs,
     ) -> datafusion::common::Result<ColumnarValue> {
-        let args: [ColumnarValue; 1] = args.args.try_into().map_err(|_| {
-            internal_datafusion_err!("unix_timestamp expects exactly one argument")
-        })?;
+        let args: [ColumnarValue; 1] = args
+            .args
+            .try_into()
+            .map_err(|_| internal_datafusion_err!("unix_timestamp expects exactly one argument"))?;
 
         match args {
-            [ColumnarValue::Array(array)] => {
-                match array.data_type() {
-                    DataType::Timestamp(_, _) => {
-                        let array = array_with_timezone(
-                            array,
-                            self.timezone.clone(),
-                            Some(&DataType::Timestamp(
-                                Microsecond,
-                                Some("UTC".into()),
-                            )),
-                        )?;
+            [ColumnarValue::Array(array)] => match array.data_type() {
+                DataType::Timestamp(_, _) => {
+                    let array = array_with_timezone(
+                        array,
+                        self.timezone.clone(),
+                        Some(&DataType::Timestamp(Microsecond, Some("UTC".into()))),
+                    )?;
 
-                        let timestamp_array =
-                            array.as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
-                        let result: arrow::array::Int64Array = timestamp_array
-                            .iter()
-                            .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
-                            .collect();
-                        Ok(ColumnarValue::Array(Arc::new(result)))
-                    }
-                    DataType::Date32 => {
-                        let date_array = array.as_primitive::<arrow::datatypes::Date32Type>();
-                        let result: arrow::array::Int64Array = date_array
-                            .iter()
-                            .map(|v| v.map(|days| (days as i64) * SECONDS_PER_DAY))
-                            .collect();
-                        Ok(ColumnarValue::Array(Arc::new(result)))
-                    }
-                    _ => Err(DataFusionError::Execution(format!(
-                        "unix_timestamp does not support input type: {:?}",
-                        array.data_type()
-                    ))),
+                    let timestamp_array =
+                        array.as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
+                    let result: arrow::array::Int64Array = timestamp_array
+                        .iter()
+                        .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
+                        .collect();
+                    Ok(ColumnarValue::Array(Arc::new(result)))
                 }
-            }
+                DataType::Date32 => {
+                    let timestamp_array = cast(&array, &DataType::Timestamp(Microsecond, None))?;
+
+                    let array = array_with_timezone(
+                        timestamp_array,
+                        self.timezone.clone(),
+                        Some(&DataType::Timestamp(Microsecond, Some("UTC".into()))),
+                    )?;
+
+                    let timestamp_array =
+                        array.as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
+                    let result: arrow::array::Int64Array = timestamp_array
+                        .iter()
+                        .map(|v| v.map(|micros| div_floor(micros, MICROS_PER_SECOND)))
+                        .collect();
+                    Ok(ColumnarValue::Array(Arc::new(result)))
+                }
+                _ => Err(DataFusionError::Execution(format!(
+                    "unix_timestamp does not support input type: {:?}",
+                    array.data_type()
+                ))),
+            },
             _ => Err(DataFusionError::Execution(
                 "unix_timestamp(scalar) should be fold in Spark JVM side.".to_string(),
             )),

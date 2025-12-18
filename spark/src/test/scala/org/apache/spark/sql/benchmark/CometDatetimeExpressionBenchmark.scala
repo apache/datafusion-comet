@@ -84,7 +84,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
           spark.sql(s"select timestamp_micros(cast(value/100000 as integer)) as ts FROM $tbl"))
         val isDictionary = if (useDictionary) "(Dictionary)" else ""
         runWithComet(s"Unix Timestamp from Timestamp $isDictionary", values) {
-          spark.sql(s"select unix_timestamp(ts) from parquetV1Table").noop()
+          spark.sql("select unix_timestamp(ts) from parquetV1Table").noop()
         }
       }
     }
@@ -99,7 +99,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
             s"select cast(timestamp_micros(cast(value/100000 as integer)) as date) as dt FROM $tbl"))
         val isDictionary = if (useDictionary) "(Dictionary)" else ""
         runWithComet(s"Unix Timestamp from Date $isDictionary", values) {
-          spark.sql(s"select unix_timestamp(dt) from parquetV1Table").noop()
+          spark.sql("select unix_timestamp(dt) from parquetV1Table").noop()
         }
       }
     }

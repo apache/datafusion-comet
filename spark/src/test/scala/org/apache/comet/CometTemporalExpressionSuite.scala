@@ -135,7 +135,6 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
-
   private def createTimestampTestData = {
     val r = new Random(42)
     val schema = StructType(
