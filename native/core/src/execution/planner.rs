@@ -2761,6 +2761,19 @@ fn parse_file_scan_tasks(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    let partition_data_cache: Vec<serde_json::Value> = proto_scan
+        .partition_data_pool
+        .iter()
+        .map(|json| {
+            serde_json::from_str(json).map_err(|e| {
+                ExecutionError::GeneralError(format!(
+                    "Failed to parse partition data JSON from pool: {}",
+                    e
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let results: Result<Vec<_>, _> = proto_tasks
         .iter()
         .map(|proto_task| {
@@ -2821,14 +2834,13 @@ fn parse_file_scan_tasks(
                     )
                 })?;
 
-                let partition_json = proto_scan
-                    .partition_data_pool
+                let partition_data_value = partition_data_cache
                     .get(partition_data_idx as usize)
                     .ok_or_else(|| {
                         ExecutionError::GeneralError(format!(
-                            "Invalid partition_data_idx: {} (pool size: {})",
+                            "Invalid partition_data_idx: {} (cache size: {})",
                             partition_data_idx,
-                            proto_scan.partition_data_pool.len()
+                            partition_data_cache.len()
                         ))
                     })?;
 
@@ -2842,16 +2854,8 @@ fn parse_file_scan_tasks(
                         ))
                     })?;
 
-                let partition_data_value: serde_json::Value = serde_json::from_str(partition_json)
-                    .map_err(|e| {
-                        ExecutionError::GeneralError(format!(
-                            "Failed to parse partition data JSON from pool: {}",
-                            e
-                        ))
-                    })?;
-
                 match iceberg::spec::Literal::try_from_json(
-                    partition_data_value,
+                    partition_data_value.clone(),
                     &iceberg::spec::Type::Struct(partition_type.clone()),
                 ) {
                     Ok(Some(iceberg::spec::Literal::Struct(s))) => Some(s),
