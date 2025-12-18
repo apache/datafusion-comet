@@ -52,7 +52,7 @@ use datafusion::{
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr, LikeExpr,
+            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr,
             Literal as DataFusionLiteral,
         },
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
@@ -124,9 +124,9 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
-    RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr, SumDecimal, TimestampTruncExpr,
-    ToJson, UnboundColumn, Variance,
+    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RandExpr,
+    RandnExpr, SparkCastOptions, Stddev, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn,
+    Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -432,39 +432,6 @@ impl PhysicalPlanner {
                 let timezone = expr.timezone.clone();
 
                 Ok(Arc::new(TimestampTruncExpr::new(child, format, timezone)))
-            }
-            ExprStruct::Substring(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                // Spark Substring's start is 1-based when start > 0
-                let start = expr.start - i32::from(expr.start > 0);
-                // substring negative len is treated as 0 in Spark
-                let len = max(expr.len, 0);
-
-                Ok(Arc::new(SubstringExpr::new(
-                    child,
-                    start as i64,
-                    len as u64,
-                )))
-            }
-            ExprStruct::Like(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(LikeExpr::new(false, false, left, right)))
-            }
-            ExprStruct::Rlike(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                match right.as_any().downcast_ref::<Literal>().unwrap().value() {
-                    ScalarValue::Utf8(Some(pattern)) => {
-                        Ok(Arc::new(RLike::try_new(left, pattern)?))
-                    }
-                    _ => Err(GeneralError(
-                        "RLike only supports scalar patterns".to_string(),
-                    )),
-                }
             }
             ExprStruct::CheckOverflow(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
