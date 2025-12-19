@@ -242,14 +242,11 @@ impl Accumulator for SumIntegerAccumulator {
             1
         };
         if expected_state_len != states.len() {
-            return Err(DataFusionError::Internal(
-                format!(
-                    "Invalid state while merging batch. Expected {} elements but found {}",
-                    expected_state_len,
-                    states.len()
-                )
-                .into(),
-            ));
+            return Err(DataFusionError::Internal(format!(
+                "Invalid state while merging batch. Expected {} elements but found {}",
+                expected_state_len,
+                states.len()
+            )));
         }
 
         let that_sum_array = states[0].as_primitive::<Int64Type>();
@@ -502,14 +499,11 @@ impl GroupsAccumulator for SumIntGroupsAccumulator {
             1
         };
         if expected_state_len != values.len() {
-            return Err(DataFusionError::Internal(
-                format!(
-                    "Invalid state while merging batch. Expected {} elements but found {}",
-                    expected_state_len,
-                    values.len()
-                )
-                .into(),
-            ));
+            return Err(DataFusionError::Internal(format!(
+                "Invalid state while merging batch. Expected {} elements but found {}",
+                expected_state_len,
+                values.len()
+            )));
         }
         let that_sums = values[0].as_primitive::<Int64Type>();
 
