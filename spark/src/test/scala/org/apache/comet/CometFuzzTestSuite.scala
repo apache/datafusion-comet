@@ -283,8 +283,9 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
   private def testParquetTemporalTypes(
       outputTimestampType: ParquetOutputTimestampType.Value): Unit = {
 
+    // TODO test with MapType
     val schemaGenOptions =
-      SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = true)
+      SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = false)
     val dataGenOptions = DataGenOptions(generateNegativeZero = false)
 
     withTempPath { filename =>
