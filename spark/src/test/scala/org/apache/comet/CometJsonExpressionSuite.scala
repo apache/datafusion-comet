@@ -26,8 +26,6 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.JsonToStructs
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
-
 class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -40,8 +38,6 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("from_json - basic primitives") {
-    assume(!isSpark40Plus)
-
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
         (0 until 100).map(i => {
@@ -60,8 +56,6 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("from_json - null and error handling") {
-    assume(!isSpark40Plus)
-
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
         Seq(
@@ -84,8 +78,6 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("from_json - all primitive types") {
-    assume(!isSpark40Plus)
-
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
         (0 until 50).map(i => {
@@ -106,8 +98,6 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("from_json - null input produces null struct") {
-    assume(!isSpark40Plus)
-
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
         Seq(
@@ -129,8 +119,6 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("from_json - nested struct") {
-    assume(!isSpark40Plus)
-
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
         (0 until 50).map(i => {
@@ -145,6 +133,31 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         checkSparkAnswerAndOperator(s"SELECT from_json(_2, '$schema').outer FROM tbl")
         checkSparkAnswerAndOperator(s"SELECT from_json(_2, '$schema').outer.inner_a FROM tbl")
         checkSparkAnswerAndOperator(s"SELECT from_json(_2, '$schema').top_level FROM tbl")
+      }
+    }
+  }
+
+  test("from_json - valid json with incompatible schema") {
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withParquetTable(
+        Seq(
+          (1, """{"a":"not_a_number","b":"test"}"""), // String where INT expected
+          (2, """{"a":123,"b":456}"""), // Number where STRING expected
+          (3, """{"a":{"nested":"value"},"b":"test"}"""), // Object where INT expected
+          (4, """{"a":[1,2,3],"b":"test"}"""), // Array where INT expected
+          (5, """{"a":123.456,"b":"test"}"""), // Float where INT expected
+          (6, """{"a":true,"b":"test"}"""), // Boolean where INT expected
+          (7, """{"a":123,"b":null}""") // Null value for STRING field
+        ),
+        "tbl",
+        withDictionary = dictionaryEnabled) {
+
+        val schema = "a INT, b STRING"
+        // When types don't match, Spark typically returns null for that field
+        checkSparkAnswerAndOperator(
+          s"SELECT _1, from_json(_2, '$schema') as parsed FROM tbl ORDER BY _1")
+        checkSparkAnswerAndOperator(s"SELECT _1, from_json(_2, '$schema').a FROM tbl ORDER BY _1")
+        checkSparkAnswerAndOperator(s"SELECT _1, from_json(_2, '$schema').b FROM tbl ORDER BY _1")
       }
     }
   }
