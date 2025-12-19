@@ -29,9 +29,9 @@ import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometSc
 import org.apache.spark.sql.execution.FileSourceScanExec
 import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{StructField, StructType}
+import org.apache.spark.sql.types.{ByteType, DataType, ShortType, StructField, StructType}
 
-import org.apache.comet.{CometConf, ConfigEntry}
+import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
 import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, withInfo}
 import org.apache.comet.objectstore.NativeConfig
@@ -40,11 +40,34 @@ import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClas
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
+import org.apache.comet.shims.CometTypeShim
 
 /**
  * Validation and serde logic for `native_datafusion` scans.
  */
-object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
+object CometNativeScan
+    extends CometOperatorSerde[CometScanExec]
+    with DataTypeSupport
+    with CometTypeShim
+    with Logging {
+
+  override def isTypeSupported(
+      dt: DataType,
+      name: String,
+      fallbackReasons: ListBuffer[String]): Boolean = {
+    dt match {
+      case ByteType | ShortType if !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
+        fallbackReasons += "Cannot read $dt when " +
+          s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
+        false
+      case dt if isStringCollationType(dt) =>
+        // we don't need specific support for collation in scans, but this
+        // is a convenient place to force the whole query to fall back to Spark for now
+        false
+      case _ =>
+        super.isTypeSupported(dt, name, fallbackReasons)
+    }
+  }
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {

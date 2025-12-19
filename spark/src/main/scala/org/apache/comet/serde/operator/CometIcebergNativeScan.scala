@@ -20,6 +20,7 @@
 package org.apache.comet.serde.operator
 
 import scala.collection.mutable
+import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.json4s._
@@ -31,14 +32,20 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
 import org.apache.spark.sql.types._
 
-import org.apache.comet.ConfigEntry
+import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
+import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.IcebergReflection
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
+import org.apache.comet.shims.CometTypeShim
 
-object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] with Logging {
+object CometIcebergNativeScan
+    extends CometOperatorSerde[CometBatchScanExec]
+    with DataTypeSupport
+    with CometTypeShim
+    with Logging {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
 
@@ -67,6 +74,31 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val AND = "And"
       val OR = "Or"
       val NOT = "Not"
+    }
+  }
+
+  override def isTypeSupported(
+      dt: DataType,
+      name: String,
+      fallbackReasons: ListBuffer[String]): Boolean = {
+    dt match {
+      case ByteType | ShortType if !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
+        fallbackReasons += s"Cannot read $dt when " +
+          s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
+        false
+      case dt if isStringCollationType(dt) =>
+        // we don't need specific support for collation in scans, but this
+        // is a convenient place to force the whole query to fall back to Spark for now
+        false
+      case m: MapType =>
+        // maps containing complex types are not supported
+        isComplexType(m.keyType) || isComplexType(m.valueType) ||
+        !isTypeSupported(m.keyType, name, fallbackReasons) || isTypeSupported(
+          m.valueType,
+          name,
+          fallbackReasons)
+      case _ =>
+        super.isTypeSupported(dt, name, fallbackReasons)
     }
   }
 

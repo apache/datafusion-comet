@@ -48,7 +48,7 @@ import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflecti
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
-import org.apache.comet.serde.operator.CometNativeScan
+import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -272,9 +272,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           return withInfos(scanExec, fallbackReasons.toSet)
         }
 
-        val typeChecker = CometScanTypeChecker(SCAN_NATIVE_DATAFUSION)
         val schemaSupported =
-          typeChecker.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
+          CometNativeScan.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
 
         if (!schemaSupported) {
           fallbackReasons += "Comet extension is not enabled for " +
@@ -586,40 +585,17 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT only supports local filesystem and S3"
     }
 
-    val typeChecker = CometScanTypeChecker(SCAN_NATIVE_ICEBERG_COMPAT)
     val schemaSupported =
-      typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
+      CometIcebergNativeScan.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
     val partitionSchemaSupported =
-      typeChecker.isSchemaSupported(partitionSchema, fallbackReasons)
-
-    def hasUnsupportedType(dataType: DataType): Boolean = {
-      dataType match {
-        case s: StructType => s.exists(field => hasUnsupportedType(field.dataType))
-        case a: ArrayType => hasUnsupportedType(a.elementType)
-        case m: MapType =>
-          // maps containing complex types are not supported
-          isComplexType(m.keyType) || isComplexType(m.valueType) ||
-          hasUnsupportedType(m.keyType) || hasUnsupportedType(m.valueType)
-        case dt if isStringCollationType(dt) => true
-        case _ => false
-      }
-    }
-
-    val knownIssues =
-      scanExec.requiredSchema.exists(field => hasUnsupportedType(field.dataType)) ||
-        partitionSchema.exists(field => hasUnsupportedType(field.dataType))
-
-    if (knownIssues) {
-      fallbackReasons += "Schema contains data types that are not supported by " +
-        s"$SCAN_NATIVE_ICEBERG_COMPAT"
-    }
+      CometIcebergNativeScan.isSchemaSupported(partitionSchema, fallbackReasons)
 
     val cometExecEnabled = COMET_EXEC_ENABLED.get()
     if (!cometExecEnabled) {
       fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT requires ${COMET_EXEC_ENABLED.key}=true"
     }
 
-    if (cometExecEnabled && schemaSupported && partitionSchemaSupported && !knownIssues &&
+    if (cometExecEnabled && schemaSupported && partitionSchemaSupported &&
       fallbackReasons.isEmpty) {
       logInfo(s"Auto scan mode selecting $SCAN_NATIVE_ICEBERG_COMPAT")
       SCAN_NATIVE_ICEBERG_COMPAT
@@ -634,7 +610,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
   private def isDynamicPruningFilter(e: Expression): Boolean =
     e.exists(_.isInstanceOf[PlanExpression[_]])
 
-  def checkSchema(scanExec: FileSourceScanExec, scanImpl: String, r: HadoopFsRelation): Unit = {
+  private def checkSchema(
+      scanExec: FileSourceScanExec,
+      scanImpl: String,
+      r: HadoopFsRelation): Unit = {
     val fallbackReasons = new ListBuffer[String]()
     val typeChecker = CometScanTypeChecker(scanImpl)
     val schemaSupported =
@@ -651,10 +630,15 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
   }
 }
 
+// TODO move these type checks into specific scan classes
 case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with CometTypeShim {
 
   // this class is intended to be used with a specific scan impl
   assert(scanImpl != CometConf.SCAN_AUTO)
+
+  assert(
+    scanImpl != CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
+    "Call CometIcebergNativeScan.isSchemaSupported instead of using CometScanTypeChecker")
 
   override def isTypeSupported(
       dt: DataType,
