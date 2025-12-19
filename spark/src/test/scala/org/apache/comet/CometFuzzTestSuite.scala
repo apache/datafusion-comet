@@ -20,11 +20,13 @@
 package org.apache.comet
 
 import scala.util.Random
+
 import org.apache.commons.codec.binary.Hex
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
+
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 import org.apache.comet.testing.FuzzDataGenerator.{doubleNaNLiteral, floatNaNLiteral}
@@ -284,6 +286,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
       outputTimestampType: ParquetOutputTimestampType.Value): Unit = {
 
     // TODO test with MapType
+    // https://github.com/apache/datafusion-comet/issues/2945
     val schemaGenOptions =
       SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = false)
     val dataGenOptions = DataGenOptions(generateNegativeZero = false)
@@ -295,7 +298,12 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> outputTimestampType.toString,
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
 
-        val schema = FuzzDataGenerator.generateNestedSchema(random, 50, 2, 3, schemaGenOptions)
+        val schema = FuzzDataGenerator.generateNestedSchema(
+          random,
+          numCols = 50,
+          minDepth = 2,
+          maxDepth = 3,
+          options = schemaGenOptions)
         ParquetGenerator.makeParquetFile(
           random,
           spark,
@@ -320,7 +328,8 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
                 df.createOrReplaceTempView("t1")
                 val columns =
                   df.schema.fields
-                    .filter(f => DataTypeSupport.hasTemporalType(f.dataType)).map(_.name)
+                    .filter(f => DataTypeSupport.hasTemporalType(f.dataType))
+                    .map(_.name)
 
                 for (col <- columns) {
                   checkSparkAnswer(s"SELECT $col FROM t1 ORDER BY $col")

@@ -81,8 +81,7 @@ object DataTypeSupport {
   }
 
   def hasTemporalType(t: DataType): Boolean = t match {
-    case DataTypes.DateType | DataTypes.TimestampType |
-         DataTypes.TimestampNTZType =>
+    case DataTypes.DateType | DataTypes.TimestampType | DataTypes.TimestampNTZType =>
       true
     case t: StructType => t.exists(f => hasTemporalType(f.dataType))
     case t: ArrayType => hasTemporalType(t.elementType)
