@@ -20,15 +20,13 @@
 package org.apache.comet
 
 import scala.util.Random
-
 import org.apache.commons.codec.binary.Hex
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
-
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 import org.apache.comet.testing.FuzzDataGenerator.{doubleNaNLiteral, floatNaNLiteral}
 
 class CometFuzzTestSuite extends CometFuzzTestBase {
@@ -283,13 +281,10 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
   }
 
   private def testParquetTemporalTypes(
-      outputTimestampType: ParquetOutputTimestampType.Value,
-      generateArray: Boolean = true,
-      generateStruct: Boolean = true): Unit = {
+      outputTimestampType: ParquetOutputTimestampType.Value): Unit = {
 
     val schemaGenOptions =
-      SchemaGenOptions(generateArray = generateArray, generateStruct = generateStruct)
-
+      SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = true)
     val dataGenOptions = DataGenOptions(generateNegativeZero = false)
 
     withTempPath { filename =>
@@ -298,12 +293,14 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         CometConf.COMET_ENABLED.key -> "false",
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> outputTimestampType.toString,
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
+
+        val schema = FuzzDataGenerator.generateNestedSchema(random, 50, 2, 3, schemaGenOptions)
         ParquetGenerator.makeParquetFile(
           random,
           spark,
           filename.toString,
+          schema,
           100,
-          schemaGenOptions,
           dataGenOptions)
       }
 
@@ -320,18 +317,9 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
 
                 val df = spark.read.parquet(filename.toString)
                 df.createOrReplaceTempView("t1")
-
-                def hasTemporalType(t: DataType): Boolean = t match {
-                  case DataTypes.DateType | DataTypes.TimestampType |
-                      DataTypes.TimestampNTZType =>
-                    true
-                  case t: StructType => t.exists(f => hasTemporalType(f.dataType))
-                  case t: ArrayType => hasTemporalType(t.elementType)
-                  case _ => false
-                }
-
                 val columns =
-                  df.schema.fields.filter(f => hasTemporalType(f.dataType)).map(_.name)
+                  df.schema.fields
+                    .filter(f => DataTypeSupport.hasTemporalType(f.dataType)).map(_.name)
 
                 for (col <- columns) {
                   checkSparkAnswer(s"SELECT $col FROM t1 ORDER BY $col")
