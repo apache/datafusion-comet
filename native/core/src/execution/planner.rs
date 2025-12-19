@@ -22,7 +22,7 @@ pub mod macros;
 pub mod operator_registry;
 
 use crate::execution::operators::IcebergScanExec;
-use crate::execution::operators::{init_csv_datasource_exec, IcebergScanExec};
+use crate::execution::operators::init_csv_datasource_exec;
 use crate::{
     errors::ExpressionError,
     execution::{
@@ -1155,7 +1155,7 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::CsvScan(scan) => {
-                let data_schema = convert_spark_types_to_arrow_schema(scan.schema.as_slice());
+                let data_schema = convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
                 let object_store_options: HashMap<String, String> = scan
                     .object_store_options
                     .iter()
@@ -1179,7 +1179,7 @@ impl PhysicalPlanner {
                     object_store_url,
                     file_groups,
                     data_schema,
-                    &scan.csv_options
+                    &scan.csv_options.clone().unwrap()
                 )?;
                 Ok((
                     vec![],

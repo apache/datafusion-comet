@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::HashMap;
 use crate::execution::operators::ExecutionError;
 use arrow::datatypes::SchemaRef;
+use datafusion::common::Result;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::datasource::physical_plan::CsvSource;
 use datafusion_datasource::file_groups::FileGroup;
@@ -25,8 +25,8 @@ use datafusion_datasource::file_scan_config::{FileScanConfig, FileScanConfigBuil
 use datafusion_datasource::source::DataSourceExec;
 use datafusion_datasource::PartitionedFile;
 use std::sync::Arc;
+use datafusion_common::DataFusionError;
 use datafusion_comet_proto::spark_operator::CsvOptions;
-use crate::execution::spark_config::SparkConfig;
 
 pub fn init_csv_datasource_exec(
     object_store_url: ObjectStoreUrl,
@@ -34,7 +34,7 @@ pub fn init_csv_datasource_exec(
     data_schema: SchemaRef,
     csv_options: &CsvOptions
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    let csv_source = build_csv_source(csv_options);
+    let csv_source = build_csv_source(csv_options.clone());
 
     let file_groups = file_groups
         .iter()
@@ -49,9 +49,18 @@ pub fn init_csv_datasource_exec(
     Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))
 }
 
-fn build_csv_source(options: &CsvOptions) -> Arc<CsvSource> {
-    let csv_source = CsvSource::new(options.has_header, options.delimiter as u8, options.quote as u8)
-        .with_terminator(None);
+fn build_csv_source(options: CsvOptions) -> Arc<CsvSource> {
+    let delimiter = char_to_u8(options.delimiter.chars().next().unwrap(), "delimiter").unwrap();
+    let quote = char_to_u8(options.quote.chars().next().unwrap(), "quote").unwrap();
+    let csv_source = CsvSource::new(options.has_header, delimiter, quote);
 
     Arc::new(csv_source)
+}
+
+fn char_to_u8(c: char, option: &str) -> Result<u8> {
+    if c.is_ascii() {
+        Ok(c as u8)
+    } else {
+        Err(DataFusionError::Configuration(format!("invalid {option} character '{c}': must be an ASCII character")))
+    }
 }

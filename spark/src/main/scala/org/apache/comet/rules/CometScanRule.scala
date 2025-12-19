@@ -244,7 +244,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
-            fileFormat = new CSVFileFormat)
+            fileFormat = "csv")
         } else {
           withInfos(scanExec, fallbackReasons.toSet)
         }

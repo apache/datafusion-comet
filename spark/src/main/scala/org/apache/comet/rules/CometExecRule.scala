@@ -190,7 +190,7 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
         convertToComet(scan, CometIcebergNativeScan).getOrElse(scan)
 
-      case scan: CometBatchScanExec if scan.fileFormat.isInstanceOf[CSVFileFormat] =>
+      case scan: CometBatchScanExec if scan.fileFormat == "csv" =>
         convertToComet(scan, CometCsvNativeScanExec).getOrElse(scan)
 
       // Comet JVM + native scan for V1 and V2

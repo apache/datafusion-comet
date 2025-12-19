@@ -44,7 +44,7 @@ case class CometBatchScanExec(
     wrapped: BatchScanExec,
     runtimeFilters: Seq[Expression],
     nativeIcebergScanMetadata: Option[CometIcebergNativeScanMetadata] = None,
-    fileFormat: FileFormat = ParquetFileFormat.asInstanceOf[FileFormat])
+    fileFormat: String = "parquet")
     extends DataSourceV2ScanExecBase
     with CometPlan {
   def ordering: Option[Seq[SortOrder]] = wrapped.ordering

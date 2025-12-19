@@ -17,28 +17,24 @@
  * under the License.
  */
 
-package org.apache.comet.csv
+package org.apache.comet.testing
 
-import org.apache.spark.sql.CometTestBase
+import scala.util.Random
 
-import org.apache.comet.CometConf
+import org.apache.spark.sql.{SaveMode, SparkSession}
+import org.apache.spark.sql.types.StructType
 
-class CometNativeCsvScanSuite extends CometTestBase {
+object CsvGenerator {
 
-  test("Native csv scan") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
-      CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
-      "spark.sql.sources.useV1SourceList" -> "") {
-      spark.time {
-        val df = spark.read
-          .options(Map("header" -> "false", "delimiter" -> ","))
-          .csv("/Users/tendoo/Desktop/datafusion-comet/spark/src/test/resources/test-data/csv-test-1.csv")
-        df.show(false)
-      }
-    }
-    Thread.sleep(10000000)
+  def makeCsvFile(
+      r: Random,
+      spark: SparkSession,
+      schema: StructType,
+      filename: String,
+      numRows: Int): Unit = {
+    val options = DataGenOptions(allowNull = false, generateNaN = false)
+    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, numRows, options)
+    df.write.mode(SaveMode.Overwrite).csv(filename)
   }
+
 }

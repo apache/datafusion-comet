@@ -71,7 +71,12 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
       childOp: Operator*): Option[Operator] = {
     val csvScanBuilder = OperatorOuterClass.CsvScan.newBuilder()
     val csvScan = op.wrapped.scan.asInstanceOf[CSVScan]
-    csvOptions2Proto(csvScan.options, true, "")
+    val columnPruning = op.session.sessionState.conf.csvColumnPruning
+    val timeZone = op.session.sessionState.conf.sessionLocalTimeZone
+
+    val csvOptionsProto = csvOptions2Proto(csvScan.options, columnPruning, timeZone)
+    csvScanBuilder.setCsvOptions(csvOptionsProto)
+
     val schemaProto = schema2Proto(op.schema.fields)
     val partitionsProto =
       op.inputPartitions.map(partition => partition2Proto(partition.asInstanceOf[FilePartition]))
