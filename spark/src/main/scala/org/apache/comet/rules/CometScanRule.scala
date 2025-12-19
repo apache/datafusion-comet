@@ -610,10 +610,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
   private def isDynamicPruningFilter(e: Expression): Boolean =
     e.exists(_.isInstanceOf[PlanExpression[_]])
 
-  private def checkSchema(
-      scanExec: FileSourceScanExec,
-      scanImpl: String,
-      r: HadoopFsRelation): Unit = {
+  def checkSchema(scanExec: FileSourceScanExec, scanImpl: String, r: HadoopFsRelation): Unit = {
     val fallbackReasons = new ListBuffer[String]()
     val typeChecker = CometScanTypeChecker(scanImpl)
     val schemaSupported =
