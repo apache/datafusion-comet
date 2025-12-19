@@ -2019,7 +2019,7 @@ fn cast_string_to_decimal128_impl(
         if string_array.is_null(i) {
             decimal_builder.append_null();
         } else {
-            let str_value = string_array.value(i).trim();
+            let str_value = string_array.value(i);
             match parse_string_to_decimal(str_value, precision, scale) {
                 Ok(Some(decimal_value)) => {
                     decimal_builder.append_value(decimal_value);
@@ -2068,7 +2068,7 @@ fn cast_string_to_decimal256_impl(
         if string_array.is_null(i) {
             decimal_builder.append_null();
         } else {
-            let str_value = string_array.value(i).trim();
+            let str_value = string_array.value(i);
             match parse_string_to_decimal(str_value, precision, scale) {
                 Ok(Some(decimal_value)) => {
                     // Convert i128 to i256
@@ -2108,12 +2108,12 @@ fn is_valid_decimal_format(s: &str) -> bool {
         return false;
     }
 
-    let bytes = s.as_bytes();
+    let string_bytes = s.as_bytes();
     let mut idx = 0;
-    let len = bytes.len();
+    let len = string_bytes.len();
 
     // Skip leading +/- signs
-    if bytes[idx] == b'+' || bytes[idx] == b'-' {
+    if string_bytes[idx] == b'+' || string_bytes[idx] == b'-' {
         idx += 1;
         if idx >= len {
             // Sign only. Fail early
@@ -2122,7 +2122,7 @@ fn is_valid_decimal_format(s: &str) -> bool {
     }
 
     // Check invalid cases like "++", "+-"
-    if bytes[idx] == b'+' || bytes[idx] == b'-' {
+    if string_bytes[idx] == b'+' || string_bytes[idx] == b'-' {
         return false;
     }
 
@@ -2131,7 +2131,7 @@ fn is_valid_decimal_format(s: &str) -> bool {
     let mut is_decimal_point_seen = false;
 
     while idx < len {
-        let ch = bytes[idx];
+        let ch = string_bytes[idx];
 
         if ch.is_ascii_digit() {
             has_digit = true;
@@ -2154,7 +2154,7 @@ fn is_valid_decimal_format(s: &str) -> bool {
                 return false;
             }
 
-            if bytes[idx] == b'+' || bytes[idx] == b'-' {
+            if string_bytes[idx] == b'+' || string_bytes[idx] == b'-' {
                 idx += 1;
                 if idx >= len {
                     return false;
@@ -2162,13 +2162,13 @@ fn is_valid_decimal_format(s: &str) -> bool {
             }
 
             // Must have at least one digit in exponent
-            if !bytes[idx].is_ascii_digit() {
+            if !string_bytes[idx].is_ascii_digit() {
                 return false;
             }
 
             // Rest all should only be digits
             while idx < len {
-                if !bytes[idx].is_ascii_digit() {
+                if !string_bytes[idx].is_ascii_digit() {
                     return false;
                 }
                 idx += 1;
@@ -2184,26 +2184,39 @@ fn is_valid_decimal_format(s: &str) -> bool {
 
 /// Parse a string to decimal following Spark's behavior
 fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Option<i128>> {
-    if s.is_empty() {
+    let string_bytes = s.as_bytes();
+    let mut start = 0;
+    let mut end = string_bytes.len();
+
+    while start < end && string_bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && string_bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    let trimmed = &s[start..end];
+
+    if trimmed.is_empty() {
         return Ok(None);
     }
     // Handle special values (inf, nan, etc.)
-    if s.eq_ignore_ascii_case("inf")
-        || s.eq_ignore_ascii_case("+inf")
-        || s.eq_ignore_ascii_case("infinity")
-        || s.eq_ignore_ascii_case("+infinity")
-        || s.eq_ignore_ascii_case("-inf")
-        || s.eq_ignore_ascii_case("-infinity")
-        || s.eq_ignore_ascii_case("nan")
+    if trimmed.eq_ignore_ascii_case("inf")
+        || trimmed.eq_ignore_ascii_case("+inf")
+        || trimmed.eq_ignore_ascii_case("infinity")
+        || trimmed.eq_ignore_ascii_case("+infinity")
+        || trimmed.eq_ignore_ascii_case("-inf")
+        || trimmed.eq_ignore_ascii_case("-infinity")
+        || trimmed.eq_ignore_ascii_case("nan")
     {
         return Ok(None);
     }
 
-    if !is_valid_decimal_format(s) {
+    if !is_valid_decimal_format(trimmed) {
         return Ok(None);
     }
 
-    match parse_decimal_str(s) {
+    match parse_decimal_str(trimmed) {
         Ok((mantissa, exponent)) => {
             // Convert to target scale
             let target_scale = scale as i32;
@@ -2267,7 +2280,6 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
 /// Parse a decimal string into mantissa and scale
 /// e.g., "123.45" -> (12345, 2), "-0.001" -> (-1, 3)
 fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
-    let s = s.trim();
     if s.is_empty() {
         return Err("Empty string".to_string());
     }
@@ -2292,17 +2304,9 @@ fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
         mantissa_str
     };
 
-    let split_by_dot: Vec<&str> = mantissa_str.split('.').collect();
-
-    if split_by_dot.len() > 2 {
-        return Err("Multiple decimal points".to_string());
-    }
-
-    let integral_part = split_by_dot[0];
-    let fractional_part = if split_by_dot.len() == 2 {
-        split_by_dot[1]
-    } else {
-        ""
+    let (integral_part, fractional_part) = match mantissa_str.find('.') {
+        Some(dot_pos) => (&mantissa_str[..dot_pos], &mantissa_str[dot_pos + 1..]),
+        None => (mantissa_str, ""),
     };
 
     // Parse integral part
