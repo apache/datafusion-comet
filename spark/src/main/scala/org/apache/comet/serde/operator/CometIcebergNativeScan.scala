@@ -426,6 +426,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         // Global S3A configuration keys
         case "fs.s3a.access.key" => Some("s3.access-key-id" -> value)
         case "fs.s3a.secret.key" => Some("s3.secret-access-key" -> value)
+        case "fs.s3a.session.token" => Some("s3.session-token" -> value)
         case "fs.s3a.endpoint" => Some("s3.endpoint" -> value)
         case "fs.s3a.path.style.access" => Some("s3.path-style-access" -> value)
         case "fs.s3a.endpoint.region" => Some("s3.region" -> value)
@@ -440,6 +441,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             property match {
               case "access.key" => Some(s"s3.bucket.$bucket.access-key-id" -> value)
               case "secret.key" => Some(s"s3.bucket.$bucket.secret-access-key" -> value)
+              case "session.token" => Some(s"s3.bucket.$bucket.session.token" -> value)
               case "endpoint" => Some(s"s3.bucket.$bucket.endpoint" -> value)
               case "path.style.access" => Some(s"s3.bucket.$bucket.path-style-access" -> value)
               case "endpoint.region" => Some(s"s3.bucket.$bucket.region" -> value)

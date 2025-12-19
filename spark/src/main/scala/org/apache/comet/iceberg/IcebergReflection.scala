@@ -204,9 +204,11 @@ object IcebergReflection extends Logging {
       case _: NoSuchMethodException =>
         try {
           // If not directly available, access via operations/metadata
-          val opsMethod = table.getClass.getMethod("operations")
+          val opsMethod = table.getClass.getDeclaredMethod("operations")
+          opsMethod.setAccessible(true)
           val ops = opsMethod.invoke(table)
-          val currentMethod = ops.getClass.getMethod("current")
+          val currentMethod = ops.getClass.getDeclaredMethod("current")
+          currentMethod.setAccessible(true)
           val metadata = currentMethod.invoke(ops)
           val formatVersionMethod = metadata.getClass.getMethod("formatVersion")
           Some(formatVersionMethod.invoke(metadata).asInstanceOf[Int])
@@ -274,10 +276,12 @@ object IcebergReflection extends Logging {
    */
   def getTableMetadata(table: Any): Option[Any] = {
     try {
-      val operationsMethod = table.getClass.getMethod("operations")
+      val operationsMethod = table.getClass.getDeclaredMethod("operations")
+      operationsMethod.setAccessible(true)
       val operations = operationsMethod.invoke(table)
 
-      val currentMethod = operations.getClass.getMethod("current")
+      val currentMethod = operations.getClass.getDeclaredMethod("current")
+      currentMethod.setAccessible(true)
       Some(currentMethod.invoke(operations))
     } catch {
       case e: Exception =>
