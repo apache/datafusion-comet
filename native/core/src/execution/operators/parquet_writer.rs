@@ -26,7 +26,6 @@ use std::{
     sync::Arc,
 };
 
-use bytes::Bytes;
 use opendal::{services::Hdfs, Operator};
 use url::Url;
 
@@ -54,17 +53,20 @@ use parquet::{
 
 use crate::execution::shuffle::CompressionCodec;
 
-#[cfg(all(test, feature = "hdfs-opendal"))]
-use crate::parquet::parquet_support::write_record_batch_to_hdfs;
-
 /// Enum representing different types of Arrow writers based on storage backend
 enum ParquetWriter {
     /// Writer for local file system
     LocalFile(ArrowWriter<File>),
     /// Writer for HDFS or other remote storage (writes to in-memory buffer)
     /// Contains the arrow writer, HDFS operator, and destination path
+    /// an Arrow writer writes to in-memory buffer the data converted to Parquet format
     /// The opendal::Writer is created lazily on first write
-    Remote(ArrowWriter<Cursor<Vec<u8>>>, Option<opendal::Writer>, Operator, String),
+    Remote(
+        ArrowWriter<Cursor<Vec<u8>>>,
+        Option<opendal::Writer>,
+        Operator,
+        String,
+    ),
 }
 
 impl ParquetWriter {
@@ -75,7 +77,12 @@ impl ParquetWriter {
     ) -> std::result::Result<(), parquet::errors::ParquetError> {
         match self {
             ParquetWriter::LocalFile(writer) => writer.write(batch),
-            ParquetWriter::Remote(arrow_parquet_buffer_writer, hdfs_writer_opt, op, output_path) => {
+            ParquetWriter::Remote(
+                arrow_parquet_buffer_writer,
+                hdfs_writer_opt,
+                op,
+                output_path,
+            ) => {
                 // Write batch to in-memory buffer
                 arrow_parquet_buffer_writer.write(batch)?;
 
@@ -88,7 +95,8 @@ impl ParquetWriter {
                 if hdfs_writer_opt.is_none() {
                     let writer = op.writer(output_path.as_str()).await.map_err(|e| {
                         parquet::errors::ParquetError::External(
-                            format!("Failed to create HDFS writer: {}", e).into()
+                            format!("Failed to create HDFS writer for '{}': {}", output_path, e)
+                                .into(),
                         )
                     })?;
                     *hdfs_writer_opt = Some(writer);
@@ -98,7 +106,11 @@ impl ParquetWriter {
                 if let Some(hdfs_writer) = hdfs_writer_opt {
                     hdfs_writer.write(current_data).await.map_err(|e| {
                         parquet::errors::ParquetError::External(
-                            format!("Failed to write batch to HDFS: {}", e).into()
+                            format!(
+                                "Failed to write batch to HDFS file '{}': {}",
+                                output_path, e
+                            )
+                            .into(),
                         )
                     })?;
                 }
@@ -113,15 +125,18 @@ impl ParquetWriter {
     }
 
     /// Close the writer and finalize the file
-    async fn close(
-        self,
-    ) -> std::result::Result<(), parquet::errors::ParquetError> {
+    async fn close(self) -> std::result::Result<(), parquet::errors::ParquetError> {
         match self {
             ParquetWriter::LocalFile(writer) => {
                 writer.close()?;
                 Ok(())
             }
-            ParquetWriter::Remote(arrow_parquet_buffer_writer, mut hdfs_writer_opt, op, output_path) => {
+            ParquetWriter::Remote(
+                arrow_parquet_buffer_writer,
+                mut hdfs_writer_opt,
+                op,
+                output_path,
+            ) => {
                 // Close the arrow writer to finalize parquet format
                 let cursor = arrow_parquet_buffer_writer.into_inner()?;
                 let final_data = cursor.into_inner();
@@ -130,7 +145,8 @@ impl ParquetWriter {
                 if hdfs_writer_opt.is_none() && !final_data.is_empty() {
                     let writer = op.writer(output_path.as_str()).await.map_err(|e| {
                         parquet::errors::ParquetError::External(
-                            format!("Failed to create HDFS writer: {}", e).into()
+                            format!("Failed to create HDFS writer for '{}': {}", output_path, e)
+                                .into(),
                         )
                     })?;
                     hdfs_writer_opt = Some(writer);
@@ -141,14 +157,19 @@ impl ParquetWriter {
                     if let Some(mut hdfs_writer) = hdfs_writer_opt {
                         hdfs_writer.write(final_data).await.map_err(|e| {
                             parquet::errors::ParquetError::External(
-                                format!("Failed to write final data to HDFS: {}", e).into()
+                                format!(
+                                    "Failed to write final data to HDFS file '{}': {}",
+                                    output_path, e
+                                )
+                                .into(),
                             )
                         })?;
 
                         // Close the HDFS writer
                         hdfs_writer.close().await.map_err(|e| {
                             parquet::errors::ParquetError::External(
-                                format!("Failed to close HDFS writer: {}", e).into()
+                                format!("Failed to close HDFS writer for '{}': {}", output_path, e)
+                                    .into(),
                             )
                         })?;
                     }
@@ -243,13 +264,43 @@ impl ParquetWriterExec {
     /// * `Ok(ParquetWriter)` - A writer appropriate for the storage scheme
     /// * `Err(DataFusionError)` - If writer creation fails
     fn create_arrow_writer(
-        storage_scheme: &str,
         output_file_path: &str,
         schema: SchemaRef,
         props: WriterProperties,
     ) -> Result<ParquetWriter> {
+        // Determine storage scheme from output_file_path
+        let storage_scheme = if output_file_path.starts_with("hdfs://") {
+            "hdfs"
+        } else if output_file_path.starts_with("s3://") || output_file_path.starts_with("s3a://") {
+            "s3"
+        } else {
+            "local"
+        };
+
         match storage_scheme {
-            "hdfs" | "s3" => {
+            "hdfs" => {
+                // Parse the output_file_path to extract namenode and path
+                // Expected format: hdfs://namenode:port/path/to/file
+                let url = Url::parse(output_file_path).map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Failed to parse HDFS URL '{}': {}",
+                        output_file_path, e
+                    ))
+                })?;
+
+                // Extract namenode (scheme + host + port)
+                let namenode = format!(
+                    "{}://{}{}",
+                    url.scheme(),
+                    url.host_str().unwrap_or("localhost"),
+                    url.port()
+                        .map(|p| format!(":{}", p))
+                        .unwrap_or_else(|| ":9000".to_string())
+                );
+
+                // Extract the path (without the scheme and host)
+                let hdfs_path = url.path().to_string();
+
                 // For remote storage (HDFS, S3), write to an in-memory buffer
                 let buffer = Vec::new();
                 let cursor = Cursor::new(buffer);
@@ -261,19 +312,23 @@ impl ParquetWriterExec {
                         ))
                     })?;
 
-                let builder = Hdfs::default().name_node("hdfs://namenode:9000");
+                let builder = Hdfs::default().name_node(&namenode);
                 let op = Operator::new(builder)
                     .map_err(|e| {
-                        DataFusionError::Execution(format!("Failed to create HDFS operator: {}", e))
+                        DataFusionError::Execution(format!(
+                            "Failed to create HDFS operator for '{}' (namenode: {}): {}",
+                            output_file_path, namenode, e
+                        ))
                     })?
                     .finish();
 
                 // HDFS writer will be created lazily on first write
+                // Use only the path part for the HDFS writer
                 Ok(ParquetWriter::Remote(
                     arrow_parquet_buffer_writer,
                     None,
                     op,
-                    output_file_path.to_string(),
+                    hdfs_path,
                 ))
             }
             "local" => {
@@ -283,6 +338,14 @@ impl ParquetWriterExec {
                     .strip_prefix("file://")
                     .or_else(|| output_file_path.strip_prefix("file:"))
                     .unwrap_or(output_file_path);
+
+                // Create output directory
+                std::fs::create_dir_all(&local_path).map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Failed to create output directory '{}': {}",
+                        local_path, e
+                    ))
+                })?;
 
                 let file = File::create(local_path).map_err(|e| {
                     DataFusionError::Execution(format!(
@@ -400,39 +463,15 @@ impl ExecutionPlan for ParquetWriterExec {
             .collect();
         let output_schema = Arc::new(arrow::datatypes::Schema::new(fields));
 
-        // Determine storage scheme from work_dir
-        let storage_scheme = if work_dir.starts_with("hdfs://") {
-            "hdfs"
-        } else if work_dir.starts_with("s3://") || work_dir.starts_with("s3a://") {
-            "s3"
-        } else {
-            "local"
-        };
-
-        // Strip file:// or file: prefix if present
-        let local_path = work_dir
-            .strip_prefix("file://")
-            .or_else(|| work_dir.strip_prefix("file:"))
-            .unwrap_or(&work_dir)
-            .to_string();
-
-        // Create output directory
-        std::fs::create_dir_all(&local_path).map_err(|e| {
-            DataFusionError::Execution(format!(
-                "Failed to create output directory '{}': {}",
-                local_path, e
-            ))
-        })?;
-
         // Generate part file name for this partition
         // If using FileCommitProtocol (work_dir is set), include task_attempt_id in the filename
         let part_file = if let Some(attempt_id) = task_attempt_id {
             format!(
                 "{}/part-{:05}-{:05}.parquet",
-                local_path, self.partition_id, attempt_id
+                work_dir, self.partition_id, attempt_id
             )
         } else {
-            format!("{}/part-{:05}.parquet", local_path, self.partition_id)
+            format!("{}/part-{:05}.parquet", work_dir, self.partition_id)
         };
 
         // Configure writer properties
@@ -440,12 +479,7 @@ impl ExecutionPlan for ParquetWriterExec {
             .set_compression(compression)
             .build();
 
-        let mut writer = Self::create_arrow_writer(
-            storage_scheme,
-            &part_file,
-            Arc::clone(&output_schema),
-            props,
-        )?;
+        let mut writer = Self::create_arrow_writer(&part_file, Arc::clone(&output_schema), props)?;
 
         // Clone schema for use in async closure
         let schema_for_write = Arc::clone(&output_schema);
@@ -516,7 +550,6 @@ mod tests {
     use super::*;
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::record_batch;
     use std::sync::Arc;
 
     /// Helper function to create a test RecordBatch with 1000 rows of (int, string) data
@@ -684,9 +717,10 @@ mod tests {
             .build();
 
         // Create ParquetWriter using the create_arrow_writer method
+        // Use full HDFS URL format
+        let full_output_path = format!("hdfs://namenode:9000{}", output_path);
         let mut writer = ParquetWriterExec::create_arrow_writer(
-            "hdfs",
-            output_path,
+            &full_output_path,
             create_test_record_batch(1)?.schema(),
             props,
         )?;
@@ -694,7 +728,7 @@ mod tests {
         // Write 5 batches in a loop
         for i in 1..=5 {
             let record_batch = create_test_record_batch(i)?;
-            
+
             writer.write(&record_batch).await.map_err(|e| {
                 DataFusionError::Execution(format!("Failed to write batch {}: {}", i, e))
             })?;
@@ -706,13 +740,71 @@ mod tests {
         }
 
         // Close the writer
-        writer.close().await.map_err(|e| {
-            DataFusionError::Execution(format!("Failed to close writer: {}", e))
-        })?;
+        writer
+            .close()
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("Failed to close writer: {}", e)))?;
 
         println!(
             "Successfully completed ParquetWriter streaming write of 5 batches (5000 total rows) to HDFS at {}",
             output_path
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "hdfs-opendal")]
+    async fn test_parquet_writer_exec_with_memory_input() -> Result<()> {
+        use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::datasource::source::DataSourceExec;
+        use datafusion::prelude::SessionContext;
+
+        // Create 5 batches for the DataSourceExec input
+        let mut batches = Vec::new();
+        for i in 1..=5 {
+            batches.push(create_test_record_batch(i)?);
+        }
+
+        // Get schema from the first batch
+        let schema = batches[0].schema();
+
+        // Create DataSourceExec with MemorySourceConfig containing the 5 batches as a single partition
+        let partitions = vec![batches];
+        let memory_source_config = MemorySourceConfig::try_new(&partitions, schema, None)?;
+        let memory_exec = Arc::new(DataSourceExec::new(Arc::new(memory_source_config)));
+
+        // Create ParquetWriterExec with DataSourceExec as input
+        let output_path = "unused".to_string();
+        let work_dir = "hdfs://namenode:9000/user/test_parquet_writer_exec".to_string();
+        let column_names = vec!["id".to_string(), "name".to_string()];
+
+        let parquet_writer = ParquetWriterExec::try_new(
+            memory_exec,
+            output_path,
+            work_dir,
+            None,      // job_id
+            Some(123), // task_attempt_id
+            CompressionCodec::None,
+            0, // partition_id
+            column_names,
+        )?;
+
+        // Create a session context and execute the plan
+        let session_ctx = SessionContext::new();
+        let task_ctx = session_ctx.task_ctx();
+
+        // Execute partition 0
+        let mut stream = parquet_writer.execute(0, task_ctx)?;
+
+        // Consume the stream (this triggers the write)
+        while let Some(batch_result) = stream.try_next().await? {
+            // The stream should be empty as ParquetWriterExec returns empty batches
+            assert_eq!(batch_result.num_rows(), 0);
+        }
+
+        println!(
+            "Successfully completed ParquetWriterExec test with DataSourceExec input (5 batches, 5000 total rows)"
         );
 
         Ok(())

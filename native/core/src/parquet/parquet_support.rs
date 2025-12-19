@@ -29,7 +29,6 @@ use arrow::{
     datatypes::{DataType, TimeUnit},
     util::display::FormatOptions,
 };
-use bytes::BytesMut;
 use datafusion::common::{Result as DataFusionResult, ScalarValue};
 use datafusion::error::DataFusionError;
 use datafusion::execution::object_store::ObjectStoreUrl;
@@ -39,7 +38,6 @@ use datafusion_comet_spark_expr::EvalMode;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore};
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::time::Duration;
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
@@ -406,89 +404,6 @@ fn create_hdfs_object_store(
     let store = object_store_opendal::OpendalStore::new(op);
     let path = Path::parse(url.path())?;
     Ok((Box::new(store), path))
-}
-
-use tokio::sync::mpsc;
-
-struct ChannelWriter {
-    sender: mpsc::Sender<Vec<u8>>,
-}
-
-impl std::io::Write for ChannelWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.sender
-            .blocking_send(buf.to_vec())
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "channel closed"))?;
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-//#[cfg(feature = "hdfs-opendal")]
-use arrow::record_batch::RecordBatch;
-use opendal::Writer;
-use parquet::arrow::ArrowWriter;
-use parquet::file::properties::WriterProperties;
-
-//#[cfg(feature = "hdfs-opendal")]
-pub async fn write_record_batch_to_hdfs(
-    hdfs_writer: &mut Writer,
-    batch: RecordBatch,
-) -> Result<(), opendal::Error> {
-    // ------------------------------------------------------------
-    // 2. Channel between blocking and async worlds
-    // ------------------------------------------------------------
-    //let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
-
-    //let schema = batch.schema();
-
-    let mut buffer = Vec::new();
-    let mut writer = ArrowWriter::try_new(&mut buffer, batch.schema(), None).unwrap();
-    writer.write(&batch).map_err(|e| {
-        opendal::Error::new(
-            opendal::ErrorKind::Unexpected,
-            &format!("write failed: {}", e),
-        )
-    })?;
-
-    writer.close().map_err(|e| {
-        opendal::Error::new(
-            opendal::ErrorKind::Unexpected,
-            &format!("Error closing writer: {}", e),
-        )
-    })?;
-    hdfs_writer.write(buffer).await?;
-
-    // let parquet_task = tokio::task::spawn_blocking(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    //     let props = WriterProperties::builder().build();
-    //     let channel_writer = ChannelWriter { sender: tx };
-
-    //     let mut writer = ArrowWriter::try_new(
-    //         channel_writer,
-    //         schema,
-    //         Some(props),
-    //     )?;
-
-    //     writer.write(&batch)?;
-
-    //     writer.close()?; // important to flush remaining data
-
-    //     Ok(())
-    // });
-
-    // while let Some(chunk) = rx.recv().await {
-    //     hdfs_writer.write(chunk).await?;
-    // }
-
-    // parquet_task
-    //     .await
-    //     .map_err(|e| opendal::Error::new(opendal::ErrorKind::Unexpected, &format!("task join failed: {}", e)))?
-    //     .map_err(|e| opendal::Error::new(opendal::ErrorKind::Unexpected, &format!("parquet write failed: {}", e)))?;
-
-    Ok(())
 }
 
 /// Stub implementation when hdfs-opendal feature is not enabled
