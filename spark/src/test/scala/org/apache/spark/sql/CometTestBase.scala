@@ -116,8 +116,6 @@ abstract class CometTestBase
       sparkPlan = dfSpark.queryExecution.executedPlan
     }
     val dfComet = datasetOfRows(spark, df.logicalPlan)
-    // scalastyle:off
-    println(dfComet.queryExecution.executedPlan)
     if (withTol.isDefined) {
       checkAnswerWithTolerance(dfComet, expected, withTol.get)
     } else {
