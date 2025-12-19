@@ -22,8 +22,7 @@ use crate::math_funcs::modulo_expr::spark_modulo;
 use crate::{
     spark_array_repeat, spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad,
-    spark_unhex, spark_unscaled_value, EvalMode, SparkBitwiseCount, SparkDateTrunc,
-    SparkStringSpace,
+    spark_unhex, spark_unscaled_value, EvalMode, SparkDateTrunc, SparkStringSpace,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
