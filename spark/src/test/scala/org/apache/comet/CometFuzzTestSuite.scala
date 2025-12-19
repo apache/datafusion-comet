@@ -48,7 +48,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     val df = spark.read.parquet(complexTypesFilename)
     df.createOrReplaceTempView("t1")
     val sql = "SELECT * FROM t1"
-    if (usingDataSourceExec) {
+    if (CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_COMET) {
       checkSparkAnswerAndOperator(sql)
     } else {
       checkSparkAnswer(sql)

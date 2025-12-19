@@ -107,6 +107,7 @@ class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
       pos: Position): Unit = {
     Seq("native", "jvm").foreach { shuffleMode =>
       Seq(
+        CometConf.SCAN_AUTO,
         CometConf.SCAN_NATIVE_COMET,
         CometConf.SCAN_NATIVE_DATAFUSION,
         CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach { scanImpl =>
