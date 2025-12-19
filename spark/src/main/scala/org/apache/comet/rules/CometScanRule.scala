@@ -630,37 +630,27 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
   }
 }
 
-// TODO move these type checks into specific scan classes
 case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with CometTypeShim {
 
   // this class is intended to be used with a specific scan impl
   assert(scanImpl != CometConf.SCAN_AUTO)
 
-  assert(
-    scanImpl != CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
-    "Call CometIcebergNativeScan.isSchemaSupported instead of using CometScanTypeChecker")
-
   override def isTypeSupported(
       dt: DataType,
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = {
-    dt match {
-      case ByteType | ShortType
-          if scanImpl != CometConf.SCAN_NATIVE_COMET &&
-            !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
-        fallbackReasons += s"$scanImpl scan cannot read $dt when " +
-          s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
-        false
-      case _: StructType | _: ArrayType | _: MapType if scanImpl == CometConf.SCAN_NATIVE_COMET =>
-        false
-      case dt if isStringCollationType(dt) =>
-        // we don't need specific support for collation in scans, but this
-        // is a convenient place to force the whole query to fall back to Spark for now
-        false
-      case s: StructType if s.fields.isEmpty =>
-        false
-      case _ =>
-        super.isTypeSupported(dt, name, fallbackReasons)
+    scanImpl match {
+      case CometConf.SCAN_NATIVE_DATAFUSION =>
+        CometNativeScan.isTypeSupported(dt, name, fallbackReasons)
+      case CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
+        CometIcebergNativeScan.isTypeSupported(dt, name, fallbackReasons)
+      case CometConf.SCAN_NATIVE_COMET =>
+        dt match {
+          case _: StructType | _: ArrayType | _: MapType =>
+            false
+          case _ =>
+            super.isTypeSupported(dt, name, fallbackReasons)
+        }
     }
   }
 }

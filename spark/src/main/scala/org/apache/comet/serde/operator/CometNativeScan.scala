@@ -40,7 +40,6 @@ import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClas
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
-import org.apache.comet.shims.CometTypeShim
 
 /**
  * Validation and serde logic for `native_datafusion` scans.
@@ -48,7 +47,6 @@ import org.apache.comet.shims.CometTypeShim
 object CometNativeScan
     extends CometOperatorSerde[CometScanExec]
     with DataTypeSupport
-    with CometTypeShim
     with Logging {
 
   override def isTypeSupported(
@@ -57,12 +55,8 @@ object CometNativeScan
       fallbackReasons: ListBuffer[String]): Boolean = {
     dt match {
       case ByteType | ShortType if !CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.get() =>
-        fallbackReasons += "Cannot read $dt when " +
+        fallbackReasons += s"Cannot read $dt when " +
           s"${CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key} is false. ${CometConf.COMPAT_GUIDE}."
-        false
-      case dt if isStringCollationType(dt) =>
-        // we don't need specific support for collation in scans, but this
-        // is a convenient place to force the whole query to fall back to Spark for now
         false
       case _ =>
         super.isTypeSupported(dt, name, fallbackReasons)

@@ -24,8 +24,9 @@ import scala.collection.mutable.ListBuffer
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.{ARRAY_ELEMENT, MAP_KEY, MAP_VALUE}
+import org.apache.comet.shims.CometTypeShim
 
-trait DataTypeSupport {
+trait DataTypeSupport extends CometTypeShim {
 
   /**
    * Checks if this schema is supported by checking if each field in the schema is supported.
@@ -49,6 +50,10 @@ trait DataTypeSupport {
       fallbackReasons: ListBuffer[String]): Boolean = {
 
     dt match {
+      case dt if isStringCollationType(dt) =>
+        // we don't need specific support for collation in scans, but this
+        // is a convenient place to force the whole query to fall back to Spark for now
+        false
       case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
           BinaryType | StringType | _: DecimalType | DateType | TimestampType |
           TimestampNTZType =>
