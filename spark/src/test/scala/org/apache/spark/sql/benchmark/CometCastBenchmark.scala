@@ -63,7 +63,9 @@ object CometCastBenchmark extends CometBenchmarkBase {
           None,
           if (ansiMode) CometEvalMode.ANSI else CometEvalMode.LEGACY) match {
           case Compatible(notes) =>
-            runBenchmarkWithTable(s"Running benchmark $toDataType)", 1024 * 1024 * 10) { v =>
+            runBenchmarkWithTable(
+              s"Running benchmark cast operation from : $LongType to : $toDataType",
+              1024 * 1024 * 10) { v =>
               castBenchmark(v, LongType, toDataType, isAnsiMode = ansiMode)
             }
           case Incompatible(notes) => None
