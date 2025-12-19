@@ -136,6 +136,8 @@ struct ExecutionContext {
     pub metrics_update_interval: Option<Duration>,
     // The last update time of metrics
     pub metrics_last_update_time: Instant,
+    /// Counter to avoid checking time on every poll iteration (reduces syscalls)
+    pub poll_count_since_metrics_check: u32,
     /// The time it took to create the native plan and configure the context
     pub plan_creation_time: Duration,
     /// DataFusion SessionContext
@@ -272,6 +274,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 metrics,
                 metrics_update_interval,
                 metrics_last_update_time: Instant::now(),
+                poll_count_since_metrics_check: 0,
                 plan_creation_time,
                 session_ctx: Arc::new(session),
                 debug_native,
@@ -512,11 +515,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                     let poll_output = poll!(next_item);
 
                     // update metrics at interval
+                    // Only check time every 100 polls to reduce syscall overhead
                     if let Some(interval) = exec_context.metrics_update_interval {
-                        let now = Instant::now();
-                        if now - exec_context.metrics_last_update_time >= interval {
-                            update_metrics(&mut env, exec_context)?;
-                            exec_context.metrics_last_update_time = now;
+                        exec_context.poll_count_since_metrics_check += 1;
+                        if exec_context.poll_count_since_metrics_check >= 100 {
+                            let now = Instant::now();
+                            if now - exec_context.metrics_last_update_time >= interval {
+                                update_metrics(&mut env, exec_context)?;
+                                exec_context.metrics_last_update_time = now;
+                            }
+                            exec_context.poll_count_since_metrics_check = 0;
                         }
                     }
 
