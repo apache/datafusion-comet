@@ -79,7 +79,6 @@ class CometNativeShuffleWriter[K, V](
       "elapsed_compute",
       "encode_time",
       "repart_time",
-      "mempool_time",
       "input_batches",
       "spill_count",
       "spilled_bytes")
