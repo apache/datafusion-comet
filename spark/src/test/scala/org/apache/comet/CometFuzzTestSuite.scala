@@ -190,7 +190,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         case CometConf.SCAN_NATIVE_COMET =>
           // native_comet does not support reading complex types
           0
-        case CometConf.SCAN_NATIVE_ICEBERG_COMPAT | CometConf.SCAN_NATIVE_DATAFUSION =>
+        case _ =>
           CometConf.COMET_SHUFFLE_MODE.get() match {
             case "jvm" =>
               1
@@ -213,7 +213,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         case CometConf.SCAN_NATIVE_COMET =>
           // native_comet does not support reading complex types
           0
-        case CometConf.SCAN_NATIVE_ICEBERG_COMPAT | CometConf.SCAN_NATIVE_DATAFUSION =>
+        case _ =>
           CometConf.COMET_SHUFFLE_MODE.get() match {
             case "jvm" =>
               1
