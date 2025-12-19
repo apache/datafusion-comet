@@ -370,7 +370,7 @@ fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>) -> 
 }
 
 // Creates an HDFS object store from a URL using the native HDFS implementation
-#[cfg(feature = "hdfs")]
+#[cfg(all(feature = "hdfs", not(feature = "hdfs-opendal")))]
 fn create_hdfs_object_store(
     url: &Url,
 ) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {

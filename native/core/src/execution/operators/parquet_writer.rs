@@ -340,7 +340,7 @@ impl ParquetWriterExec {
                     .unwrap_or(output_file_path);
 
                 // Create output directory
-                std::fs::create_dir_all(&local_path).map_err(|e| {
+                std::fs::create_dir_all(local_path).map_err(|e| {
                     DataFusionError::Execution(format!(
                         "Failed to create output directory '{}': {}",
                         local_path, e
