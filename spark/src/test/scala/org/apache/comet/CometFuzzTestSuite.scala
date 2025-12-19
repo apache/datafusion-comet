@@ -44,6 +44,17 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     }
   }
 
+  test("select * with deeply nested complex types") {
+    val df = spark.read.parquet(complexTypesFilename)
+    df.createOrReplaceTempView("t1")
+    val sql = "SELECT * FROM t1"
+    if (usingDataSourceExec) {
+      checkSparkAnswerAndOperator(sql)
+    } else {
+      checkSparkAnswer(sql)
+    }
+  }
+
   test("select * with limit") {
     val df = spark.read.parquet(filename)
     df.createOrReplaceTempView("t1")
