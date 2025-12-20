@@ -94,6 +94,7 @@ pub enum ExpressionType {
     CreateNamedStruct,
     GetStructField,
     ToJson,
+    FromJson,
     ToPrettyString,
     ListExtract,
     GetArrayStructFields,
@@ -282,6 +283,8 @@ impl ExpressionRegistry {
             .insert(ExpressionType::Like, Box::new(LikeBuilder));
         self.builders
             .insert(ExpressionType::Rlike, Box::new(RlikeBuilder));
+        self.builders
+            .insert(ExpressionType::FromJson, Box::new(FromJsonBuilder));
     }
 
     /// Extract expression type from Spark protobuf expression
@@ -337,6 +340,7 @@ impl ExpressionRegistry {
             Some(ExprStruct::CreateNamedStruct(_)) => Ok(ExpressionType::CreateNamedStruct),
             Some(ExprStruct::GetStructField(_)) => Ok(ExpressionType::GetStructField),
             Some(ExprStruct::ToJson(_)) => Ok(ExpressionType::ToJson),
+            Some(ExprStruct::FromJson(_)) => Ok(ExpressionType::FromJson),
             Some(ExprStruct::ToPrettyString(_)) => Ok(ExpressionType::ToPrettyString),
             Some(ExprStruct::ListExtract(_)) => Ok(ExpressionType::ListExtract),
             Some(ExprStruct::GetArrayStructFields(_)) => Ok(ExpressionType::GetArrayStructFields),

@@ -86,6 +86,7 @@ message Expr {
     EmptyExpr spark_partition_id = 63;
     EmptyExpr monotonically_increasing_id = 64;
     UnixTimestamp unix_timestamp = 65;
+    FromJson from_json = 66;
   }
 }
 
@@ -267,6 +268,12 @@ message ToJson {
   string timestamp_format = 4;
   string timestamp_ntz_format = 5;
   bool ignore_null_fields = 6;
+}
+
+message FromJson {
+  Expr child = 1;
+  DataType schema = 2;
+  string timezone = 3;
 }
 
 enum BinaryOutputStyle {
