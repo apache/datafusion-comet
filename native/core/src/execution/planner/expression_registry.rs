@@ -182,9 +182,8 @@ impl ExpressionRegistry {
         // Register string expressions
         self.register_string_expressions();
 
-        // TODO: Register other expression categories in future phases
-        // self.register_temporal_expressions();
-        // etc.
+        // Register temporal expressions
+        self.register_temporal_expressions();
     }
 
     /// Register arithmetic expression builders
@@ -285,6 +284,26 @@ impl ExpressionRegistry {
             .insert(ExpressionType::Rlike, Box::new(RlikeBuilder));
         self.builders
             .insert(ExpressionType::FromJson, Box::new(FromJsonBuilder));
+    }
+
+    /// Register temporal expression builders
+    fn register_temporal_expressions(&mut self) {
+        use crate::execution::expressions::temporal::*;
+
+        self.builders
+            .insert(ExpressionType::Hour, Box::new(HourBuilder));
+        self.builders
+            .insert(ExpressionType::Minute, Box::new(MinuteBuilder));
+        self.builders
+            .insert(ExpressionType::Second, Box::new(SecondBuilder));
+        self.builders.insert(
+            ExpressionType::UnixTimestamp,
+            Box::new(UnixTimestampBuilder),
+        );
+        self.builders.insert(
+            ExpressionType::TruncTimestamp,
+            Box::new(TruncTimestampBuilder),
+        );
     }
 
     /// Extract expression type from Spark protobuf expression
