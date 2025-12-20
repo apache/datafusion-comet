@@ -290,10 +290,9 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
 }
 
 /**
- * Serde for StringSplit expression.
- * This is a custom Comet function (not a built-in DataFusion function),
- * so we need to include the return type in the protobuf to avoid
- * DataFusion registry lookup failures.
+ * Serde for StringSplit expression. This is a custom Comet function (not a built-in DataFusion
+ * function), so we need to include the return type in the protobuf to avoid DataFusion registry
+ * lookup failures.
  */
 object CometStringSplit extends CometExpressionSerde[StringSplit] {
 
