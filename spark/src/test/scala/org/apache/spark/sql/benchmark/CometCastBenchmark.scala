@@ -97,7 +97,11 @@ object CometCastBenchmark extends CometBenchmarkBase {
           s"SQL Parquet - Spark Cast expr from ${fromDataType.sql} to : ${toDataType.sql} , " +
             s"ansi mode enabled : ${isAnsiMode}") { _ =>
           withSQLConf(SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
-            Try { spark.sql(query).noop() }
+            if (isAnsiMode) {
+              Try { spark.sql(query).noop() }
+            } else {
+              spark.sql(query).noop()
+            }
           }
         }
 
@@ -108,7 +112,11 @@ object CometCastBenchmark extends CometBenchmarkBase {
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
-            Try { spark.sql(query).noop() }
+            if (isAnsiMode) {
+              Try { spark.sql(query).noop() }
+            } else {
+              spark.sql(query).noop()
+            }
           }
         }
         benchmark.run()
