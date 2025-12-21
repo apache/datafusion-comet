@@ -21,23 +21,13 @@ description: "Run Rust tests"
 runs:
   using: "composite"
   steps:
-    - name: Check Cargo fmt
+    - name: Lint native module
       shell: bash
       run: |
+        curl --proto '=https' --tlsv1.2 -LsSf https://github.com/j178/prek/releases/download/v0.2.23/prek-installer.sh | sh
+        git config --global --add safe.directory /__w/datafusion-comet/datafusion-comet
         cd native
-        cargo fmt --all -- --check --color=never
-
-    - name: Check Cargo clippy
-      shell: bash
-      run: |
-        cd native
-        cargo clippy --color=never --all-targets --workspace -- -D warnings
-
-    - name: Check compilation
-      shell: bash
-      run: |
-        cd native
-        cargo check --benches
+        ~/.local/bin/prek run --all-files
 
     - name: Check unused dependencies
       shell: bash

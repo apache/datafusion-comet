@@ -98,7 +98,7 @@
  * @param excErrno        (out param) The POSIX error number associated with the
  *                        exception.
  * @param shouldPrint     (out param) Nonzero if we should print this exception,
- *                        based on the noPrintFlags and its name. 
+ *                        based on the noPrintFlags and its name.
  */
 LIBHDFS_EXTERNAL
 void getExceptionInfo(const char *excName, int noPrintFlags,

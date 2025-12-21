@@ -86,7 +86,7 @@ jthrowable newJavaStr(JNIEnv *env, const char *str, jstring *out);
 
 /**
  * Helper function to destroy a local reference of java.lang.Object
- * @param env: The JNIEnv pointer. 
+ * @param env: The JNIEnv pointer.
  * @param jFile: The local reference of java.lang.Object object
  * @return None.
  */
@@ -107,12 +107,12 @@ void destroyLocalReference(JNIEnv *env, jobject jObject);
    value (JNI_TRUE or JNI_FALSE), etc.
  * exc: If the methods throws any exception, this will contain the reference
  * Arguments (the method arguments) must be passed after methSignature
- * RETURNS: -1 on error and 0 on success. If -1 is returned, exc will have 
+ * RETURNS: -1 on error and 0 on success. If -1 is returned, exc will have
    a valid exception reference, and the result stored at retval is undefined.
  */
 LIBHDFS_EXTERNAL
 jthrowable invokeMethod(JNIEnv *env, jvalue *retval, MethType methType,
-                 jobject instObj, const char *className, const char *methName, 
+                 jobject instObj, const char *className, const char *methName,
                  const char *methSignature, ...);
 
 LIBHDFS_EXTERNAL
@@ -121,7 +121,7 @@ jthrowable constructNewObjectOfClass(JNIEnv *env, jobject *out, const char *clas
 
 LIBHDFS_EXTERNAL
 jthrowable methodIdFromClass(const char *className, const char *methName,
-                            const char *methSignature, MethType methType, 
+                            const char *methSignature, MethType methType,
                             JNIEnv *env, jmethodID *out);
 
 LIBHDFS_EXTERNAL
@@ -234,4 +234,3 @@ jthrowable fetchEnumInstance(JNIEnv *env, const char *className,
 /**
  * vim: ts=4: sw=4: et:
  */
-

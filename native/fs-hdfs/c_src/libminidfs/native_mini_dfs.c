@@ -300,7 +300,7 @@ int nmdGetNameNodeHttpAddress(const struct NativeMiniDfsCluster *cl,
     jthrowable jthr;
     int ret = 0;
     const char *host;
-    
+
     if (!env) {
         fprintf(stderr, "nmdHdfsConnect: getJNIEnv failed\n");
         return -EIO;
@@ -315,7 +315,7 @@ int nmdGetNameNodeHttpAddress(const struct NativeMiniDfsCluster *cl,
         return -EIO;
     }
     jNameNode = jVal.l;
-    
+
     // Then get the http address (InetSocketAddress) of the NameNode
     jthr = invokeMethod(env, &jVal, INSTANCE, jNameNode, HADOOP_NAMENODE,
                         "getHttpAddress", "()L" JAVA_INETSOCKETADDRESS ";");
@@ -326,7 +326,7 @@ int nmdGetNameNodeHttpAddress(const struct NativeMiniDfsCluster *cl,
         goto error_dlr_nn;
     }
     jAddress = jVal.l;
-    
+
     jthr = invokeMethod(env, &jVal, INSTANCE, jAddress,
                         JAVA_INETSOCKETADDRESS, "getPort", "()I");
     if (jthr) {
@@ -336,7 +336,7 @@ int nmdGetNameNodeHttpAddress(const struct NativeMiniDfsCluster *cl,
         goto error_dlr_addr;
     }
     *port = jVal.i;
-    
+
     jthr = invokeMethod(env, &jVal, INSTANCE, jAddress, JAVA_INETSOCKETADDRESS,
                         "getHostName", "()Ljava/lang/String;");
     if (jthr) {
@@ -348,12 +348,12 @@ int nmdGetNameNodeHttpAddress(const struct NativeMiniDfsCluster *cl,
     host = (*env)->GetStringUTFChars(env, jVal.l, NULL);
     *hostName = strdup(host);
     (*env)->ReleaseStringUTFChars(env, jVal.l, host);
-    
+
 error_dlr_addr:
     (*env)->DeleteLocalRef(env, jAddress);
 error_dlr_nn:
     (*env)->DeleteLocalRef(env, jNameNode);
-    
+
     return ret;
 }
 

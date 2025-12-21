@@ -19,4 +19,3 @@
              at /Users/somebody/src/arrow-datafusion-comet/core/src/errors.rs:369:43
   10: Java_org_apache_comet_NativeBase_init
              at /Users/somebody/src/arrow-datafusion-comet/core/src/lib.rs:53:5
-

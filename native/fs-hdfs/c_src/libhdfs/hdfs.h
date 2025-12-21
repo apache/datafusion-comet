@@ -52,12 +52,12 @@
 #define O_RDONLY 1
 #endif
 
-#ifndef O_WRONLY 
+#ifndef O_WRONLY
 #define O_WRONLY 2
 #endif
 
 #ifndef EINTERNAL
-#define EINTERNAL 255 
+#define EINTERNAL 255
 #endif
 
 #define ELASTIC_BYTE_BUFFER_POOL_CLASS \
@@ -72,7 +72,7 @@ extern  "C" {
      * Some utility decls used in libhdfs.
      */
     struct hdfsBuilder;
-    typedef int32_t   tSize; /// size of data for read/write io ops 
+    typedef int32_t   tSize; /// size of data for read/write io ops
     typedef time_t    tTime; /// time type in seconds
     typedef int64_t   tOffset;/// offset within the file
     typedef uint16_t  tPort; /// port
@@ -88,7 +88,7 @@ extern  "C" {
      */
     struct hdfs_internal;
     typedef struct hdfs_internal* hdfsFS;
-    
+
     struct hdfsFile_internal;
     typedef struct hdfsFile_internal* hdfsFile;
 
@@ -198,30 +198,30 @@ extern  "C" {
     LIBHDFS_EXTERNAL
     void hdfsFreeHedgedReadMetrics(struct hdfsHedgedReadMetrics *metrics);
 
-    /** 
+    /**
      * hdfsConnectAsUser - Connect to a hdfs file system as a specific user
      * Connect to the hdfs.
      * @param nn   The NameNode.  See hdfsBuilderSetNameNode for details.
      * @param port The port on which the server is listening.
      * @param user the user name (this is hadoop domain user). Or NULL is equivelant to hhdfsConnect(host, port)
      * @return Returns a handle to the filesystem or NULL on error.
-     * @deprecated Use hdfsBuilderConnect instead. 
+     * @deprecated Use hdfsBuilderConnect instead.
      */
      LIBHDFS_EXTERNAL
      hdfsFS hdfsConnectAsUser(const char* nn, tPort port, const char *user);
 
-    /** 
+    /**
      * hdfsConnect - Connect to a hdfs file system.
      * Connect to the hdfs.
      * @param nn   The NameNode.  See hdfsBuilderSetNameNode for details.
      * @param port The port on which the server is listening.
      * @return Returns a handle to the filesystem or NULL on error.
-     * @deprecated Use hdfsBuilderConnect instead. 
+     * @deprecated Use hdfsBuilderConnect instead.
      */
      LIBHDFS_EXTERNAL
      hdfsFS hdfsConnect(const char* nn, tPort port);
 
-    /** 
+    /**
      * hdfsConnect - Connect to an hdfs file system.
      *
      * Forces a new instance to be created
@@ -230,12 +230,12 @@ extern  "C" {
      * @param port   The port on which the server is listening.
      * @param user   The user name to use when connecting
      * @return       Returns a handle to the filesystem or NULL on error.
-     * @deprecated   Use hdfsBuilderConnect instead. 
+     * @deprecated   Use hdfsBuilderConnect instead.
      */
      LIBHDFS_EXTERNAL
      hdfsFS hdfsConnectAsUserNewInstance(const char* nn, tPort port, const char *user );
 
-    /** 
+    /**
      * hdfsConnect - Connect to an hdfs file system.
      *
      * Forces a new instance to be created
@@ -243,12 +243,12 @@ extern  "C" {
      * @param nn     The NameNode.  See hdfsBuilderSetNameNode for details.
      * @param port   The port on which the server is listening.
      * @return       Returns a handle to the filesystem or NULL on error.
-     * @deprecated   Use hdfsBuilderConnect instead. 
+     * @deprecated   Use hdfsBuilderConnect instead.
      */
      LIBHDFS_EXTERNAL
      hdfsFS hdfsConnectNewInstance(const char* nn, tPort port);
 
-    /** 
+    /**
      * Connect to HDFS using the parameters defined by the builder.
      *
      * The HDFS builder will be freed, whether or not the connection was
@@ -384,14 +384,14 @@ extern  "C" {
     int hdfsConfGetInt(const char *key, int32_t *val);
 
     /**
-     * Free a configuration string found with hdfsConfGetStr. 
+     * Free a configuration string found with hdfsConfGetStr.
      *
      * @param val      A configuration string obtained from hdfsConfGetStr
      */
     LIBHDFS_EXTERNAL
     void hdfsConfStrFree(char *val);
 
-    /** 
+    /**
      * hdfsDisconnect - Disconnect from the hdfs file system.
      * Disconnect from hdfs.
      * @param fs The configured filesystem handle.
@@ -401,15 +401,15 @@ extern  "C" {
      */
     LIBHDFS_EXTERNAL
     int hdfsDisconnect(hdfsFS fs);
-        
-    /** 
+
+    /**
      * hdfsOpenFile - Open a hdfs file in given mode.
      * @deprecated    Use the hdfsStreamBuilder functions instead.
      * This function does not support setting block sizes bigger than 2 GB.
      *
      * @param fs The configured filesystem handle.
      * @param path The full path to the file.
-     * @param flags - an | of bits/fcntl.h file flags - supported flags are O_RDONLY, O_WRONLY (meaning create or overwrite i.e., implies O_TRUNCAT), 
+     * @param flags - an | of bits/fcntl.h file flags - supported flags are O_RDONLY, O_WRONLY (meaning create or overwrite i.e., implies O_TRUNCAT),
      * O_WRONLY|O_APPEND. Other flags are generally ignored other than (O_RDWR || (O_EXCL & O_CREAT)) which return NULL and set errno equal ENOTSUP.
      * @param bufferSize Size of buffer for read/write - pass 0 if you want
      * to use the default configured values.
@@ -510,10 +510,10 @@ extern  "C" {
      * @param fs The configured filesystem handle.
      * @param path The full path to the file.
      * @param newlength The size the file is to be truncated to
-     * @return 1 if the file has been truncated to the desired newlength 
-     *         and is immediately available to be reused for write operations 
+     * @return 1 if the file has been truncated to the desired newlength
+     *         and is immediately available to be reused for write operations
      *         such as append.
-     *         0 if a background process of adjusting the length of the last 
+     *         0 if a background process of adjusting the length of the last
      *         block has been started, and clients should wait for it to
      *         complete before proceeding with further file updates.
      *         -1 on error.
@@ -532,11 +532,11 @@ extern  "C" {
     LIBHDFS_EXTERNAL
     int hdfsUnbufferFile(hdfsFile file);
 
-    /** 
-     * hdfsCloseFile - Close an open file. 
+    /**
+     * hdfsCloseFile - Close an open file.
      * @param fs The configured filesystem handle.
      * @param file The file handle.
-     * @return Returns 0 on success, -1 on error.  
+     * @return Returns 0 on success, -1 on error.
      *         On error, errno will be set appropriately.
      *         If the hdfs file was valid, the memory associated with it will
      *         be freed at the end of this call, even if there was an I/O
@@ -546,29 +546,29 @@ extern  "C" {
     int hdfsCloseFile(hdfsFS fs, hdfsFile file);
 
 
-    /** 
-     * hdfsExists - Checks if a given path exsits on the filesystem 
+    /**
+     * hdfsExists - Checks if a given path exsits on the filesystem
      * @param fs The configured filesystem handle.
      * @param path The path to look for
-     * @return Returns 0 on success, -1 on error.  
+     * @return Returns 0 on success, -1 on error.
      */
     LIBHDFS_EXTERNAL
     int hdfsExists(hdfsFS fs, const char *path);
 
 
-    /** 
-     * hdfsSeek - Seek to given offset in file. 
-     * This works only for files opened in read-only mode. 
+    /**
+     * hdfsSeek - Seek to given offset in file.
+     * This works only for files opened in read-only mode.
      * @param fs The configured filesystem handle.
      * @param file The file handle.
      * @param desiredPos Offset into the file to seek into.
-     * @return Returns 0 on success, -1 on error.  
+     * @return Returns 0 on success, -1 on error.
      */
     LIBHDFS_EXTERNAL
-    int hdfsSeek(hdfsFS fs, hdfsFile file, tOffset desiredPos); 
+    int hdfsSeek(hdfsFS fs, hdfsFile file, tOffset desiredPos);
 
 
-    /** 
+    /**
      * hdfsTell - Get the current offset in the file, in bytes.
      * @param fs The configured filesystem handle.
      * @param file The file handle.
@@ -578,7 +578,7 @@ extern  "C" {
     tOffset hdfsTell(hdfsFS fs, hdfsFile file);
 
 
-    /** 
+    /**
      * hdfsRead - Read data from an open file.
      * @param fs The configured filesystem handle.
      * @param file The file handle.
@@ -595,7 +595,7 @@ extern  "C" {
     LIBHDFS_EXTERNAL
     tSize hdfsRead(hdfsFS fs, hdfsFile file, void* buffer, tSize length);
 
-    /** 
+    /**
      * hdfsPread - Positional read of data from an open file.
      * @param fs The configured filesystem handle.
      * @param file The file handle.
@@ -609,12 +609,12 @@ extern  "C" {
                     void* buffer, tSize length);
 
 
-    /** 
+    /**
      * hdfsWrite - Write data into an open file.
      * @param fs The configured filesystem handle.
      * @param file The file handle.
      * @param buffer The data.
-     * @param length The no. of bytes to write. 
+     * @param length The no. of bytes to write.
      * @return Returns the number of bytes written, -1 on error.
      */
     LIBHDFS_EXTERNAL
@@ -622,11 +622,11 @@ extern  "C" {
                     tSize length);
 
 
-    /** 
-     * hdfsWrite - Flush the data. 
+    /**
+     * hdfsWrite - Flush the data.
      * @param fs The configured filesystem handle.
      * @param file The file handle.
-     * @return Returns 0 on success, -1 on error. 
+     * @return Returns 0 on success, -1 on error.
      */
     LIBHDFS_EXTERNAL
     int hdfsFlush(hdfsFS fs, hdfsFile file);
@@ -644,8 +644,8 @@ extern  "C" {
 
 
     /**
-     * hdfsHSync - Similar to posix fsync, Flush out the data in client's 
-     * user buffer. all the way to the disk device (but the disk may have 
+     * hdfsHSync - Similar to posix fsync, Flush out the data in client's
+     * user buffer. all the way to the disk device (but the disk may have
      * it in its cache).
      * @param fs configured filesystem handle
      * @param file file handle
@@ -660,7 +660,7 @@ extern  "C" {
      * input stream without blocking.
      * @param fs The configured filesystem handle.
      * @param file The file handle.
-     * @return Returns available bytes; -1 on error. 
+     * @return Returns available bytes; -1 on error.
      */
     LIBHDFS_EXTERNAL
     int hdfsAvailable(hdfsFS fs, hdfsFile file);
@@ -669,10 +669,10 @@ extern  "C" {
     /**
      * hdfsCopy - Copy file from one filesystem to another.
      * @param srcFS The handle to source filesystem.
-     * @param src The path of source file. 
+     * @param src The path of source file.
      * @param dstFS The handle to destination filesystem.
-     * @param dst The path of destination file. 
-     * @return Returns 0 on success, -1 on error. 
+     * @param dst The path of destination file.
+     * @return Returns 0 on success, -1 on error.
      */
     LIBHDFS_EXTERNAL
     int hdfsCopy(hdfsFS srcFS, const char* src, hdfsFS dstFS, const char* dst);
@@ -681,33 +681,33 @@ extern  "C" {
     /**
      * hdfsMove - Move file from one filesystem to another.
      * @param srcFS The handle to source filesystem.
-     * @param src The path of source file. 
+     * @param src The path of source file.
      * @param dstFS The handle to destination filesystem.
-     * @param dst The path of destination file. 
-     * @return Returns 0 on success, -1 on error. 
+     * @param dst The path of destination file.
+     * @return Returns 0 on success, -1 on error.
      */
     LIBHDFS_EXTERNAL
     int hdfsMove(hdfsFS srcFS, const char* src, hdfsFS dstFS, const char* dst);
 
 
     /**
-     * hdfsDelete - Delete file. 
+     * hdfsDelete - Delete file.
      * @param fs The configured filesystem handle.
-     * @param path The path of the file. 
-     * @param recursive if path is a directory and set to 
+     * @param path The path of the file.
+     * @param recursive if path is a directory and set to
      * non-zero, the directory is deleted else throws an exception. In
      * case of a file the recursive argument is irrelevant.
-     * @return Returns 0 on success, -1 on error. 
+     * @return Returns 0 on success, -1 on error.
      */
     LIBHDFS_EXTERNAL
     int hdfsDelete(hdfsFS fs, const char* path, int recursive);
 
     /**
-     * hdfsRename - Rename file. 
+     * hdfsRename - Rename file.
      * @param fs The configured filesystem handle.
-     * @param oldPath The path of the source file. 
-     * @param newPath The path of the destination file. 
-     * @return Returns 0 on success, -1 on error. 
+     * @param oldPath The path of the source file.
+     * @param newPath The path of the destination file.
+     * @return Returns 0 on success, -1 on error.
      */
     LIBHDFS_EXTERNAL
     int hdfsRename(hdfsFS fs, const char* oldPath, const char* newPath);
@@ -723,11 +723,11 @@ extern  "C" {
     int hdfsRenameOverwrite(hdfsFS fs, const char* oldPath, const char* newPath);
 
 
-    /** 
+    /**
      * hdfsGetWorkingDirectory - Get the current working directory for
      * the given filesystem.
      * @param fs The configured filesystem handle.
-     * @param buffer The user-buffer to copy path of cwd into. 
+     * @param buffer The user-buffer to copy path of cwd into.
      * @param bufferSize The length of user-buffer.
      * @return Returns buffer, NULL on error.
      */
@@ -735,40 +735,40 @@ extern  "C" {
     char* hdfsGetWorkingDirectory(hdfsFS fs, char *buffer, size_t bufferSize);
 
 
-    /** 
+    /**
      * hdfsSetWorkingDirectory - Set the working directory. All relative
      * paths will be resolved relative to it.
      * @param fs The configured filesystem handle.
-     * @param path The path of the new 'cwd'. 
-     * @return Returns 0 on success, -1 on error. 
+     * @param path The path of the new 'cwd'.
+     * @return Returns 0 on success, -1 on error.
      */
     LIBHDFS_EXTERNAL
     int hdfsSetWorkingDirectory(hdfsFS fs, const char* path);
 
 
-    /** 
+    /**
      * hdfsCreateDirectory - Make the given file and all non-existent
      * parents into directories.
      * @param fs The configured filesystem handle.
-     * @param path The path of the directory. 
-     * @return Returns 0 on success, -1 on error. 
+     * @param path The path of the directory.
+     * @return Returns 0 on success, -1 on error.
      */
     LIBHDFS_EXTERNAL
     int hdfsCreateDirectory(hdfsFS fs, const char* path);
 
 
-    /** 
+    /**
      * hdfsSetReplication - Set the replication of the specified
      * file to the supplied value
      * @param fs The configured filesystem handle.
-     * @param path The path of the file. 
-     * @return Returns 0 on success, -1 on error. 
+     * @param path The path of the file.
+     * @return Returns 0 on success, -1 on error.
      */
     LIBHDFS_EXTERNAL
     int hdfsSetReplication(hdfsFS fs, const char* path, int16_t replication);
 
 
-    /** 
+    /**
      * hdfsFileInfo - Information about a file/directory.
      */
     typedef struct  {
@@ -785,11 +785,11 @@ extern  "C" {
     } hdfsFileInfo;
 
 
-    /** 
+    /**
      * hdfsListDirectory - Get list of files/directories for a given
-     * directory-path. hdfsFreeFileInfo should be called to deallocate memory. 
+     * directory-path. hdfsFreeFileInfo should be called to deallocate memory.
      * @param fs The configured filesystem handle.
-     * @param path The path of the directory. 
+     * @param path The path of the directory.
      * @param numEntries Set to the number of files/directories in path.
      * @return Returns a dynamically-allocated array of hdfsFileInfo
      * objects; NULL on error or empty directory.
@@ -800,12 +800,12 @@ extern  "C" {
                                     int *numEntries);
 
 
-    /** 
+    /**
      * hdfsGetPathInfo - Get information about a path as a (dynamically
      * allocated) single hdfsFileInfo struct. hdfsFreeFileInfo should be
      * called when the pointer is no longer needed.
      * @param fs The configured filesystem handle.
-     * @param path The path of the file. 
+     * @param path The path of the file.
      * @return Returns a dynamically-allocated hdfsFileInfo object;
      * NULL on error.
      */
@@ -813,8 +813,8 @@ extern  "C" {
     hdfsFileInfo *hdfsGetPathInfo(hdfsFS fs, const char* path);
 
 
-    /** 
-     * hdfsFreeFileInfo - Free up the hdfsFileInfo array (including fields) 
+    /**
+     * hdfsFreeFileInfo - Free up the hdfsFileInfo array (including fields)
      * @param hdfsFileInfo The array of dynamically-allocated hdfsFileInfo
      * objects.
      * @param numEntries The size of the array.
@@ -832,24 +832,24 @@ extern  "C" {
     int hdfsFileIsEncrypted(hdfsFileInfo *hdfsFileInfo);
 
 
-    /** 
+    /**
      * hdfsGetHosts - Get hostnames where a particular block (determined by
      * pos & blocksize) of a file is stored. The last element in the array
      * is NULL. Due to replication, a single block could be present on
      * multiple hosts.
      * @param fs The configured filesystem handle.
-     * @param path The path of the file. 
+     * @param path The path of the file.
      * @param start The start of the block.
      * @param length The length of the block.
      * @return Returns a dynamically-allocated 2-d array of blocks-hosts;
      * NULL on error.
      */
     LIBHDFS_EXTERNAL
-    char*** hdfsGetHosts(hdfsFS fs, const char* path, 
+    char*** hdfsGetHosts(hdfsFS fs, const char* path,
             tOffset start, tOffset length);
 
 
-    /** 
+    /**
      * hdfsFreeHosts - Free up the structure returned by hdfsGetHosts
      * @param hdfsFileInfo The array of dynamically-allocated hdfsFileInfo
      * objects.
@@ -859,7 +859,7 @@ extern  "C" {
     void hdfsFreeHosts(char ***blockHosts);
 
 
-    /** 
+    /**
      * hdfsGetDefaultBlockSize - Get the default blocksize.
      *
      * @param fs            The configured filesystem handle.
@@ -871,7 +871,7 @@ extern  "C" {
     tOffset hdfsGetDefaultBlockSize(hdfsFS fs);
 
 
-    /** 
+    /**
      * hdfsGetDefaultBlockSizeAtPath - Get the default blocksize at the
      * filesystem indicated by a given path.
      *
@@ -885,24 +885,24 @@ extern  "C" {
     tOffset hdfsGetDefaultBlockSizeAtPath(hdfsFS fs, const char *path);
 
 
-    /** 
-     * hdfsGetCapacity - Return the raw capacity of the filesystem.  
+    /**
+     * hdfsGetCapacity - Return the raw capacity of the filesystem.
      * @param fs The configured filesystem handle.
-     * @return Returns the raw-capacity; -1 on error. 
+     * @return Returns the raw-capacity; -1 on error.
      */
     LIBHDFS_EXTERNAL
     tOffset hdfsGetCapacity(hdfsFS fs);
 
 
-    /** 
+    /**
      * hdfsGetUsed - Return the total raw size of all files in the filesystem.
      * @param fs The configured filesystem handle.
-     * @return Returns the total-size; -1 on error. 
+     * @return Returns the total-size; -1 on error.
      */
     LIBHDFS_EXTERNAL
     tOffset hdfsGetUsed(hdfsFS fs);
 
-    /** 
+    /**
      * Change the user and/or group of a file or directory.
      *
      * @param fs            The configured filesystem handle.
@@ -915,7 +915,7 @@ extern  "C" {
     int hdfsChown(hdfsFS fs, const char* path, const char *owner,
                   const char *group);
 
-    /** 
+    /**
      * hdfsChmod
      * @param fs The configured filesystem handle.
      * @param path the path to the file or directory
@@ -925,7 +925,7 @@ extern  "C" {
     LIBHDFS_EXTERNAL
     int hdfsChmod(hdfsFS fs, const char* path, short mode);
 
-    /** 
+    /**
      * hdfsUtime
      * @param fs The configured filesystem handle.
      * @param path the path to the file or directory

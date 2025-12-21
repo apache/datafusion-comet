@@ -51,7 +51,7 @@ struct htable {
  * @param key           The key to insert.
  * @param val           The value to insert.
  */
-static void htable_insert_internal(struct htable_pair *nelem, 
+static void htable_insert_internal(struct htable_pair *nelem,
         uint32_t capacity, htable_hash_fn_t hash_fun, void *key,
         void *val)
 {
@@ -165,7 +165,7 @@ int htable_put(struct htable *htable, void *key, void *val)
     }
     // NULL is not a valid value.  Otherwise the results of htable_get would
     // be confusing (does a NULL return mean entry not found, or that the
-    // entry was found and was NULL?) 
+    // entry was found and was NULL?)
     if (!val) {
         return EINVAL;
     }
