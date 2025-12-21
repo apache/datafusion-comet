@@ -173,16 +173,30 @@ fn spark_size_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
 fn spark_size_scalar(scalar: &ScalarValue) -> Result<ScalarValue, DataFusionError> {
     match scalar {
         ScalarValue::List(array) => {
-            let len = array.len() as i32;
-            Ok(ScalarValue::Int32(Some(len)))
+            // ScalarValue::List contains a ListArray with exactly one row.
+            // We need the length of that row's contents, not the row count.
+            if array.is_null(0) {
+                Ok(ScalarValue::Int32(Some(-1))) // Spark behavior: return -1 for null
+            } else {
+                let len = array.value(0).len() as i32;
+                Ok(ScalarValue::Int32(Some(len)))
+            }
         }
         ScalarValue::LargeList(array) => {
-            let len = array.len() as i32;
-            Ok(ScalarValue::Int32(Some(len)))
+            if array.is_null(0) {
+                Ok(ScalarValue::Int32(Some(-1)))
+            } else {
+                let len = array.value(0).len() as i32;
+                Ok(ScalarValue::Int32(Some(len)))
+            }
         }
         ScalarValue::FixedSizeList(array) => {
-            let len = array.len() as i32;
-            Ok(ScalarValue::Int32(Some(len)))
+            if array.is_null(0) {
+                Ok(ScalarValue::Int32(Some(-1)))
+            } else {
+                let len = array.value(0).len() as i32;
+                Ok(ScalarValue::Int32(Some(len)))
+            }
         }
         ScalarValue::Null => {
             Ok(ScalarValue::Int32(Some(-1))) // Spark behavior: return -1 for null
@@ -237,14 +251,24 @@ mod tests {
 
     #[test]
     fn test_spark_size_scalar() {
-        // Test non-null list
+        // Test non-null list with 3 elements
         let values = Int32Array::from(vec![1, 2, 3]);
         let field = Arc::new(Field::new("item", DataType::Int32, true));
         let offsets = arrow::buffer::OffsetBuffer::new(vec![0, 3].into());
         let list_array = ListArray::try_new(field, offsets, Arc::new(values), None).unwrap();
         let scalar = ScalarValue::List(Arc::new(list_array));
         let result = spark_size_scalar(&scalar).unwrap();
-        assert_eq!(result, ScalarValue::Int32(Some(1))); // The list array itself has 1 element (which is the array [1,2,3])
+        assert_eq!(result, ScalarValue::Int32(Some(3))); // The array [1,2,3] has 3 elements
+
+        // Test empty list
+        let empty_values = Int32Array::from(vec![] as Vec<i32>);
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+        let offsets = arrow::buffer::OffsetBuffer::new(vec![0, 0].into());
+        let empty_list_array =
+            ListArray::try_new(field, offsets, Arc::new(empty_values), None).unwrap();
+        let scalar = ScalarValue::List(Arc::new(empty_list_array));
+        let result = spark_size_scalar(&scalar).unwrap();
+        assert_eq!(result, ScalarValue::Int32(Some(0))); // Empty array has 0 elements
 
         // Test null handling
         let scalar = ScalarValue::Null;

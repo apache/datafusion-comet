@@ -839,30 +839,34 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
         // Test size function with arrays built from columns (ensures native execution)
         checkSparkAnswerAndOperator(
-          sql("SELECT size(array(_2, _3, _4)) from t1 where _2 is not null"))
-        checkSparkAnswerAndOperator(sql("SELECT size(array(_1)) from t1 where _1 is not null"))
-        checkSparkAnswerAndOperator(sql("SELECT size(array(_2, _3)) from t1 where _2 is null"))
+          sql("SELECT size(array(_2, _3, _4)) from t1 where _2 is not null order by _2, _3, _4"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(array(_1)) from t1 where _1 is not null order by _1"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(array(_2, _3)) from t1 where _2 is null order by _2, _3"))
 
         // Test with conditional arrays (forces runtime evaluation)
-        checkSparkAnswerAndOperator(
-          sql("SELECT size(case when _2 > 0 then array(_2, _3, _4) else array(_2) end) from t1"))
-        checkSparkAnswerAndOperator(
-          sql("SELECT size(case when _1 then array(_8, _9) else array(_8, _9, _10) end) from t1"))
+        checkSparkAnswerAndOperator(sql(
+          "SELECT size(case when _2 > 0 then array(_2, _3, _4) else array(_2) end) from t1 order by _2, _3, _4"))
+        checkSparkAnswerAndOperator(sql(
+          "SELECT size(case when _1 then array(_8, _9) else array(_8, _9, _10) end) from t1 order by _1, _8, _9, _10"))
 
         // Test empty arrays using conditional logic to avoid constant folding
-        checkSparkAnswerAndOperator(
-          sql("SELECT size(case when _2 < 0 then array(_2, _3) else array() end) from t1"))
+        checkSparkAnswerAndOperator(sql(
+          "SELECT size(case when _2 < 0 then array(_2, _3) else array() end) from t1 order by _2, _3"))
 
         // Test null arrays using conditional logic
         checkSparkAnswerAndOperator(sql(
-          "SELECT size(case when _2 is null then cast(null as array<int>) else array(_2) end) from t1"))
+          "SELECT size(case when _2 is null then cast(null as array<int>) else array(_2) end) from t1 order by _2"))
 
         // Test with different data types using column references
         checkSparkAnswerAndOperator(
-          sql("SELECT size(array(_8, _9, _10)) from t1 where _8 is not null")
+          sql("SELECT size(array(_8, _9, _10)) from t1 where _8 is not null order by _8, _9, _10")
         ) // string arrays
         checkSparkAnswerAndOperator(
-          sql("SELECT size(array(_2, _3, _4, _5, _6)) from t1 where _2 is not null")
+          sql(
+            "SELECT size(array(_2, _3, _4, _5, _6)) from t1 where _2 is not null order by _2, _3, _4, _5, _6"
+          )
         ) // int arrays
       }
     }
