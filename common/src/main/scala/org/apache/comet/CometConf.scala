@@ -114,7 +114,7 @@ object CometConf extends ShimCometConf {
   // Deprecated: native_comet uses mutable buffers incompatible with Arrow FFI best practices
   // and does not support complex types. Use native_iceberg_compat or auto instead.
   // See: https://github.com/apache/datafusion-comet/issues/2186
-  @deprecated("Use SCAN_NATIVE_ICEBERG_COMPAT or SCAN_AUTO instead", "0.9.0")
+  @deprecated("Use SCAN_AUTO instead", "0.9.0")
   val SCAN_NATIVE_COMET = "native_comet"
   val SCAN_NATIVE_DATAFUSION = "native_datafusion"
   val SCAN_NATIVE_ICEBERG_COMPAT = "native_iceberg_compat"
