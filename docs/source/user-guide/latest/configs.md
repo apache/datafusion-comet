@@ -264,6 +264,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.IsNaN.enabled` | Enable Comet acceleration for `IsNaN` | true |
 | `spark.comet.expression.IsNotNull.enabled` | Enable Comet acceleration for `IsNotNull` | true |
 | `spark.comet.expression.IsNull.enabled` | Enable Comet acceleration for `IsNull` | true |
+| `spark.comet.expression.JsonToStructs.enabled` | Enable Comet acceleration for `JsonToStructs` | true |
 | `spark.comet.expression.KnownFloatingPointNormalized.enabled` | Enable Comet acceleration for `KnownFloatingPointNormalized` | true |
 | `spark.comet.expression.Length.enabled` | Enable Comet acceleration for `Length` | true |
 | `spark.comet.expression.LessThan.enabled` | Enable Comet acceleration for `LessThan` | true |
