@@ -56,14 +56,14 @@ class CometToPrettyStringSuite extends CometFuzzTestBase {
           val plan = Project(Seq(prettyExpr), table)
           val analyzed = spark.sessionState.analyzer.execute(plan)
           val result: DataFrame = Dataset.ofRows(spark, analyzed)
-          CometCast.isSupported(
+          val supportLevel = CometCast.isSupported(
             field.dataType,
             DataTypes.StringType,
             Some(spark.sessionState.conf.sessionLocalTimeZone),
-            CometEvalMode.TRY) match {
+            CometEvalMode.TRY)
+          supportLevel match {
             case _: Compatible
-                if CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
-                  .isTypeSupported(field.dataType, field.name, ListBuffer.empty) =>
+                if CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_COMET =>
               checkSparkAnswerAndOperator(result)
             case _ => checkSparkAnswer(result)
           }
