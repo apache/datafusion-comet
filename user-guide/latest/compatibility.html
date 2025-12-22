@@ -871,9 +871,13 @@ Spark.</p></li>
 </tr>
 <tr class="row-even"><td><p>string</p></td>
 <td><p>decimal</p></td>
-<td><p>Does not support inputs ending with ‘d’ or ‘f’. Does not support ‘inf’. Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits</p></td>
+<td><p>Does not support fullwidth unicode digits (e.g \uFF10)</p></td>
 </tr>
-<tr class="row-odd"><td><p>string</p></td>
+<tr class="row-odd"><td><p>or strings containing null bytes (e.g \u0000)</p></td>
+<td><p></p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>string</p></td>
 <td><p>timestamp</p></td>
 <td><p>Not all valid formats are supported</p></td>
 </tr>
