@@ -388,9 +388,9 @@ checksum = "b0f477b951e452a0b6b4a10b53ccd569042d1d01729b519e02074a9c0958a063"
 
 [[package]]
 name = "assertables"
-version = "9.8.2"
+version = "9.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59051ec02907378a67b0ba1b8631121f5388c8dbbb3cec8c749d8f93c2c3c211"
+checksum = "cbada39b42413d4db3d9460f6e791702490c40f72924378a1b6fc1a4181188fd"
 
 [[package]]
 name = "async-channel"
