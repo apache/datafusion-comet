@@ -77,10 +77,6 @@ pub struct ScanExec {
     metrics: ExecutionPlanMetricsSet,
     /// Baseline metrics
     baseline_metrics: BaselineMetrics,
-    /// Time waiting for JVM input plan to execute and return batches
-    jvm_fetch_time: Time,
-    /// Time spent in FFI
-    arrow_ffi_time: Time,
     /// Whether native code can assume ownership of batches that it receives
     arrow_ffi_safe: bool,
 }
@@ -95,32 +91,9 @@ impl ScanExec {
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
-        let arrow_ffi_time = MetricBuilder::new(&metrics_set).subset_time("arrow_ffi_time", 0);
-        let jvm_fetch_time = MetricBuilder::new(&metrics_set).subset_time("jvm_fetch_time", 0);
 
-        // Scan's schema is determined by the input batch, so we need to set it before execution.
-        // Note that we determine if arrays are dictionary-encoded based on the
-        // first batch. The array may be dictionary-encoded in some batches and not others, and
-        // ScanExec will cast arrays from all future batches to the type determined here, so we
-        // may end up either unpacking dictionary arrays or dictionary-encoding arrays.
-        // Dictionary-encoded primitive arrays are always unpacked.
-        let first_batch = if let Some(input_source) = input_source.as_ref() {
-            let mut timer = baseline_metrics.elapsed_compute().timer();
-            let batch = ScanExec::get_next(
-                exec_context_id,
-                input_source.as_obj(),
-                data_types.len(),
-                &jvm_fetch_time,
-                &arrow_ffi_time,
-                arrow_ffi_safe,
-            )?;
-            timer.stop();
-            batch
-        } else {
-            InputBatch::EOF
-        };
-
-        let schema = scan_schema(&first_batch, &data_types);
+        // Build schema directly from data types since get_next now always unpacks dictionaries
+        let schema = schema_from_data_types(&data_types);
 
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&schema)),
@@ -136,12 +109,10 @@ impl ScanExec {
             input_source,
             input_source_description: input_source_description.to_string(),
             data_types,
-            batch: Arc::new(Mutex::new(Some(first_batch))),
+            batch: Arc::new(Mutex::new(None)),
             cache,
             metrics: metrics_set,
             baseline_metrics,
-            jvm_fetch_time,
-            arrow_ffi_time,
             schema,
             arrow_ffi_safe,
         })
@@ -176,8 +147,6 @@ impl ScanExec {
                 self.exec_context_id,
                 self.input_source.as_ref().unwrap().as_obj(),
                 self.data_types.len(),
-                &self.jvm_fetch_time,
-                &self.arrow_ffi_time,
                 self.arrow_ffi_safe,
             )?;
             *current_batch = Some(next_batch);
@@ -193,8 +162,6 @@ impl ScanExec {
         exec_context_id: i64,
         iter: &JObject,
         num_cols: usize,
-        jvm_fetch_time: &Time,
-        arrow_ffi_time: &Time,
         arrow_ffi_safe: bool,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
@@ -210,14 +177,10 @@ impl ScanExec {
 
         let mut env = JVMClasses::get_env()?;
 
-        let mut timer = jvm_fetch_time.timer();
-
         let num_rows: i32 = unsafe {
             jni_call!(&mut env,
         comet_batch_iterator(iter).has_next() -> i32)?
         };
-
-        timer.stop();
 
         if num_rows == -1 {
             return Ok(InputBatch::EOF);
@@ -227,11 +190,9 @@ impl ScanExec {
         // JVM via FFI
         // Selection vectors can be provided by, for instance, Iceberg to
         // remove rows that have been deleted.
-        let selection_indices_arrays =
-            Self::get_selection_indices(&mut env, iter, num_cols, jvm_fetch_time, arrow_ffi_time)?;
+        let selection_indices_arrays = Self::get_selection_indices(&mut env, iter, num_cols)?;
 
         // fetch batch data from JVM via FFI
-        let mut timer = arrow_ffi_time.timer();
         let (num_rows, array_addrs, schema_addrs) =
             Self::allocate_and_fetch_batch(&mut env, iter, num_cols)?;
 
@@ -282,8 +243,6 @@ impl ScanExec {
                 Rc::from_raw(schema_ptr as *const FFI_ArrowSchema);
             }
         }
-
-        timer.stop();
 
         // If selection was applied, determine the actual row count from the selected arrays
         let actual_num_rows = if let Some(ref selection_arrays) = selection_indices_arrays {
@@ -353,21 +312,15 @@ impl ScanExec {
         env: &mut jni::JNIEnv,
         iter: &JObject,
         num_cols: usize,
-        jvm_fetch_time: &Time,
-        arrow_ffi_time: &Time,
     ) -> Result<Option<Vec<ArrayRef>>, CometError> {
         // Check if all columns have selection vectors
-        let mut timer = jvm_fetch_time.timer();
         let has_selection_vectors_result: jni::sys::jboolean = unsafe {
             jni_call!(env,
                 comet_batch_iterator(iter).has_selection_vectors() -> jni::sys::jboolean)?
         };
-        timer.stop();
         let has_selection_vectors = has_selection_vectors_result != 0;
 
         let selection_indices_arrays = if has_selection_vectors {
-            let mut timer = arrow_ffi_time.timer();
-
             // Allocate arrays for selection indices export (one per column)
             let mut indices_array_addrs = Vec::with_capacity(num_cols);
             let mut indices_schema_addrs = Vec::with_capacity(num_cols);
@@ -385,10 +338,7 @@ impl ScanExec {
             env.set_long_array_region(&indices_array_obj, 0, &indices_array_addrs)?;
             env.set_long_array_region(&indices_schema_obj, 0, &indices_schema_addrs)?;
 
-            timer.stop();
-
             // Export selection indices from JVM
-            let mut timer = jvm_fetch_time.timer();
             let _exported_count: i32 = unsafe {
                 jni_call!(env,
                     comet_batch_iterator(iter).export_selection_indices(
@@ -396,10 +346,8 @@ impl ScanExec {
                         JValueGen::Object(JObject::from(indices_schema_obj).as_ref())
                     ) -> i32)?
             };
-            timer.stop();
 
             // Convert to ArrayRef for easier handling
-            let mut timer = arrow_ffi_time.timer();
             let mut selection_arrays = Vec::with_capacity(num_cols);
             for i in 0..num_cols {
                 let array_data =
@@ -412,7 +360,6 @@ impl ScanExec {
                     Rc::from_raw(indices_schema_addrs[i] as *const FFI_ArrowSchema);
                 }
             }
-            timer.stop();
 
             Some(selection_arrays)
         } else {
@@ -423,26 +370,16 @@ impl ScanExec {
     }
 }
 
-fn scan_schema(input_batch: &InputBatch, data_types: &[DataType]) -> SchemaRef {
-    let fields = match input_batch {
-        // Note that if `columns` is empty, we'll get an empty schema
-        InputBatch::Batch(columns, _) => {
-            columns
-                .iter()
-                .enumerate()
-                .map(|(idx, c)| {
-                    let datatype = ScanExec::unpack_dictionary_type(c.data_type());
-                    // We don't use the field name. Put a placeholder.
-                    Field::new(format!("col_{idx}"), datatype, true)
-                })
-                .collect::<Vec<Field>>()
-        }
-        _ => data_types
-            .iter()
-            .enumerate()
-            .map(|(idx, dt)| Field::new(format!("col_{idx}"), dt.clone(), true))
-            .collect(),
-    };
+fn schema_from_data_types(data_types: &[DataType]) -> SchemaRef {
+    let fields = data_types
+        .iter()
+        .enumerate()
+        .map(|(idx, dt)| {
+            let datatype = ScanExec::unpack_dictionary_type(dt);
+            // We don't use the field name. Put a placeholder.
+            Field::new(format!("col_{idx}"), datatype, true)
+        })
+        .collect::<Vec<Field>>();
 
     Arc::new(Schema::new(fields))
 }
@@ -453,15 +390,7 @@ impl ExecutionPlan for ScanExec {
     }
 
     fn schema(&self) -> SchemaRef {
-        if self.exec_context_id == TEST_EXEC_CONTEXT_ID {
-            // `unwrap` is safe because `schema` is only called during converting
-            // Spark plan to DataFusion plan. At the moment, `batch` is not EOF.
-            let binding = self.batch.try_lock().unwrap();
-            let input_batch = binding.as_ref().unwrap();
-            scan_schema(input_batch, &self.data_types)
-        } else {
-            Arc::clone(&self.schema)
-        }
+        Arc::clone(&self.schema)
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

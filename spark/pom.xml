@@ -173,8 +173,8 @@ under the License.
       <groupId>software.amazon.awssdk</groupId>
       <artifactId>s3</artifactId>
     </dependency>
-    <!-- Iceberg dependencies for testing native Iceberg scan -->
-    <!-- Note: The specific Iceberg artifact is defined in profiles below based on Spark version -->
+    <!-- Jetty and Iceberg dependencies for testing native Iceberg scan -->
+    <!-- Note: The specific versions are defined in profiles below based on Spark version -->
   </dependencies>
 
   <profiles>
@@ -186,6 +186,19 @@ under the License.
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
           <version>1.5.2</version>
+          <scope>test</scope>
+        </dependency>
+        <!-- Jetty 9.4.x for Spark 3.4 (JDK 11, javax.* packages) -->
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-server</artifactId>
+          <version>9.4.53.v20231009</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-servlet</artifactId>
+          <version>9.4.53.v20231009</version>
           <scope>test</scope>
         </dependency>
       </dependencies>
@@ -203,6 +216,19 @@ under the License.
           <version>1.8.1</version>
           <scope>test</scope>
         </dependency>
+        <!-- Jetty 9.4.x for Spark 3.5 (JDK 11, javax.* packages) -->
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-server</artifactId>
+          <version>9.4.53.v20231009</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-servlet</artifactId>
+          <version>9.4.53.v20231009</version>
+          <scope>test</scope>
+        </dependency>
       </dependencies>
     </profile>
 
@@ -213,6 +239,19 @@ under the License.
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
           <version>1.10.0</version>
+          <scope>test</scope>
+        </dependency>
+        <!-- Jetty 11.x for Spark 4.0 (jakarta.servlet) -->
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-server</artifactId>
+          <version>11.0.24</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-servlet</artifactId>
+          <version>11.0.24</version>
           <scope>test</scope>
         </dependency>
       </dependencies>

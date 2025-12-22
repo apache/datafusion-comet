@@ -17,12 +17,18 @@
 
 //! Converts Spark physical plan to DataFusion physical plan
 
+pub mod expression_registry;
+pub mod macros;
+pub mod operator_registry;
+
 use crate::execution::operators::IcebergScanExec;
 use crate::{
     errors::ExpressionError,
     execution::{
         expressions::subquery::Subquery,
         operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec},
+        planner::expression_registry::ExpressionRegistry,
+        planner::operator_registry::OperatorRegistry,
         serde::to_arrow_datatype,
         shuffle::ShuffleWriterExec,
     },
@@ -46,13 +52,14 @@ use datafusion::{
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
         expressions::{
-            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNotNullExpr, IsNullExpr, LikeExpr,
-            Literal as DataFusionLiteral, NotExpr,
+            in_list, BinaryExpr, CaseExpr, CastExpr, Column, IsNullExpr,
+            Literal as DataFusionLiteral,
         },
         PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
     physical_plan::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
+        empty::EmptyExec,
         joins::{utils::JoinFilter, HashJoinExec, PartitionMode, SortMergeJoinExec},
         limit::LocalLimitExec,
         projection::ProjectionExec,
@@ -62,9 +69,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, create_modulo_expr,
-    create_negate_expr, BinaryOutputStyle, BloomFilterAgg, BloomFilterMightContain, EvalMode,
-    SparkHour, SparkMinute, SparkSecond,
+    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
+    BloomFilterAgg, BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
 };
 use iceberg::expr::Bind;
 
@@ -96,9 +102,11 @@ use arrow::array::{
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
+use datafusion::common::UnnestOptions;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
+use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
 use datafusion_comet_proto::spark_expression::ListLiteral;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
@@ -116,9 +124,9 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
-    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RLike,
-    RandExpr, RandnExpr, SparkCastOptions, Stddev, SubstringExpr, SumDecimal, TimestampTruncExpr,
-    ToJson, UnboundColumn, Variance,
+    GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RandExpr,
+    RandnExpr, SparkCastOptions, Stddev, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn,
+    Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -142,7 +150,7 @@ struct JoinParameters {
 }
 
 #[derive(Default)]
-struct BinaryExprOptions {
+pub struct BinaryExprOptions {
     pub is_integral_div: bool,
 }
 
@@ -242,126 +250,13 @@ impl PhysicalPlanner {
         spark_expr: &Expr,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        match spark_expr.expr_struct.as_ref().unwrap() {
-            ExprStruct::Add(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                self.create_binary_expr(
-                    expr.left.as_ref().unwrap(),
-                    expr.right.as_ref().unwrap(),
-                    expr.return_type.as_ref(),
-                    DataFusionOperator::Plus,
-                    input_schema,
-                    eval_mode,
-                )
-            }
-            ExprStruct::Subtract(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                self.create_binary_expr(
-                    expr.left.as_ref().unwrap(),
-                    expr.right.as_ref().unwrap(),
-                    expr.return_type.as_ref(),
-                    DataFusionOperator::Minus,
-                    input_schema,
-                    eval_mode,
-                )
-            }
-            ExprStruct::Multiply(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                self.create_binary_expr(
-                    expr.left.as_ref().unwrap(),
-                    expr.right.as_ref().unwrap(),
-                    expr.return_type.as_ref(),
-                    DataFusionOperator::Multiply,
-                    input_schema,
-                    eval_mode,
-                )
-            }
-            ExprStruct::Divide(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                self.create_binary_expr(
-                    expr.left.as_ref().unwrap(),
-                    expr.right.as_ref().unwrap(),
-                    expr.return_type.as_ref(),
-                    DataFusionOperator::Divide,
-                    input_schema,
-                    eval_mode,
-                )
-            }
-            ExprStruct::IntegralDivide(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                self.create_binary_expr_with_options(
-                    expr.left.as_ref().unwrap(),
-                    expr.right.as_ref().unwrap(),
-                    expr.return_type.as_ref(),
-                    DataFusionOperator::Divide,
-                    input_schema,
-                    BinaryExprOptions {
-                        is_integral_div: true,
-                    },
-                    eval_mode,
-                )
-            }
-            ExprStruct::Remainder(expr) => {
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
-                // TODO add support for EvalMode::TRY
-                // https://github.com/apache/datafusion-comet/issues/2021
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right =
-                    self.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        // Try to use the modular registry first - this automatically handles any registered expression types
+        if ExpressionRegistry::global().can_handle(spark_expr) {
+            return ExpressionRegistry::global().create_expr(spark_expr, input_schema, self);
+        }
 
-                let result = create_modulo_expr(
-                    left,
-                    right,
-                    expr.return_type.as_ref().map(to_arrow_datatype).unwrap(),
-                    input_schema,
-                    eval_mode == EvalMode::Ansi,
-                    &self.session_ctx.state(),
-                );
-                result.map_err(|e| GeneralError(e.to_string()))
-            }
-            ExprStruct::Eq(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::Eq;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::Neq(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::NotEq;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::Gt(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::Gt;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::GtEq(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::GtEq;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::Lt(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::Lt;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::LtEq(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::LtEq;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
+        // Fall back to the original monolithic match for other expressions
+        match spark_expr.expr_struct.as_ref().unwrap() {
             ExprStruct::Bound(bound) => {
                 let idx = bound.index as usize;
                 if idx >= input_schema.fields().len() {
@@ -378,28 +273,6 @@ impl PhysicalPlanner {
                     unbound.name.as_str(),
                     data_type,
                 )))
-            }
-            ExprStruct::IsNotNull(is_notnull) => {
-                let child = self.create_expr(is_notnull.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(IsNotNullExpr::new(child)))
-            }
-            ExprStruct::IsNull(is_null) => {
-                let child = self.create_expr(is_null.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(IsNullExpr::new(child)))
-            }
-            ExprStruct::And(and) => {
-                let left =
-                    self.create_expr(and.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(and.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::And;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::Or(or) => {
-                let left =
-                    self.create_expr(or.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(or.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::Or;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
             }
             ExprStruct::Literal(literal) => {
                 let data_type = to_arrow_datatype(literal.datatype.as_ref().unwrap());
@@ -560,39 +433,6 @@ impl PhysicalPlanner {
 
                 Ok(Arc::new(TimestampTruncExpr::new(child, format, timezone)))
             }
-            ExprStruct::Substring(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                // Spark Substring's start is 1-based when start > 0
-                let start = expr.start - i32::from(expr.start > 0);
-                // substring negative len is treated as 0 in Spark
-                let len = max(expr.len, 0);
-
-                Ok(Arc::new(SubstringExpr::new(
-                    child,
-                    start as i64,
-                    len as u64,
-                )))
-            }
-            ExprStruct::Like(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-
-                Ok(Arc::new(LikeExpr::new(false, false, left, right)))
-            }
-            ExprStruct::Rlike(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                match right.as_any().downcast_ref::<Literal>().unwrap().value() {
-                    ScalarValue::Utf8(Some(pattern)) => {
-                        Ok(Arc::new(RLike::try_new(left, pattern)?))
-                    }
-                    _ => Err(GeneralError(
-                        "RLike only supports scalar patterns".to_string(),
-                    )),
-                }
-            }
             ExprStruct::CheckOverflow(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
@@ -626,55 +466,6 @@ impl PhysicalPlanner {
                     ))),
                     _ => func,
                 }
-            }
-            ExprStruct::EqNullSafe(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::IsNotDistinctFrom;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::NeqNullSafe(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::IsDistinctFrom;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::BitwiseAnd(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::BitwiseAnd;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::BitwiseOr(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::BitwiseOr;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::BitwiseXor(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::BitwiseXor;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::BitwiseShiftRight(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::BitwiseShiftRight;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
-            }
-            ExprStruct::BitwiseShiftLeft(expr) => {
-                let left =
-                    self.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right = self.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
-                let op = DataFusionOperator::BitwiseShiftLeft;
-                Ok(Arc::new(BinaryExpr::new(left, op, right)))
             }
             ExprStruct::CaseWhen(case_when) => {
                 let when_then_pairs = case_when
@@ -723,16 +514,6 @@ impl PhysicalPlanner {
                 let false_expr =
                     self.create_expr(expr.false_expr.as_ref().unwrap(), input_schema)?;
                 Ok(Arc::new(IfExpr::new(if_expr, true_expr, false_expr)))
-            }
-            ExprStruct::Not(expr) => {
-                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-                Ok(Arc::new(NotExpr::new(child)))
-            }
-            ExprStruct::UnaryMinus(expr) => {
-                let child: Arc<dyn PhysicalExpr> =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let result = create_negate_expr(child, expr.fail_on_error);
-                result.map_err(|e| GeneralError(e.to_string()))
             }
             ExprStruct::NormalizeNanAndZero(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -892,7 +673,7 @@ impl PhysicalPlanner {
         }
     }
 
-    fn create_binary_expr(
+    pub fn create_binary_expr(
         &self,
         left: &Expr,
         right: &Expr,
@@ -913,7 +694,7 @@ impl PhysicalPlanner {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn create_binary_expr_with_options(
+    pub fn create_binary_expr_with_options(
         &self,
         left: &Expr,
         right: &Expr,
@@ -1050,29 +831,19 @@ impl PhysicalPlanner {
         inputs: &mut Vec<Arc<GlobalRef>>,
         partition_count: usize,
     ) -> Result<(Vec<ScanExec>, Arc<SparkPlan>), ExecutionError> {
+        // Try to use the modular registry first - this automatically handles any registered operator types
+        if OperatorRegistry::global().can_handle(spark_plan) {
+            return OperatorRegistry::global().create_plan(
+                spark_plan,
+                inputs,
+                partition_count,
+                self,
+            );
+        }
+
+        // Fall back to the original monolithic match for other operators
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
-            OpStruct::Projection(project) => {
-                assert_eq!(children.len(), 1);
-                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
-                let exprs: PhyExprResult = project
-                    .project_list
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, expr)| {
-                        self.create_expr(expr, child.schema())
-                            .map(|r| (r, format!("col_{idx}")))
-                    })
-                    .collect();
-                let projection = Arc::new(ProjectionExec::try_new(
-                    exprs?,
-                    Arc::clone(&child.native_plan),
-                )?);
-                Ok((
-                    scans,
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, projection, vec![child])),
-                ))
-            }
             OpStruct::Filter(filter) => {
                 assert_eq!(children.len(), 1);
                 let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
@@ -1244,6 +1015,17 @@ impl PhysicalPlanner {
                     .map(|offset| *offset as usize)
                     .collect();
 
+                // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
+                let partition_files = &scan.file_partitions[self.partition as usize];
+
+                if partition_files.partitioned_file.is_empty() {
+                    let empty_exec = Arc::new(EmptyExec::new(required_schema));
+                    return Ok((
+                        vec![],
+                        Arc::new(SparkPlan::new(spark_plan.plan_id, empty_exec, vec![])),
+                    ));
+                }
+
                 // Convert the Spark expressions to Physical expressions
                 let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
                     .data_filters
@@ -1287,13 +1069,12 @@ impl PhysicalPlanner {
                     None
                 };
 
-                // Get one file from the list of files
-                let one_file = scan
-                    .file_partitions
+                // Get one file from this partition (we know it's not empty due to early return above)
+                let one_file = partition_files
+                    .partitioned_file
                     .first()
-                    .and_then(|f| f.partitioned_file.first())
                     .map(|f| f.file_path.clone())
-                    .ok_or(GeneralError("Failed to locate file".to_string()))?;
+                    .expect("partition should have files after empty check");
 
                 let object_store_options: HashMap<String, String> = scan
                     .object_store_options
@@ -1388,6 +1169,7 @@ impl PhysicalPlanner {
                 );
 
                 let tasks = parse_file_scan_tasks(
+                    scan,
                     &scan.file_partitions[self.partition as usize].file_scan_tasks,
                 )?;
                 let file_task_groups = vec![tasks];
@@ -1430,6 +1212,7 @@ impl PhysicalPlanner {
                     ))),
                 }?;
 
+                let write_buffer_size = writer.write_buffer_size as usize;
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     partitioning,
@@ -1437,6 +1220,7 @@ impl PhysicalPlanner {
                     writer.output_data_file.clone(),
                     writer.output_index_file.clone(),
                     writer.tracing_enabled,
+                    write_buffer_size,
                 )?);
 
                 Ok((
@@ -1466,6 +1250,13 @@ impl PhysicalPlanner {
                 let parquet_writer = Arc::new(ParquetWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     writer.output_path.clone(),
+                    writer
+                        .work_dir
+                        .as_ref()
+                        .expect("work_dir is provided")
+                        .clone(),
+                    writer.job_id.clone(),
+                    writer.task_attempt_id,
                     codec,
                     self.partition,
                     writer.column_names.clone(),
@@ -1526,6 +1317,117 @@ impl PhysicalPlanner {
                 Ok((
                     scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, expand, vec![child])),
+                ))
+            }
+            OpStruct::Explode(explode) => {
+                assert_eq!(children.len(), 1);
+                let (scans, child) = self.create_plan(&children[0], inputs, partition_count)?;
+
+                // Create the expression for the array to explode
+                let child_expr = if let Some(child_expr) = &explode.child {
+                    self.create_expr(child_expr, child.schema())?
+                } else {
+                    return Err(ExecutionError::GeneralError(
+                        "Explode operator requires a child expression".to_string(),
+                    ));
+                };
+
+                // Create projection expressions for other columns
+                let projections: Vec<Arc<dyn PhysicalExpr>> = explode
+                    .project_list
+                    .iter()
+                    .map(|expr| self.create_expr(expr, child.schema()))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // For UnnestExec, we need to add a projection to put the columns in the right order:
+                // 1. First add all projection columns
+                // 2. Then add the array column to be exploded
+                // Then UnnestExec will unnest the last column
+
+                // Use return_field() to get the proper column names from the expressions
+                let child_schema = child.schema();
+                let mut project_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = projections
+                    .iter()
+                    .map(|expr| {
+                        let field = expr
+                            .return_field(&child_schema)
+                            .expect("Failed to get field from expression");
+                        let name = field.name().to_string();
+                        (Arc::clone(expr), name)
+                    })
+                    .collect();
+
+                // Add the array column as the last column
+                let array_field = child_expr
+                    .return_field(&child_schema)
+                    .expect("Failed to get field from array expression");
+                let array_col_name = array_field.name().to_string();
+                project_exprs.push((Arc::clone(&child_expr), array_col_name.clone()));
+
+                // Create a projection to arrange columns as needed
+                let project_exec = Arc::new(ProjectionExec::try_new(
+                    project_exprs,
+                    Arc::clone(&child.native_plan),
+                )?);
+
+                // Get the input schema from the projection
+                let project_schema = project_exec.schema();
+
+                // Build the output schema for UnnestExec
+                // The output schema replaces the list column with its element type
+                let mut output_fields: Vec<Field> = Vec::new();
+
+                // Add all projection columns (non-array columns)
+                for i in 0..projections.len() {
+                    output_fields.push(project_schema.field(i).clone());
+                }
+
+                // Add the unnested array element field
+                // Extract the element type from the list/array type
+                let array_field = project_schema.field(projections.len());
+                let element_type = match array_field.data_type() {
+                    DataType::List(field) => field.data_type().clone(),
+                    dt => {
+                        return Err(ExecutionError::GeneralError(format!(
+                            "Expected List type for explode, got {:?}",
+                            dt
+                        )))
+                    }
+                };
+
+                // The output column has the same name as the input array column
+                // but with the element type instead of the list type
+                output_fields.push(Field::new(
+                    array_field.name(),
+                    element_type,
+                    true, // Element is nullable after unnesting
+                ));
+
+                let output_schema = Arc::new(Schema::new(output_fields));
+
+                // Use UnnestExec to explode the last column (the array column)
+                // ListUnnest specifies which column to unnest and the depth (1 for single level)
+                let list_unnest = ListUnnest {
+                    index_in_input_schema: projections.len(), // Index of the array column to unnest
+                    depth: 1, // Unnest one level (explode single array)
+                };
+
+                let unnest_options = UnnestOptions {
+                    preserve_nulls: explode.outer,
+                    recursions: vec![],
+                };
+
+                let unnest_exec = Arc::new(UnnestExec::new(
+                    project_exec,
+                    vec![list_unnest],
+                    vec![], // No struct columns to unnest
+                    output_schema,
+                    unnest_options,
+                )?);
+
+                Ok((
+                    scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, unnest_exec, vec![child])),
                 ))
             }
             OpStruct::SortMergeJoin(join) => {
@@ -1705,6 +1607,10 @@ impl PhysicalPlanner {
                     Arc::new(SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])),
                 ))
             }
+            _ => Err(GeneralError(format!(
+                "Unsupported or unregistered operator type: {:?}",
+                spark_plan.op_struct
+            ))),
         }
     }
 
@@ -1902,7 +1808,9 @@ impl PhysicalPlanner {
 
                 let builder = match datatype {
                     DataType::Decimal128(_, _) => {
-                        let func = AggregateUDF::new_from_impl(SumDecimal::try_new(datatype)?);
+                        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                        let func =
+                            AggregateUDF::new_from_impl(SumDecimal::try_new(datatype, eval_mode)?);
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
                     _ => {
@@ -2303,7 +2211,7 @@ impl PhysicalPlanner {
             partition_by,
             sort_phy_exprs,
             window_frame.into(),
-            input_schema.as_ref(),
+            input_schema,
             false, // TODO: Ignore nulls
             false, // TODO: Spark does not support DISTINCT ... OVER
             None,
@@ -2703,7 +2611,7 @@ fn rewrite_physical_expr(
     Ok(expr.rewrite(&mut rewriter).data()?)
 }
 
-fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnumValue> {
+pub fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnumValue> {
     match spark_expression::EvalMode::try_from(value)? {
         spark_expression::EvalMode::Legacy => Ok(EvalMode::Legacy),
         spark_expression::EvalMode::Try => Ok(EvalMode::Try),
@@ -2732,29 +2640,66 @@ fn convert_spark_types_to_arrow_schema(
 ///
 /// Each task contains a residual predicate that is used for row-group level filtering
 /// during Parquet scanning.
+///
+/// This function uses deduplication pools from the IcebergScan to avoid redundant parsing
+/// of schemas, partition specs, partition types, name mappings, and other repeated data.
 fn parse_file_scan_tasks(
+    proto_scan: &spark_operator::IcebergScan,
     proto_tasks: &[spark_operator::IcebergFileScanTask],
 ) -> Result<Vec<iceberg::scan::FileScanTask>, ExecutionError> {
-    let results: Result<Vec<_>, _> = proto_tasks
+    // Build caches upfront: for 10K tasks with 1 schema, this parses the schema
+    // once instead of 10K times, eliminating redundant JSON deserialization
+    let schema_cache: Vec<Arc<iceberg::spec::Schema>> = proto_scan
+        .schema_pool
         .iter()
-        .map(|proto_task| {
-            let schema: iceberg::spec::Schema = serde_json::from_str(&proto_task.schema_json)
-                .map_err(|e| {
-                    ExecutionError::GeneralError(format!("Failed to parse schema JSON: {}", e))
-                })?;
+        .map(|json| {
+            serde_json::from_str(json).map(Arc::new).map_err(|e| {
+                ExecutionError::GeneralError(format!(
+                    "Failed to parse schema JSON from pool: {}",
+                    e
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-            let schema_ref = Arc::new(schema);
+    let partition_type_cache: Vec<iceberg::spec::StructType> = proto_scan
+        .partition_type_pool
+        .iter()
+        .map(|json| {
+            serde_json::from_str(json).map_err(|e| {
+                ExecutionError::GeneralError(format!(
+                    "Failed to parse partition type JSON from pool: {}",
+                    e
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-            // CometScanRule validates format before serialization
-            debug_assert_eq!(
-                proto_task.data_file_format.as_str(),
-                "PARQUET",
-                "Only PARQUET format is supported. This indicates a bug in CometScanRule validation."
-            );
-            let data_file_format = iceberg::spec::DataFileFormat::Parquet;
+    let partition_spec_cache: Vec<Option<Arc<iceberg::spec::PartitionSpec>>> = proto_scan
+        .partition_spec_pool
+        .iter()
+        .map(|json| {
+            serde_json::from_str::<iceberg::spec::PartitionSpec>(json)
+                .ok()
+                .map(Arc::new)
+        })
+        .collect();
 
-            let deletes: Vec<iceberg::scan::FileScanTaskDeleteFile> = proto_task
-                .delete_files
+    let name_mapping_cache: Vec<Option<Arc<iceberg::spec::NameMapping>>> = proto_scan
+        .name_mapping_pool
+        .iter()
+        .map(|json| {
+            serde_json::from_str::<iceberg::spec::NameMapping>(json)
+                .ok()
+                .map(Arc::new)
+        })
+        .collect();
+
+    let delete_files_cache: Vec<Vec<iceberg::scan::FileScanTaskDeleteFile>> = proto_scan
+        .delete_files_pool
+        .iter()
+        .map(|list| {
+            list.delete_files
                 .iter()
                 .map(|del| {
                     let file_type = match del.content_type.as_str() {
@@ -2779,53 +2724,106 @@ fn parse_file_scan_tasks(
                         },
                     })
                 })
-                .collect::<Result<Vec<_>, ExecutionError>>()?;
+                .collect::<Result<Vec<_>, ExecutionError>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-            // Residuals are serialized with binding=false (name-based references).
-            // Convert to Iceberg predicate and bind to this file's schema for row-group filtering.
-            let bound_predicate = proto_task
-                .residual
-                .as_ref()
-                .and_then(|residual_expr| {
-                    convert_spark_expr_to_predicate(residual_expr)
-                })
-                .map(
-                    |pred| -> Result<iceberg::expr::BoundPredicate, ExecutionError> {
-                        let bound = pred.bind(Arc::clone(&schema_ref), true).map_err(|e| {
-                            ExecutionError::GeneralError(format!(
-                                "Failed to bind predicate to schema: {}",
-                                e
-                            ))
-                        })?;
+    let partition_data_cache: Vec<serde_json::Value> = proto_scan
+        .partition_data_pool
+        .iter()
+        .map(|json| {
+            serde_json::from_str(json).map_err(|e| {
+                ExecutionError::GeneralError(format!(
+                    "Failed to parse partition data JSON from pool: {}",
+                    e
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-                        Ok(bound)
-                    },
-                )
-                .transpose()?;
-
-            let partition = if let (Some(partition_json), Some(partition_type_json)) = (
-                proto_task.partition_data_json.as_ref(),
-                proto_task.partition_type_json.as_ref(),
-            ) {
-                let partition_type: iceberg::spec::StructType =
-                    serde_json::from_str(partition_type_json).map_err(|e| {
+    let results: Result<Vec<_>, _> = proto_tasks
+        .iter()
+        .map(|proto_task| {
+            let schema_ref = Arc::clone(
+                schema_cache
+                    .get(proto_task.schema_idx as usize)
+                    .ok_or_else(|| {
                         ExecutionError::GeneralError(format!(
-                            "Failed to parse partition type JSON: {}",
-                            e
+                            "Invalid schema_idx: {} (pool size: {})",
+                            proto_task.schema_idx,
+                            schema_cache.len()
+                        ))
+                    })?,
+            );
+
+            let data_file_format = iceberg::spec::DataFileFormat::Parquet;
+
+            let deletes = if let Some(idx) = proto_task.delete_files_idx {
+                delete_files_cache
+                    .get(idx as usize)
+                    .ok_or_else(|| {
+                        ExecutionError::GeneralError(format!(
+                            "Invalid delete_files_idx: {} (pool size: {})",
+                            idx,
+                            delete_files_cache.len()
+                        ))
+                    })?
+                    .clone()
+            } else {
+                vec![]
+            };
+
+            let bound_predicate = if let Some(idx) = proto_task.residual_idx {
+                proto_scan
+                    .residual_pool
+                    .get(idx as usize)
+                    .and_then(convert_spark_expr_to_predicate)
+                    .map(
+                        |pred| -> Result<iceberg::expr::BoundPredicate, ExecutionError> {
+                            pred.bind(Arc::clone(&schema_ref), true).map_err(|e| {
+                                ExecutionError::GeneralError(format!(
+                                    "Failed to bind predicate to schema: {}",
+                                    e
+                                ))
+                            })
+                        },
+                    )
+                    .transpose()?
+            } else {
+                None
+            };
+
+            let partition = if let Some(partition_data_idx) = proto_task.partition_data_idx {
+                let partition_type_idx = proto_task.partition_type_idx.ok_or_else(|| {
+                    ExecutionError::GeneralError(
+                        "partition_type_idx is required when partition_data_idx is present"
+                            .to_string(),
+                    )
+                })?;
+
+                let partition_data_value = partition_data_cache
+                    .get(partition_data_idx as usize)
+                    .ok_or_else(|| {
+                        ExecutionError::GeneralError(format!(
+                            "Invalid partition_data_idx: {} (cache size: {})",
+                            partition_data_idx,
+                            partition_data_cache.len()
                         ))
                     })?;
 
-                let partition_data_value: serde_json::Value = serde_json::from_str(partition_json)
-                    .map_err(|e| {
+                let partition_type = partition_type_cache
+                    .get(partition_type_idx as usize)
+                    .ok_or_else(|| {
                         ExecutionError::GeneralError(format!(
-                            "Failed to parse partition data JSON: {}",
-                            e
+                            "Invalid partition_type_idx: {} (cache size: {})",
+                            partition_type_idx,
+                            partition_type_cache.len()
                         ))
                     })?;
 
                 match iceberg::spec::Literal::try_from_json(
-                    partition_data_value,
-                    &iceberg::spec::Type::Struct(partition_type),
+                    partition_data_value.clone(),
+                    &iceberg::spec::Type::Struct(partition_type.clone()),
                 ) {
                     Ok(Some(iceberg::spec::Literal::Struct(s))) => Some(s),
                     Ok(None) => None,
@@ -2846,28 +2844,28 @@ fn parse_file_scan_tasks(
                 None
             };
 
-            let partition_spec = if let Some(partition_spec_json) =
-                proto_task.partition_spec_json.as_ref()
-            {
-                // Try to parse partition spec, but gracefully handle unknown transforms
-                // for forward compatibility (e.g., TestForwardCompatibility tests)
-                match serde_json::from_str::<iceberg::spec::PartitionSpec>(partition_spec_json) {
-                    Ok(spec) => Some(Arc::new(spec)),
-                    Err(_) => None,
-                }
-            } else {
-                None
-            };
+            let partition_spec = proto_task
+                .partition_spec_idx
+                .and_then(|idx| partition_spec_cache.get(idx as usize))
+                .and_then(|opt| opt.clone());
 
-            let name_mapping = if let Some(name_mapping_json) = proto_task.name_mapping_json.as_ref()
-            {
-                match serde_json::from_str::<iceberg::spec::NameMapping>(name_mapping_json) {
-                    Ok(mapping) => Some(Arc::new(mapping)),
-                    Err(_) => None, // Name mapping is optional
-                }
-            } else {
-                None
-            };
+            let name_mapping = proto_task
+                .name_mapping_idx
+                .and_then(|idx| name_mapping_cache.get(idx as usize))
+                .and_then(|opt| opt.clone());
+
+            let project_field_ids = proto_scan
+                .project_field_ids_pool
+                .get(proto_task.project_field_ids_idx as usize)
+                .ok_or_else(|| {
+                    ExecutionError::GeneralError(format!(
+                        "Invalid project_field_ids_idx: {} (pool size: {})",
+                        proto_task.project_field_ids_idx,
+                        proto_scan.project_field_ids_pool.len()
+                    ))
+                })?
+                .field_ids
+                .clone();
 
             Ok(iceberg::scan::FileScanTask {
                 data_file_path: proto_task.data_file_path.clone(),
@@ -2876,7 +2874,7 @@ fn parse_file_scan_tasks(
                 record_count: proto_task.record_count,
                 data_file_format,
                 schema: schema_ref,
-                project_field_ids: proto_task.project_field_ids.clone(),
+                project_field_ids,
                 predicate: bound_predicate,
                 deletes,
                 partition,

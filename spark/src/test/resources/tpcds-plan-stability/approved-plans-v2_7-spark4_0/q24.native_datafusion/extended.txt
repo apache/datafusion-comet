@@ -1,0 +1,99 @@
+CometColumnarToRow
++- CometSort
+   +- CometColumnarExchange
+      +- Filter
+         :  +- Subquery
+         :     +- HashAggregate
+         :        +- CometColumnarToRow
+         :           +- CometColumnarExchange
+         :              +- HashAggregate
+         :                 +- HashAggregate
+         :                    +- CometColumnarToRow
+         :                       +- CometColumnarExchange
+         :                          +- HashAggregate
+         :                             +- Project
+         :                                +-  BroadcastHashJoin [COMET: Comet is not compatible with Spark for case conversion in locale-specific cases. Set spark.comet.caseConversion.enabled=true to enable it anyway.]
+         :                                   :- CometColumnarToRow
+         :                                   :  +- CometProject
+         :                                   :     +- CometBroadcastHashJoin
+         :                                   :        :- CometProject
+         :                                   :        :  +- CometBroadcastHashJoin
+         :                                   :        :     :- CometProject
+         :                                   :        :     :  +- CometBroadcastHashJoin
+         :                                   :        :     :     :- CometProject
+         :                                   :        :     :     :  +- CometSortMergeJoin
+         :                                   :        :     :     :     :- CometSort
+         :                                   :        :     :     :     :  +- CometExchange
+         :                                   :        :     :     :     :     +- CometProject
+         :                                   :        :     :     :     :        +- CometFilter
+         :                                   :        :     :     :     :           +- CometNativeScan parquet spark_catalog.default.store_sales
+         :                                   :        :     :     :     +- CometSort
+         :                                   :        :     :     :        +- CometExchange
+         :                                   :        :     :     :           +- CometProject
+         :                                   :        :     :     :              +- CometFilter
+         :                                   :        :     :     :                 +- CometNativeScan parquet spark_catalog.default.store_returns
+         :                                   :        :     :     +- CometBroadcastExchange
+         :                                   :        :     :        +- CometProject
+         :                                   :        :     :           +- CometFilter
+         :                                   :        :     :              +- CometNativeScan parquet spark_catalog.default.store
+         :                                   :        :     +- CometBroadcastExchange
+         :                                   :        :        +- CometProject
+         :                                   :        :           +- CometFilter
+         :                                   :        :              +- CometNativeScan parquet spark_catalog.default.item
+         :                                   :        +- CometBroadcastExchange
+         :                                   :           +- CometProject
+         :                                   :              +- CometFilter
+         :                                   :                 +- CometNativeScan parquet spark_catalog.default.customer
+         :                                   +- BroadcastExchange
+         :                                      +- CometColumnarToRow
+         :                                         +- CometProject
+         :                                            +- CometFilter
+         :                                               +- CometNativeScan parquet spark_catalog.default.customer_address
+         +- HashAggregate
+            +- CometColumnarToRow
+               +- CometColumnarExchange
+                  +- HashAggregate
+                     +- HashAggregate
+                        +- CometColumnarToRow
+                           +- CometColumnarExchange
+                              +- HashAggregate
+                                 +- Project
+                                    +-  BroadcastHashJoin [COMET: Comet is not compatible with Spark for case conversion in locale-specific cases. Set spark.comet.caseConversion.enabled=true to enable it anyway.]
+                                       :- CometColumnarToRow
+                                       :  +- CometProject
+                                       :     +- CometBroadcastHashJoin
+                                       :        :- CometProject
+                                       :        :  +- CometBroadcastHashJoin
+                                       :        :     :- CometProject
+                                       :        :     :  +- CometBroadcastHashJoin
+                                       :        :     :     :- CometProject
+                                       :        :     :     :  +- CometSortMergeJoin
+                                       :        :     :     :     :- CometSort
+                                       :        :     :     :     :  +- CometExchange
+                                       :        :     :     :     :     +- CometProject
+                                       :        :     :     :     :        +- CometFilter
+                                       :        :     :     :     :           +- CometNativeScan parquet spark_catalog.default.store_sales
+                                       :        :     :     :     +- CometSort
+                                       :        :     :     :        +- CometExchange
+                                       :        :     :     :           +- CometProject
+                                       :        :     :     :              +- CometFilter
+                                       :        :     :     :                 +- CometNativeScan parquet spark_catalog.default.store_returns
+                                       :        :     :     +- CometBroadcastExchange
+                                       :        :     :        +- CometProject
+                                       :        :     :           +- CometFilter
+                                       :        :     :              +- CometNativeScan parquet spark_catalog.default.store
+                                       :        :     +- CometBroadcastExchange
+                                       :        :        +- CometProject
+                                       :        :           +- CometFilter
+                                       :        :              +- CometNativeScan parquet spark_catalog.default.item
+                                       :        +- CometBroadcastExchange
+                                       :           +- CometProject
+                                       :              +- CometFilter
+                                       :                 +- CometNativeScan parquet spark_catalog.default.customer
+                                       +- BroadcastExchange
+                                          +- CometColumnarToRow
+                                             +- CometProject
+                                                +- CometFilter
+                                                   +- CometNativeScan parquet spark_catalog.default.customer_address
+
+Comet accelerated 72 out of 88 eligible operators (81%). Final plan contains 9 transitions between Spark and Comet.
