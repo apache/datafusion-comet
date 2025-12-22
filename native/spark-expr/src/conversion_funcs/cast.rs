@@ -2212,10 +2212,6 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
         return Ok(None);
     }
 
-    if !is_valid_decimal_format(trimmed) {
-        return Ok(None);
-    }
-
     match parse_decimal_str(trimmed) {
         Ok((mantissa, exponent)) => {
             // Convert to target scale
@@ -2304,10 +2300,31 @@ fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
         mantissa_str
     };
 
+    if mantissa_str.starts_with('+') || mantissa_str.starts_with('-') {
+        return Err("Invalid sign format".to_string());
+    }
+
     let (integral_part, fractional_part) = match mantissa_str.find('.') {
-        Some(dot_pos) => (&mantissa_str[..dot_pos], &mantissa_str[dot_pos + 1..]),
+        Some(dot_pos) => {
+            if mantissa_str[dot_pos + 1..].contains('.') {
+                return Err("Multiple decimal points".to_string());
+            }
+            (&mantissa_str[..dot_pos], &mantissa_str[dot_pos + 1..])
+        }
         None => (mantissa_str, ""),
     };
+
+    if integral_part.is_empty() && fractional_part.is_empty() {
+        return Err("No digits found".to_string());
+    }
+
+    if !integral_part.is_empty() && !integral_part.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Invalid integral part".to_string());
+    }
+
+    if !fractional_part.is_empty() && !fractional_part.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Invalid fractional part".to_string());
+    }
 
     // Parse integral part
     let integral_value: i128 = if integral_part.is_empty() {
