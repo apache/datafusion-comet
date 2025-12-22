@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.benchmark
 
-import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.catalyst.expressions.JsonToStructs
 
 import org.apache.comet.CometConf
@@ -54,8 +53,6 @@ object CometJsonExpressionBenchmark extends CometBenchmarkBase {
    * Generic method to run a JSON expression benchmark with the given configuration.
    */
   def runJsonExprBenchmark(config: JsonExprConfig, values: Int): Unit = {
-    val benchmark = new Benchmark(config.name, values, output = output)
-
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         // Generate data with specified JSON patterns
@@ -119,31 +116,11 @@ object CometJsonExpressionBenchmark extends CometBenchmarkBase {
 
         prepareTable(dir, jsonData)
 
-        benchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark.sql(config.query).noop()
-        }
+        val extraConfigs = Map(
+          CometConf.getExprAllowIncompatConfigKey(
+            classOf[JsonToStructs]) -> "true") ++ config.extraCometConfigs
 
-        benchmark.addCase("SQL Parquet - Comet (Scan)") { _ =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
-            spark.sql(config.query).noop()
-          }
-        }
-
-        benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
-          val baseConfigs =
-            Map(
-              CometConf.COMET_ENABLED.key -> "true",
-              CometConf.COMET_EXEC_ENABLED.key -> "true",
-              CometConf.getExprAllowIncompatConfigKey(classOf[JsonToStructs]) -> "true",
-              "spark.sql.optimizer.constantFolding.enabled" -> "false")
-          val allConfigs = baseConfigs ++ config.extraCometConfigs
-
-          withSQLConf(allConfigs.toSeq: _*) {
-            spark.sql(config.query).noop()
-          }
-        }
-
-        benchmark.run()
+        runExpressionBenchmark(config.name, values, config.query, extraConfigs)
       }
     }
   }
