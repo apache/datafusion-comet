@@ -2102,92 +2102,13 @@ fn cast_string_to_decimal256_impl(
     ))
 }
 
-/// Validates if a string is a valid decimal similar to BigDecimal
-fn is_valid_decimal_format(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
-    }
-
-    let string_bytes = s.as_bytes();
-    let mut idx = 0;
-    let len = string_bytes.len();
-
-    // Skip leading +/- signs
-    if string_bytes[idx] == b'+' || string_bytes[idx] == b'-' {
-        idx += 1;
-        if idx >= len {
-            // Sign only. Fail early
-            return false;
-        }
-    }
-
-    // Check invalid cases like "++", "+-"
-    if string_bytes[idx] == b'+' || string_bytes[idx] == b'-' {
-        return false;
-    }
-
-    // Now we need at least one digit either before or after a decimal point
-    let mut has_digit = false;
-    let mut is_decimal_point_seen = false;
-
-    while idx < len {
-        let ch = string_bytes[idx];
-
-        if ch.is_ascii_digit() {
-            has_digit = true;
-            idx += 1;
-        } else if ch == b'.' {
-            if is_decimal_point_seen {
-                // Multiple decimal points or decimal after exponent
-                return false;
-            }
-            is_decimal_point_seen = true;
-            idx += 1;
-        } else if ch.eq_ignore_ascii_case(&b'e') {
-            if !has_digit {
-                // Exponent without any digits before it
-                return false;
-            }
-            idx += 1;
-            // Exponent part must have optional sign followed by atleast a digit
-            if idx >= len {
-                return false;
-            }
-
-            if string_bytes[idx] == b'+' || string_bytes[idx] == b'-' {
-                idx += 1;
-                if idx >= len {
-                    return false;
-                }
-            }
-
-            // Must have at least one digit in exponent
-            if !string_bytes[idx].is_ascii_digit() {
-                return false;
-            }
-
-            // Rest all should only be digits
-            while idx < len {
-                if !string_bytes[idx].is_ascii_digit() {
-                    return false;
-                }
-                idx += 1;
-            }
-            break;
-        } else {
-            // Invalid character found. Fail fast
-            return false;
-        }
-    }
-    has_digit
-}
-
 /// Parse a string to decimal following Spark's behavior
 fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Option<i128>> {
     let string_bytes = s.as_bytes();
     let mut start = 0;
     let mut end = string_bytes.len();
 
+    // trim whitespaces
     while start < end && string_bytes[start].is_ascii_whitespace() {
         start += 1;
     }
@@ -2212,6 +2133,7 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
         return Ok(None);
     }
 
+    // validate and parse mantissa and exponent
     match parse_decimal_str(trimmed) {
         Ok((mantissa, exponent)) => {
             // Convert to target scale
