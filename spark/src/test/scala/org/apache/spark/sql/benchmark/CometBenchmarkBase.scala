@@ -137,7 +137,9 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
     }
 
     benchmark.addCase("Comet (Scan)") { _ =>
-      withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "false") {
         spark.sql(query).noop()
       }
     }
