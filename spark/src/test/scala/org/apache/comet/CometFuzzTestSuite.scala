@@ -28,7 +28,7 @@ import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 import org.apache.comet.testing.FuzzDataGenerator.{doubleNaNLiteral, floatNaNLiteral}
 
 class CometFuzzTestSuite extends CometFuzzTestBase {
@@ -296,11 +296,13 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
 
         // TODO test with MapType
         // https://github.com/apache/datafusion-comet/issues/2945
-        val schema = StructType(Seq(
-          StructField("c0", DataTypes.DateType),
-          StructField("c1", DataTypes.createArrayType(DataTypes.DateType)),
-          StructField("c2", DataTypes.createStructType(Array(StructField("c3", DataTypes.DateType))))
-        ))
+        val schema = StructType(
+          Seq(
+            StructField("c0", DataTypes.DateType),
+            StructField("c1", DataTypes.createArrayType(DataTypes.DateType)),
+            StructField(
+              "c2",
+              DataTypes.createStructType(Array(StructField("c3", DataTypes.DateType))))))
 
         ParquetGenerator.makeParquetFile(
           random,
