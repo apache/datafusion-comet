@@ -233,7 +233,7 @@ under the License.
     </profile>
 
     <profile>
-      <id>spark-4.0</id>
+      <id>spark-4.1</id>
       <dependencies>
         <dependency>
           <groupId>org.apache.iceberg</groupId>
@@ -241,7 +241,7 @@ under the License.
           <version>1.10.0</version>
           <scope>test</scope>
         </dependency>
-        <!-- Jetty 11.x for Spark 4.0 (jakarta.servlet) -->
+        <!-- Jetty 11.x for Spark 4.1 (jakarta.servlet) -->
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
