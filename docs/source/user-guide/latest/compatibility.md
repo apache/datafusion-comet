@@ -183,7 +183,8 @@ The following cast operations are not compatible with Spark for all inputs and a
 | double | decimal  | There can be rounding differences |
 | string | float  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
 | string | double  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
-| string | decimal  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits |
+| string | decimal  | Does not support fullwidth unicode digits (e.g \\uFF10)
+or strings containing null bytes (e.g \\u0000) |
 | string | timestamp  | Not all valid formats are supported |
 <!-- prettier-ignore-end -->
 <!--END:INCOMPAT_CAST_TABLE-->
