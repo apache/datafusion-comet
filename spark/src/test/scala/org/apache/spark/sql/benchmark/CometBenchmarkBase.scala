@@ -110,6 +110,52 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
     benchmark.run()
   }
 
+  /**
+   * Runs an expression benchmark with standard cases: Spark, Comet (Scan), Comet (Scan + Exec).
+   * This provides a consistent benchmark structure for expression evaluation.
+   *
+   * @param name
+   *   Benchmark name
+   * @param cardinality
+   *   Number of rows being processed
+   * @param query
+   *   SQL query to benchmark
+   * @param extraCometConfigs
+   *   Additional configurations to apply for Comet cases (optional)
+   */
+  final def runExpressionBenchmark(
+      name: String,
+      cardinality: Long,
+      query: String,
+      extraCometConfigs: Map[String, String] = Map.empty): Unit = {
+    val benchmark = new Benchmark(name, cardinality, output = output)
+
+    benchmark.addCase("Spark") { _ =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.sql(query).noop()
+      }
+    }
+
+    benchmark.addCase("Comet (Scan)") { _ =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+        spark.sql(query).noop()
+      }
+    }
+
+    val cometExecConfigs = Map(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      "spark.sql.optimizer.constantFolding.enabled" -> "false") ++ extraCometConfigs
+
+    benchmark.addCase("Comet (Scan + Exec)") { _ =>
+      withSQLConf(cometExecConfigs.toSeq: _*) {
+        spark.sql(query).noop()
+      }
+    }
+
+    benchmark.run()
+  }
+
   protected def prepareTable(dir: File, df: DataFrame, partition: Option[String] = None): Unit = {
     val testDf = if (partition.isDefined) {
       df.write.partitionBy(partition.get)

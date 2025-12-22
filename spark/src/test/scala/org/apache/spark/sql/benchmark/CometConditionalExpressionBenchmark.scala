@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.benchmark
 
-import org.apache.spark.benchmark.Benchmark
-
 import org.apache.comet.CometConf
 
 /**
@@ -32,8 +30,6 @@ import org.apache.comet.CometConf
 object CometConditionalExpressionBenchmark extends CometBenchmarkBase {
 
   def caseWhenExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("Case When Expr", values, output = output)
-
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         prepareTable(dir, spark.sql(s"SELECT value AS c1 FROM $tbl"))
@@ -41,56 +37,19 @@ object CometConditionalExpressionBenchmark extends CometBenchmarkBase {
         val query =
           "select CASE WHEN c1 < 0 THEN '<0' WHEN c1 = 0 THEN '=0' ELSE '>0' END from parquetV1Table"
 
-        benchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark.sql(query).noop()
-        }
-
-        benchmark.addCase("SQL Parquet - Comet (Scan)") { _ =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
-            spark.sql(query).noop()
-          }
-        }
-
-        benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true") {
-            spark.sql(query).noop()
-          }
-        }
-
-        benchmark.run()
+        runExpressionBenchmark("Case When Expr", values, query)
       }
     }
   }
 
   def ifExprBenchmark(values: Int): Unit = {
-    val benchmark = new Benchmark("If Expr", values, output = output)
-
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         prepareTable(dir, spark.sql(s"SELECT value AS c1 FROM $tbl"))
+
         val query = "select IF (c1 < 0, '<0', '>=0') from parquetV1Table"
 
-        benchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark.sql(query).noop()
-        }
-
-        benchmark.addCase("SQL Parquet - Comet (Scan)") { _ =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
-            spark.sql(query).noop()
-          }
-        }
-
-        benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true") {
-            spark.sql(query).noop()
-          }
-        }
-
-        benchmark.run()
+        runExpressionBenchmark("If Expr", values, query)
       }
     }
   }

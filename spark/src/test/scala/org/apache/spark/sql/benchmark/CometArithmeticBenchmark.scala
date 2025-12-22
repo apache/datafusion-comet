@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.benchmark
 
-import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
@@ -35,10 +34,6 @@ object CometArithmeticBenchmark extends CometBenchmarkBase {
 
   def integerArithmeticBenchmark(values: Int, op: BinaryOp, useDictionary: Boolean): Unit = {
     val dataType = IntegerType
-    val benchmark = new Benchmark(
-      s"Binary op ${dataType.sql}, dictionary = $useDictionary",
-      values,
-      output = output)
 
     withTempPath { dir =>
       withTempTable(table) {
@@ -48,25 +43,10 @@ object CometArithmeticBenchmark extends CometBenchmarkBase {
             s"SELECT CAST(value AS ${dataType.sql}) AS c1, " +
               s"CAST(value AS ${dataType.sql}) c2 FROM $tbl"))
 
-        benchmark.addCase(s"$op ($dataType) - Spark") { _ =>
-          spark.sql(s"SELECT c1 ${op.sig} c2 FROM $table").noop()
-        }
+        val name = s"Binary op ${dataType.sql}, dictionary = $useDictionary"
+        val query = s"SELECT c1 ${op.sig} c2 FROM $table"
 
-        benchmark.addCase(s"$op ($dataType) - Comet (Scan)") { _ =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
-            spark.sql(s"SELECT c1 ${op.sig} c2 FROM $table").noop()
-          }
-        }
-
-        benchmark.addCase(s"$op ($dataType) - Comet (Scan, Exec)") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true") {
-            spark.sql(s"SELECT c1 ${op.sig} c2 FROM $table").noop()
-          }
-        }
-
-        benchmark.run()
+        runExpressionBenchmark(name, values, query)
       }
     }
   }
@@ -76,10 +56,6 @@ object CometArithmeticBenchmark extends CometBenchmarkBase {
       dataType: DecimalType,
       op: BinaryOp,
       useDictionary: Boolean): Unit = {
-    val benchmark = new Benchmark(
-      s"Binary op ${dataType.sql}, dictionary = $useDictionary",
-      values,
-      output = output)
     val df = makeDecimalDataFrame(values, dataType, useDictionary)
 
     withTempPath { dir =>
@@ -87,25 +63,10 @@ object CometArithmeticBenchmark extends CometBenchmarkBase {
         df.createOrReplaceTempView(tbl)
         prepareTable(dir, spark.sql(s"SELECT dec AS c1, dec AS c2 FROM $tbl"))
 
-        benchmark.addCase(s"$op ($dataType) - Spark") { _ =>
-          spark.sql(s"SELECT c1 ${op.sig} c2 FROM $table").noop()
-        }
+        val name = s"Binary op ${dataType.sql}, dictionary = $useDictionary"
+        val query = s"SELECT c1 ${op.sig} c2 FROM $table"
 
-        benchmark.addCase(s"$op ($dataType) - Comet (Scan)") { _ =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
-            spark.sql(s"SELECT c1 ${op.sig} c2 FROM $table").noop()
-          }
-        }
-
-        benchmark.addCase(s"$op ($dataType) - Comet (Scan, Exec)") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true") {
-            spark.sql(s"SELECT c1 ${op.sig} c2 FROM $table").noop()
-          }
-        }
-
-        benchmark.run()
+        runExpressionBenchmark(name, values, query)
       }
     }
   }
