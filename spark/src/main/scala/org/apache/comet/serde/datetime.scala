@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.types.{DateType, IntegerType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -249,6 +249,32 @@ object CometSecond extends CometExpressionSerde[Second] {
           .build())
     } else {
       withInfo(expr, expr.child)
+      None
+    }
+  }
+}
+
+object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
+  override def convert(
+      expr: UnixTimestamp,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
+
+    if (childExpr.isDefined) {
+      val builder = ExprOuterClass.UnixTimestamp.newBuilder()
+      builder.setChild(childExpr.get)
+
+      val timeZone = expr.timeZoneId.getOrElse("UTC")
+      builder.setTimezone(timeZone)
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setUnixTimestamp(builder)
+          .build())
+    } else {
+      withInfo(expr, expr.children.head)
       None
     }
   }
