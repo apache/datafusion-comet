@@ -39,9 +39,7 @@ trait CometExprShim extends CommonStringExprs {
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
   protected def binaryOutputStyle: BinaryOutputStyle = {
-    SQLConf.get
-      .getConf(SQLConf.BINARY_OUTPUT_STYLE)
-      .map(SQLConf.BinaryOutputStyle.withName) match {
+    SQLConf.get.getConf(SQLConf.BINARY_OUTPUT_STYLE) match {
       case Some(SQLConf.BinaryOutputStyle.UTF8) => BinaryOutputStyle.UTF8
       case Some(SQLConf.BinaryOutputStyle.BASIC) => BinaryOutputStyle.BASIC
       case Some(SQLConf.BinaryOutputStyle.BASE64) => BinaryOutputStyle.BASE64

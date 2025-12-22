@@ -30,7 +30,7 @@ import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
-import org.apache.comet.shims.CometEvalModeUtil
+import org.apache.comet.shims.{CometAggShim, CometEvalModeUtil}
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
 
@@ -214,7 +214,7 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 object CometSum extends CometAggregateExpressionSerde[Sum] {
 
   override def getSupportLevel(sum: Sum): SupportLevel = {
-    sum.evalMode match {
+    CometAggShim.getSumEvalMode(sum) match {
       case EvalMode.ANSI if !sum.dataType.isInstanceOf[DecimalType] =>
         Incompatible(Some("ANSI mode for non decimal inputs is not supported"))
       case EvalMode.TRY if !sum.dataType.isInstanceOf[DecimalType] =>
@@ -243,7 +243,8 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
       val builder = ExprOuterClass.Sum.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
-      builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(sum.evalMode)))
+      val evalMode = CometEvalModeUtil.fromSparkEvalMode(CometAggShim.getSumEvalMode(sum))
+      builder.setEvalMode(evalModeToProto(evalMode))
 
       Some(
         ExprOuterClass.AggExpr

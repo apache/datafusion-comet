@@ -110,7 +110,7 @@ echo "---------------------------------------------------------"
 
 
 # create <tarball> containing the files in git at $release_hash
-# the files in the tarball are prefixed with {version} (e.g. 4.0.1)
+# the files in the tarball are prefixed with {version} (e.g. 4.1.0)
 mkdir -p ${distdir}
 (cd "${DEV_RELEASE_TOP_DIR}" && git archive ${release_hash} --prefix ${release}/ | gzip > ${tarball})
 
