@@ -32,12 +32,11 @@ Comet has the following limitations when reading Parquet files:
 
 ## ANSI Mode
 
-Comet will fall back to Spark for the following expressions when ANSI mode is enabled. Thes expressions can be enabled by setting
+Comet will fall back to Spark for the following expressions when ANSI mode is enabled. These expressions can be enabled by setting
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
 the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
 
 - Average
-- Sum
 - Cast (in some cases)
 
 There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where we are tracking the work to fully implement ANSI support.

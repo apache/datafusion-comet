@@ -1479,7 +1479,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "null_tbl") {
           val res = sql("SELECT sum(_1) FROM null_tbl")
           checkSparkAnswerAndOperator(res)
-          assert(res.collect() === Array(Row(null)))
         }
       }
     }
@@ -1509,7 +1508,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "null_tbl") {
           val res = sql("SELECT try_sum(_1) FROM null_tbl")
           checkSparkAnswerAndOperator(res)
-          assert(res.collect() === Array(Row(null)))
         }
       }
     }
@@ -1582,7 +1580,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "tbl") {
           val res = sql("SELECT _2, try_sum(_1) FROM tbl group by 1")
           checkSparkAnswerAndOperator(res)
-          assert(res.orderBy(col("_2")).collect() === Array(Row("a", null), Row("b", null)))
         }
       }
     }
@@ -1601,7 +1598,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "tbl") {
           val res = sql("SELECT _2, try_sum(_1) FROM tbl group by 1")
           checkSparkAnswerAndOperator(res)
-          assert(res.orderBy(col("_2")).collect() === Array(Row("a", null), Row("b", null)))
         }
       }
     }
@@ -1621,6 +1617,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           if (ansiEnabled) {
             checkSparkAnswerMaybeThrows(res) match {
               case (Some(sparkExc), Some(cometExc)) =>
+                // make sure that the error message throws overflow exception only
                 assert(sparkExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
                 assert(cometExc.getMessage.contains("ARITHMETIC_OVERFLOW"))
               case _ => fail("Exception should be thrown for Long overflow in ANSI mode")
@@ -1771,6 +1768,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("try_sum overflow - with GROUP BY") {
     // Test Long overflow with GROUP BY - some groups overflow while some don't
     withParquetTable(Seq((Long.MaxValue, 1), (100L, 1), (200L, 2), (300L, 2)), "tbl") {
+      // repartition to trigger merge batch and state checks
       val res = sql("SELECT _2, try_sum(_1) FROM tbl GROUP BY _2").repartition(2, col("_2"))
       // first group should return NULL (overflow) and group 2 should return 500
       checkSparkAnswerAndOperator(res)
