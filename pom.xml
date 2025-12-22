@@ -115,7 +115,7 @@ under the License.
       --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
       -Djdk.reflect.useDirectMethodHandle=false
     </extraJavaTestArgs>
-    <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
+    <argLine>-ea -Xmx4g -Xss2m ${extraJavaTestArgs}</argLine>
     <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
     <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
   </properties>
