@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.benchmark
 
-import org.apache.comet.CometConf
-
 /**
  * Benchmark to measure Comet execution performance. To run this benchmark:
  * `SPARK_GENERATE_BENCHMARK_FILES=1 make
