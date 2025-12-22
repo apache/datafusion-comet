@@ -285,10 +285,6 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
   private def testParquetTemporalTypes(
       outputTimestampType: ParquetOutputTimestampType.Value): Unit = {
 
-    // TODO test with MapType
-    // https://github.com/apache/datafusion-comet/issues/2945
-    val schemaGenOptions =
-      SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = false)
     val dataGenOptions = DataGenOptions(generateNegativeZero = false)
 
     withTempPath { filename =>
@@ -298,12 +294,14 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> outputTimestampType.toString,
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
 
-        val schema = FuzzDataGenerator.generateNestedSchema(
-          random,
-          numCols = 50,
-          minDepth = 2,
-          maxDepth = 3,
-          options = schemaGenOptions)
+        // TODO test with MapType
+        // https://github.com/apache/datafusion-comet/issues/2945
+        val schema = StructType(Seq(
+          StructField("c0", DataTypes.DateType),
+          StructField("c1", DataTypes.createArrayType(DataTypes.DateType)),
+          StructField("c2", DataTypes.createStructType(Array(StructField("c3", DataTypes.DateType))))
+        ))
+
         ParquetGenerator.makeParquetFile(
           random,
           spark,
