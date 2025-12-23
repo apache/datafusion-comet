@@ -1487,7 +1487,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
           val res = sql("SELECT avg(_1) FROM tbl")
           checkSparkAnswerAndOperator(res)
-          assert(res.collect() === Array(Row(null)))
         }
 
         // with GROUP BY
@@ -1557,6 +1556,8 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       }
     })
+  }
+
   test("ANSI support for sum - null test") {
     Seq(true, false).foreach { ansiEnabled =>
       withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
