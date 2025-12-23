@@ -81,7 +81,7 @@ object CometCastStringToNumericBenchmark extends CometBenchmarkBase {
       CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024 * 10 // 10M rows
+    val values = 1024 * 1024 // 1M rows
 
     castConfigs.foreach { config =>
       runBenchmarkWithTable(config.name, values) { v =>
