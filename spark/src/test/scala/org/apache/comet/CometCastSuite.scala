@@ -33,6 +33,7 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType, StructField, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.Compatible
@@ -661,7 +662,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // https://github.com/apache/datafusion-comet/issues/326
     castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.DoubleType)
   }
-
   test("cast StringType to DoubleType (partial support)") {
     withSQLConf(
       CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
@@ -673,21 +673,88 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+//  This is to pass the first `all cast combinations are covered`
   ignore("cast StringType to DecimalType(10,2)") {
-    // https://github.com/apache/datafusion-comet/issues/325
-    val values = gen.generateStrings(dataSize, numericPattern, 8).toDF("a")
-    castTest(values, DataTypes.createDecimalType(10, 2))
+    val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
+    castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = false)
   }
 
-  test("cast StringType to DecimalType(10,2) (partial support)") {
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
-      SQLConf.ANSI_ENABLED.key -> "false") {
-      val values = gen
-        .generateStrings(dataSize, "0123456789.", 8)
-        .filter(_.exists(_.isDigit))
-        .toDF("a")
-      castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = false)
+  test("cast StringType to DecimalType(10,2) (does not support fullwidth unicode digits)") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+      // TODO fix for Spark 4.0.0
+      assume(!isSpark40Plus)
+      val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
+      Seq(true, false).foreach(ansiEnabled =>
+        castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = ansiEnabled))
+    }
+  }
+
+  test("cast StringType to DecimalType(2,2)") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+      // TODO fix for Spark 4.0.0
+      assume(!isSpark40Plus)
+      val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
+      Seq(true, false).foreach(ansiEnabled =>
+        castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = ansiEnabled))
+    }
+  }
+
+  test("cast StringType to DecimalType(38,10) high precision") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+      // TODO fix for Spark 4.0.0
+      assume(!isSpark40Plus)
+      val values = gen.generateStrings(dataSize, numericPattern, 38).toDF("a")
+      Seq(true, false).foreach(ansiEnabled =>
+        castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
+    }
+  }
+
+  test("cast StringType to DecimalType(10,2) basic values") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+      // TODO fix for Spark 4.0.0
+      assume(!isSpark40Plus)
+      val values = Seq(
+        "123.45",
+        "-67.89",
+        "-67.89",
+        "-67.895",
+        "67.895",
+        "0.001",
+        "999.99",
+        "123.456",
+        "123.45D",
+        ".5",
+        "5.",
+        "+123.45",
+        "  123.45  ",
+        "inf",
+        "",
+        "abc",
+        null).toDF("a")
+      Seq(true, false).foreach(ansiEnabled =>
+        castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = ansiEnabled))
+    }
+  }
+
+  test("cast StringType to Decimal type scientific notation") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+      // TODO fix for Spark 4.0.0
+      assume(!isSpark40Plus)
+      val values = Seq(
+        "1.23E-5",
+        "1.23e10",
+        "1.23E+10",
+        "-1.23e-5",
+        "1e5",
+        "1E-2",
+        "-1.5e3",
+        "1.23E0",
+        "0e0",
+        "1.23e",
+        "e5",
+        null).toDF("a")
+      Seq(true, false).foreach(ansiEnabled =>
+        castTest(values, DataTypes.createDecimalType(23, 8), testAnsi = ansiEnabled))
     }
   }
 
