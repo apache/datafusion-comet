@@ -473,12 +473,11 @@ under the License.
 </section>
 <section id="ansi-mode">
 <h2>ANSI Mode<a class="headerlink" href="#ansi-mode" title="Link to this heading">#</a></h2>
-<p>Comet will fall back to Spark for the following expressions when ANSI mode is enabled. Thes expressions can be enabled by setting
+<p>Comet will fall back to Spark for the following expressions when ANSI mode is enabled. These expressions can be enabled by setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code>, where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the Spark expression class name. See
 the <a class="reference internal" href="expressions.html"><span class="std std-doc">Comet Supported Expressions Guide</span></a> for more information on this configuration setting.</p>
 <ul class="simple">
 <li><p>Average</p></li>
-<li><p>Sum</p></li>
 <li><p>Cast (in some cases)</p></li>
 </ul>
 <p>There is an <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/313">epic</a> where we are tracking the work to fully implement ANSI support.</p>
