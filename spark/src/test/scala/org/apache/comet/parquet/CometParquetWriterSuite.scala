@@ -54,7 +54,8 @@ class CometParquetWriterSuite extends CometTestBase {
 
   private def writeWithCometNativeWriteExec(
       inputPath: String,
-      outputPath: String): Option[QueryExecution] = {
+      outputPath: String,
+      num_partitions: Option[Int] = None): Option[QueryExecution] = {
     val df = spark.read.parquet(inputPath)
 
     // Use a listener to capture the execution plan during write
@@ -77,8 +78,8 @@ class CometParquetWriterSuite extends CometTestBase {
     spark.listenerManager.register(listener)
 
     try {
-      // Perform native write
-      df.write.parquet(outputPath)
+      // Perform native write with optional partitioning
+      num_partitions.fold(df)(n => df.repartition(n)).write.parquet(outputPath)
 
       // Wait for listener to be called with timeout
       val maxWaitTimeMs = 15000
@@ -97,7 +98,7 @@ class CometParquetWriterSuite extends CometTestBase {
         s"Listener was not called within ${maxWaitTimeMs}ms - no execution plan captured")
 
       capturedPlan.foreach { qe =>
-        val executedPlan = qe.executedPlan
+        val executedPlan = stripAQEPlan(qe.executedPlan)
         val hasNativeWrite = executedPlan.exists {
           case _: CometNativeWriteExec => true
           case d: DataWritingCommandExec =>
@@ -194,6 +195,32 @@ class CometParquetWriterSuite extends CometTestBase {
             verifyWrittenFile(outputPath)
           }
         }
+      }
+    }
+  }
+
+  test("basic parquet write with repartition") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+
+      // Create test data and write it to a temp parquet file first
+      withTempPath { inputDir =>
+        val inputPath = createTestData(inputDir)
+        Seq(true, false).foreach(adaptive => {
+          withSQLConf(
+            CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+            "spark.sql.adaptive.enabled" -> adaptive.toString,
+            SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
+            CometConf.getOperatorAllowIncompatConfigKey(
+              classOf[DataWritingCommandExec]) -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
+
+            val plan = writeWithCometNativeWriteExec(inputPath, outputPath, Some(10))
+            println(plan)
+
+            verifyWrittenFile(outputPath)
+          }
+        })
       }
     }
   }
