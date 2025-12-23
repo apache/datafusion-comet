@@ -1064,9 +1064,7 @@ fn cast_string_to_float(
     eval_mode: EvalMode,
 ) -> SparkResult<ArrayRef> {
     match to_type {
-        DataType::Float32 => {
-            cast_string_to_float_impl::<Float32Type>(array, eval_mode, "FLOAT")
-        }
+        DataType::Float32 => cast_string_to_float_impl::<Float32Type>(array, eval_mode, "FLOAT"),
         DataType::Float64 => cast_string_to_float_impl::<Float64Type>(array, eval_mode, "DOUBLE"),
         _ => Err(SparkError::Internal(format!(
             "Unsupported cast to float type: {:?}",
@@ -1116,7 +1114,11 @@ where
     F: FromStr + num::Float,
 {
     // Handle +inf / -inf
-    if s.eq_ignore_ascii_case("inf") || s.eq_ignore_ascii_case("+inf") || s.eq_ignore_ascii_case("infinity") || s.eq_ignore_ascii_case("+infinity") {
+    if s.eq_ignore_ascii_case("inf")
+        || s.eq_ignore_ascii_case("+inf")
+        || s.eq_ignore_ascii_case("infinity")
+        || s.eq_ignore_ascii_case("+infinity")
+    {
         return Some(F::infinity());
     }
     if s.eq_ignore_ascii_case("-inf") || s.eq_ignore_ascii_case("-infinity") {
@@ -1126,11 +1128,12 @@ where
         return Some(F::nan());
     }
     // Remove D/F suffix if present
-    let pruned_float_str = if s.ends_with("d") || s.ends_with("D") || s.ends_with('f') || s.ends_with('F')  {
-        &s[..s.len() - 1]
-    } else {
-        s
-    };
+    let pruned_float_str =
+        if s.ends_with("d") || s.ends_with("D") || s.ends_with('f') || s.ends_with('F') {
+            &s[..s.len() - 1]
+        } else {
+            s
+        };
     // Rust's parse logic already handles scientific notations so we just rely on it
     pruned_float_str.parse::<F>().ok()
 }
