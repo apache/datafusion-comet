@@ -19,19 +19,24 @@
 
 package org.apache.spark.sql.benchmark
 
+import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.internal.SQLConf
+
+import org.apache.comet.CometConf
 
 case class CastStringToNumericConfig(
     name: String,
     query: String,
     extraCometConfigs: Map[String, String] = Map.empty)
 
+// spotless:off
 /**
  * Benchmark to measure performance of Comet cast from String to numeric types. To run this
- * benchmark: `SPARK_GENERATE_BENCHMARK_FILES=1 make
- * benchmark-org.apache.spark.sql.benchmark.CometCastStringToNumericBenchmark` Results will be
- * written to "spark/benchmarks/CometCastStringToNumericBenchmark-**results.txt".
+ * benchmark:
+ * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCastStringToNumericBenchmark`
+ * Results will be written to "spark/benchmarks/CometCastStringToNumericBenchmark-**results.txt".
  */
+// spotless:on
 object CometCastStringToNumericBenchmark extends CometBenchmarkBase {
 
   /**
@@ -41,9 +46,19 @@ object CometCastStringToNumericBenchmark extends CometBenchmarkBase {
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         // Generate numeric strings with decimal points: "123.45", "-456.78", etc.
+        // Also include some special values: nulls (~2%), NaN (~2%), Infinity (~2%)
         prepareTable(
           dir,
-          spark.sql(s"SELECT CAST((value - 500000) / 100.0 AS STRING) AS c1 FROM $tbl"))
+          spark.sql(s"""
+            SELECT CASE
+              WHEN value % 50 = 0 THEN NULL
+              WHEN value % 50 = 1 THEN 'NaN'
+              WHEN value % 50 = 2 THEN 'Infinity'
+              WHEN value % 50 = 3 THEN '-Infinity'
+              ELSE CAST((value - 500000) / 100.0 AS STRING)
+            END AS c1
+            FROM $tbl
+          """))
 
         runExpressionBenchmark(config.name, values, config.query, config.extraCometConfigs)
       }
@@ -97,21 +112,27 @@ object CometCastStringToNumericBenchmark extends CometBenchmarkBase {
       "Cast String to Long (ANSI)",
       "SELECT CAST(c1 AS LONG) FROM parquetV1Table",
       Map(SQLConf.ANSI_ENABLED.key -> "true")),
-    // Float (Incompatible - but still useful to benchmark)
+    // Float (Incompatible - requires allowIncompat config)
     CastStringToNumericConfig(
       "Cast String to Float (LEGACY)",
       "SELECT CAST(c1 AS FLOAT) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "false")),
-    // Double (Incompatible - but still useful to benchmark)
+      Map(
+        SQLConf.ANSI_ENABLED.key -> "false",
+        CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true")),
+    // Double (Incompatible - requires allowIncompat config)
     CastStringToNumericConfig(
       "Cast String to Double (LEGACY)",
       "SELECT CAST(c1 AS DOUBLE) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "false")),
-    // Decimal (Incompatible - but still useful to benchmark)
+      Map(
+        SQLConf.ANSI_ENABLED.key -> "false",
+        CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true")),
+    // Decimal (Incompatible - requires allowIncompat config)
     CastStringToNumericConfig(
       "Cast String to Decimal(10,2) (LEGACY)",
       "SELECT CAST(c1 AS DECIMAL(10,2)) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "false")))
+      Map(
+        SQLConf.ANSI_ENABLED.key -> "false",
+        CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true")))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024 * 10 // 10M rows
