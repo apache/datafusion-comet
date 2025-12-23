@@ -26,86 +26,77 @@ case class CastStringToTemporalConfig(
     query: String,
     extraCometConfigs: Map[String, String] = Map.empty)
 
+// spotless:off
 /**
  * Benchmark to measure performance of Comet cast from String to temporal types. To run this
- * benchmark: `SPARK_GENERATE_BENCHMARK_FILES=1 make
- * benchmark-org.apache.spark.sql.benchmark.CometCastStringToTemporalBenchmark` Results will be
- * written to "spark/benchmarks/CometCastStringToTemporalBenchmark-**results.txt".
+ * benchmark:
+ * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCastStringToTemporalBenchmark`
+ * Results will be written to "spark/benchmarks/CometCastStringToTemporalBenchmark-**results.txt".
  */
+// spotless:on
 object CometCastStringToTemporalBenchmark extends CometBenchmarkBase {
 
-  /**
-   * Generic method to run a cast benchmark with the given configuration.
-   */
-  def runCastBenchmark(config: CastStringToTemporalConfig, values: Int): Unit = {
-    withTempPath { dir =>
-      withTempTable("parquetV1Table") {
-        // Generate date strings like "2020-01-01", "2020-01-02", etc.
-        // This covers the full range for date parsing
-        prepareTable(
-          dir,
-          spark.sql(
-            s"SELECT CAST(DATE_ADD('2020-01-01', CAST(value % 3650 AS INT)) AS STRING) AS c1 FROM $tbl"))
-
-        runExpressionBenchmark(config.name, values, config.query, config.extraCometConfigs)
-      }
-    }
-  }
-
-  /**
-   * Benchmark for String to Timestamp with timestamp-formatted strings.
-   */
-  def runTimestampCastBenchmark(config: CastStringToTemporalConfig, values: Int): Unit = {
-    withTempPath { dir =>
-      withTempTable("parquetV1Table") {
-        // Generate timestamp strings like "2020-01-01 12:34:56", etc.
-        prepareTable(
-          dir,
-          spark.sql(
-            s"SELECT CAST(TIMESTAMP_MICROS(value % 9999999999) AS STRING) AS c1 FROM $tbl"))
-
-        runExpressionBenchmark(config.name, values, config.query, config.extraCometConfigs)
-      }
-    }
-  }
-
   // Configuration for String to temporal cast benchmarks
-  private val castConfigs = List(
-    // Date
+  private val dateCastConfigs = List(
     CastStringToTemporalConfig(
-      "Cast String to Date (LEGACY)",
-      "SELECT CAST(c1 AS DATE) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "false")),
+      "Cast String to Date",
+      "SELECT CAST(c1 AS DATE) FROM parquetV1Table"),
     CastStringToTemporalConfig(
-      "Cast String to Date (ANSI)",
-      "SELECT CAST(c1 AS DATE) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "true")))
+      "Try_Cast String to Date",
+      "SELECT TRY_CAST(c1 AS DATE) FROM parquetV1Table"))
 
   private val timestampCastConfigs = List(
-    // Timestamp (only UTC timezone is compatible)
     CastStringToTemporalConfig(
-      "Cast String to Timestamp (LEGACY, UTC)",
-      "SELECT CAST(c1 AS TIMESTAMP) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "false")),
+      "Cast String to Timestamp",
+      "SELECT CAST(c1 AS TIMESTAMP) FROM parquetV1Table"),
     CastStringToTemporalConfig(
-      "Cast String to Timestamp (ANSI, UTC)",
-      "SELECT CAST(c1 AS TIMESTAMP) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "true")))
+      "Try_Cast String to Timestamp",
+      "SELECT TRY_CAST(c1 AS TIMESTAMP) FROM parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024 * 10 // 10M rows
 
-    // Run date casts
-    castConfigs.foreach { config =>
-      runBenchmarkWithTable(config.name, values) { v =>
-        runCastBenchmark(config, v)
+    // Generate date data once with ~10% invalid values
+    runBenchmarkWithTable("date data generation", values) { v =>
+      withTempPath { dateDir =>
+        withTempTable("parquetV1Table") {
+          prepareTable(
+            dateDir,
+            spark.sql(s"""
+              SELECT CASE
+                WHEN value % 10 = 0 THEN 'invalid-date'
+                ELSE CAST(DATE_ADD('2020-01-01', CAST(value % 3650 AS INT)) AS STRING)
+              END AS c1
+              FROM $tbl
+            """))
+
+          // Run date cast benchmarks with the same data
+          dateCastConfigs.foreach { config =>
+            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+          }
+        }
       }
     }
 
-    // Run timestamp casts
-    timestampCastConfigs.foreach { config =>
-      runBenchmarkWithTable(config.name, values) { v =>
-        runTimestampCastBenchmark(config, v)
+    // Generate timestamp data once with ~10% invalid values
+    runBenchmarkWithTable("timestamp data generation", values) { v =>
+      withTempPath { timestampDir =>
+        withTempTable("parquetV1Table") {
+          prepareTable(
+            timestampDir,
+            spark.sql(s"""
+              SELECT CASE
+                WHEN value % 10 = 0 THEN 'not-a-timestamp'
+                ELSE CAST(TIMESTAMP_MICROS(value % 9999999999) AS STRING)
+              END AS c1
+              FROM $tbl
+            """))
+
+          // Run timestamp cast benchmarks with the same data
+          timestampCastConfigs.foreach { config =>
+            runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
+          }
+        }
       }
     }
   }
