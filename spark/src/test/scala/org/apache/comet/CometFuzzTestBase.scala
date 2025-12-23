@@ -35,11 +35,14 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
 
   var filename: String = null
+
+  /** Filename for data file with deeply nested complex types */
+  var complexTypesFilename: String = null
 
   /**
    * We use Asia/Kathmandu because it has a non-zero number of minutes as the offset, so is an
@@ -53,18 +56,20 @@ class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
   override def beforeAll(): Unit = {
     super.beforeAll()
     val tempDir = System.getProperty("java.io.tmpdir")
-    filename = s"$tempDir/CometFuzzTestSuite_${System.currentTimeMillis()}.parquet"
     val random = new Random(42)
+    val dataGenOptions = DataGenOptions(
+      generateNegativeZero = false,
+      // override base date due to known issues with experimental scans
+      baseDate = new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime)
+
+    // generate Parquet file with primitives, structs, and arrays, but no maps
+    // and no nested complex types
+    filename = s"$tempDir/CometFuzzTestSuite_${System.currentTimeMillis()}.parquet"
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "false",
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
       val schemaGenOptions =
         SchemaGenOptions(generateArray = true, generateStruct = true)
-      val dataGenOptions = DataGenOptions(
-        generateNegativeZero = false,
-        // override base date due to known issues with experimental scans
-        baseDate =
-          new SimpleDateFormat("YYYY-MM-DD hh:mm:ss").parse("2024-05-25 12:34:56").getTime)
       ParquetGenerator.makeParquetFile(
         random,
         spark,
@@ -73,6 +78,30 @@ class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
         schemaGenOptions,
         dataGenOptions)
     }
+
+    // generate Parquet file with complex nested types
+    complexTypesFilename =
+      s"$tempDir/CometFuzzTestSuite_nested_${System.currentTimeMillis()}.parquet"
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
+      val schemaGenOptions =
+        SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = true)
+      val schema = FuzzDataGenerator.generateNestedSchema(
+        random,
+        numCols = 10,
+        minDepth = 2,
+        maxDepth = 4,
+        options = schemaGenOptions)
+      ParquetGenerator.makeParquetFile(
+        random,
+        spark,
+        complexTypesFilename,
+        schema,
+        1000,
+        dataGenOptions)
+    }
+
   }
 
   protected override def afterAll(): Unit = {
@@ -84,6 +113,7 @@ class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
       pos: Position): Unit = {
     Seq("native", "jvm").foreach { shuffleMode =>
       Seq(
+        CometConf.SCAN_AUTO,
         CometConf.SCAN_NATIVE_COMET,
         CometConf.SCAN_NATIVE_DATAFUSION,
         CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach { scanImpl =>
