@@ -50,13 +50,13 @@ WholeStageCodegen (1)
                                                     InputAdapter
                                                       CometProject [d_week_seq]
                                                         CometFilter [d_week_seq,d_year,d_moy,d_dom]
-                                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_week_seq,d_year,d_moy,d_dom]
-                                              CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq]
+                                                          CometNativeScan parquet spark_catalog.default.date_dim [d_week_seq,d_year,d_moy,d_dom]
+                                              CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq]
                             CometBroadcastExchange [ss_item_sk] #3
                               CometProject [i_item_sk] [ss_item_sk]
                                 CometBroadcastHashJoin [i_item_sk,i_brand_id,i_class_id,i_category_id,brand_id,class_id,category_id]
                                   CometFilter [i_item_sk,i_brand_id,i_class_id,i_category_id]
-                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_class_id,i_category_id]
+                                    CometNativeScan parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_class_id,i_category_id]
                                   CometBroadcastExchange [brand_id,class_id,category_id] #4
                                     CometBroadcastHashJoin [brand_id,class_id,category_id,i_brand_id,i_class_id,i_category_id]
                                       CometHashAggregate [brand_id,class_id,category_id]
@@ -75,11 +75,11 @@ WholeStageCodegen (1)
                                                                 InputAdapter
                                                                   CometProject [d_date_sk]
                                                                     CometFilter [d_date_sk,d_year]
-                                                                      CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                                      CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                                     CometBroadcastExchange [i_item_sk,i_brand_id,i_class_id,i_category_id] #7
                                                       CometBroadcastHashJoin [i_item_sk,i_brand_id,i_class_id,i_category_id,i_brand_id,i_class_id,i_category_id]
                                                         CometFilter [i_item_sk,i_brand_id,i_class_id,i_category_id]
-                                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_class_id,i_category_id]
+                                                          CometNativeScan parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_class_id,i_category_id]
                                                         CometBroadcastExchange [i_brand_id,i_class_id,i_category_id] #8
                                                           CometProject [i_brand_id,i_class_id,i_category_id]
                                                             CometBroadcastHashJoin [cs_sold_date_sk,i_brand_id,i_class_id,i_category_id,d_date_sk]
@@ -90,11 +90,11 @@ WholeStageCodegen (1)
                                                                       ReusedSubquery [d_date_sk] #3
                                                                   CometBroadcastExchange [i_item_sk,i_brand_id,i_class_id,i_category_id] #9
                                                                     CometFilter [i_item_sk,i_brand_id,i_class_id,i_category_id]
-                                                                      CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_class_id,i_category_id]
+                                                                      CometNativeScan parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_class_id,i_category_id]
                                                               CometBroadcastExchange [d_date_sk] #10
                                                                 CometProject [d_date_sk]
                                                                   CometFilter [d_date_sk,d_year]
-                                                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                                    CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                                 ReusedExchange [d_date_sk] #10
                                       CometBroadcastExchange [i_brand_id,i_class_id,i_category_id] #11
                                         CometProject [i_brand_id,i_class_id,i_category_id]
@@ -109,13 +109,13 @@ WholeStageCodegen (1)
                           CometBroadcastExchange [i_item_sk,i_brand_id,i_class_id,i_category_id] #12
                             CometBroadcastHashJoin [i_item_sk,i_brand_id,i_class_id,i_category_id,ss_item_sk]
                               CometFilter [i_item_sk,i_brand_id,i_class_id,i_category_id]
-                                CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_class_id,i_category_id]
+                                CometNativeScan parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_class_id,i_category_id]
                               ReusedExchange [ss_item_sk] #3
                       CometBroadcastExchange [d_date_sk] #13
                         CometProject [d_date_sk]
                           CometFilter [d_date_sk,d_week_seq]
                             ReusedSubquery [d_week_seq] #2
-                            CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq]
+                            CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq]
           CometBroadcastExchange [channel,i_brand_id,i_class_id,i_category_id,sales,number_sales] #15
             CometFilter [channel,i_brand_id,i_class_id,i_category_id,sales,number_sales]
               ReusedSubquery [average_sales] #4
@@ -142,12 +142,12 @@ WholeStageCodegen (1)
                                                       InputAdapter
                                                         CometProject [d_week_seq]
                                                           CometFilter [d_week_seq,d_year,d_moy,d_dom]
-                                                            CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_week_seq,d_year,d_moy,d_dom]
-                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq]
+                                                            CometNativeScan parquet spark_catalog.default.date_dim [d_week_seq,d_year,d_moy,d_dom]
+                                                CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq]
                               ReusedExchange [ss_item_sk] #3
                             ReusedExchange [i_item_sk,i_brand_id,i_class_id,i_category_id] #12
                         CometBroadcastExchange [d_date_sk] #18
                           CometProject [d_date_sk]
                             CometFilter [d_date_sk,d_week_seq]
                               ReusedSubquery [d_week_seq] #6
-                              CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq]
+                              CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq]

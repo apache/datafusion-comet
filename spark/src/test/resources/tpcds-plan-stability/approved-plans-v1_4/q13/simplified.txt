@@ -23,22 +23,22 @@ WholeStageCodegen (1)
                                             InputAdapter
                                               CometProject [d_date_sk]
                                                 CometFilter [d_date_sk,d_year]
-                                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                  CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                 CometBroadcastExchange [s_store_sk] #3
                                   CometFilter [s_store_sk]
-                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.store [s_store_sk]
+                                    CometNativeScan parquet spark_catalog.default.store [s_store_sk]
                             CometBroadcastExchange [ca_address_sk,ca_state] #4
                               CometProject [ca_state] [ca_address_sk,ca_state]
                                 CometFilter [ca_address_sk,ca_state,ca_country]
-                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
+                                  CometNativeScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_country]
                         CometBroadcastExchange [d_date_sk] #5
                           CometProject [d_date_sk]
                             CometFilter [d_date_sk,d_year]
-                              CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                              CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                     CometBroadcastExchange [cd_demo_sk,cd_marital_status,cd_education_status] #6
                       CometProject [cd_marital_status,cd_education_status] [cd_demo_sk,cd_marital_status,cd_education_status]
                         CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
-                          CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
+                          CometNativeScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
                 CometBroadcastExchange [hd_demo_sk,hd_dep_count] #7
                   CometFilter [hd_demo_sk,hd_dep_count]
-                    CometScan [native_iceberg_compat] parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_dep_count]
+                    CometNativeScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_dep_count]

@@ -27,16 +27,16 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,gross_margin,i
                                                     InputAdapter
                                                       CometProject [d_date_sk]
                                                         CometFilter [d_date_sk,d_year]
-                                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                                          CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                         CometBroadcastExchange [d_date_sk] #4
                                           CometProject [d_date_sk]
                                             CometFilter [d_date_sk,d_year]
-                                              CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]
+                                              CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                     CometBroadcastExchange [i_item_sk,i_class,i_category] #5
                                       CometProject [i_class,i_category] [i_item_sk,i_class,i_category]
                                         CometFilter [i_item_sk,i_class,i_category]
-                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
+                                          CometNativeScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]
                                 CometBroadcastExchange [s_store_sk] #6
                                   CometProject [s_store_sk]
                                     CometFilter [s_store_sk,s_state]
-                                      CometScan [native_iceberg_compat] parquet spark_catalog.default.store [s_store_sk,s_state]
+                                      CometNativeScan parquet spark_catalog.default.store [s_store_sk,s_state]

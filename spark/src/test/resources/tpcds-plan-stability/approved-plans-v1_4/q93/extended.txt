@@ -10,15 +10,15 @@ CometColumnarToRow
                   :     :- CometSort
                   :     :  +- CometExchange
                   :     :     +- CometProject
-                  :     :        +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                  :     :        +- CometNativeScan parquet spark_catalog.default.store_sales
                   :     +- CometSort
                   :        +- CometExchange
                   :           +- CometProject
                   :              +- CometFilter
-                  :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns
+                  :                 +- CometNativeScan parquet spark_catalog.default.store_returns
                   +- CometBroadcastExchange
                      +- CometProject
                         +- CometFilter
-                           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.reason
+                           +- CometNativeScan parquet spark_catalog.default.reason
 
 Comet accelerated 21 out of 21 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet.
