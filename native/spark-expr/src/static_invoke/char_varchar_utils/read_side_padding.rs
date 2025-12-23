@@ -208,7 +208,7 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
             );
 
             // Reusable buffer to avoid per-element allocations
-            let mut buffer = String::new();
+            let mut buffer = String::with_capacity(pad_chars.len());
 
             for (string, length) in string_array.iter().zip(int_pad_array) {
                 let length = length.unwrap();
@@ -243,7 +243,7 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
             );
 
             // Reusable buffer to avoid per-element allocations
-            let mut buffer = String::new();
+            let mut buffer = String::with_capacity(length);
 
             for string in string_array.iter() {
                 match string {
