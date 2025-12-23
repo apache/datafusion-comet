@@ -49,7 +49,7 @@ case class CometIcebergNativeScanExec(
     override val serializedPlanOpt: SerializedPlan,
     metadataLocation: String,
     numPartitions: Int,
-    nativeIcebergScanMetadata: CometIcebergNativeScanMetadata)
+    @transient nativeIcebergScanMetadata: CometIcebergNativeScanMetadata)
     extends CometLeafExec {
 
   override val supportsColumnar: Boolean = true

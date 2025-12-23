@@ -55,7 +55,7 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: 11
       - name: Cache Maven dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.m2/repository
@@ -67,7 +67,7 @@ jobs:
         run: make release
       - name: Cache TPC-DS generated data
         id: cache-tpcds-sf-1
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ./tpcds-sf-1
           key: tpcds-${{ hashFiles('.github/workflows/benchmark.yml') }}
@@ -107,7 +107,7 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: 11
       - name: Cache Maven dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.m2/repository
@@ -117,7 +117,7 @@ jobs:
             ${{ runner.os }}-java-maven-
       - name: Restore TPC-DS generated data
         id: cache-tpcds-sf-1
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: ./tpcds-sf-1
           key: tpcds-${{ hashFiles('.github/workflows/benchmark.yml') }}

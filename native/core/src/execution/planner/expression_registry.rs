@@ -94,6 +94,7 @@ pub enum ExpressionType {
     CreateNamedStruct,
     GetStructField,
     ToJson,
+    FromJson,
     ToPrettyString,
     ListExtract,
     GetArrayStructFields,
@@ -177,8 +178,10 @@ impl ExpressionRegistry {
         // Register null check expressions
         self.register_null_check_expressions();
 
+        // Register string expressions
+        self.register_string_expressions();
+
         // TODO: Register other expression categories in future phases
-        // self.register_string_expressions();
         // self.register_temporal_expressions();
         // etc.
     }
@@ -269,6 +272,20 @@ impl ExpressionRegistry {
             .insert(ExpressionType::IsNotNull, Box::new(IsNotNullBuilder));
     }
 
+    /// Register string expression builders
+    fn register_string_expressions(&mut self) {
+        use crate::execution::expressions::strings::*;
+
+        self.builders
+            .insert(ExpressionType::Substring, Box::new(SubstringBuilder));
+        self.builders
+            .insert(ExpressionType::Like, Box::new(LikeBuilder));
+        self.builders
+            .insert(ExpressionType::Rlike, Box::new(RlikeBuilder));
+        self.builders
+            .insert(ExpressionType::FromJson, Box::new(FromJsonBuilder));
+    }
+
     /// Extract expression type from Spark protobuf expression
     fn get_expression_type(spark_expr: &Expr) -> Result<ExpressionType, ExecutionError> {
         match spark_expr.expr_struct.as_ref() {
@@ -322,6 +339,7 @@ impl ExpressionRegistry {
             Some(ExprStruct::CreateNamedStruct(_)) => Ok(ExpressionType::CreateNamedStruct),
             Some(ExprStruct::GetStructField(_)) => Ok(ExpressionType::GetStructField),
             Some(ExprStruct::ToJson(_)) => Ok(ExpressionType::ToJson),
+            Some(ExprStruct::FromJson(_)) => Ok(ExpressionType::FromJson),
             Some(ExprStruct::ToPrettyString(_)) => Ok(ExpressionType::ToPrettyString),
             Some(ExprStruct::ListExtract(_)) => Ok(ExpressionType::ListExtract),
             Some(ExprStruct::GetArrayStructFields(_)) => Ok(ExpressionType::GetArrayStructFields),
