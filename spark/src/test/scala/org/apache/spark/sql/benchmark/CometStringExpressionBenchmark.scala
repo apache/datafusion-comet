@@ -44,22 +44,6 @@ case class StringExprConfig(
 // spotless:on
 object CometStringExpressionBenchmark extends CometBenchmarkBase {
 
-  /**
-   * Generic method to run a string expression benchmark with the given configuration.
-   */
-  def runStringExprBenchmark(config: StringExprConfig, values: Int): Unit = {
-    withTempPath { dir =>
-      withTempTable("parquetV1Table") {
-        prepareTable(dir, spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 100) AS c1 FROM $tbl"))
-
-        val extraConfigs =
-          Map(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") ++ config.extraCometConfigs
-
-        runExpressionBenchmark(config.name, values, config.query, extraConfigs)
-      }
-    }
-  }
-
   // Configuration for all string expression benchmarks
   private val stringExpressions = List(
     StringExprConfig("Substring", "select substring(c1, 1, 100) from parquetV1Table"),
@@ -90,11 +74,24 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("translate", "select translate(c1, '123456', 'aBcDeF') from parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024;
+    val values = 1024 * 1024
 
-    stringExpressions.foreach { config =>
-      runBenchmarkWithTable(config.name, values) { v =>
-        runStringExprBenchmark(config, v)
+    runBenchmarkWithTable("String expressions", values) { v =>
+      withTempPath { dir =>
+        withTempTable("parquetV1Table") {
+          prepareTable(
+            dir,
+            spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 10) AS c1 FROM $tbl"))
+
+          val extraConfigs = Map(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true")
+
+          stringExpressions.foreach { config =>
+            val allConfigs = extraConfigs ++ config.extraCometConfigs
+            runBenchmark(config.name) {
+              runExpressionBenchmark(config.name, v, config.query, allConfigs)
+            }
+          }
+        }
       }
     }
   }
