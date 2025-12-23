@@ -15,12 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::EvalMode;
 use arrow::array::{
     builder::PrimitiveBuilder,
     cast::AsArray,
     types::{Float64Type, Int64Type},
-    Array, ArrayRef, ArrowNativeTypeOp, ArrowNumericType, Int64Array, PrimitiveArray,
+    Array, ArrayRef, ArrowNumericType, Int64Array, PrimitiveArray,
 };
 use arrow::compute::sum;
 use arrow::datatypes::{DataType, Field, FieldRef};
@@ -31,6 +30,7 @@ use datafusion::logical_expr::{
 use datafusion::physical_expr::expressions::format_state_name;
 use std::{any::Any, sync::Arc};
 
+use arrow::array::ArrowNativeTypeOp;
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::Volatility::Immutable;
 use DataType::*;
@@ -47,8 +47,9 @@ fn avg_return_type(_name: &str, data_type: &DataType) -> Result<DataType> {
 pub struct Avg {
     name: String,
     signature: Signature,
+    // expr: Arc<dyn PhysicalExpr>,
     input_data_type: DataType,
-    result_data_type: DataType
+    result_data_type: DataType,
 }
 
 impl Avg {
@@ -66,6 +67,7 @@ impl Avg {
 }
 
 impl AggregateUDFImpl for Avg {
+    /// Return a reference to Any that can be used for downcasting
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -73,8 +75,7 @@ impl AggregateUDFImpl for Avg {
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         // All numeric types use Float64 accumulation after casting
         match (&self.input_data_type, &self.result_data_type) {
-            (Float64, Float64) => Ok(Box::new(AvgAccumulator::
-            new())),
+            (Float64, Float64) => Ok(Box::<AvgAccumulator>::default()),
             _ => not_impl_err!(
                 "AvgAccumulator for ({} --> {})",
                 self.input_data_type,
@@ -141,19 +142,11 @@ impl AggregateUDFImpl for Avg {
     }
 }
 
-#[derive(Debug)]
+/// An accumulator to compute the average
+#[derive(Debug, Default)]
 pub struct AvgAccumulator {
     sum: Option<f64>,
     count: i64,
-}
-
-impl AvgAccumulator {
-    pub fn new() -> Self {
-        Self {
-            sum: None,
-            count: 0,
-        }
-    }
 }
 
 impl Accumulator for AvgAccumulator {
@@ -178,7 +171,7 @@ impl Accumulator for AvgAccumulator {
         // counts are summed
         self.count += sum(states[1].as_primitive::<Int64Type>()).unwrap_or_default();
 
-        // sums are summed - no overflow checking
+        // sums are summed - no overflow checking in all Eval Modes
         if let Some(x) = sum(states[0].as_primitive::<Float64Type>()) {
             let v = self.sum.get_or_insert(0.);
             *v += x;
@@ -188,6 +181,8 @@ impl Accumulator for AvgAccumulator {
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
         if self.count == 0 {
+            // If all input are nulls, count will be 0, and we will get null after the division.
+            // This is consistent with Spark Average implementation.
             Ok(ScalarValue::Float64(None))
         } else {
             Ok(ScalarValue::Float64(
@@ -202,7 +197,8 @@ impl Accumulator for AvgAccumulator {
 }
 
 /// An accumulator to compute the average of `[PrimitiveArray<T>]`.
-/// Stores values as native types.
+/// Stores values as native types (
+/// no overflow check all eval modes since inf is a perfectly valid value per spark impl)
 ///
 /// F: Function that calculates the average value from a sum of
 /// T::Native and a total count
@@ -264,7 +260,7 @@ where
         if values.null_count() == 0 {
             for (&group_index, &value) in iter {
                 let sum = &mut self.sums[group_index];
-                // No overflow checking - INFINITY is a valid result
+                // No overflow checking - Infinity is a valid result
                 *sum = (*sum).add_wrapping(value);
                 self.counts[group_index] += 1;
             }
@@ -275,6 +271,7 @@ where
                 }
                 let sum = &mut self.sums[group_index];
                 *sum = (*sum).add_wrapping(value);
+
                 self.counts[group_index] += 1;
             }
         }
@@ -290,9 +287,9 @@ where
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 2, "two arguments to merge_batch");
+        // first batch is partial sums, second is counts
         let partial_sums = values[0].as_primitive::<T>();
         let partial_counts = values[1].as_primitive::<Int64Type>();
-
         // update counts with partial counts
         self.counts.resize(total_num_groups, 0);
         let iter1 = group_indices.iter().zip(partial_counts.values().iter());
@@ -300,7 +297,7 @@ where
             self.counts[group_index] += partial_count;
         }
 
-        // update sums - no overflow checking
+        // update sums - no overflow checking (in all eval modes)
         self.sums.resize(total_num_groups, T::default_value());
         let iter2 = group_indices.iter().zip(partial_sums.values().iter());
         for (&group_index, &new_value) in iter2 {
@@ -328,6 +325,7 @@ where
 
         Ok(Arc::new(array))
     }
+
 
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
         let counts = emit_to.take_needed(&mut self.counts);
