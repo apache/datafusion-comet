@@ -42,7 +42,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark40Plus, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
@@ -185,10 +185,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       scanExec: FileSourceScanExec,
       r: HadoopFsRelation,
       hadoopConf: Configuration): Option[SparkPlan] = {
-    if (isSpark40Plus) {
-      // there are still issues with Spark 4 support
-      return None
-    }
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }
