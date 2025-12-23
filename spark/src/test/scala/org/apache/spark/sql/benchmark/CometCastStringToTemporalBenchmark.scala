@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.benchmark
 
-import org.apache.spark.sql.internal.SQLConf
-
 case class CastStringToTemporalConfig(
     name: String,
     query: String,
