@@ -24,23 +24,23 @@ WholeStageCodegen (1)
                                               InputAdapter
                                                 CometProject [d_date_sk]
                                                   CometFilter [d_date_sk,d_year,d_moy]
-                                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
+                                                    CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
                                   CometBroadcastExchange [d_date_sk] #4
                                     CometProject [d_date_sk]
                                       CometFilter [d_date_sk,d_year,d_moy]
-                                        CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
+                                        CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
                               CometBroadcastExchange [ca_address_sk] #5
                                 CometProject [ca_address_sk]
                                   CometFilter [ca_address_sk,ca_gmt_offset]
-                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_gmt_offset]
+                                    CometNativeScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_gmt_offset]
                           CometBroadcastExchange [i_item_sk,i_manufact_id] #6
                             CometBroadcastHashJoin [i_item_sk,i_manufact_id,i_manufact_id]
                               CometFilter [i_item_sk,i_manufact_id]
-                                CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_manufact_id]
+                                CometNativeScan parquet spark_catalog.default.item [i_item_sk,i_manufact_id]
                               CometBroadcastExchange [i_manufact_id] #7
                                 CometProject [i_manufact_id]
                                   CometFilter [i_category,i_manufact_id]
-                                    CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_category,i_manufact_id]
+                                    CometNativeScan parquet spark_catalog.default.item [i_category,i_manufact_id]
                 CometHashAggregate [sum] [i_manufact_id,total_sales,sum(UnscaledValue(cs_ext_sales_price))]
                   CometExchange [i_manufact_id] #8
                     CometHashAggregate [cs_ext_sales_price] [i_manufact_id,sum]
