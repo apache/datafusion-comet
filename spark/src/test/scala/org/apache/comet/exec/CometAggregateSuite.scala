@@ -1577,6 +1577,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "null_tbl") {
           val res = sql("SELECT sum(_1) FROM null_tbl")
           checkSparkAnswerAndOperator(res)
+          assert(res.collect() === Array(Row(null)))
         }
       }
     }
