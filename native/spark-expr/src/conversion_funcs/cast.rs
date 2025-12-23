@@ -1265,13 +1265,7 @@ fn is_datafusion_spark_compatible(
                 | DataType::Decimal256(_, _)
                 | DataType::Utf8 // note that there can be formatting differences
         ),
-        DataType::Utf8 if allow_incompat => {
-            matches!(to_type, DataType::Binary | DataType::Decimal128(_, _))
-        }
-        DataType::Utf8 => matches!(
-            to_type,
-            DataType::Binary | DataType::Float32 | DataType::Float64
-        ),
+        DataType::Utf8 => matches!(to_type, DataType::Binary),
         DataType::Date32 => matches!(to_type, DataType::Utf8),
         DataType::Timestamp(_, _) => {
             matches!(
