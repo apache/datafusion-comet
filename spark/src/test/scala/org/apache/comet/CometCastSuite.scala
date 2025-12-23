@@ -1344,7 +1344,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 else cometException.getMessage
               // this if branch should only check decimal to decimal cast and errors when output precision, scale causes overflow.
               if (df.schema("a").dataType.typeName.contains("decimal") && toType.typeName
-                .contains("decimal") && sparkMessage.contains("cannot be represented as")) {
+                  .contains("decimal") && sparkMessage.contains("cannot be represented as")) {
                 assert(cometMessage.contains("too large to store"))
               } else {
                 if (CometSparkSessionExtensions.isSpark40Plus) {
