@@ -159,6 +159,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           withInfo(
             scanExec,
             "Full native scan disabled because nested types for default values are not supported")
+          return scanExec
         }
 
         COMET_NATIVE_SCAN_IMPL.get() match {
