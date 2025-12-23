@@ -203,11 +203,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       scanExec: FileSourceScanExec,
       r: HadoopFsRelation,
       hadoopConf: Configuration): Option[SparkPlan] = {
-    if (encryptionEnabled(hadoopConf)) {
-      if (!isEncryptionConfigSupported(hadoopConf)) {
-        withInfo(scanExec, s"$SCAN_NATIVE_ICEBERG_COMPAT does not support encryption")
-        return None
-      }
+    if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
+      withInfo(scanExec, s"$SCAN_NATIVE_ICEBERG_COMPAT does not support encryption")
+      return None
     }
     if (!isSchemaSupported(scanExec, SCAN_NATIVE_ICEBERG_COMPAT, r)) {
       return None
