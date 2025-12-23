@@ -1522,37 +1522,33 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val zeroSeq: Seq[(Long, Int)] =
       Seq((0L, 1), (-0L, 1), (+0L, 2), (+0L, 2), (null.asInstanceOf[Long], 3))
 
-    val highNegNumbers: Seq[(Long, Int)] = Seq(
+    val highValNumbers: Seq[(Long, Int)] = Seq(
       (Long.MaxValue, 1),
       (Long.MaxValue, 1),
       (Long.MaxValue, 2),
       (Long.MaxValue, 2),
       (null.asInstanceOf[Long], 3))
 
-    val inputs = Seq(negativeNumbers, highNegNumbers, zeroSeq)
+    val inputs = Seq(negativeNumbers, highValNumbers, zeroSeq)
     inputs.foreach(inputSeq => {
       withParquetTable(inputSeq, "tbl") {
         Seq(true, false).foreach({ ansiMode =>
           // without GROUP BY
           withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
-            val res = sql("SELECT avg(_1) FROM tbl")
-            checkSparkAnswerAndOperator(res)
+            checkSparkAnswerAndOperator("SELECT avg(_1) FROM tbl")
           }
 
           // with GROUP BY
           withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
-            val res = sql("SELECT _2, avg(_1) FROM tbl GROUP BY _2")
-            checkSparkAnswerAndOperator(res)
+            checkSparkAnswerAndOperator("SELECT _2, avg(_1) FROM tbl GROUP BY _2")
           }
         })
 
         // try_avg without GROUP BY
-        val resTry = sql("SELECT try_avg(_1) FROM tbl")
-        checkSparkAnswerAndOperator(resTry)
+        checkSparkAnswerAndOperator("SELECT try_avg(_1) FROM tbl")
 
         // try_avg with GROUP BY
-        val resTryGroup = sql("SELECT _2, try_avg(_1) FROM tbl GROUP BY _2")
-        checkSparkAnswerAndOperator(resTryGroup)
+        checkSparkAnswerAndOperator("SELECT _2, try_avg(_1) FROM tbl GROUP BY _2")
 
       }
     })
