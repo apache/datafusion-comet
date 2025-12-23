@@ -32,12 +32,27 @@ use std::{any::Any, sync::Arc};
 
 use crate::utils::{build_bool_state, is_valid_decimal_precision, unlikely};
 use arrow::array::ArrowNativeTypeOp;
-use arrow::datatypes::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
+use arrow::datatypes::{
+    DECIMAL128_MAX_PRECISION, DECIMAL128_MAX_SCALE, MAX_DECIMAL128_FOR_EACH_PRECISION,
+    MIN_DECIMAL128_FOR_EACH_PRECISION,
+};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion::logical_expr::type_coercion::aggregates::avg_return_type;
 use datafusion::logical_expr::Volatility::Immutable;
 use num::{integer::div_ceil, Integer};
 use DataType::*;
+
+fn avg_return_type(_name: &str, data_type: &DataType) -> Result<DataType> {
+    match data_type {
+        Decimal128(precision, scale) => {
+            // In the spark, the result type is DECIMAL(min(38,precision+4), min(38,scale+4)).
+            // Ref: https://github.com/apache/spark/blob/fcf636d9eb8d645c24be3db2d599aba2d7e2955a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/aggregate/Average.scala#L66
+            let new_precision = DECIMAL128_MAX_PRECISION.min(*precision + 4);
+            let new_scale = DECIMAL128_MAX_SCALE.min(*scale + 4);
+            Ok(Decimal128(new_precision, new_scale))
+        }
+        _ => not_impl_err!("Avg return type for {data_type}"),
+    }
+}
 
 /// AVG aggregate expression
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -20,7 +20,7 @@
 package org.apache.spark.sql
 
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.catalyst.expressions.{Expression, MakeDecimal}
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 
 trait ShimCometTestBase {
@@ -45,5 +45,9 @@ trait ShimCometTestBase {
 
   def extractLogicalPlan(df: DataFrame): LogicalPlan = {
     df.logicalPlan
+  }
+
+  def createMakeDecimalColumn(child: Expression, precision: Int, scale: Int): Column = {
+    new Column(MakeDecimal(child, precision, scale))
   }
 }

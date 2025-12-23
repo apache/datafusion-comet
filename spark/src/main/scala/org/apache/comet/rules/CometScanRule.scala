@@ -42,12 +42,13 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
-import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isCometScanEnabled, withInfo, withInfos}
+import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, isCometLoaded, withInfo, withInfos}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
+import org.apache.comet.serde.operator.CometNativeScan
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -108,7 +109,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     }
 
     def transformScan(plan: SparkPlan): SparkPlan = plan match {
-      case scan if !isCometScanEnabled(conf) =>
+      case scan if !CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf) =>
         withInfo(scan, "Comet Scan is not enabled")
 
       case scan if hasMetadataCol(scan) =>
@@ -132,9 +133,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     }
   }
 
-  private def isDynamicPruningFilter(e: Expression): Boolean =
-    e.exists(_.isInstanceOf[PlanExpression[_]])
-
   private def transformV1Scan(scanExec: FileSourceScanExec): SparkPlan = {
 
     if (COMET_DPP_FALLBACK_ENABLED.get() &&
@@ -144,10 +142,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
     scanExec.relation match {
       case r: HadoopFsRelation =>
-        val fallbackReasons = new ListBuffer[String]()
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
-          fallbackReasons += s"Unsupported file format ${r.fileFormat}"
-          return withInfos(scanExec, fallbackReasons.toSet)
+          return withInfo(scanExec, s"Unsupported file format ${r.fileFormat}")
         }
 
         var scanImpl = COMET_NATIVE_SCAN_IMPL.get()
@@ -160,35 +156,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           scanImpl = selectScan(scanExec, r.partitionSchema, hadoopConf)
         }
 
-        if (scanImpl == SCAN_NATIVE_DATAFUSION && !COMET_EXEC_ENABLED.get()) {
-          fallbackReasons +=
-            s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled"
-          return withInfos(scanExec, fallbackReasons.toSet)
-        }
-
-        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && (SQLConf.get.ignoreCorruptFiles ||
-            scanExec.relation.options
-              .get("ignorecorruptfiles") // Spark sets this to lowercase.
-              .contains("true"))) {
-          fallbackReasons +=
-            "Full native scan disabled because ignoreCorruptFiles enabled"
-          return withInfos(scanExec, fallbackReasons.toSet)
-        }
-
-        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && (SQLConf.get.ignoreMissingFiles ||
-            scanExec.relation.options
-              .get("ignoremissingfiles") // Spark sets this to lowercase.
-              .contains("true"))) {
-          fallbackReasons +=
-            "Full native scan disabled because ignoreMissingFiles enabled"
-          return withInfos(scanExec, fallbackReasons.toSet)
-        }
-
-        if (scanImpl == CometConf.SCAN_NATIVE_DATAFUSION && scanExec.bucketedScan) {
-          // https://github.com/apache/datafusion-comet/issues/1719
-          fallbackReasons +=
-            "Full native scan disabled because bucketed scan is not supported"
-          return withInfos(scanExec, fallbackReasons.toSet)
+        if (scanImpl == SCAN_NATIVE_DATAFUSION && !CometNativeScan.isSupported(scanExec)) {
+          return scanExec
         }
 
         val possibleDefaultValues = getExistenceDefaultValues(scanExec.requiredSchema)
@@ -199,36 +168,27 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           // Spark already converted these to Java-native types, so we can't check SQL types.
           // ArrayBasedMapData, GenericInternalRow, GenericArrayData correspond to maps, structs,
           // and arrays respectively.
-          fallbackReasons +=
-            "Full native scan disabled because nested types for default values are not supported"
-          return withInfos(scanExec, fallbackReasons.toSet)
+          withInfo(
+            scanExec,
+            "Full native scan disabled because nested types for default values are not supported")
         }
 
         if (encryptionEnabled(hadoopConf) && scanImpl != CometConf.SCAN_NATIVE_COMET) {
           if (!isEncryptionConfigSupported(hadoopConf)) {
-            return withInfos(scanExec, fallbackReasons.toSet)
+            withInfo(scanExec, s"$scanImpl does not support encryption")
           }
         }
 
-        val typeChecker = CometScanTypeChecker(scanImpl)
-        val schemaSupported =
-          typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
-        val partitionSchemaSupported =
-          typeChecker.isSchemaSupported(r.partitionSchema, fallbackReasons)
+        // check that schema is supported
+        checkSchema(scanExec, scanImpl, r)
 
-        if (!schemaSupported) {
-          fallbackReasons += s"Unsupported schema ${scanExec.requiredSchema} for $scanImpl"
-        }
-        if (!partitionSchemaSupported) {
-          fallbackReasons += s"Unsupported partitioning schema ${r.partitionSchema} for $scanImpl"
-        }
-
-        if (schemaSupported && partitionSchemaSupported) {
+        if (hasExplainInfo(scanExec)) {
+          // could not accelerate, and plan is already tagged with fallback reasons
+          scanExec
+        } else {
           // this is confusing, but we always insert a CometScanExec here, which may replaced
           // with a CometNativeExec when CometExecRule runs, depending on the scanImpl value.
           CometScanExec(scanExec, session, scanImpl)
-        } else {
-          withInfos(scanExec, fallbackReasons.toSet)
         }
 
       case _ =>
@@ -324,22 +284,56 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         // Extract all Iceberg metadata once using reflection.
         // If any required reflection fails, this returns None, and we fall back to Spark.
         // First get metadataLocation and catalogProperties which are needed by the factory.
-        val metadataLocationOpt = IcebergReflection
-          .getTable(scanExec.scan)
-          .flatMap(IcebergReflection.getMetadataLocation)
+        val tableOpt = IcebergReflection.getTable(scanExec.scan)
+
+        val metadataLocationOpt = tableOpt.flatMap { table =>
+          IcebergReflection.getMetadataLocation(table)
+        }
 
         val metadataOpt = metadataLocationOpt.flatMap { metadataLocation =>
           try {
             val session = org.apache.spark.sql.SparkSession.active
             val hadoopConf = session.sessionState.newHadoopConf()
+
+            // For REST catalogs, the metadata file may not exist on disk since metadata
+            // is fetched via HTTP. Check if file exists; if not, use table location instead.
             val metadataUri = new java.net.URI(metadataLocation)
-            val hadoopS3Options = NativeConfig.extractObjectStoreOptions(hadoopConf, metadataUri)
+
+            val metadataFile = new java.io.File(metadataUri.getPath)
+
+            val effectiveLocation =
+              if (!metadataFile.exists() && metadataUri.getScheme == "file") {
+                // Metadata file doesn't exist (REST catalog with InMemoryFileIO or similar)
+                // Use table location instead for FileIO initialization
+
+                tableOpt
+                  .flatMap { table =>
+                    try {
+                      val locationMethod = table.getClass.getMethod("location")
+                      val tableLocation = locationMethod.invoke(table).asInstanceOf[String]
+                      Some(tableLocation)
+                    } catch {
+                      case _: Exception =>
+                        Some(metadataLocation)
+                    }
+                  }
+                  .getOrElse(metadataLocation)
+              } else {
+                metadataLocation
+              }
+
+            val effectiveUri = new java.net.URI(effectiveLocation)
+
+            val hadoopS3Options = NativeConfig.extractObjectStoreOptions(hadoopConf, effectiveUri)
+
             val catalogProperties =
               org.apache.comet.serde.operator.CometIcebergNativeScan
                 .hadoopToIcebergS3Properties(hadoopS3Options)
 
-            CometIcebergNativeScanMetadata
-              .extract(scanExec.scan, metadataLocation, catalogProperties)
+            val result = CometIcebergNativeScanMetadata
+              .extract(scanExec.scan, effectiveLocation, catalogProperties)
+
+            result
           } catch {
             case e: Exception =>
               logError(
@@ -359,21 +353,18 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
         // Now perform all validation using the pre-extracted metadata
         // Check if table uses a FileIO implementation compatible with iceberg-rust
+
         val fileIOCompatible = IcebergReflection.getFileIO(metadata.table) match {
-          case Some(fileIO) =>
-            val fileIOClassName = fileIO.getClass.getName
-            if (fileIOClassName == "org.apache.iceberg.inmemory.InMemoryFileIO") {
-              fallbackReasons += "Comet does not support InMemoryFileIO table locations"
-              false
-            } else {
-              true
-            }
+          case Some(_) =>
+            // InMemoryFileIO is now supported with table location fallback for REST catalogs
+            true
           case None =>
             fallbackReasons += "Could not check FileIO compatibility"
             false
         }
 
         // Check Iceberg table format version
+
         val formatVersionSupported = IcebergReflection.getFormatVersion(metadata.table) match {
           case Some(formatVersion) =>
             if (formatVersion > 2) {
@@ -640,6 +631,24 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     }
   }
 
+  private def isDynamicPruningFilter(e: Expression): Boolean =
+    e.exists(_.isInstanceOf[PlanExpression[_]])
+
+  def checkSchema(scanExec: FileSourceScanExec, scanImpl: String, r: HadoopFsRelation): Unit = {
+    val fallbackReasons = new ListBuffer[String]()
+    val typeChecker = CometScanTypeChecker(scanImpl)
+    val schemaSupported =
+      typeChecker.isSchemaSupported(scanExec.requiredSchema, fallbackReasons)
+    if (!schemaSupported) {
+      withInfo(scanExec, s"Unsupported schema ${scanExec.requiredSchema} for $scanImpl")
+    }
+    val partitionSchemaSupported =
+      typeChecker.isSchemaSupported(r.partitionSchema, fallbackReasons)
+    if (!partitionSchemaSupported) {
+      fallbackReasons += s"Unsupported partitioning schema ${r.partitionSchema} for $scanImpl"
+    }
+    withInfos(scanExec, fallbackReasons.toSet)
+  }
 }
 
 case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with CometTypeShim {
