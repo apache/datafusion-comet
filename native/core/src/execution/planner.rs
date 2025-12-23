@@ -1875,10 +1875,7 @@ impl PhysicalPlanner {
                         // Cast to Float64 for accumulation
                         let child: Arc<dyn PhysicalExpr> =
                             Arc::new(CastExpr::new(Arc::clone(&child), DataType::Float64, None));
-                        let func = AggregateUDF::new_from_impl(Avg::new(
-                            "avg",
-                            DataType::Float64
-                        ));
+                        let func = AggregateUDF::new_from_impl(Avg::new("avg", DataType::Float64));
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
                 };
