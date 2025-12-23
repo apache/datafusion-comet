@@ -39,7 +39,6 @@ case class CastStringToNumericConfig(
 // spotless:on
 object CometCastStringToNumericBenchmark extends CometBenchmarkBase {
 
-  // Configuration for all String to numeric cast benchmarks
   private val castFunctions = Seq("CAST", "TRY_CAST")
   private val targetTypes =
     Seq("BOOLEAN", "BYTE", "SHORT", "INT", "LONG", "FLOAT", "DOUBLE", "DECIMAL(10,2)")
@@ -61,7 +60,7 @@ object CometCastStringToNumericBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("String to numeric casts", values) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
-          // Generate numeric strings with decimal points: "123.45", "-456.78", etc.
+          // Generate numeric strings with both integer and decimal values
           // Also include some special values: nulls (~2%), NaN (~2%), Infinity (~2%)
           prepareTable(
             dir,
@@ -71,12 +70,13 @@ object CometCastStringToNumericBenchmark extends CometBenchmarkBase {
                 WHEN value % 50 = 1 THEN 'NaN'
                 WHEN value % 50 = 2 THEN 'Infinity'
                 WHEN value % 50 = 3 THEN '-Infinity'
+                WHEN value % 50 < 10 THEN CAST(value % 99 AS STRING)
+                WHEN value % 50 < 30 THEN CAST(value % 999999 AS STRING)
                 ELSE CAST((value - 500000) / 100.0 AS STRING)
               END AS c1
               FROM $tbl
             """))
 
-          // Run all benchmarks on the same input data
           castConfigs.foreach { config =>
             runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
           }
