@@ -39,10 +39,9 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGener
 
 class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
 
-  /** Path for generated data files */
   var filename: String = null
 
-  /** Path for generated data files with deeply nested complex types */
+  /** Filename for data file with deeply nested complex types */
   var complexTypesFilename: String = null
 
   /**
