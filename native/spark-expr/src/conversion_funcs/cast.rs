@@ -1041,7 +1041,7 @@ fn cast_array(
         }
         (Binary, Utf8) => Ok(cast_binary_to_string::<i32>(&array, cast_options)?),
         _ if cast_options.is_adapting_schema
-            || is_datafusion_spark_compatible(from_type, to_type, cast_options.allow_incompat) =>
+            || is_datafusion_spark_compatible(from_type, to_type) =>
         {
             // use DataFusion cast only when we know that it is compatible with Spark
             Ok(cast_with_options(&array, to_type, &native_cast_options)?)
@@ -1208,11 +1208,7 @@ fn cast_binary_formatter(value: &[u8]) -> String {
 
 /// Determines if DataFusion supports the given cast in a way that is
 /// compatible with Spark
-fn is_datafusion_spark_compatible(
-    from_type: &DataType,
-    to_type: &DataType,
-    allow_incompat: bool,
-) -> bool {
+fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> bool {
     if from_type == to_type {
         return true;
     }
