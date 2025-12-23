@@ -131,6 +131,15 @@ jobs:
           - name: "sql"
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite
+
+        exclude:
+          # Skip fuzz suite for Spark 4.0
+          # https://github.com/apache/datafusion-comet/issues/2965
+          - profile:
+              name: "Spark 4.0, JDK 17, Scala 2.13"
+            suite:
+              name: "fuzz"
+
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
