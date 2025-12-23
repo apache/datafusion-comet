@@ -188,18 +188,14 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }
-    if (encryptionEnabled(hadoopConf)) {
-      if (!isEncryptionConfigSupported(hadoopConf)) {
-        withInfo(scanExec, s"$SCAN_NATIVE_DATAFUSION does not support encryption")
-        return None
-      }
+    if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
+      withInfo(scanExec, s"$SCAN_NATIVE_DATAFUSION does not support encryption")
+      return None
     }
     if (!isSchemaSupported(scanExec, SCAN_NATIVE_DATAFUSION, r)) {
       return None
     }
-    // TODO enable SCAN_NATIVE_DATAFUSION for auto scan
-    // Some(CometScanExec(scanExec, session, SCAN_NATIVE_DATAFUSION))
-    None
+    Some(CometScanExec(scanExec, session, SCAN_NATIVE_DATAFUSION))
   }
 
   private def nativeIcebergCompatScan(
@@ -657,7 +653,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     if (!schemaSupported) {
       withInfo(
         scanExec,
-        s"Unsupported schema ${scanExec.requiredSchema} for $scanImpl: ${fallbackReasons.mkString(", ")}")
+        s"Unsupported schema ${scanExec.requiredSchema} " +
+          s"for $scanImpl: ${fallbackReasons.mkString(", ")}")
       return false
     }
     val partitionSchemaSupported =
@@ -665,8 +662,9 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     if (!partitionSchemaSupported) {
       withInfo(
         scanExec,
-        s"Unsupported partitioning schema ${scanExec.requiredSchema} for $scanImpl: ${fallbackReasons
-            .mkString(", ")}")
+        s"Unsupported partitioning schema ${scanExec.requiredSchema} " +
+          s"for $scanImpl: ${fallbackReasons
+              .mkString(", ")}")
       return false
     }
     true
