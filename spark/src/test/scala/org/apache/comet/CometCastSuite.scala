@@ -19,12 +19,12 @@
 
 package org.apache.comet
 
-import java.io.File
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
+import java.io.File
 import scala.collection.mutable.ListBuffer
 import scala.util.Random
 import scala.util.matching.Regex
-
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
@@ -32,8 +32,6 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType, StructField, StructType}
-
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.Compatible
@@ -690,8 +688,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to FloatType") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     Seq(true, false).foreach { v =>
       castTest(
         gen.generateStrings(dataSize, numericPattern, 10).toDF("a"),
@@ -701,8 +697,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to Float type scientific notation") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     val values = Seq(
       "1.23E-5",
       "1.23e10",
@@ -717,622 +711,624 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "e5",
       null).toDF("a")
     Seq(true, false).foreach(k => castTest(values, DataTypes.FloatType, testAnsi = k))
-    
-//  This is to pass the first `all cast combinations are covered`
-  ignore("cast StringType to DecimalType(10,2)") {
-    val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
-    castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = false)
-  }
 
-  test("cast StringType to DecimalType(10,2) (does not support fullwidth unicode digits)") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      // TODO fix for Spark 4.0.0
-      assume(!isSpark40Plus)
+    //  This is to pass the first `all cast combinations are covered`
+    ignore("cast StringType to DecimalType(10,2)") {
       val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
-      Seq(true, false).foreach(ansiEnabled =>
-        castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = ansiEnabled))
+      castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = false)
     }
-  }
 
-  test("cast StringType to DecimalType(2,2)") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      // TODO fix for Spark 4.0.0
-      assume(!isSpark40Plus)
-      val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
-      Seq(true, false).foreach(ansiEnabled =>
-        castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = ansiEnabled))
+    test("cast StringType to DecimalType(10,2) (does not support fullwidth unicode digits)") {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+        // TODO fix for Spark 4.0.0
+        assume(!isSpark40Plus)
+        val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
+        Seq(true, false).foreach(ansiEnabled =>
+          castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = ansiEnabled))
+      }
     }
-  }
 
-  test("cast StringType to DecimalType(38,10) high precision") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      // TODO fix for Spark 4.0.0
-      assume(!isSpark40Plus)
-      val values = gen.generateStrings(dataSize, numericPattern, 38).toDF("a")
-      Seq(true, false).foreach(ansiEnabled =>
-        castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
+    test("cast StringType to DecimalType(2,2)") {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+        // TODO fix for Spark 4.0.0
+        assume(!isSpark40Plus)
+        val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
+        Seq(true, false).foreach(ansiEnabled =>
+          castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = ansiEnabled))
+      }
     }
-  }
 
-  test("cast StringType to DecimalType(10,2) basic values") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      // TODO fix for Spark 4.0.0
-      assume(!isSpark40Plus)
-      val values = Seq(
-        "123.45",
-        "-67.89",
-        "-67.89",
-        "-67.895",
-        "67.895",
-        "0.001",
-        "999.99",
-        "123.456",
-        "123.45D",
-        ".5",
-        "5.",
-        "+123.45",
-        "  123.45  ",
-        "inf",
-        "",
-        "abc",
-        null).toDF("a")
-      Seq(true, false).foreach(ansiEnabled =>
-        castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = ansiEnabled))
+    test("cast StringType to DecimalType(38,10) high precision") {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+        // TODO fix for Spark 4.0.0
+        assume(!isSpark40Plus)
+        val values = gen.generateStrings(dataSize, numericPattern, 38).toDF("a")
+        Seq(true, false).foreach(ansiEnabled =>
+          castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
+      }
     }
-  }
 
-  test("cast StringType to Decimal type scientific notation") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      // TODO fix for Spark 4.0.0
-      assume(!isSpark40Plus)
-      val values = Seq(
-        "1.23E-5",
-        "1.23e10",
-        "1.23E+10",
-        "-1.23e-5",
-        "1e5",
-        "1E-2",
-        "-1.5e3",
-        "1.23E0",
-        "0e0",
-        "1.23e",
-        "e5",
-        null).toDF("a")
-      Seq(true, false).foreach(ansiEnabled =>
-        castTest(values, DataTypes.createDecimalType(23, 8), testAnsi = ansiEnabled))
+    test("cast StringType to DecimalType(10,2) basic values") {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+        // TODO fix for Spark 4.0.0
+        assume(!isSpark40Plus)
+        val values = Seq(
+          "123.45",
+          "-67.89",
+          "-67.89",
+          "-67.895",
+          "67.895",
+          "0.001",
+          "999.99",
+          "123.456",
+          "123.45D",
+          ".5",
+          "5.",
+          "+123.45",
+          "  123.45  ",
+          "inf",
+          "",
+          "abc",
+          null).toDF("a")
+        Seq(true, false).foreach(ansiEnabled =>
+          castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = ansiEnabled))
+      }
     }
-  }
 
-  test("cast StringType to BinaryType") {
-    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.BinaryType)
-  }
-
-  test("cast StringType to DateType") {
-    val validDates = Seq(
-      "262142-01-01",
-      "262142-01-01 ",
-      "262142-01-01T ",
-      "262142-01-01T 123123123",
-      "-262143-12-31",
-      "-262143-12-31 ",
-      "-262143-12-31T",
-      "-262143-12-31T ",
-      "-262143-12-31T 123123123",
-      "2020",
-      "2020-1",
-      "2020-1-1",
-      "2020-01",
-      "2020-01-01",
-      "2020-1-01 ",
-      "2020-01-1",
-      "02020-01-01",
-      "2020-01-01T",
-      "2020-10-01T  1221213",
-      "002020-01-01  ",
-      "0002020-01-01  123344",
-      "-3638-5")
-    val invalidDates = Seq(
-      "0",
-      "202",
-      "3/",
-      "3/3/",
-      "3/3/2020",
-      "3#3#2020",
-      "2020-010-01",
-      "2020-10-010",
-      "2020-10-010T",
-      "--262143-12-31",
-      "--262143-12-31T 1234 ",
-      "abc-def-ghi",
-      "abc-def-ghi jkl",
-      "2020-mar-20",
-      "not_a_date",
-      "T2",
-      "\t\n3938\n8",
-      "8701\t",
-      "\n8757",
-      "7593\t\t\t",
-      "\t9374 \n ",
-      "\n 9850 \t",
-      "\r\n\t9840",
-      "\t9629\n",
-      "\r\n 9629 \r\n",
-      "\r\n 962 \r\n",
-      "\r\n 62 \r\n")
-
-    // due to limitations of NaiveDate we only support years between 262143 BC and 262142 AD"
-    val unsupportedYearPattern: Regex = "^\\s*[0-9]{5,}".r
-    val fuzzDates = gen
-      .generateStrings(dataSize, datePattern, 8)
-      .filterNot(str => unsupportedYearPattern.findFirstMatchIn(str).isDefined)
-    castTest((validDates ++ invalidDates ++ fuzzDates).toDF("a"), DataTypes.DateType)
-  }
-
-  test("cast StringType to TimestampType disabled by default") {
-    withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "UTC")) {
-      val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
-      castFallbackTest(
-        values.toDF("a"),
-        DataTypes.TimestampType,
-        "Not all valid formats are supported")
+    test("cast StringType to Decimal type scientific notation") {
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+        // TODO fix for Spark 4.0.0
+        assume(!isSpark40Plus)
+        val values = Seq(
+          "1.23E-5",
+          "1.23e10",
+          "1.23E+10",
+          "-1.23e-5",
+          "1e5",
+          "1E-2",
+          "-1.5e3",
+          "1.23E0",
+          "0e0",
+          "1.23e",
+          "e5",
+          null).toDF("a")
+        Seq(true, false).foreach(ansiEnabled =>
+          castTest(values, DataTypes.createDecimalType(23, 8), testAnsi = ansiEnabled))
+      }
     }
-  }
 
-  ignore("cast StringType to TimestampType") {
-    // https://github.com/apache/datafusion-comet/issues/328
-    withSQLConf((CometConf.getExprAllowIncompatConfigKey(classOf[Cast]), "true")) {
-      val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ gen.generateStrings(
-        dataSize,
-        timestampPattern,
-        8)
-      castTest(values.toDF("a"), DataTypes.TimestampType)
+    test("cast StringType to BinaryType") {
+      castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.BinaryType)
     }
-  }
 
-  test("cast StringType to TimestampType disabled for non-UTC timezone") {
-    withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Denver")) {
-      val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
-      castFallbackTest(
-        values.toDF("a"),
-        DataTypes.TimestampType,
-        "Cast will use UTC instead of Some(America/Denver)")
-    }
-  }
-
-  test("cast StringType to TimestampType - subset of supported values") {
-    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
-      val values = Seq(
+    test("cast StringType to DateType") {
+      val validDates = Seq(
+        "262142-01-01",
+        "262142-01-01 ",
+        "262142-01-01T ",
+        "262142-01-01T 123123123",
+        "-262143-12-31",
+        "-262143-12-31 ",
+        "-262143-12-31T",
+        "-262143-12-31T ",
+        "-262143-12-31T 123123123",
         "2020",
+        "2020-1",
+        "2020-1-1",
         "2020-01",
         "2020-01-01",
-        "2020-01-01T12",
-        "2020-01-01T12:34",
-        "2020-01-01T12:34:56",
-        "2020-01-01T12:34:56.123456",
+        "2020-1-01 ",
+        "2020-01-1",
+        "02020-01-01",
+        "2020-01-01T",
+        "2020-10-01T  1221213",
+        "002020-01-01  ",
+        "0002020-01-01  123344",
+        "-3638-5")
+      val invalidDates = Seq(
+        "0",
+        "202",
+        "3/",
+        "3/3/",
+        "3/3/2020",
+        "3#3#2020",
+        "2020-010-01",
+        "2020-10-010",
+        "2020-10-010T",
+        "--262143-12-31",
+        "--262143-12-31T 1234 ",
+        "abc-def-ghi",
+        "abc-def-ghi jkl",
+        "2020-mar-20",
+        "not_a_date",
         "T2",
-        "-9?",
-        "0100",
-        "0100-01",
-        "0100-01-01",
-        "0100-01-01T12",
-        "0100-01-01T12:34",
-        "0100-01-01T12:34:56",
-        "0100-01-01T12:34:56.123456",
-        "10000",
-        "10000-01",
-        "10000-01-01",
-        "10000-01-01T12",
-        "10000-01-01T12:34",
-        "10000-01-01T12:34:56",
-        "10000-01-01T12:34:56.123456")
-      castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
+        "\t\n3938\n8",
+        "8701\t",
+        "\n8757",
+        "7593\t\t\t",
+        "\t9374 \n ",
+        "\n 9850 \t",
+        "\r\n\t9840",
+        "\t9629\n",
+        "\r\n 9629 \r\n",
+        "\r\n 962 \r\n",
+        "\r\n 62 \r\n")
+
+      // due to limitations of NaiveDate we only support years between 262143 BC and 262142 AD"
+      val unsupportedYearPattern: Regex = "^\\s*[0-9]{5,}".r
+      val fuzzDates = gen
+        .generateStrings(dataSize, datePattern, 8)
+        .filterNot(str => unsupportedYearPattern.findFirstMatchIn(str).isDefined)
+      castTest((validDates ++ invalidDates ++ fuzzDates).toDF("a"), DataTypes.DateType)
     }
 
-    // test for invalid inputs
-    withSQLConf(
-      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
-      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      val values = Seq("-9?", "1-", "0.5")
-      castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
+    test("cast StringType to TimestampType disabled by default") {
+      withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "UTC")) {
+        val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
+        castFallbackTest(
+          values.toDF("a"),
+          DataTypes.TimestampType,
+          "Not all valid formats are supported")
+      }
     }
-  }
 
-  // CAST from BinaryType
+    ignore("cast StringType to TimestampType") {
+      // https://github.com/apache/datafusion-comet/issues/328
+      withSQLConf((CometConf.getExprAllowIncompatConfigKey(classOf[Cast]), "true")) {
+        val values = Seq("2020-01-01T12:34:56.123456", "T2") ++ gen.generateStrings(
+          dataSize,
+          timestampPattern,
+          8)
+        castTest(values.toDF("a"), DataTypes.TimestampType)
+      }
+    }
 
-  test("cast BinaryType to StringType") {
-    castTest(generateBinary(), DataTypes.StringType)
-  }
+    test("cast StringType to TimestampType disabled for non-UTC timezone") {
+      withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "America/Denver")) {
+        val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
+        castFallbackTest(
+          values.toDF("a"),
+          DataTypes.TimestampType,
+          "Cast will use UTC instead of Some(America/Denver)")
+      }
+    }
 
-  test("cast BinaryType to StringType - valid UTF-8 inputs") {
-    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.StringType)
-  }
+    test("cast StringType to TimestampType - subset of supported values") {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
+        val values = Seq(
+          "2020",
+          "2020-01",
+          "2020-01-01",
+          "2020-01-01T12",
+          "2020-01-01T12:34",
+          "2020-01-01T12:34:56",
+          "2020-01-01T12:34:56.123456",
+          "T2",
+          "-9?",
+          "0100",
+          "0100-01",
+          "0100-01-01",
+          "0100-01-01T12",
+          "0100-01-01T12:34",
+          "0100-01-01T12:34:56",
+          "0100-01-01T12:34:56.123456",
+          "10000",
+          "10000-01",
+          "10000-01-01",
+          "10000-01-01T12",
+          "10000-01-01T12:34",
+          "10000-01-01T12:34:56",
+          "10000-01-01T12:34:56.123456")
+        castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
+      }
 
-  // CAST from DateType
+      // test for invalid inputs
+      withSQLConf(
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+        CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+        val values = Seq("-9?", "1-", "0.5")
+        castTimestampTest(values.toDF("a"), DataTypes.TimestampType)
+      }
+    }
 
-  ignore("cast DateType to BooleanType") {
-    // Arrow error: Cast error: Casting from Date32 to Boolean not supported
-    castTest(generateDates(), DataTypes.BooleanType)
-  }
+    // CAST from BinaryType
 
-  ignore("cast DateType to ByteType") {
-    // Arrow error: Cast error: Casting from Date32 to Int8 not supported
-    castTest(generateDates(), DataTypes.ByteType)
-  }
+    test("cast BinaryType to StringType") {
+      castTest(generateBinary(), DataTypes.StringType)
+    }
 
-  ignore("cast DateType to ShortType") {
-    // Arrow error: Cast error: Casting from Date32 to Int16 not supported
-    castTest(generateDates(), DataTypes.ShortType)
-  }
+    test("cast BinaryType to StringType - valid UTF-8 inputs") {
+      castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.StringType)
+    }
 
-  ignore("cast DateType to IntegerType") {
-    // input: 2345-01-01, expected: null, actual: 3789391
-    castTest(generateDates(), DataTypes.IntegerType)
-  }
+    // CAST from DateType
 
-  ignore("cast DateType to LongType") {
-    // input: 2024-01-01, expected: null, actual: 19723
-    castTest(generateDates(), DataTypes.LongType)
-  }
+    ignore("cast DateType to BooleanType") {
+      // Arrow error: Cast error: Casting from Date32 to Boolean not supported
+      castTest(generateDates(), DataTypes.BooleanType)
+    }
 
-  ignore("cast DateType to FloatType") {
-    // Arrow error: Cast error: Casting from Date32 to Float32 not supported
-    castTest(generateDates(), DataTypes.FloatType)
-  }
+    ignore("cast DateType to ByteType") {
+      // Arrow error: Cast error: Casting from Date32 to Int8 not supported
+      castTest(generateDates(), DataTypes.ByteType)
+    }
 
-  ignore("cast DateType to DoubleType") {
-    // Arrow error: Cast error: Casting from Date32 to Float64 not supported
-    castTest(generateDates(), DataTypes.DoubleType)
-  }
+    ignore("cast DateType to ShortType") {
+      // Arrow error: Cast error: Casting from Date32 to Int16 not supported
+      castTest(generateDates(), DataTypes.ShortType)
+    }
 
-  ignore("cast DateType to DecimalType(10,2)") {
-    // Arrow error: Cast error: Casting from Date32 to Decimal128(10, 2) not supported
-    castTest(generateDates(), DataTypes.createDecimalType(10, 2))
-  }
+    ignore("cast DateType to IntegerType") {
+      // input: 2345-01-01, expected: null, actual: 3789391
+      castTest(generateDates(), DataTypes.IntegerType)
+    }
 
-  test("cast DateType to StringType") {
-    castTest(generateDates(), DataTypes.StringType)
-  }
+    ignore("cast DateType to LongType") {
+      // input: 2024-01-01, expected: null, actual: 19723
+      castTest(generateDates(), DataTypes.LongType)
+    }
 
-  ignore("cast DateType to TimestampType") {
-    // Arrow error: Cast error: Casting from Date32 to Timestamp(Microsecond, Some("UTC")) not supported
-    castTest(generateDates(), DataTypes.TimestampType)
-  }
+    ignore("cast DateType to FloatType") {
+      // Arrow error: Cast error: Casting from Date32 to Float32 not supported
+      castTest(generateDates(), DataTypes.FloatType)
+    }
 
-  // CAST from TimestampType
+    ignore("cast DateType to DoubleType") {
+      // Arrow error: Cast error: Casting from Date32 to Float64 not supported
+      castTest(generateDates(), DataTypes.DoubleType)
+    }
 
-  ignore("cast TimestampType to BooleanType") {
-    // Arrow error: Cast error: Casting from Timestamp(Microsecond, Some("America/Los_Angeles")) to Boolean not supported
-    castTest(generateTimestamps(), DataTypes.BooleanType)
-  }
+    ignore("cast DateType to DecimalType(10,2)") {
+      // Arrow error: Cast error: Casting from Date32 to Decimal128(10, 2) not supported
+      castTest(generateDates(), DataTypes.createDecimalType(10, 2))
+    }
 
-  ignore("cast TimestampType to ByteType") {
-    // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 10:00:00.0, expected: 32, actual: null
-    castTest(generateTimestamps(), DataTypes.ByteType)
-  }
+    test("cast DateType to StringType") {
+      castTest(generateDates(), DataTypes.StringType)
+    }
 
-  ignore("cast TimestampType to ShortType") {
-    // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 10:00:00.0, expected: -21472, actual: null]
-    castTest(generateTimestamps(), DataTypes.ShortType)
-  }
+    ignore("cast DateType to TimestampType") {
+      // Arrow error: Cast error: Casting from Date32 to Timestamp(Microsecond, Some("UTC")) not supported
+      castTest(generateDates(), DataTypes.TimestampType)
+    }
 
-  ignore("cast TimestampType to IntegerType") {
-    // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 10:00:00.0, expected: 1704045600, actual: null]
-    castTest(generateTimestamps(), DataTypes.IntegerType)
-  }
+    // CAST from TimestampType
 
-  test("cast TimestampType to LongType") {
-    castTest(generateTimestampsExtended(), DataTypes.LongType)
-  }
+    ignore("cast TimestampType to BooleanType") {
+      // Arrow error: Cast error: Casting from Timestamp(Microsecond, Some("America/Los_Angeles")) to Boolean not supported
+      castTest(generateTimestamps(), DataTypes.BooleanType)
+    }
 
-  ignore("cast TimestampType to FloatType") {
-    // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 10:00:00.0, expected: 1.7040456E9, actual: 1.7040456E15
-    castTest(generateTimestamps(), DataTypes.FloatType)
-  }
+    ignore("cast TimestampType to ByteType") {
+      // https://github.com/apache/datafusion-comet/issues/352
+      // input: 2023-12-31 10:00:00.0, expected: 32, actual: null
+      castTest(generateTimestamps(), DataTypes.ByteType)
+    }
 
-  ignore("cast TimestampType to DoubleType") {
-    // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 10:00:00.0, expected: 1.7040456E9, actual: 1.7040456E15
-    castTest(generateTimestamps(), DataTypes.DoubleType)
-  }
+    ignore("cast TimestampType to ShortType") {
+      // https://github.com/apache/datafusion-comet/issues/352
+      // input: 2023-12-31 10:00:00.0, expected: -21472, actual: null]
+      castTest(generateTimestamps(), DataTypes.ShortType)
+    }
 
-  ignore("cast TimestampType to DecimalType(10,2)") {
-    // https://github.com/apache/datafusion-comet/issues/1280
-    // Native cast invoked for unsupported cast from Timestamp(Microsecond, Some("Etc/UTC")) to Decimal128(10, 2)
-    castTest(generateTimestamps(), DataTypes.createDecimalType(10, 2))
-  }
+    ignore("cast TimestampType to IntegerType") {
+      // https://github.com/apache/datafusion-comet/issues/352
+      // input: 2023-12-31 10:00:00.0, expected: 1704045600, actual: null]
+      castTest(generateTimestamps(), DataTypes.IntegerType)
+    }
 
-  test("cast TimestampType to StringType") {
-    castTest(generateTimestamps(), DataTypes.StringType)
-  }
+    test("cast TimestampType to LongType") {
+      castTest(generateTimestampsExtended(), DataTypes.LongType)
+    }
 
-  test("cast TimestampType to DateType") {
-    castTest(generateTimestamps(), DataTypes.DateType)
-  }
+    ignore("cast TimestampType to FloatType") {
+      // https://github.com/apache/datafusion-comet/issues/352
+      // input: 2023-12-31 10:00:00.0, expected: 1.7040456E9, actual: 1.7040456E15
+      castTest(generateTimestamps(), DataTypes.FloatType)
+    }
 
-  // Complex Types
+    ignore("cast TimestampType to DoubleType") {
+      // https://github.com/apache/datafusion-comet/issues/352
+      // input: 2023-12-31 10:00:00.0, expected: 1.7040456E9, actual: 1.7040456E15
+      castTest(generateTimestamps(), DataTypes.DoubleType)
+    }
 
-  test("cast StructType to StringType") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "tbl") {
-          // primitives
-          checkSparkAnswerAndOperator(
-            "SELECT CAST(struct(_1, _2, _3, _4, _5, _6, _7, _8) as string) FROM tbl")
-          // the same field, add _11 and _12 again when
-          // https://github.com/apache/datafusion-comet/issues/2256 resolved
-          checkSparkAnswerAndOperator("SELECT CAST(struct(_11, _12) as string) FROM tbl")
-          // decimals
-          // TODO add _16 when https://github.com/apache/datafusion-comet/issues/1068 is resolved
-          checkSparkAnswerAndOperator("SELECT CAST(struct(_15, _17) as string) FROM tbl")
-          // dates & timestamps
-          checkSparkAnswerAndOperator("SELECT CAST(struct(_18, _19, _20) as string) FROM tbl")
-          // named struct
-          checkSparkAnswerAndOperator(
-            "SELECT CAST(named_struct('a', _1, 'b', _2) as string) FROM tbl")
-          // nested struct
-          checkSparkAnswerAndOperator(
-            "SELECT CAST(named_struct('a', named_struct('b', _1, 'c', _2)) as string) FROM tbl")
+    ignore("cast TimestampType to DecimalType(10,2)") {
+      // https://github.com/apache/datafusion-comet/issues/1280
+      // Native cast invoked for unsupported cast from Timestamp(Microsecond, Some("Etc/UTC")) to Decimal128(10, 2)
+      castTest(generateTimestamps(), DataTypes.createDecimalType(10, 2))
+    }
+
+    test("cast TimestampType to StringType") {
+      castTest(generateTimestamps(), DataTypes.StringType)
+    }
+
+    test("cast TimestampType to DateType") {
+      castTest(generateTimestamps(), DataTypes.DateType)
+    }
+
+    // Complex Types
+
+    test("cast StructType to StringType") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "tbl") {
+            // primitives
+            checkSparkAnswerAndOperator(
+              "SELECT CAST(struct(_1, _2, _3, _4, _5, _6, _7, _8) as string) FROM tbl")
+            // the same field, add _11 and _12 again when
+            // https://github.com/apache/datafusion-comet/issues/2256 resolved
+            checkSparkAnswerAndOperator("SELECT CAST(struct(_11, _12) as string) FROM tbl")
+            // decimals
+            // TODO add _16 when https://github.com/apache/datafusion-comet/issues/1068 is resolved
+            checkSparkAnswerAndOperator("SELECT CAST(struct(_15, _17) as string) FROM tbl")
+            // dates & timestamps
+            checkSparkAnswerAndOperator("SELECT CAST(struct(_18, _19, _20) as string) FROM tbl")
+            // named struct
+            checkSparkAnswerAndOperator(
+              "SELECT CAST(named_struct('a', _1, 'b', _2) as string) FROM tbl")
+            // nested struct
+            checkSparkAnswerAndOperator(
+              "SELECT CAST(named_struct('a', named_struct('b', _1, 'c', _2)) as string) FROM tbl")
+          }
         }
       }
     }
-  }
 
-  test("cast StructType to StructType") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withParquetTable(path.toString, "tbl") {
-          checkSparkAnswerAndOperator(
-            "SELECT CAST(CASE WHEN _1 THEN struct(_1, _2, _3, _4) ELSE null END as " +
-              "struct<_1:string, _2:string, _3:string, _4:string>) FROM tbl")
+    test("cast StructType to StructType") {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withParquetTable(path.toString, "tbl") {
+            checkSparkAnswerAndOperator(
+              "SELECT CAST(CASE WHEN _1 THEN struct(_1, _2, _3, _4) ELSE null END as " +
+                "struct<_1:string, _2:string, _3:string, _4:string>) FROM tbl")
+          }
         }
       }
     }
-  }
 
-  test("cast StructType to StructType with different names") {
-    withTable("tab1") {
-      sql("""
-           |CREATE TABLE tab1 (s struct<a: string, b: string>)
-           |USING parquet
+    test("cast StructType to StructType with different names") {
+      withTable("tab1") {
+        sql(
+          """
+            |CREATE TABLE tab1 (s struct<a: string, b: string>)
+            |USING parquet
          """.stripMargin)
-      sql("INSERT INTO TABLE tab1 SELECT named_struct('col1','1','col2','2')")
-      if (usingDataSourceExec) {
-        checkSparkAnswerAndOperator(
-          "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
-      } else {
-        // Should just fall back to Spark since non-DataSourceExec scan does not support nested types.
-        checkSparkAnswer(
-          "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
+        sql("INSERT INTO TABLE tab1 SELECT named_struct('col1','1','col2','2')")
+        if (usingDataSourceExec) {
+          checkSparkAnswerAndOperator(
+            "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
+        } else {
+          // Should just fall back to Spark since non-DataSourceExec scan does not support nested types.
+          checkSparkAnswer(
+            "SELECT CAST(s AS struct<field1:string, field2:string>) AS new_struct FROM tab1")
+        }
       }
     }
-  }
 
-  test("cast between decimals with different precision and scale") {
-    val rowData = Seq(
-      Row(BigDecimal("12345.6789")),
-      Row(BigDecimal("9876.5432")),
-      Row(BigDecimal("123.4567")))
-    val df = spark.createDataFrame(
-      spark.sparkContext.parallelize(rowData),
-      StructType(Seq(StructField("a", DataTypes.createDecimalType(10, 4)))))
+    test("cast between decimals with different precision and scale") {
+      val rowData = Seq(
+        Row(BigDecimal("12345.6789")),
+        Row(BigDecimal("9876.5432")),
+        Row(BigDecimal("123.4567")))
+      val df = spark.createDataFrame(
+        spark.sparkContext.parallelize(rowData),
+        StructType(Seq(StructField("a", DataTypes.createDecimalType(10, 4)))))
 
-    castTest(df, DecimalType(6, 2))
-  }
-
-  test("cast between decimals with higher precision than source") {
-    // cast between Decimal(10, 2) to Decimal(10,4)
-    castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(10, 4))
-  }
-
-  test("cast between decimals with negative precision") {
-    // cast to negative scale
-    checkSparkAnswerMaybeThrows(
-      spark.sql("select a, cast(a as DECIMAL(10,-4)) from t order by a")) match {
-      case (expected, actual) =>
-        assert(expected.contains("PARSE_SYNTAX_ERROR") === actual.contains("PARSE_SYNTAX_ERROR"))
+      castTest(df, DecimalType(6, 2))
     }
-  }
 
-  test("cast between decimals with zero precision") {
-    // cast between Decimal(10, 2) to Decimal(10,0)
-    castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(10, 0))
-  }
-
-  test("cast ArrayType to StringType") {
-    val hasIncompatibleType = (dt: DataType) =>
-      if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == "auto") {
-        true
-      } else {
-        !CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
-          .isTypeSupported(dt, "a", ListBuffer.empty)
-      }
-    Seq(
-      BooleanType,
-      StringType,
-      ByteType,
-      IntegerType,
-      LongType,
-      ShortType,
-      // FloatType,
-      // DoubleType,
-      // BinaryType
-      DecimalType(10, 2),
-      DecimalType(38, 18)).foreach { dt =>
-      val input = generateArrays(100, dt)
-      castTest(input, StringType, hasIncompatibleType = hasIncompatibleType(input.schema))
+    test("cast between decimals with higher precision than source") {
+      // cast between Decimal(10, 2) to Decimal(10,4)
+      castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(10, 4))
     }
-  }
 
-  private def generateFloats(): DataFrame = {
-    withNulls(gen.generateFloats(dataSize)).toDF("a")
-  }
-
-  private def generateDoubles(): DataFrame = {
-    withNulls(gen.generateDoubles(dataSize)).toDF("a")
-  }
-
-  private def generateBools(): DataFrame = {
-    withNulls(Seq(true, false)).toDF("a")
-  }
-
-  private def generateBytes(): DataFrame = {
-    withNulls(gen.generateBytes(dataSize)).toDF("a")
-  }
-
-  private def generateShorts(): DataFrame = {
-    withNulls(gen.generateShorts(dataSize)).toDF("a")
-  }
-
-  private def generateInts(): DataFrame = {
-    withNulls(gen.generateInts(dataSize)).toDF("a")
-  }
-
-  private def generateLongs(): DataFrame = {
-    withNulls(gen.generateLongs(dataSize)).toDF("a")
-  }
-
-  private def generateArrays(rowSize: Int, elementType: DataType): DataFrame = {
-    import scala.collection.JavaConverters._
-    val schema = StructType(Seq(StructField("a", ArrayType(elementType), true)))
-    spark.createDataFrame(gen.generateRows(rowSize, schema).asJava, schema)
-  }
-
-  // https://github.com/apache/datafusion-comet/issues/2038
-  test("test implicit cast to dictionary with case when and dictionary type") {
-    withSQLConf("parquet.enable.dictionary" -> "true") {
-      withParquetTable((0 until 10000).map(i => (i < 5000, "one")), "tbl") {
-        val df = spark.sql("select case when (_1 = true) then _2 else '' end as aaa from tbl")
-        checkSparkAnswerAndOperator(df)
+    test("cast between decimals with negative precision") {
+      // cast to negative scale
+      checkSparkAnswerMaybeThrows(
+        spark.sql("select a, cast(a as DECIMAL(10,-4)) from t order by a")) match {
+        case (expected, actual) =>
+          assert(expected.contains("PARSE_SYNTAX_ERROR") === actual.contains("PARSE_SYNTAX_ERROR"))
       }
     }
-  }
 
-  private def generateDecimalsPrecision10Scale2(): DataFrame = {
-    val values = Seq(
-      BigDecimal("-99999999.999"),
-      BigDecimal("-123456.789"),
-      BigDecimal("-32768.678"),
-      // Short Min
-      BigDecimal("-32767.123"),
-      BigDecimal("-128.12312"),
-      // Byte Min
-      BigDecimal("-127.123"),
-      BigDecimal("0.0"),
-      // Byte Max
-      BigDecimal("127.123"),
-      BigDecimal("128.12312"),
-      BigDecimal("32767.122"),
-      // Short Max
-      BigDecimal("32768.678"),
-      BigDecimal("123456.789"),
-      BigDecimal("99999999.999"))
-    withNulls(values).toDF("b").withColumn("a", col("b").cast(DecimalType(10, 2))).drop("b")
-  }
+    test("cast between decimals with zero precision") {
+      // cast between Decimal(10, 2) to Decimal(10,0)
+      castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(10, 0))
+    }
 
-  private def generateDecimalsPrecision38Scale18(): DataFrame = {
-    val values = Seq(
-      BigDecimal("-99999999999999999999.999999999999"),
-      BigDecimal("-9223372036854775808.234567"),
-      // Long Min
-      BigDecimal("-9223372036854775807.123123"),
-      BigDecimal("-2147483648.123123123"),
-      // Int Min
-      BigDecimal("-2147483647.123123123"),
-      BigDecimal("-123456.789"),
-      BigDecimal("0.00000000000"),
-      BigDecimal("123456.789"),
-      // Int Max
-      BigDecimal("2147483647.123123123"),
-      BigDecimal("2147483648.123123123"),
-      BigDecimal("9223372036854775807.123123"),
-      // Long Max
-      BigDecimal("9223372036854775808.234567"),
-      BigDecimal("99999999999999999999.999999999999"))
-    withNulls(values).toDF("a")
-  }
-
-  private def generateDates(): DataFrame = {
-    val values = Seq("2024-01-01", "999-01-01", "12345-01-01")
-    withNulls(values).toDF("b").withColumn("a", col("b").cast(DataTypes.DateType)).drop("b")
-  }
-
-  // Extended values are Timestamps that are outside dates supported chrono::DateTime and
-  // therefore not supported by operations using it.
-  private def generateTimestampsExtended(): DataFrame = {
-    val values = Seq("290000-12-31T01:00:00+02:00")
-    generateTimestamps().unionByName(
-      values.toDF("str").select(col("str").cast(DataTypes.TimestampType).as("a")))
-  }
-
-  private def generateTimestamps(): DataFrame = {
-    val values =
+    test("cast ArrayType to StringType") {
+      val hasIncompatibleType = (dt: DataType) =>
+        if (CometConf.COMET_NATIVE_SCAN_IMPL.get() == "auto") {
+          true
+        } else {
+          !CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
+            .isTypeSupported(dt, "a", ListBuffer.empty)
+        }
       Seq(
-        "2024-01-01T12:34:56.123456",
-        "2024-01-01T01:00:00Z",
-        "9999-12-31T01:00:00-02:00",
-        "2024-12-31T01:00:00+02:00")
-    withNulls(values)
-      .toDF("str")
-      .withColumn("a", col("str").cast(DataTypes.TimestampType))
-      .drop("str")
-  }
-
-  private def generateBinary(): DataFrame = {
-    val r = new Random(0)
-    val bytes = new Array[Byte](8)
-    val values: Seq[Array[Byte]] = Range(0, dataSize).map(_ => {
-      r.nextBytes(bytes)
-      bytes.clone()
-    })
-    values.toDF("a")
-  }
-
-  private def withNulls[T](values: Seq[T]): Seq[Option[T]] = {
-    values.map(v => Some(v)) ++ Seq(None)
-  }
-
-  private def castFallbackTest(
-      input: DataFrame,
-      toType: DataType,
-      expectedMessage: String): Unit = {
-    withTempPath { dir =>
-      val data = roundtripParquet(input, dir).coalesce(1)
-      data.createOrReplaceTempView("t")
-
-      withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
-        val df = data.withColumn("converted", col("a").cast(toType))
-        df.collect()
-        val str =
-          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
-        assert(str.contains(expectedMessage))
+        BooleanType,
+        StringType,
+        ByteType,
+        IntegerType,
+        LongType,
+        ShortType,
+        // FloatType,
+        // DoubleType,
+        // BinaryType
+        DecimalType(10, 2),
+        DecimalType(38, 18)).foreach { dt =>
+        val input = generateArrays(100, dt)
+        castTest(input, StringType, hasIncompatibleType = hasIncompatibleType(input.schema))
       }
     }
   }
 
-  private def castTimestampTest(input: DataFrame, toType: DataType) = {
-    withTempPath { dir =>
-      val data = roundtripParquet(input, dir).coalesce(1)
-      data.createOrReplaceTempView("t")
+    private def generateFloats(): DataFrame = {
+      withNulls(gen.generateFloats(dataSize)).toDF("a")
+    }
 
-      withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
-        // cast() should return null for invalid inputs when ansi mode is disabled
-        val df = data.withColumn("converted", col("a").cast(toType))
-        checkSparkAnswer(df)
+    private def generateDoubles(): DataFrame = {
+      withNulls(gen.generateDoubles(dataSize)).toDF("a")
+    }
 
-        // try_cast() should always return null for invalid inputs
-        val df2 = spark.sql(s"select try_cast(a as ${toType.sql}) from t")
-        checkSparkAnswer(df2)
+    private def generateBools(): DataFrame = {
+      withNulls(Seq(true, false)).toDF("a")
+    }
+
+    private def generateBytes(): DataFrame = {
+      withNulls(gen.generateBytes(dataSize)).toDF("a")
+    }
+
+    private def generateShorts(): DataFrame = {
+      withNulls(gen.generateShorts(dataSize)).toDF("a")
+    }
+
+    private def generateInts(): DataFrame = {
+      withNulls(gen.generateInts(dataSize)).toDF("a")
+    }
+
+    private def generateLongs(): DataFrame = {
+      withNulls(gen.generateLongs(dataSize)).toDF("a")
+    }
+
+    private def generateArrays(rowSize: Int, elementType: DataType): DataFrame = {
+      import scala.collection.JavaConverters._
+      val schema = StructType(Seq(StructField("a", ArrayType(elementType), true)))
+      spark.createDataFrame(gen.generateRows(rowSize, schema).asJava, schema)
+    }
+
+    // https://github.com/apache/datafusion-comet/issues/2038
+    test("test implicit cast to dictionary with case when and dictionary type") {
+      withSQLConf("parquet.enable.dictionary" -> "true") {
+        withParquetTable((0 until 10000).map(i => (i < 5000, "one")), "tbl") {
+          val df = spark.sql("select case when (_1 = true) then _2 else '' end as aaa from tbl")
+          checkSparkAnswerAndOperator(df)
+        }
       }
     }
-  }
+
+    private def generateDecimalsPrecision10Scale2(): DataFrame = {
+      val values = Seq(
+        BigDecimal("-99999999.999"),
+        BigDecimal("-123456.789"),
+        BigDecimal("-32768.678"),
+        // Short Min
+        BigDecimal("-32767.123"),
+        BigDecimal("-128.12312"),
+        // Byte Min
+        BigDecimal("-127.123"),
+        BigDecimal("0.0"),
+        // Byte Max
+        BigDecimal("127.123"),
+        BigDecimal("128.12312"),
+        BigDecimal("32767.122"),
+        // Short Max
+        BigDecimal("32768.678"),
+        BigDecimal("123456.789"),
+        BigDecimal("99999999.999"))
+      withNulls(values).toDF("b").withColumn("a", col("b").cast(DecimalType(10, 2))).drop("b")
+    }
+
+    private def generateDecimalsPrecision38Scale18(): DataFrame = {
+      val values = Seq(
+        BigDecimal("-99999999999999999999.999999999999"),
+        BigDecimal("-9223372036854775808.234567"),
+        // Long Min
+        BigDecimal("-9223372036854775807.123123"),
+        BigDecimal("-2147483648.123123123"),
+        // Int Min
+        BigDecimal("-2147483647.123123123"),
+        BigDecimal("-123456.789"),
+        BigDecimal("0.00000000000"),
+        BigDecimal("123456.789"),
+        // Int Max
+        BigDecimal("2147483647.123123123"),
+        BigDecimal("2147483648.123123123"),
+        BigDecimal("9223372036854775807.123123"),
+        // Long Max
+        BigDecimal("9223372036854775808.234567"),
+        BigDecimal("99999999999999999999.999999999999"))
+      withNulls(values).toDF("a")
+    }
+
+    private def generateDates(): DataFrame = {
+      val values = Seq("2024-01-01", "999-01-01", "12345-01-01")
+      withNulls(values).toDF("b").withColumn("a", col("b").cast(DataTypes.DateType)).drop("b")
+    }
+
+    // Extended values are Timestamps that are outside dates supported chrono::DateTime and
+    // therefore not supported by operations using it.
+    private def generateTimestampsExtended(): DataFrame = {
+      val values = Seq("290000-12-31T01:00:00+02:00")
+      generateTimestamps().unionByName(
+        values.toDF("str").select(col("str").cast(DataTypes.TimestampType).as("a")))
+    }
+
+    private def generateTimestamps(): DataFrame = {
+      val values =
+        Seq(
+          "2024-01-01T12:34:56.123456",
+          "2024-01-01T01:00:00Z",
+          "9999-12-31T01:00:00-02:00",
+          "2024-12-31T01:00:00+02:00")
+      withNulls(values)
+        .toDF("str")
+        .withColumn("a", col("str").cast(DataTypes.TimestampType))
+        .drop("str")
+    }
+
+    private def generateBinary(): DataFrame = {
+      val r = new Random(0)
+      val bytes = new Array[Byte](8)
+      val values: Seq[Array[Byte]] = Range(0, dataSize).map(_ => {
+        r.nextBytes(bytes)
+        bytes.clone()
+      })
+      values.toDF("a")
+    }
+
+    private def withNulls[T](values: Seq[T]): Seq[Option[T]] = {
+      values.map(v => Some(v)) ++ Seq(None)
+    }
+
+    private def castFallbackTest(
+                                  input: DataFrame,
+                                  toType: DataType,
+                                  expectedMessage: String): Unit = {
+      withTempPath { dir =>
+        val data = roundtripParquet(input, dir).coalesce(1)
+        data.createOrReplaceTempView("t")
+
+        withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
+          val df = data.withColumn("converted", col("a").cast(toType))
+          df.collect()
+          val str =
+            new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+          assert(str.contains(expectedMessage))
+        }
+      }
+    }
+
+    private def castTimestampTest(input: DataFrame, toType: DataType) = {
+      withTempPath { dir =>
+        val data = roundtripParquet(input, dir).coalesce(1)
+        data.createOrReplaceTempView("t")
+
+        withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
+          // cast() should return null for invalid inputs when ansi mode is disabled
+          val df = data.withColumn("converted", col("a").cast(toType))
+          checkSparkAnswer(df)
+
+          // try_cast() should always return null for invalid inputs
+          val df2 = spark.sql(s"select try_cast(a as ${toType.sql}) from t")
+          checkSparkAnswer(df2)
+        }
+      }
+    }
 
   private def castTest(
       input: DataFrame,
