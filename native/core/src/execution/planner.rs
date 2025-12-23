@@ -71,6 +71,7 @@ use datafusion::{
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
+    SumInteger,
 };
 use iceberg::expr::Bind;
 
@@ -1811,6 +1812,12 @@ impl PhysicalPlanner {
                         let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
                         let func =
                             AggregateUDF::new_from_impl(SumDecimal::try_new(datatype, eval_mode)?);
+                        AggregateExprBuilder::new(Arc::new(func), vec![child])
+                    }
+                    DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
+                        let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
+                        let func =
+                            AggregateUDF::new_from_impl(SumInteger::try_new(datatype, eval_mode)?);
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }
                     _ => {
