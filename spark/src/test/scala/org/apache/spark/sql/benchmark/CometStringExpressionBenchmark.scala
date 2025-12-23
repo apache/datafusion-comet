@@ -74,9 +74,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("translate", "select translate(c1, '123456', 'aBcDeF') from parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024
-
-    runBenchmarkWithTable("String expressions", values) { v =>
+    runBenchmarkWithTable("String expressions", 1024) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
           prepareTable(
