@@ -65,6 +65,7 @@ use std::{
     num::Wrapping,
     sync::Arc,
 };
+use std::ascii::AsciiExt;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -970,7 +971,7 @@ fn cast_array(
             cast_string_to_timestamp(&array, to_type, eval_mode, &cast_options.timezone)
         }
         (Utf8, Date32) => cast_string_to_date(&array, to_type, eval_mode),
-        (Utf8, Float16 | Float32 | Float64) => cast_string_to_float(&array, to_type, eval_mode),
+        (Utf8, Float32 | Float64) => cast_string_to_float(&array, to_type, eval_mode),
         (Int64, Int32)
         | (Int64, Int16)
         | (Int64, Int8)
@@ -1059,7 +1060,7 @@ fn cast_string_to_float(
     eval_mode: EvalMode,
 ) -> SparkResult<ArrayRef> {
     match to_type {
-        DataType::Float16 | DataType::Float32 => {
+        DataType::Float32 => {
             cast_string_to_float_impl::<Float32Type>(array, eval_mode, "FLOAT")
         }
         DataType::Float64 => cast_string_to_float_impl::<Float64Type>(array, eval_mode, "DOUBLE"),
@@ -1110,19 +1111,18 @@ fn parse_string_to_float<F>(s: &str) -> Option<F>
 where
     F: FromStr + num::Float,
 {
-    let s_lower = s.to_lowercase();
     // Handle +inf / -inf
-    if s_lower == "inf" || s_lower == "+inf" || s_lower == "infinity" || s_lower == "+infinity" {
+    if s.eq_ignore_ascii_case("inf") || s.eq_ignore_ascii_case("+inf") || s.eq_ignore_ascii_case("infinity") || s.eq_ignore_ascii_case("+infinity") {
         return Some(F::infinity());
     }
-    if s_lower == "-inf" || s_lower == "-infinity" {
+    if s.eq_ignore_ascii_case("-inf") || s.eq_ignore_ascii_case("-infinity") {
         return Some(F::neg_infinity());
     }
-    if s_lower == "nan" {
+    if s.eq_ignore_ascii_case("nan") {
         return Some(F::nan());
     }
     // Remove D/F suffix if present
-    let pruned_float_str = if s_lower.ends_with('d') || s_lower.ends_with('f') {
+    let pruned_float_str = if s.ends_with("d") || s.ends_with("D") || s.ends_with('f') || s.ends_with('F')  {
         &s[..s.len() - 1]
     } else {
         s

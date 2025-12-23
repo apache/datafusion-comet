@@ -679,29 +679,23 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to FloatType special values") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     Seq(true, false).foreach { v =>
       castTest(specialValues.toDF("a"), DataTypes.FloatType, testAnsi = v)
     }
   }
 
   test("cast StringType to DoubleType special values") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     Seq(true, false).foreach { v =>
       castTest(specialValues.toDF("a"), DataTypes.DoubleType, testAnsi = v)
     }
   }
 
   test("cast StringType to DoubleType") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
-    Seq(true, false).foreach { v =>
+    Seq(true, false).foreach { ansiMode =>
       castTest(
         gen.generateStrings(dataSize, numericPattern, 10).toDF("a"),
         DataTypes.DoubleType,
-        testAnsi = v)
+        testAnsi = ansiMode)
     }
   }
 
