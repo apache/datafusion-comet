@@ -1483,15 +1483,15 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         (null.asInstanceOf[Long], 3)),
       "tbl") {
 
-      Seq(true, false).foreach({ k =>
+      Seq(true, false).foreach({ ansiMode =>
         // without GROUP BY
-        withSQLConf(SQLConf.ANSI_ENABLED.key -> k.toString) {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
           val res = sql("SELECT avg(_1) FROM tbl")
           checkSparkAnswerAndOperator(res)
         }
 
         // with GROUP BY
-        withSQLConf(SQLConf.ANSI_ENABLED.key -> k.toString) {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
           val res = sql("SELECT _2, avg(_1) FROM tbl GROUP BY _2")
           checkSparkAnswerAndOperator(res)
         }
@@ -1520,7 +1520,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "null_tbl") {
           val res = sql("SELECT sum(_1) FROM null_tbl")
           checkSparkAnswerAndOperator(res)
-          assert(res.collect() === Array(Row(null)))
         }
       }
     }

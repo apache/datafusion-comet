@@ -48,13 +48,12 @@ pub struct Avg {
     name: String,
     signature: Signature,
     input_data_type: DataType,
-    result_data_type: DataType,
-    eval_mode: EvalMode,
+    result_data_type: DataType
 }
 
 impl Avg {
     /// Create a new AVG aggregate function
-    pub fn new(name: impl Into<String>, data_type: DataType, eval_mode: EvalMode) -> Self {
+    pub fn new(name: impl Into<String>, data_type: DataType) -> Self {
         let result_data_type = avg_return_type("avg", &data_type).unwrap();
 
         Self {
@@ -62,7 +61,6 @@ impl Avg {
             signature: Signature::user_defined(Immutable),
             input_data_type: data_type,
             result_data_type,
-            eval_mode,
         }
     }
 }
@@ -75,7 +73,8 @@ impl AggregateUDFImpl for Avg {
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
         // All numeric types use Float64 accumulation after casting
         match (&self.input_data_type, &self.result_data_type) {
-            (Float64, Float64) => Ok(Box::new(AvgAccumulator::new(self.eval_mode))),
+            (Float64, Float64) => Ok(Box::new(AvgAccumulator::
+            new())),
             _ => not_impl_err!(
                 "AvgAccumulator for ({} --> {})",
                 self.input_data_type,
@@ -118,7 +117,6 @@ impl AggregateUDFImpl for Avg {
         match (&self.input_data_type, &self.result_data_type) {
             (Float64, Float64) => Ok(Box::new(AvgGroupsAccumulator::<Float64Type, _>::new(
                 &self.input_data_type,
-                self.eval_mode,
                 |sum: f64, count: i64| Ok(sum / count as f64),
             ))),
 
@@ -147,16 +145,13 @@ impl AggregateUDFImpl for Avg {
 pub struct AvgAccumulator {
     sum: Option<f64>,
     count: i64,
-    #[allow(dead_code)]
-    eval_mode: EvalMode,
 }
 
 impl AvgAccumulator {
-    pub fn new(eval_mode: EvalMode) -> Self {
+    pub fn new() -> Self {
         Self {
             sum: None,
             count: 0,
-            eval_mode,
         }
     }
 }
@@ -226,10 +221,6 @@ where
     /// Sums per group, stored as the native type
     sums: Vec<T::Native>,
 
-    /// Evaluation mode (stored but not used for Float64)
-    #[allow(dead_code)]
-    eval_mode: EvalMode,
-
     /// Function that computes the final average (value / count)
     avg_fn: F,
 }
@@ -239,12 +230,11 @@ where
     T: ArrowNumericType + Send,
     F: Fn(T::Native, i64) -> Result<T::Native> + Send,
 {
-    pub fn new(return_data_type: &DataType, eval_mode: EvalMode, avg_fn: F) -> Self {
+    pub fn new(return_data_type: &DataType, avg_fn: F) -> Self {
         Self {
             return_data_type: return_data_type.clone(),
             counts: vec![],
             sums: vec![],
-            eval_mode,
             avg_fn,
         }
     }
