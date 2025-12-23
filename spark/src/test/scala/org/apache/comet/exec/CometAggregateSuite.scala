@@ -1515,10 +1515,10 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       (-1L, 1),
       (-123L, 1),
       (-456L, 1),
-      (-9223372036854775808L, 1),
-      (-9223372036854775808L, 1),
-      (-9223372036854775808L, 2),
-      (-9223372036854775807L, 2),
+      (Long.MinValue, 1),
+      (Long.MinValue, 1),
+      (Long.MinValue, 2),
+      (Long.MinValue, 2),
       (null.asInstanceOf[String], 3))
 
     val zeroSeq = Seq((0, 1), (-0, 1), (+0, 2), (+0, 2), (null.asInstanceOf[String], 3))
