@@ -183,8 +183,6 @@ The following cast operations are not compatible with Spark for all inputs and a
 |-|-|-|
 | float | decimal  | There can be rounding differences |
 | double | decimal  | There can be rounding differences |
-| string | float  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
-| string | double  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
 | string | decimal  | Does not support fullwidth unicode digits (e.g \\uFF10)
 or strings containing null bytes (e.g \\u0000) |
 | string | timestamp  | Not all valid formats are supported |
