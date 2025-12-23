@@ -1511,7 +1511,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("AVG and try_avg - special numbers") {
 
-    val negativeNumbers  = Seq(
+    val negativeNumbers = Seq(
       (-1L, 1),
       (-123L, 1),
       (-456L, 1),
@@ -1519,55 +1519,45 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       (-9223372036854775808L, 1),
       (-9223372036854775808L, 2),
       (-9223372036854775807L, 2),
-      (null.asInstanceOf[String], 3)
-    )
+      (null.asInstanceOf[String], 3))
 
-    val zeroSeq = Seq(
-      (0, 1),
-      (-0, 1),
-      (+0, 2),
-      (+0, 2),
-      (null.asInstanceOf[String], 3)
-    )
+    val zeroSeq = Seq((0, 1), (-0, 1), (+0, 2), (+0, 2), (null.asInstanceOf[String], 3))
 
     val highNegNumbers = Seq(
       (Long.MaxValue, 1),
       (Long.MaxValue, 1),
       (Long.MaxValue, 2),
       (Long.MaxValue, 2),
-      (null.asInstanceOf[String], 3)
-    )
+      (null.asInstanceOf[String], 3))
     val inputs = Seq(negativeNumbers, zeroSeq, highNegNumbers)
-    inputs.foreach(
-      inputSeq => {
-    withParquetTable(inputSeq,
-      "tbl") {
+    inputs.foreach(inputSeq => {
+      withParquetTable(inputSeq, "tbl") {
 
-      Seq(true, false).foreach({ ansiMode =>
-        // without GROUP BY
-        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
-          val res = sql("SELECT avg(_1) FROM tbl")
-          checkSparkAnswerAndOperator(res)
-          assert(res.collect() === Array(Row(null)))
-        }
+        Seq(true, false).foreach({ ansiMode =>
+          // without GROUP BY
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
+            val res = sql("SELECT avg(_1) FROM tbl")
+            checkSparkAnswerAndOperator(res)
+            assert(res.collect() === Array(Row(null)))
+          }
 
-        // with GROUP BY
-        withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
-          val res = sql("SELECT _2, avg(_1) FROM tbl GROUP BY _2")
-          checkSparkAnswerAndOperator(res)
-        }
-      })
+          // with GROUP BY
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiMode.toString) {
+            val res = sql("SELECT _2, avg(_1) FROM tbl GROUP BY _2")
+            checkSparkAnswerAndOperator(res)
+          }
+        })
 
-      // try_avg without GROUP BY
-      val resTry = sql("SELECT try_avg(_1) FROM tbl")
-      checkSparkAnswerAndOperator(resTry)
+        // try_avg without GROUP BY
+        val resTry = sql("SELECT try_avg(_1) FROM tbl")
+        checkSparkAnswerAndOperator(resTry)
 
-      // try_avg with GROUP BY
-      val resTryGroup = sql("SELECT _2, try_avg(_1) FROM tbl GROUP BY _2")
-      checkSparkAnswerAndOperator(resTryGroup)
-    
-    }
-      })
+        // try_avg with GROUP BY
+        val resTryGroup = sql("SELECT _2, try_avg(_1) FROM tbl GROUP BY _2")
+        checkSparkAnswerAndOperator(resTryGroup)
+
+      }
+    })
   }
 
   test("ANSI support for decimal sum - null test") {

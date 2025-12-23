@@ -1863,7 +1863,6 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let input_datatype = to_arrow_datatype(expr.sum_datatype.as_ref().unwrap());
-                let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
 
                 let builder = match datatype {
                     DataType::Decimal128(_, _) => {
@@ -1878,8 +1877,7 @@ impl PhysicalPlanner {
                             Arc::new(CastExpr::new(Arc::clone(&child), DataType::Float64, None));
                         let func = AggregateUDF::new_from_impl(Avg::new(
                             "avg",
-                            DataType::Float64,
-                            eval_mode,
+                            DataType::Float64
                         ));
                         AggregateExprBuilder::new(Arc::new(func), vec![child])
                     }

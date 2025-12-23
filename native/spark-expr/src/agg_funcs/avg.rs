@@ -326,7 +326,6 @@ where
         Ok(Arc::new(array))
     }
 
-
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
         let counts = emit_to.take_needed(&mut self.counts);
         let counts = Int64Array::new(counts.into(), None);
