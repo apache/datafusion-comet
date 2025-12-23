@@ -66,7 +66,6 @@ use std::{
     num::Wrapping,
     sync::Arc,
 };
-use std::ascii::AsciiExt;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
