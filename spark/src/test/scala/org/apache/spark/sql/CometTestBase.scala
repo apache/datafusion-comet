@@ -694,7 +694,7 @@ abstract class CometTestBase
 
     val idGenerator = new AtomicInteger(0)
 
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     val data = (begin until end).map { i =>
       if (nullEnabled && rand.nextBoolean()) {
         None
@@ -788,7 +788,7 @@ abstract class CometTestBase
       rowGroupSize = rowGroupSize)
     val div = if (dictionaryEnabled) 10 else n // maps value to a small range for dict to kick in
 
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     val expected = (0 until n).map { i =>
       if (rand.nextBoolean()) {
         None
@@ -842,7 +842,7 @@ abstract class CometTestBase
       rowGroupSize = rowGroupSize)
     val div = if (dictionaryEnabled) 10 else n // maps value to a small range for dict to kick in
 
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     val expected = (0 until n).map { i =>
       if (rand.nextBoolean()) {
         None
@@ -1240,7 +1240,7 @@ abstract class CometTestBase
     val schema = MessageTypeParser.parseMessageType(schemaStr)
     val writer = createParquetWriter(schema, path, dictionaryEnabled = true)
 
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     val expected = (0 until total).map { i =>
       // use a single value for the first page, to make sure dictionary encoding kicks in
       if (rand.nextBoolean()) None

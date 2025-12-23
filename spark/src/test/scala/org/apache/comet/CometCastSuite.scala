@@ -1354,7 +1354,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                     assert(
                       sparkMessage.replace(".WITH_SUGGESTION] ", "]").startsWith(cometMessage))
                   } else if (cometMessage.startsWith("[CAST_INVALID_INPUT]") || cometMessage
-                    .startsWith("[CAST_OVERFLOW]")) {
+                      .startsWith("[CAST_OVERFLOW]")) {
                     assert(
                       sparkMessage.startsWith(
                         cometMessage

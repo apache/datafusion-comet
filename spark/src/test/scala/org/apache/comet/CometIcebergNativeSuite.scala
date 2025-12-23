@@ -26,12 +26,14 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
 
+import org.apache.comet.iceberg.RESTCatalogHelper
+
 /**
  * Test suite for native Iceberg scan using FileScanTasks and iceberg-rust.
  *
  * Note: Requires Iceberg dependencies to be added to pom.xml
  */
-class CometIcebergNativeSuite extends CometTestBase {
+class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
 
   // Skip these tests if Iceberg is not available in classpath
   private def icebergAvailable: Boolean = {
@@ -2238,6 +2240,45 @@ class CometIcebergNativeSuite extends CometTestBase {
         checkIcebergNativeScan("SELECT * FROM test_cat.db.decimal_partition_test ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.decimal_partition_test")
+      }
+    }
+  }
+
+  test("REST catalog with native Iceberg scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withRESTCatalog { (restUri, _, warehouseDir) =>
+      withSQLConf(
+        "spark.sql.catalog.rest_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.rest_cat.catalog-impl" -> "org.apache.iceberg.rest.RESTCatalog",
+        "spark.sql.catalog.rest_cat.uri" -> restUri,
+        "spark.sql.catalog.rest_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+
+        // Create namespace first (REST catalog requires explicit namespace creation)
+        spark.sql("CREATE NAMESPACE rest_cat.db")
+
+        // Create a table via REST catalog
+        spark.sql("""
+          CREATE TABLE rest_cat.db.test_table (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO rest_cat.db.test_table
+          VALUES (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)
+        """)
+
+        checkIcebergNativeScan("SELECT * FROM rest_cat.db.test_table ORDER BY id")
+
+        spark.sql("DROP TABLE rest_cat.db.test_table")
+        spark.sql("DROP NAMESPACE rest_cat.db")
       }
     }
   }

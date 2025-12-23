@@ -71,11 +71,11 @@ pub use comet_scalar_funcs::{
 pub use datetime_funcs::{SparkDateTrunc, SparkHour, SparkMinute, SparkSecond, TimestampTruncExpr};
 pub use error::{SparkError, SparkResult};
 pub use hash_funcs::*;
-pub use json_funcs::ToJson;
+pub use json_funcs::{FromJson, ToJson};
 pub use math_funcs::{
     create_modulo_expr, create_negate_expr, spark_ceil, spark_decimal_div,
-    spark_decimal_integral_div, spark_floor, spark_hex, spark_make_decimal, spark_round,
-    spark_unhex, spark_unscaled_value, CheckOverflow, NegativeExpr, NormalizeNaNAndZero,
+    spark_decimal_integral_div, spark_floor, spark_make_decimal, spark_round, spark_unhex,
+    spark_unscaled_value, CheckOverflow, NegativeExpr, NormalizeNaNAndZero,
 };
 pub use string_funcs::*;
 
