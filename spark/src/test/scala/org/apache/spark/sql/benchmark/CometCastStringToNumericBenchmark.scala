@@ -66,73 +66,19 @@ object CometCastStringToNumericBenchmark extends CometBenchmarkBase {
   }
 
   // Configuration for all String to numeric cast benchmarks
-  private val castConfigs = List(
-    // Boolean
-    CastStringToNumericConfig(
-      "Cast String to Boolean (LEGACY)",
-      "SELECT CAST(c1 AS BOOLEAN) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "false")),
-    CastStringToNumericConfig(
-      "Cast String to Boolean (ANSI)",
-      "SELECT CAST(c1 AS BOOLEAN) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "true")),
-    // Byte
-    CastStringToNumericConfig(
-      "Cast String to Byte (LEGACY)",
-      "SELECT CAST(c1 AS BYTE) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "false")),
-    CastStringToNumericConfig(
-      "Cast String to Byte (ANSI)",
-      "SELECT CAST(c1 AS BYTE) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "true")),
-    // Short
-    CastStringToNumericConfig(
-      "Cast String to Short (LEGACY)",
-      "SELECT CAST(c1 AS SHORT) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "false")),
-    CastStringToNumericConfig(
-      "Cast String to Short (ANSI)",
-      "SELECT CAST(c1 AS SHORT) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "true")),
-    // Integer
-    CastStringToNumericConfig(
-      "Cast String to Integer (LEGACY)",
-      "SELECT CAST(c1 AS INT) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "false")),
-    CastStringToNumericConfig(
-      "Cast String to Integer (ANSI)",
-      "SELECT CAST(c1 AS INT) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "true")),
-    // Long
-    CastStringToNumericConfig(
-      "Cast String to Long (LEGACY)",
-      "SELECT CAST(c1 AS LONG) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "false")),
-    CastStringToNumericConfig(
-      "Cast String to Long (ANSI)",
-      "SELECT CAST(c1 AS LONG) FROM parquetV1Table",
-      Map(SQLConf.ANSI_ENABLED.key -> "true")),
-    // Float (Incompatible - requires allowIncompat config)
-    CastStringToNumericConfig(
-      "Cast String to Float (LEGACY)",
-      "SELECT CAST(c1 AS FLOAT) FROM parquetV1Table",
-      Map(
-        SQLConf.ANSI_ENABLED.key -> "false",
-        CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true")),
-    // Double (Incompatible - requires allowIncompat config)
-    CastStringToNumericConfig(
-      "Cast String to Double (LEGACY)",
-      "SELECT CAST(c1 AS DOUBLE) FROM parquetV1Table",
-      Map(
-        SQLConf.ANSI_ENABLED.key -> "false",
-        CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true")),
-    // Decimal (Incompatible - requires allowIncompat config)
-    CastStringToNumericConfig(
-      "Cast String to Decimal(10,2) (LEGACY)",
-      "SELECT CAST(c1 AS DECIMAL(10,2)) FROM parquetV1Table",
-      Map(
-        SQLConf.ANSI_ENABLED.key -> "false",
-        CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true")))
+  private val castFunctions = Seq("CAST", "TRY_CAST")
+  private val targetTypes =
+    Seq("BOOLEAN", "BYTE", "SHORT", "INT", "LONG", "FLOAT", "DOUBLE", "DECIMAL(10,2)")
+
+  private val castConfigs = for {
+    castFunc <- castFunctions
+    targetType <- targetTypes
+  } yield CastStringToNumericConfig(
+    s"$castFunc String to $targetType",
+    s"SELECT $castFunc(c1 AS $targetType) FROM parquetV1Table",
+    Map(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024 * 10 // 10M rows
