@@ -62,23 +62,34 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
 
   // Configuration for all string expression benchmarks
   private val stringExpressions = List(
-    StringExprConfig("Substring", "select substring(c1, 1, 100) from parquetV1Table"),
+    StringExprConfig("substring", "select substring(c1, 1, 100) from parquetV1Table"),
     StringExprConfig("ascii", "select ascii(c1) from parquetV1Table"),
-    StringExprConfig("bitLength", "select bit_length(c1) from parquetV1Table"),
+    StringExprConfig("bit_length", "select bit_length(c1) from parquetV1Table"),
     StringExprConfig("octet_length", "select octet_length(c1) from parquetV1Table"),
     StringExprConfig("upper", "select upper(c1) from parquetV1Table"),
     StringExprConfig("lower", "select lower(c1) from parquetV1Table"),
-    StringExprConfig("chr", "select chr(c1) from parquetV1Table"),
+    StringExprConfig("chr", "select chr(65) from parquetV1Table"),
     StringExprConfig("initCap", "select initCap(c1) from parquetV1Table"),
     StringExprConfig("trim", "select trim(c1) from parquetV1Table"),
-    StringExprConfig("concatws", "select concat_ws(' ', c1, c1) from parquetV1Table"),
+    StringExprConfig("ltrim", "select ltrim(c1) from parquetV1Table"),
+    StringExprConfig("rtrim", "select rtrim(c1) from parquetV1Table"),
+    StringExprConfig("concat", "select concat(c1, c1) from parquetV1Table"),
+    StringExprConfig("concat_ws", "select concat_ws(' ', c1, c1) from parquetV1Table"),
     StringExprConfig("length", "select length(c1) from parquetV1Table"),
     StringExprConfig("repeat", "select repeat(c1, 3) from parquetV1Table"),
     StringExprConfig("reverse", "select reverse(c1) from parquetV1Table"),
     StringExprConfig("instr", "select instr(c1, '123') from parquetV1Table"),
     StringExprConfig("replace", "select replace(c1, '123', 'ab') from parquetV1Table"),
     StringExprConfig("space", "select space(2) from parquetV1Table"),
-    StringExprConfig("translate", "select translate(c1, '123456', 'aBcDeF') from parquetV1Table"))
+    StringExprConfig("translate", "select translate(c1, '123456', 'aBcDeF') from parquetV1Table"),
+    StringExprConfig("lpad", "select lpad(c1, 150, 'x') from parquetV1Table"),
+    StringExprConfig("rpad", "select rpad(c1, 150, 'x') from parquetV1Table"),
+    StringExprConfig("contains", "select contains(c1, '123') from parquetV1Table"),
+    StringExprConfig("startswith", "select startswith(c1, '1') from parquetV1Table"),
+    StringExprConfig("endswith", "select endswith(c1, '9') from parquetV1Table"),
+    StringExprConfig("like", "select c1 like '%123%' from parquetV1Table"),
+    StringExprConfig("rlike", "select c1 rlike '[0-9]+' from parquetV1Table"),
+    StringExprConfig("regexp_replace", "select regexp_replace(c1, '[0-9]', 'X') from parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024;

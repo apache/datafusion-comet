@@ -76,6 +76,76 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
     }
   }
 
+  def datePartExprBenchmark(values: Int, useDictionary: Boolean): Unit = {
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(
+          dir,
+          spark.sql(
+            s"select cast(timestamp_micros(cast(value/100000 as integer)) as date) as dt FROM $tbl"))
+        Seq(
+          ("year", "YEAR(dt)"),
+          ("month", "MONTH(dt)"),
+          ("day_of_month", "DAYOFMONTH(dt)"),
+          ("day_of_week", "DAYOFWEEK(dt)"),
+          ("weekday", "WEEKDAY(dt)"),
+          ("day_of_year", "DAYOFYEAR(dt)"),
+          ("week_of_year", "WEEKOFYEAR(dt)"),
+          ("quarter", "QUARTER(dt)")).foreach {
+          case (name, expr) =>
+            val isDictionary = if (useDictionary) "(Dictionary)" else ""
+            val benchName = s"Date Extract $isDictionary - $name"
+            val query = s"select $expr from parquetV1Table"
+            runExpressionBenchmark(benchName, values, query)
+        }
+      }
+    }
+  }
+
+  def timestampPartExprBenchmark(values: Int, useDictionary: Boolean): Unit = {
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(
+          dir,
+          spark.sql(s"select timestamp_micros(cast(value/100000 as integer)) as ts FROM $tbl"))
+        Seq(
+          ("year", "YEAR(ts)"),
+          ("month", "MONTH(ts)"),
+          ("day_of_month", "DAYOFMONTH(ts)"),
+          ("hour", "HOUR(ts)"),
+          ("minute", "MINUTE(ts)"),
+          ("second", "SECOND(ts)"),
+          ("quarter", "QUARTER(ts)")).foreach {
+          case (name, expr) =>
+            val isDictionary = if (useDictionary) "(Dictionary)" else ""
+            val benchName = s"Timestamp Extract $isDictionary - $name"
+            val query = s"select $expr from parquetV1Table"
+            runExpressionBenchmark(benchName, values, query)
+        }
+      }
+    }
+  }
+
+  def dateArithmeticExprBenchmark(values: Int, useDictionary: Boolean): Unit = {
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(
+          dir,
+          spark.sql(
+            s"select cast(timestamp_micros(cast(value/100000 as integer)) as date) as dt, cast(value % 365 as int) as days FROM $tbl"))
+        Seq(
+          ("date_add", "DATE_ADD(dt, days)"),
+          ("date_sub", "DATE_SUB(dt, days)")).foreach {
+          case (name, expr) =>
+            val isDictionary = if (useDictionary) "(Dictionary)" else ""
+            val benchName = s"Date Arithmetic $isDictionary - $name"
+            val query = s"select $expr from parquetV1Table"
+            runExpressionBenchmark(benchName, values, query)
+        }
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024;
 
@@ -95,6 +165,24 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
         }
         runBenchmarkWithTable("TimestampTrunc (Dictionary)", values, useDictionary = true) { v =>
           timestampTruncExprBenchmark(v, useDictionary = true)
+        }
+        runBenchmarkWithTable("DatePart", values) { v =>
+          datePartExprBenchmark(v, useDictionary = false)
+        }
+        runBenchmarkWithTable("DatePart (Dictionary)", values, useDictionary = true) { v =>
+          datePartExprBenchmark(v, useDictionary = true)
+        }
+        runBenchmarkWithTable("TimestampPart", values) { v =>
+          timestampPartExprBenchmark(v, useDictionary = false)
+        }
+        runBenchmarkWithTable("TimestampPart (Dictionary)", values, useDictionary = true) { v =>
+          timestampPartExprBenchmark(v, useDictionary = true)
+        }
+        runBenchmarkWithTable("DateArithmetic", values) { v =>
+          dateArithmeticExprBenchmark(v, useDictionary = false)
+        }
+        runBenchmarkWithTable("DateArithmetic (Dictionary)", values, useDictionary = true) { v =>
+          dateArithmeticExprBenchmark(v, useDictionary = true)
         }
       }
     }
