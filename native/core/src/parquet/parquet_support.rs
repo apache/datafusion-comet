@@ -489,10 +489,30 @@ pub(crate) fn prepare_object_store_with_configs(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use datafusion::execution::object_store::ObjectStoreUrl;
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use datafusion::execution::runtime_env::RuntimeEnv;
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use object_store::path::Path;
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use std::sync::Arc;
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use url::Url;
 
     #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
