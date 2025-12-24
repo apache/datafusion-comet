@@ -35,7 +35,7 @@ TakeOrderedAndProject (76)
                :                    :                       :                             +- CometBroadcastExchange (6)
                :                    :                       :                                +- CometProject (5)
                :                    :                       :                                   +- CometFilter (4)
-               :                    :                       :                                      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (3)
+               :                    :                       :                                      +- CometNativeScan parquet spark_catalog.default.date_dim (3)
                :                    :                       +- BroadcastExchange (22)
                :                    :                          +- * Project (21)
                :                    :                             +- Window (20)
@@ -89,7 +89,7 @@ ReadSchema: struct<ws_item_sk:int,ws_sales_price:decimal(7,2)>
 Input [3]: [ws_item_sk#1, ws_sales_price#2, ws_sold_date_sk#3]
 Condition : isnotnull(ws_item_sk#1)
 
-(3) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+(3) CometNativeScan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#5, d_date#6, d_month_seq#7]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -418,10 +418,10 @@ BroadcastExchange (81)
 +- * CometColumnarToRow (80)
    +- CometProject (79)
       +- CometFilter (78)
-         +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (77)
+         +- CometNativeScan parquet spark_catalog.default.date_dim (77)
 
 
-(77) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+(77) CometNativeScan parquet spark_catalog.default.date_dim
 Output [3]: [d_date_sk#5, d_date#6, d_month_seq#7]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

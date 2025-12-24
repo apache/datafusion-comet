@@ -35,11 +35,11 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                                     InputAdapter
                                                                       CometProject [d_date_sk,d_date]
                                                                         CometFilter [d_date_sk,d_date,d_month_seq]
-                                                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_month_seq]
+                                                                          CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_month_seq]
                                                         CometBroadcastExchange [d_date_sk,d_date] #6
                                                           CometProject [d_date_sk,d_date]
                                                             CometFilter [d_date_sk,d_date,d_month_seq]
-                                                              CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_month_seq]
+                                                              CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_month_seq]
                         CometSort [item_sk,d_date,cume_sales]
                           CometColumnarExchange [item_sk,d_date] #7
                             WholeStageCodegen (4)

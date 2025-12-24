@@ -20,15 +20,15 @@ HashAggregate
                :  :                 :     :              +- CometColumnarToRow
                :  :                 :     :                 +- CometProject
                :  :                 :     :                    +- CometFilter
-               :  :                 :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               :  :                 :     :                       +- CometNativeScan parquet spark_catalog.default.date_dim
                :  :                 :     +- CometBroadcastExchange
                :  :                 :        +- CometProject
                :  :                 :           +- CometFilter
-               :  :                 :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               :  :                 :              +- CometNativeScan parquet spark_catalog.default.date_dim
                :  :                 +- CometBroadcastExchange
                :  :                    +- CometProject
                :  :                       +- CometFilter
-               :  :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
+               :  :                          +- CometNativeScan parquet spark_catalog.default.customer
                :  +- BroadcastExchange
                :     +- CometColumnarToRow
                :        +- CometHashAggregate
@@ -44,11 +44,11 @@ HashAggregate
                :                       :     +- CometBroadcastExchange
                :                       :        +- CometProject
                :                       :           +- CometFilter
-               :                       :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               :                       :              +- CometNativeScan parquet spark_catalog.default.date_dim
                :                       +- CometBroadcastExchange
                :                          +- CometProject
                :                             +- CometFilter
-               :                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
+               :                                +- CometNativeScan parquet spark_catalog.default.customer
                +- BroadcastExchange
                   +- CometColumnarToRow
                      +- CometHashAggregate
@@ -64,10 +64,10 @@ HashAggregate
                                     :     +- CometBroadcastExchange
                                     :        +- CometProject
                                     :           +- CometFilter
-                                    :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                    :              +- CometNativeScan parquet spark_catalog.default.date_dim
                                     +- CometBroadcastExchange
                                        +- CometProject
                                           +- CometFilter
-                                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
+                                             +- CometNativeScan parquet spark_catalog.default.customer
 
 Comet accelerated 55 out of 66 eligible operators (83%). Final plan contains 5 transitions between Spark and Comet.

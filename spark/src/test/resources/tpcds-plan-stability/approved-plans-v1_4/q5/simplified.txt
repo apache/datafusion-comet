@@ -25,7 +25,7 @@ WholeStageCodegen (1)
                                                 InputAdapter
                                                   CometProject [d_date_sk]
                                                     CometFilter [d_date_sk,d_date]
-                                                      CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]
+                                                      CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
                                   CometProject [sr_store_sk,sr_returned_date_sk,sr_return_amt,sr_net_loss] [store_sk,date_sk,sales_price,profit,return_amt,net_loss]
                                     CometFilter [sr_store_sk,sr_return_amt,sr_net_loss,sr_returned_date_sk]
                                       CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns [sr_store_sk,sr_return_amt,sr_net_loss,sr_returned_date_sk]
@@ -33,11 +33,11 @@ WholeStageCodegen (1)
                                 CometBroadcastExchange [d_date_sk] #4
                                   CometProject [d_date_sk]
                                     CometFilter [d_date_sk,d_date]
-                                      CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]
+                                      CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
                             CometBroadcastExchange [s_store_sk,s_store_id] #5
                               CometProject [s_store_id] [s_store_sk,s_store_id]
                                 CometFilter [s_store_sk,s_store_id]
-                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.store [s_store_sk,s_store_id]
+                                  CometNativeScan parquet spark_catalog.default.store [s_store_sk,s_store_id]
                   CometHashAggregate [sum,sum,sum,sum] [sales,returns,profit,channel,id,sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),cp_catalog_page_id]
                     CometExchange [cp_catalog_page_id] #6
                       CometHashAggregate [sales_price,return_amt,profit,net_loss] [cp_catalog_page_id,sum,sum,sum,sum]
@@ -58,7 +58,7 @@ WholeStageCodegen (1)
                             CometBroadcastExchange [cp_catalog_page_sk,cp_catalog_page_id] #7
                               CometProject [cp_catalog_page_id] [cp_catalog_page_sk,cp_catalog_page_id]
                                 CometFilter [cp_catalog_page_sk,cp_catalog_page_id]
-                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_page [cp_catalog_page_sk,cp_catalog_page_id]
+                                  CometNativeScan parquet spark_catalog.default.catalog_page [cp_catalog_page_sk,cp_catalog_page_id]
                   CometHashAggregate [sum,sum,sum,sum] [sales,returns,profit,channel,id,sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),web_site_id]
                     CometExchange [web_site_id] #8
                       CometHashAggregate [sales_price,return_amt,profit,net_loss] [web_site_id,sum,sum,sum,sum]
@@ -78,9 +78,9 @@ WholeStageCodegen (1)
                                           ReusedSubquery [d_date_sk] #1
                                       CometProject [ws_item_sk,ws_web_site_sk,ws_order_number]
                                         CometFilter [ws_item_sk,ws_web_site_sk,ws_order_number,ws_sold_date_sk]
-                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales [ws_item_sk,ws_web_site_sk,ws_order_number,ws_sold_date_sk]
+                                          CometNativeScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_web_site_sk,ws_order_number,ws_sold_date_sk]
                                 ReusedExchange [d_date_sk] #4
                             CometBroadcastExchange [web_site_sk,web_site_id] #10
                               CometProject [web_site_id] [web_site_sk,web_site_id]
                                 CometFilter [web_site_sk,web_site_id]
-                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.web_site [web_site_sk,web_site_id]
+                                  CometNativeScan parquet spark_catalog.default.web_site [web_site_sk,web_site_id]

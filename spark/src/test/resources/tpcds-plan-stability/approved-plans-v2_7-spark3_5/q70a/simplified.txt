@@ -36,11 +36,11 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                                                       InputAdapter
                                                                         CometProject [d_date_sk]
                                                                           CometFilter [d_date_sk,d_month_seq]
-                                                                            CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
+                                                                            CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                                                           CometBroadcastExchange [d_date_sk] #5
                                                             CometProject [d_date_sk]
                                                               CometFilter [d_date_sk,d_month_seq]
-                                                                CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
+                                                                CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                                                   InputAdapter
                                                     BroadcastExchange #6
                                                       WholeStageCodegen (3)
@@ -49,7 +49,7 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                                             CometColumnarToRow
                                                               InputAdapter
                                                                 CometFilter [s_store_sk,s_county,s_state]
-                                                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.store [s_store_sk,s_county,s_state]
+                                                                  CometNativeScan parquet spark_catalog.default.store [s_store_sk,s_county,s_state]
                                                             InputAdapter
                                                               BroadcastExchange #7
                                                                 WholeStageCodegen (2)
@@ -75,7 +75,7 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                                                                                   CometBroadcastExchange [s_store_sk,s_state] #9
                                                                                                     CometProject [s_state] [s_store_sk,s_state]
                                                                                                       CometFilter [s_store_sk,s_state]
-                                                                                                        CometScan [native_iceberg_compat] parquet spark_catalog.default.store [s_store_sk,s_state]
+                                                                                                        CometNativeScan parquet spark_catalog.default.store [s_store_sk,s_state]
                                                                                               ReusedExchange [d_date_sk] #5
                                 WholeStageCodegen (11)
                                   HashAggregate [s_state,sum,isEmpty] [sum(total_sum),total_sum,s_county,g_state,g_county,lochierarchy,sum,isEmpty]

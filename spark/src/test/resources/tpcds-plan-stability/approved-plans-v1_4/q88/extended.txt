@@ -17,19 +17,19 @@ BroadcastNestedLoopJoin
 :  :  :  :  :  :  :                 :     :  +- CometBroadcastHashJoin
 :  :  :  :  :  :  :                 :     :     :- CometProject
 :  :  :  :  :  :  :                 :     :     :  +- CometFilter
-:  :  :  :  :  :  :                 :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+:  :  :  :  :  :  :                 :     :     :     +- CometNativeScan parquet spark_catalog.default.store_sales
 :  :  :  :  :  :  :                 :     :     +- CometBroadcastExchange
 :  :  :  :  :  :  :                 :     :        +- CometProject
 :  :  :  :  :  :  :                 :     :           +- CometFilter
-:  :  :  :  :  :  :                 :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.household_demographics
+:  :  :  :  :  :  :                 :     :              +- CometNativeScan parquet spark_catalog.default.household_demographics
 :  :  :  :  :  :  :                 :     +- CometBroadcastExchange
 :  :  :  :  :  :  :                 :        +- CometProject
 :  :  :  :  :  :  :                 :           +- CometFilter
-:  :  :  :  :  :  :                 :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.time_dim
+:  :  :  :  :  :  :                 :              +- CometNativeScan parquet spark_catalog.default.time_dim
 :  :  :  :  :  :  :                 +- CometBroadcastExchange
 :  :  :  :  :  :  :                    +- CometProject
 :  :  :  :  :  :  :                       +- CometFilter
-:  :  :  :  :  :  :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+:  :  :  :  :  :  :                          +- CometNativeScan parquet spark_catalog.default.store
 :  :  :  :  :  :  +- BroadcastExchange
 :  :  :  :  :  :     +- CometColumnarToRow
 :  :  :  :  :  :        +- CometHashAggregate
@@ -43,19 +43,19 @@ BroadcastNestedLoopJoin
 :  :  :  :  :  :                       :     :  +- CometBroadcastHashJoin
 :  :  :  :  :  :                       :     :     :- CometProject
 :  :  :  :  :  :                       :     :     :  +- CometFilter
-:  :  :  :  :  :                       :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+:  :  :  :  :  :                       :     :     :     +- CometNativeScan parquet spark_catalog.default.store_sales
 :  :  :  :  :  :                       :     :     +- CometBroadcastExchange
 :  :  :  :  :  :                       :     :        +- CometProject
 :  :  :  :  :  :                       :     :           +- CometFilter
-:  :  :  :  :  :                       :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.household_demographics
+:  :  :  :  :  :                       :     :              +- CometNativeScan parquet spark_catalog.default.household_demographics
 :  :  :  :  :  :                       :     +- CometBroadcastExchange
 :  :  :  :  :  :                       :        +- CometProject
 :  :  :  :  :  :                       :           +- CometFilter
-:  :  :  :  :  :                       :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.time_dim
+:  :  :  :  :  :                       :              +- CometNativeScan parquet spark_catalog.default.time_dim
 :  :  :  :  :  :                       +- CometBroadcastExchange
 :  :  :  :  :  :                          +- CometProject
 :  :  :  :  :  :                             +- CometFilter
-:  :  :  :  :  :                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+:  :  :  :  :  :                                +- CometNativeScan parquet spark_catalog.default.store
 :  :  :  :  :  +- BroadcastExchange
 :  :  :  :  :     +- CometColumnarToRow
 :  :  :  :  :        +- CometHashAggregate
@@ -69,19 +69,19 @@ BroadcastNestedLoopJoin
 :  :  :  :  :                       :     :  +- CometBroadcastHashJoin
 :  :  :  :  :                       :     :     :- CometProject
 :  :  :  :  :                       :     :     :  +- CometFilter
-:  :  :  :  :                       :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+:  :  :  :  :                       :     :     :     +- CometNativeScan parquet spark_catalog.default.store_sales
 :  :  :  :  :                       :     :     +- CometBroadcastExchange
 :  :  :  :  :                       :     :        +- CometProject
 :  :  :  :  :                       :     :           +- CometFilter
-:  :  :  :  :                       :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.household_demographics
+:  :  :  :  :                       :     :              +- CometNativeScan parquet spark_catalog.default.household_demographics
 :  :  :  :  :                       :     +- CometBroadcastExchange
 :  :  :  :  :                       :        +- CometProject
 :  :  :  :  :                       :           +- CometFilter
-:  :  :  :  :                       :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.time_dim
+:  :  :  :  :                       :              +- CometNativeScan parquet spark_catalog.default.time_dim
 :  :  :  :  :                       +- CometBroadcastExchange
 :  :  :  :  :                          +- CometProject
 :  :  :  :  :                             +- CometFilter
-:  :  :  :  :                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+:  :  :  :  :                                +- CometNativeScan parquet spark_catalog.default.store
 :  :  :  :  +- BroadcastExchange
 :  :  :  :     +- CometColumnarToRow
 :  :  :  :        +- CometHashAggregate
@@ -95,19 +95,19 @@ BroadcastNestedLoopJoin
 :  :  :  :                       :     :  +- CometBroadcastHashJoin
 :  :  :  :                       :     :     :- CometProject
 :  :  :  :                       :     :     :  +- CometFilter
-:  :  :  :                       :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+:  :  :  :                       :     :     :     +- CometNativeScan parquet spark_catalog.default.store_sales
 :  :  :  :                       :     :     +- CometBroadcastExchange
 :  :  :  :                       :     :        +- CometProject
 :  :  :  :                       :     :           +- CometFilter
-:  :  :  :                       :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.household_demographics
+:  :  :  :                       :     :              +- CometNativeScan parquet spark_catalog.default.household_demographics
 :  :  :  :                       :     +- CometBroadcastExchange
 :  :  :  :                       :        +- CometProject
 :  :  :  :                       :           +- CometFilter
-:  :  :  :                       :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.time_dim
+:  :  :  :                       :              +- CometNativeScan parquet spark_catalog.default.time_dim
 :  :  :  :                       +- CometBroadcastExchange
 :  :  :  :                          +- CometProject
 :  :  :  :                             +- CometFilter
-:  :  :  :                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+:  :  :  :                                +- CometNativeScan parquet spark_catalog.default.store
 :  :  :  +- BroadcastExchange
 :  :  :     +- CometColumnarToRow
 :  :  :        +- CometHashAggregate
@@ -121,19 +121,19 @@ BroadcastNestedLoopJoin
 :  :  :                       :     :  +- CometBroadcastHashJoin
 :  :  :                       :     :     :- CometProject
 :  :  :                       :     :     :  +- CometFilter
-:  :  :                       :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+:  :  :                       :     :     :     +- CometNativeScan parquet spark_catalog.default.store_sales
 :  :  :                       :     :     +- CometBroadcastExchange
 :  :  :                       :     :        +- CometProject
 :  :  :                       :     :           +- CometFilter
-:  :  :                       :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.household_demographics
+:  :  :                       :     :              +- CometNativeScan parquet spark_catalog.default.household_demographics
 :  :  :                       :     +- CometBroadcastExchange
 :  :  :                       :        +- CometProject
 :  :  :                       :           +- CometFilter
-:  :  :                       :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.time_dim
+:  :  :                       :              +- CometNativeScan parquet spark_catalog.default.time_dim
 :  :  :                       +- CometBroadcastExchange
 :  :  :                          +- CometProject
 :  :  :                             +- CometFilter
-:  :  :                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+:  :  :                                +- CometNativeScan parquet spark_catalog.default.store
 :  :  +- BroadcastExchange
 :  :     +- CometColumnarToRow
 :  :        +- CometHashAggregate
@@ -147,19 +147,19 @@ BroadcastNestedLoopJoin
 :  :                       :     :  +- CometBroadcastHashJoin
 :  :                       :     :     :- CometProject
 :  :                       :     :     :  +- CometFilter
-:  :                       :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+:  :                       :     :     :     +- CometNativeScan parquet spark_catalog.default.store_sales
 :  :                       :     :     +- CometBroadcastExchange
 :  :                       :     :        +- CometProject
 :  :                       :     :           +- CometFilter
-:  :                       :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.household_demographics
+:  :                       :     :              +- CometNativeScan parquet spark_catalog.default.household_demographics
 :  :                       :     +- CometBroadcastExchange
 :  :                       :        +- CometProject
 :  :                       :           +- CometFilter
-:  :                       :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.time_dim
+:  :                       :              +- CometNativeScan parquet spark_catalog.default.time_dim
 :  :                       +- CometBroadcastExchange
 :  :                          +- CometProject
 :  :                             +- CometFilter
-:  :                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+:  :                                +- CometNativeScan parquet spark_catalog.default.store
 :  +- BroadcastExchange
 :     +- CometColumnarToRow
 :        +- CometHashAggregate
@@ -173,19 +173,19 @@ BroadcastNestedLoopJoin
 :                       :     :  +- CometBroadcastHashJoin
 :                       :     :     :- CometProject
 :                       :     :     :  +- CometFilter
-:                       :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+:                       :     :     :     +- CometNativeScan parquet spark_catalog.default.store_sales
 :                       :     :     +- CometBroadcastExchange
 :                       :     :        +- CometProject
 :                       :     :           +- CometFilter
-:                       :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.household_demographics
+:                       :     :              +- CometNativeScan parquet spark_catalog.default.household_demographics
 :                       :     +- CometBroadcastExchange
 :                       :        +- CometProject
 :                       :           +- CometFilter
-:                       :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.time_dim
+:                       :              +- CometNativeScan parquet spark_catalog.default.time_dim
 :                       +- CometBroadcastExchange
 :                          +- CometProject
 :                             +- CometFilter
-:                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+:                                +- CometNativeScan parquet spark_catalog.default.store
 +- BroadcastExchange
    +- CometColumnarToRow
       +- CometHashAggregate
@@ -199,18 +199,18 @@ BroadcastNestedLoopJoin
                      :     :  +- CometBroadcastHashJoin
                      :     :     :- CometProject
                      :     :     :  +- CometFilter
-                     :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+                     :     :     :     +- CometNativeScan parquet spark_catalog.default.store_sales
                      :     :     +- CometBroadcastExchange
                      :     :        +- CometProject
                      :     :           +- CometFilter
-                     :     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.household_demographics
+                     :     :              +- CometNativeScan parquet spark_catalog.default.household_demographics
                      :     +- CometBroadcastExchange
                      :        +- CometProject
                      :           +- CometFilter
-                     :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.time_dim
+                     :              +- CometNativeScan parquet spark_catalog.default.time_dim
                      +- CometBroadcastExchange
                         +- CometProject
                            +- CometFilter
-                              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+                              +- CometNativeScan parquet spark_catalog.default.store
 
 Comet accelerated 192 out of 206 eligible operators (93%). Final plan contains 8 transitions between Spark and Comet.

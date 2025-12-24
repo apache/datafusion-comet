@@ -22,7 +22,7 @@ TakeOrderedAndProject
       :     :                                      :     :  +- CometBroadcastHashJoin
       :     :                                      :     :     :- CometProject
       :     :                                      :     :     :  +- CometFilter
-      :     :                                      :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+      :     :                                      :     :     :     +- CometNativeScan parquet spark_catalog.default.item
       :     :                                      :     :     +- CometBroadcastExchange
       :     :                                      :     :        +- CometFilter
       :     :                                      :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
@@ -30,13 +30,13 @@ TakeOrderedAndProject
       :     :                                      :     :                    +- BroadcastExchange
       :     :                                      :     :                       +- CometColumnarToRow
       :     :                                      :     :                          +- CometFilter
-      :     :                                      :     :                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+      :     :                                      :     :                             +- CometNativeScan parquet spark_catalog.default.date_dim
       :     :                                      :     +- CometBroadcastExchange
       :     :                                      :        +- CometFilter
-      :     :                                      :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+      :     :                                      :           +- CometNativeScan parquet spark_catalog.default.date_dim
       :     :                                      +- CometBroadcastExchange
       :     :                                         +- CometFilter
-      :     :                                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+      :     :                                            +- CometNativeScan parquet spark_catalog.default.store
       :     +- BroadcastExchange
       :        +- Project
       :           +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
@@ -54,7 +54,7 @@ TakeOrderedAndProject
       :                                      :     :  +- CometBroadcastHashJoin
       :                                      :     :     :- CometProject
       :                                      :     :     :  +- CometFilter
-      :                                      :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+      :                                      :     :     :     +- CometNativeScan parquet spark_catalog.default.item
       :                                      :     :     +- CometBroadcastExchange
       :                                      :     :        +- CometFilter
       :                                      :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
@@ -62,13 +62,13 @@ TakeOrderedAndProject
       :                                      :     :                    +- BroadcastExchange
       :                                      :     :                       +- CometColumnarToRow
       :                                      :     :                          +- CometFilter
-      :                                      :     :                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+      :                                      :     :                             +- CometNativeScan parquet spark_catalog.default.date_dim
       :                                      :     +- CometBroadcastExchange
       :                                      :        +- CometFilter
-      :                                      :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+      :                                      :           +- CometNativeScan parquet spark_catalog.default.date_dim
       :                                      +- CometBroadcastExchange
       :                                         +- CometFilter
-      :                                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+      :                                            +- CometNativeScan parquet spark_catalog.default.store
       +- BroadcastExchange
          +- Project
             +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
@@ -86,7 +86,7 @@ TakeOrderedAndProject
                                        :     :  +- CometBroadcastHashJoin
                                        :     :     :- CometProject
                                        :     :     :  +- CometFilter
-                                       :     :     :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+                                       :     :     :     +- CometNativeScan parquet spark_catalog.default.item
                                        :     :     +- CometBroadcastExchange
                                        :     :        +- CometFilter
                                        :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
@@ -94,12 +94,12 @@ TakeOrderedAndProject
                                        :     :                    +- BroadcastExchange
                                        :     :                       +- CometColumnarToRow
                                        :     :                          +- CometFilter
-                                       :     :                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                       :     :                             +- CometNativeScan parquet spark_catalog.default.date_dim
                                        :     +- CometBroadcastExchange
                                        :        +- CometFilter
-                                       :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                       :           +- CometNativeScan parquet spark_catalog.default.date_dim
                                        +- CometBroadcastExchange
                                           +- CometFilter
-                                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store
+                                             +- CometNativeScan parquet spark_catalog.default.store
 
 Comet accelerated 75 out of 97 eligible operators (77%). Final plan contains 6 transitions between Spark and Comet.

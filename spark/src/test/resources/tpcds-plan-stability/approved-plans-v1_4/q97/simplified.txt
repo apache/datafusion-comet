@@ -20,11 +20,11 @@ WholeStageCodegen (1)
                                       InputAdapter
                                         CometProject [d_date_sk]
                                           CometFilter [d_date_sk,d_month_seq]
-                                            CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
+                                            CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                             CometBroadcastExchange [d_date_sk] #4
                               CometProject [d_date_sk]
                                 CometFilter [d_date_sk,d_month_seq]
-                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
+                                  CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
                 CometSort [customer_sk,item_sk]
                   CometHashAggregate [customer_sk,item_sk,cs_bill_customer_sk,cs_item_sk]
                     CometExchange [cs_bill_customer_sk,cs_item_sk] #5
