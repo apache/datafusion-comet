@@ -406,18 +406,6 @@ fn create_hdfs_object_store(
     Ok((Box::new(store), path))
 }
 
-/// Stub implementation when hdfs-opendal feature is not enabled
-#[cfg(not(feature = "hdfs-opendal"))]
-pub async fn write_to_hdfs_with_opendal_async(
-    _url: &Url,
-    _data: bytes::Bytes,
-) -> Result<(), object_store::Error> {
-    Err(object_store::Error::Generic {
-        store: "hdfs-opendal",
-        source: "HDFS OpenDAL support is not enabled in this build".into(),
-    })
-}
-
 #[cfg(feature = "hdfs-opendal")]
 fn get_name_node_uri(url: &Url) -> Result<String, object_store::Error> {
     use std::fmt::Write;
