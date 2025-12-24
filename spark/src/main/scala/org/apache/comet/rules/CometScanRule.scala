@@ -592,34 +592,12 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     val partitionSchemaSupported =
       typeChecker.isSchemaSupported(partitionSchema, fallbackReasons)
 
-    def hasUnsupportedType(dataType: DataType): Boolean = {
-      dataType match {
-        case s: StructType => s.exists(field => hasUnsupportedType(field.dataType))
-        case a: ArrayType => hasUnsupportedType(a.elementType)
-        case m: MapType =>
-          // maps containing complex types are not supported
-          isComplexType(m.keyType) || isComplexType(m.valueType) ||
-          hasUnsupportedType(m.keyType) || hasUnsupportedType(m.valueType)
-        case dt if isStringCollationType(dt) => true
-        case _ => false
-      }
-    }
-
-    val knownIssues =
-      scanExec.requiredSchema.exists(field => hasUnsupportedType(field.dataType)) ||
-        partitionSchema.exists(field => hasUnsupportedType(field.dataType))
-
-    if (knownIssues) {
-      fallbackReasons += "Schema contains data types that are not supported by " +
-        s"$SCAN_NATIVE_ICEBERG_COMPAT"
-    }
-
     val cometExecEnabled = COMET_EXEC_ENABLED.get()
     if (!cometExecEnabled) {
       fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT requires ${COMET_EXEC_ENABLED.key}=true"
     }
 
-    if (cometExecEnabled && schemaSupported && partitionSchemaSupported && !knownIssues &&
+    if (cometExecEnabled && schemaSupported && partitionSchemaSupported &&
       fallbackReasons.isEmpty) {
       logInfo(s"Auto scan mode selecting $SCAN_NATIVE_ICEBERG_COMPAT")
       SCAN_NATIVE_ICEBERG_COMPAT
