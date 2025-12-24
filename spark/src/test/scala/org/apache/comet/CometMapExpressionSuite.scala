@@ -197,7 +197,7 @@ class CometMapExpressionSuite extends CometTestBase {
   test("map_from_entries - fallback for binary type") {
     def fallbackReason(reason: String) = {
       if (CometConf.COMET_NATIVE_SCAN_IMPL.key == CometConf.SCAN_NATIVE_COMET || sys.env
-        .getOrElse("COMET_PARQUET_SCAN_IMPL", "") == CometConf.SCAN_NATIVE_COMET) {
+          .getOrElse("COMET_PARQUET_SCAN_IMPL", "") == CometConf.SCAN_NATIVE_COMET) {
         "Unsupported schema"
       } else {
         reason
