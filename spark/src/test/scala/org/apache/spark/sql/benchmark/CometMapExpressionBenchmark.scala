@@ -42,7 +42,7 @@ object CometMapExpressionBenchmark extends CometBenchmarkBase {
     MapExprConfig("map_subscript", "SELECT m['key2'] FROM parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024 * 2 // 2M rows (maps are larger)
+    val values = getBenchmarkRows(1024 * 1024 * 2) // 2M rows default (maps are larger)
 
     runBenchmarkWithTable("Map expression benchmarks", values) { v =>
       withTempPath { dir =>

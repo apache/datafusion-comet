@@ -71,7 +71,7 @@ object CometCastBooleanBenchmark extends CometBenchmarkBase {
     s"SELECT $castFunc($colName AS BOOLEAN) FROM parquetV1Table")
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024 * 5 // 5M rows
+    val values = getBenchmarkRows(1024 * 1024 * 5) // 5M rows default
 
     // Generate boolean data for boolean-to-other casts
     runBenchmarkWithTable("Boolean to other types casts", values) { v =>

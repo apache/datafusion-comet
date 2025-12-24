@@ -76,7 +76,7 @@ object CometAggregateFunctionBenchmark extends CometBenchmarkBase {
     AggExprConfig("bit_xor", "SELECT BIT_XOR(c_long) FROM parquetV1Table GROUP BY grp"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024 * 10 // 10M rows for aggregates
+    val values = getBenchmarkRows(1024 * 1024 * 10) // 10M rows default for aggregates
 
     runBenchmarkWithTable("Aggregate function benchmarks", values) { v =>
       withTempPath { dir =>

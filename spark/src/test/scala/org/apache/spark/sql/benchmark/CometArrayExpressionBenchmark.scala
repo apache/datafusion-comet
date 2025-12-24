@@ -59,7 +59,7 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
     ArrayExprConfig("size", "SELECT size(arr_int) FROM parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024 * 2 // 2M rows (arrays are larger)
+    val values = getBenchmarkRows(1024 * 1024 * 2) // 2M rows default (arrays are larger)
 
     runBenchmarkWithTable("Array expression benchmarks", values) { v =>
       withTempPath { dir =>

@@ -47,7 +47,7 @@ object CometBitwiseExpressionBenchmark extends CometBenchmarkBase {
     BitwiseExprConfig("bit_get", "SELECT BIT_GET(c_long, c_pos) FROM parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024 * 5 // 5M rows
+    val values = getBenchmarkRows(1024 * 1024 * 5) // 5M rows default
 
     runBenchmarkWithTable("Bitwise expression benchmarks", values) { v =>
       withTempPath { dir =>

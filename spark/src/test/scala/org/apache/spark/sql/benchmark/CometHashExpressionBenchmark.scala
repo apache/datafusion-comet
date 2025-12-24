@@ -45,7 +45,7 @@ object CometHashExpressionBenchmark extends CometBenchmarkBase {
     HashExprConfig("sha2_512", "SELECT sha2(c_str, 512) FROM parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024 * 5 // 5M rows
+    val values = getBenchmarkRows(1024 * 1024 * 5) // 5M rows default
 
     runBenchmarkWithTable("Hash expression benchmarks", values) { v =>
       withTempPath { dir =>

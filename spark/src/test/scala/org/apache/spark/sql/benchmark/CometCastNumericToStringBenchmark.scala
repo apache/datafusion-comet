@@ -54,7 +54,7 @@ object CometCastNumericToStringBenchmark extends CometBenchmarkBase {
     s"SELECT $castFunc($colName AS STRING) FROM parquetV1Table")
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024 * 5 // 5M rows
+    val values = getBenchmarkRows(1024 * 1024 * 5) // 5M rows default
 
     // Generate input data once with all numeric types
     runBenchmarkWithTable("Numeric to String casts", values) { v =>

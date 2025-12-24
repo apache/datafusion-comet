@@ -62,7 +62,7 @@ object CometMathExpressionBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024 * 5 // 5M rows
+    val values = getBenchmarkRows(1024 * 1024 * 5) // 5M rows default
 
     // Benchmark unary and binary math functions
     runBenchmarkWithTable("Math expression benchmarks", values) { v =>
