@@ -221,9 +221,7 @@ class CometParquetWriterSuite extends CometTestBase {
               classOf[DataWritingCommandExec]) -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
-            val plan = writeWithCometNativeWriteExec(inputPath, outputPath, Some(10))
-            println(plan)
-
+            writeWithCometNativeWriteExec(inputPath, outputPath, Some(10))
             verifyWrittenFile(outputPath)
           }
         })
