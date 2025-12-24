@@ -40,7 +40,9 @@ object CometBitwiseExpressionBenchmark extends CometBenchmarkBase {
     BitwiseExprConfig("bitwise_not", "SELECT ~c_int FROM parquetV1Table"),
     BitwiseExprConfig("shift_left", "SELECT SHIFTLEFT(c_int, 3) FROM parquetV1Table"),
     BitwiseExprConfig("shift_right", "SELECT SHIFTRIGHT(c_int, 3) FROM parquetV1Table"),
-    BitwiseExprConfig("shift_right_unsigned", "SELECT SHIFTRIGHTUNSIGNED(c_int, 3) FROM parquetV1Table"),
+    BitwiseExprConfig(
+      "shift_right_unsigned",
+      "SELECT SHIFTRIGHTUNSIGNED(c_int, 3) FROM parquetV1Table"),
     BitwiseExprConfig("bit_count", "SELECT BIT_COUNT(c_long) FROM parquetV1Table"),
     BitwiseExprConfig("bit_get", "SELECT BIT_GET(c_long, c_pos) FROM parquetV1Table"))
 

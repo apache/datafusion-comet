@@ -46,9 +46,8 @@ object CometMathExpressionBenchmark extends CometBenchmarkBase {
     "unary_minus" -> "-(c_double)")
 
   // Binary math functions
-  private val binaryMathFunctions = List(
-    "atan2" -> "ATAN2(c_double, c_double2)",
-    "pmod" -> "PMOD(c_int, c_int2)")
+  private val binaryMathFunctions =
+    List("atan2" -> "ATAN2(c_double, c_double2)", "pmod" -> "PMOD(c_int, c_int2)")
 
   // Logarithm functions
   private val logFunctions = List(
@@ -57,9 +56,8 @@ object CometMathExpressionBenchmark extends CometBenchmarkBase {
     "log2" -> "LOG2(c_positive_double)")
 
   private def generateConfigs(funcs: List[(String, String)]): List[MathExprConfig] = {
-    funcs.map {
-      case (name, expr) =>
-        MathExprConfig(name, s"SELECT $expr FROM parquetV1Table")
+    funcs.map { case (name, expr) =>
+      MathExprConfig(name, s"SELECT $expr FROM parquetV1Table")
     }
   }
 

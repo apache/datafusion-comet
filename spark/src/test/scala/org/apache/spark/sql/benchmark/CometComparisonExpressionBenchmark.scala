@@ -48,8 +48,12 @@ object CometComparisonExpressionBenchmark extends CometBenchmarkBase {
     ComparisonExprConfig("and", "SELECT (c_int > 0) AND (c_int2 < 100) FROM parquetV1Table"),
     ComparisonExprConfig("or", "SELECT (c_int > 0) OR (c_int2 < 100) FROM parquetV1Table"),
     ComparisonExprConfig("not", "SELECT NOT (c_int > 0) FROM parquetV1Table"),
-    ComparisonExprConfig("in_list", "SELECT c_int IN (1, 10, 100, 1000, 10000) FROM parquetV1Table"),
-    ComparisonExprConfig("not_in_list", "SELECT c_int NOT IN (1, 10, 100, 1000, 10000) FROM parquetV1Table"))
+    ComparisonExprConfig(
+      "in_list",
+      "SELECT c_int IN (1, 10, 100, 1000, 10000) FROM parquetV1Table"),
+    ComparisonExprConfig(
+      "not_in_list",
+      "SELECT c_int NOT IN (1, 10, 100, 1000, 10000) FROM parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024 * 5 // 5M rows

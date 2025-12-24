@@ -55,9 +55,7 @@ object CometCastNumericToNumericBenchmark extends CometBenchmarkBase {
     ("SHORT", "c_short", "BYTE"))
 
   // Floating point conversions
-  private val floatPairs = Seq(
-    ("FLOAT", "c_float", "DOUBLE"),
-    ("DOUBLE", "c_double", "FLOAT"))
+  private val floatPairs = Seq(("FLOAT", "c_float", "DOUBLE"), ("DOUBLE", "c_double", "FLOAT"))
 
   // Integer to floating point conversions
   private val intToFloatPairs = Seq(
@@ -84,7 +82,8 @@ object CometCastNumericToNumericBenchmark extends CometBenchmarkBase {
     ("DECIMAL(10,2)", "c_decimal", "LONG"),
     ("DECIMAL(10,2)", "c_decimal", "DOUBLE"))
 
-  private def generateConfigs(pairs: Seq[(String, String, String)]): Seq[CastNumericToNumericConfig] = {
+  private def generateConfigs(
+      pairs: Seq[(String, String, String)]): Seq[CastNumericToNumericConfig] = {
     for {
       castFunc <- castFunctions
       (sourceType, colName, targetType) <- pairs

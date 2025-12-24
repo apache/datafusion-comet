@@ -36,7 +36,9 @@ object CometAggregateFunctionBenchmark extends CometBenchmarkBase {
   private val basicAggregates = List(
     AggExprConfig("count", "SELECT COUNT(*) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("count_col", "SELECT COUNT(c_int) FROM parquetV1Table GROUP BY grp"),
-    AggExprConfig("count_distinct", "SELECT COUNT(DISTINCT c_int) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "count_distinct",
+      "SELECT COUNT(DISTINCT c_int) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("min_int", "SELECT MIN(c_int) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("max_int", "SELECT MAX(c_int) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("min_double", "SELECT MIN(c_double) FROM parquetV1Table GROUP BY grp"),
@@ -47,17 +49,25 @@ object CometAggregateFunctionBenchmark extends CometBenchmarkBase {
     AggExprConfig("avg_int", "SELECT AVG(c_int) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("avg_double", "SELECT AVG(c_double) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("first", "SELECT FIRST(c_int) FROM parquetV1Table GROUP BY grp"),
-    AggExprConfig("first_ignore_nulls", "SELECT FIRST(c_int, true) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "first_ignore_nulls",
+      "SELECT FIRST(c_int, true) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("last", "SELECT LAST(c_int) FROM parquetV1Table GROUP BY grp"),
-    AggExprConfig("last_ignore_nulls", "SELECT LAST(c_int, true) FROM parquetV1Table GROUP BY grp"))
+    AggExprConfig(
+      "last_ignore_nulls",
+      "SELECT LAST(c_int, true) FROM parquetV1Table GROUP BY grp"))
 
   private val statisticalAggregates = List(
     AggExprConfig("var_samp", "SELECT VAR_SAMP(c_double) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("var_pop", "SELECT VAR_POP(c_double) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("stddev_samp", "SELECT STDDEV_SAMP(c_double) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("stddev_pop", "SELECT STDDEV_POP(c_double) FROM parquetV1Table GROUP BY grp"),
-    AggExprConfig("covar_samp", "SELECT COVAR_SAMP(c_double, c_double2) FROM parquetV1Table GROUP BY grp"),
-    AggExprConfig("covar_pop", "SELECT COVAR_POP(c_double, c_double2) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "covar_samp",
+      "SELECT COVAR_SAMP(c_double, c_double2) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "covar_pop",
+      "SELECT COVAR_POP(c_double, c_double2) FROM parquetV1Table GROUP BY grp"),
     AggExprConfig("corr", "SELECT CORR(c_double, c_double2) FROM parquetV1Table GROUP BY grp"))
 
   private val bitwiseAggregates = List(

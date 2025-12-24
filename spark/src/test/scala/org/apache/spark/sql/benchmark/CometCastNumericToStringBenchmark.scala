@@ -36,8 +36,15 @@ object CometCastNumericToStringBenchmark extends CometBenchmarkBase {
 
   private val castFunctions = Seq("CAST", "TRY_CAST")
   private val sourceTypes =
-    Seq(("BOOLEAN", "c_bool"), ("BYTE", "c_byte"), ("SHORT", "c_short"), ("INT", "c_int"),
-      ("LONG", "c_long"), ("FLOAT", "c_float"), ("DOUBLE", "c_double"), ("DECIMAL(10,2)", "c_decimal"))
+    Seq(
+      ("BOOLEAN", "c_bool"),
+      ("BYTE", "c_byte"),
+      ("SHORT", "c_short"),
+      ("INT", "c_int"),
+      ("LONG", "c_long"),
+      ("FLOAT", "c_float"),
+      ("DOUBLE", "c_double"),
+      ("DECIMAL(10,2)", "c_decimal"))
 
   private val castConfigs = for {
     castFunc <- castFunctions

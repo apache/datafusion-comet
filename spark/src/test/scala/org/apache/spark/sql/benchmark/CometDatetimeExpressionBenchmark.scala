@@ -91,12 +91,11 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
           ("weekday", "WEEKDAY(dt)"),
           ("day_of_year", "DAYOFYEAR(dt)"),
           ("week_of_year", "WEEKOFYEAR(dt)"),
-          ("quarter", "QUARTER(dt)")).foreach {
-          case (name, expr) =>
-            val isDictionary = if (useDictionary) "(Dictionary)" else ""
-            val benchName = s"Date Extract $isDictionary - $name"
-            val query = s"select $expr from parquetV1Table"
-            runExpressionBenchmark(benchName, values, query)
+          ("quarter", "QUARTER(dt)")).foreach { case (name, expr) =>
+          val isDictionary = if (useDictionary) "(Dictionary)" else ""
+          val benchName = s"Date Extract $isDictionary - $name"
+          val query = s"select $expr from parquetV1Table"
+          runExpressionBenchmark(benchName, values, query)
         }
       }
     }
@@ -115,12 +114,11 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
           ("hour", "HOUR(ts)"),
           ("minute", "MINUTE(ts)"),
           ("second", "SECOND(ts)"),
-          ("quarter", "QUARTER(ts)")).foreach {
-          case (name, expr) =>
-            val isDictionary = if (useDictionary) "(Dictionary)" else ""
-            val benchName = s"Timestamp Extract $isDictionary - $name"
-            val query = s"select $expr from parquetV1Table"
-            runExpressionBenchmark(benchName, values, query)
+          ("quarter", "QUARTER(ts)")).foreach { case (name, expr) =>
+          val isDictionary = if (useDictionary) "(Dictionary)" else ""
+          val benchName = s"Timestamp Extract $isDictionary - $name"
+          val query = s"select $expr from parquetV1Table"
+          runExpressionBenchmark(benchName, values, query)
         }
       }
     }
@@ -133,9 +131,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
           dir,
           spark.sql(
             s"select cast(timestamp_micros(cast(value/100000 as integer)) as date) as dt, cast(value % 365 as int) as days FROM $tbl"))
-        Seq(
-          ("date_add", "DATE_ADD(dt, days)"),
-          ("date_sub", "DATE_SUB(dt, days)")).foreach {
+        Seq(("date_add", "DATE_ADD(dt, days)"), ("date_sub", "DATE_SUB(dt, days)")).foreach {
           case (name, expr) =>
             val isDictionary = if (useDictionary) "(Dictionary)" else ""
             val benchName = s"Date Arithmetic $isDictionary - $name"

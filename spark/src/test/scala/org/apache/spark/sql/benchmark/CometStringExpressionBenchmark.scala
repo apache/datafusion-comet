@@ -89,7 +89,9 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("endswith", "select endswith(c1, '9') from parquetV1Table"),
     StringExprConfig("like", "select c1 like '%123%' from parquetV1Table"),
     StringExprConfig("rlike", "select c1 rlike '[0-9]+' from parquetV1Table"),
-    StringExprConfig("regexp_replace", "select regexp_replace(c1, '[0-9]', 'X') from parquetV1Table"))
+    StringExprConfig(
+      "regexp_replace",
+      "select regexp_replace(c1, '[0-9]', 'X') from parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024;

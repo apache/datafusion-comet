@@ -41,10 +41,14 @@ object CometArrayExpressionBenchmark extends CometBenchmarkBase {
     ArrayExprConfig("array_remove", "SELECT array_remove(arr_int, 5) FROM parquetV1Table"),
     ArrayExprConfig("array_append", "SELECT array_append(arr_int, 100) FROM parquetV1Table"),
     ArrayExprConfig("array_compact", "SELECT array_compact(arr_nullable) FROM parquetV1Table"),
-    ArrayExprConfig("array_intersect", "SELECT array_intersect(arr_int, arr_int2) FROM parquetV1Table"),
+    ArrayExprConfig(
+      "array_intersect",
+      "SELECT array_intersect(arr_int, arr_int2) FROM parquetV1Table"),
     ArrayExprConfig("array_except", "SELECT array_except(arr_int, arr_int2) FROM parquetV1Table"),
     ArrayExprConfig("array_union", "SELECT array_union(arr_int, arr_int2) FROM parquetV1Table"),
-    ArrayExprConfig("arrays_overlap", "SELECT arrays_overlap(arr_int, arr_int2) FROM parquetV1Table"),
+    ArrayExprConfig(
+      "arrays_overlap",
+      "SELECT arrays_overlap(arr_int, arr_int2) FROM parquetV1Table"),
     ArrayExprConfig("array_insert", "SELECT array_insert(arr_int, 2, 999) FROM parquetV1Table"),
     ArrayExprConfig("array_join", "SELECT array_join(arr_str, ',') FROM parquetV1Table"),
     ArrayExprConfig("array_repeat", "SELECT array_repeat(elem, 5) FROM parquetV1Table"),

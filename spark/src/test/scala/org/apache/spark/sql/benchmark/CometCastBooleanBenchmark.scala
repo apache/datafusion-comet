@@ -44,7 +44,8 @@ object CometCastBooleanBenchmark extends CometBenchmarkBase {
     s"SELECT $castFunc(c_bool AS STRING) FROM parquetV1Table")
 
   // Boolean to numeric types
-  private val boolToNumericTypes = Seq("BYTE", "SHORT", "INT", "LONG", "FLOAT", "DOUBLE", "DECIMAL(10,2)")
+  private val boolToNumericTypes =
+    Seq("BYTE", "SHORT", "INT", "LONG", "FLOAT", "DOUBLE", "DECIMAL(10,2)")
   private val boolToNumericConfigs = for {
     castFunc <- castFunctions
     targetType <- boolToNumericTypes
