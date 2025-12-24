@@ -332,18 +332,27 @@ impl ParquetWriterExec {
                 ))
             }
             "local" => {
-                // For local file system, write directly to file
+                // For a local file system, write directly to file
                 // Strip file:// or file: prefix if present
                 let local_path = output_file_path
                     .strip_prefix("file://")
                     .or_else(|| output_file_path.strip_prefix("file:"))
                     .unwrap_or(output_file_path);
 
-                // Create output directory
-                std::fs::create_dir_all(local_path).map_err(|e| {
+                // Extract the parent directory from the file path
+                let output_dir = std::path::Path::new(local_path).parent().ok_or_else(|| {
+                    DataFusionError::Execution(format!(
+                        "Failed to extract parent directory from path '{}'",
+                        local_path
+                    ))
+                })?;
+
+                // Create the parent directory if it doesn't exist
+                std::fs::create_dir_all(output_dir).map_err(|e| {
                     DataFusionError::Execution(format!(
                         "Failed to create output directory '{}': {}",
-                        local_path, e
+                        output_dir.display(),
+                        e
                     ))
                 })?;
 
