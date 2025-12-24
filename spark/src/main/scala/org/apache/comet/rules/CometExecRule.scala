@@ -33,6 +33,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
+import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
 import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
@@ -196,6 +197,14 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
+
+      // AQE reoptimization looks for `DataWritingCommandExec` or `WriteFilesExec`
+      // if there is none it would reinsert write nodes, and since Comet remap those nodes
+      // to Comet counterparties the write nodes are twice to the plan.
+      // Checking if AQE inserted another write Command on top of existing write command
+      case _ @DataWritingCommandExec(_, w: WriteFilesExec)
+          if w.child.isInstanceOf[CometNativeWriteExec] =>
+        w.child
 
       case op: DataWritingCommandExec =>
         convertToComet(op, CometDataWritingCommand).getOrElse(op)
