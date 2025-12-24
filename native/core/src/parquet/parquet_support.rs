@@ -496,9 +496,9 @@ mod tests {
     use object_store::path::Path;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use url::Url;
 
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
+    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
     pub(crate) fn prepare_object_store(
         runtime_env: Arc<RuntimeEnv>,
         url: String,
@@ -506,10 +506,11 @@ mod tests {
         prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
     }
 
-    #[cfg(not(feature = "hdfs"))]
+    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
     #[test]
     fn test_prepare_object_store() {
         use crate::execution::operators::ExecutionError;
+        use url::Url;
 
         let local_file_system_url = "file:///comet/spark-warehouse/part-00000.snappy.parquet";
         let hdfs_url = "hdfs://localhost:8020/comet/spark-warehouse/part-00000.snappy.parquet";

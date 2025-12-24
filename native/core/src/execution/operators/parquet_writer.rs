@@ -553,6 +553,7 @@ mod tests {
     use std::sync::Arc;
 
     /// Helper function to create a test RecordBatch with 1000 rows of (int, string) data
+    /// Example batch_id 1 -> 0..1000, 2 -> 1001..2000
     fn create_test_record_batch(batch_id: i32) -> Result<RecordBatch> {
         assert!(batch_id > 0, "batch_id must be greater than 0");
         let num_rows = batch_id * 1000;
@@ -577,6 +578,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "hdfs-opendal")]
+    #[ignore = "This test requires a running HDFS cluster"]
     async fn test_write_to_hdfs_sync() -> Result<()> {
         use opendal::services::Hdfs;
         use opendal::Operator;
@@ -627,6 +629,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "hdfs-opendal")]
+    #[ignore = "This test requires a running HDFS cluster"]
     async fn test_write_to_hdfs_streaming() -> Result<()> {
         use opendal::services::Hdfs;
         use opendal::Operator;
@@ -707,6 +710,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "hdfs-opendal")]
+    #[ignore = "This test requires a running HDFS cluster"]
     async fn test_parquet_writer_streaming() -> Result<()> {
         // Configure output path
         let output_path = "/user/test_parquet_writer_streaming/data.parquet";
@@ -755,6 +759,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "hdfs-opendal")]
+    #[ignore = "This test requires a running HDFS cluster"]
     async fn test_parquet_writer_exec_with_memory_input() -> Result<()> {
         use datafusion::datasource::memory::MemorySourceConfig;
         use datafusion::datasource::source::DataSourceExec;
