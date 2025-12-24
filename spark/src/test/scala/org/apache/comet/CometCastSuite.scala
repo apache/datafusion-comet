@@ -575,8 +575,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // CAST from StringType
 
   test("cast StringType to BooleanType") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     val testValues =
       (Seq("TRUE", "True", "true", "FALSE", "False", "false", "1", "0", "", null) ++
         gen.generateStrings(dataSize, "truefalseTRUEFALSEyesno10" + whitespaceChars, 8)).toDF("a")
@@ -617,8 +615,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   )
 
   test("cast StringType to ByteType") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.ByteType)
     // fuzz test
@@ -626,8 +622,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to ShortType") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.ShortType)
     // fuzz test
@@ -635,8 +629,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to IntegerType") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.IntegerType)
     // fuzz test
@@ -644,61 +636,141 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to LongType") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     // test with hand-picked values
     castTest(castStringToIntegralInputs.toDF("a"), DataTypes.LongType)
     // fuzz test
     castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.LongType)
   }
 
-  ignore("cast StringType to FloatType") {
-    // https://github.com/apache/datafusion-comet/issues/326
-    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.FloatType)
-  }
-
-  test("cast StringType to FloatType (partial support)") {
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
-      SQLConf.ANSI_ENABLED.key -> "false") {
-      castTest(
-        gen.generateStrings(dataSize, "0123456789.", 8).toDF("a"),
-        DataTypes.FloatType,
-        testAnsi = false)
-    }
-  }
-
-  ignore("cast StringType to DoubleType") {
+  test("cast StringType to DoubleType") {
     // https://github.com/apache/datafusion-comet/issues/326
     castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.DoubleType)
   }
 
-  test("cast StringType to DoubleType (partial support)") {
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
-      SQLConf.ANSI_ENABLED.key -> "false") {
-      castTest(
-        gen.generateStrings(dataSize, "0123456789.", 8).toDF("a"),
-        DataTypes.DoubleType,
-        testAnsi = false)
+  test("cast StringType to FloatType") {
+    castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.FloatType)
+  }
+
+  val specialValues: Seq[String] = Seq(
+    "1.5f",
+    "1.5F",
+    "2.0d",
+    "2.0D",
+    "3.14159265358979d",
+    "inf",
+    "Inf",
+    "INF",
+    "+inf",
+    "+Infinity",
+    "-inf",
+    "-Infinity",
+    "NaN",
+    "nan",
+    "NAN",
+    "1.23e4",
+    "1.23E4",
+    "-1.23e-4",
+    "  123.456789  ",
+    "0.0",
+    "-0.0",
+    "",
+    "xyz",
+    null)
+
+  test("cast StringType to FloatType special values") {
+    Seq(true, false).foreach { ansiMode =>
+      castTest(specialValues.toDF("a"), DataTypes.FloatType, testAnsi = ansiMode)
     }
   }
 
-  ignore("cast StringType to DecimalType(10,2)") {
-    // https://github.com/apache/datafusion-comet/issues/325
-    val values = gen.generateStrings(dataSize, numericPattern, 8).toDF("a")
-    castTest(values, DataTypes.createDecimalType(10, 2))
+  test("cast StringType to DoubleType special values") {
+    Seq(true, false).foreach { ansiMode =>
+      castTest(specialValues.toDF("a"), DataTypes.DoubleType, testAnsi = ansiMode)
+    }
   }
 
-  test("cast StringType to DecimalType(10,2) (partial support)") {
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
-      SQLConf.ANSI_ENABLED.key -> "false") {
-      val values = gen
-        .generateStrings(dataSize, "0123456789.", 8)
-        .filter(_.exists(_.isDigit))
-        .toDF("a")
-      castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = false)
+//  This is to pass the first `all cast combinations are covered`
+  ignore("cast StringType to DecimalType(10,2)") {
+    val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
+    castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = false)
+  }
+
+  test("cast StringType to DecimalType(10,2) (does not support fullwidth unicode digits)") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+      // TODO fix for Spark 4.0.0
+      assume(!isSpark40Plus)
+      val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
+      Seq(true, false).foreach(ansiEnabled =>
+        castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = ansiEnabled))
+    }
+  }
+
+  test("cast StringType to DecimalType(2,2)") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+      // TODO fix for Spark 4.0.0
+      assume(!isSpark40Plus)
+      val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
+      Seq(true, false).foreach(ansiEnabled =>
+        castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = ansiEnabled))
+    }
+  }
+
+  test("cast StringType to DecimalType(38,10) high precision") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+      // TODO fix for Spark 4.0.0
+      assume(!isSpark40Plus)
+      val values = gen.generateStrings(dataSize, numericPattern, 38).toDF("a")
+      Seq(true, false).foreach(ansiEnabled =>
+        castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
+    }
+  }
+
+  test("cast StringType to DecimalType(10,2) basic values") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+      // TODO fix for Spark 4.0.0
+      assume(!isSpark40Plus)
+      val values = Seq(
+        "123.45",
+        "-67.89",
+        "-67.89",
+        "-67.895",
+        "67.895",
+        "0.001",
+        "999.99",
+        "123.456",
+        "123.45D",
+        ".5",
+        "5.",
+        "+123.45",
+        "  123.45  ",
+        "inf",
+        "",
+        "abc",
+        null).toDF("a")
+      Seq(true, false).foreach(ansiEnabled =>
+        castTest(values, DataTypes.createDecimalType(10, 2), testAnsi = ansiEnabled))
+    }
+  }
+
+  test("cast StringType to Decimal type scientific notation") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+      // TODO fix for Spark 4.0.0
+      assume(!isSpark40Plus)
+      val values = Seq(
+        "1.23E-5",
+        "1.23e10",
+        "1.23E+10",
+        "-1.23e-5",
+        "1e5",
+        "1E-2",
+        "-1.5e3",
+        "1.23E0",
+        "0e0",
+        "1.23e",
+        "e5",
+        null).toDF("a")
+      Seq(true, false).foreach(ansiEnabled =>
+        castTest(values, DataTypes.createDecimalType(23, 8), testAnsi = ansiEnabled))
     }
   }
 
@@ -707,8 +779,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast StringType to DateType") {
-    // TODO fix for Spark 4.0.0
-    assume(!isSpark40Plus)
     val validDates = Seq(
       "262142-01-01",
       "262142-01-01 ",
@@ -1295,10 +1365,21 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               } else {
                 if (CometSparkSessionExtensions.isSpark40Plus) {
                   // for Spark 4 we expect to sparkException carries the message
-                  assert(
-                    sparkException.getMessage
-                      .replace(".WITH_SUGGESTION] ", "]")
-                      .startsWith(cometMessage))
+                  assert(sparkMessage.contains("SQLSTATE"))
+                  if (sparkMessage.startsWith("[NUMERIC_VALUE_OUT_OF_RANGE.WITH_SUGGESTION]")) {
+                    assert(
+                      sparkMessage.replace(".WITH_SUGGESTION] ", "]").startsWith(cometMessage))
+                  } else if (cometMessage.startsWith("[CAST_INVALID_INPUT]") || cometMessage
+                      .startsWith("[CAST_OVERFLOW]")) {
+                    assert(
+                      sparkMessage.startsWith(
+                        cometMessage
+                          .replace(
+                            "If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.",
+                            "")))
+                  } else {
+                    assert(sparkMessage.startsWith(cometMessage))
+                  }
                 } else {
                   // for Spark 3.4 we expect to reproduce the error message exactly
                   assert(cometMessage == sparkMessage)
@@ -1325,5 +1406,4 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     df.write.mode(SaveMode.Overwrite).parquet(filename)
     spark.read.parquet(filename)
   }
-
 }
