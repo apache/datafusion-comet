@@ -127,6 +127,38 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  test("fallback for size with map input") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+        // Use column references in maps to avoid constant folding
+        checkSparkAnswerAndFallbackReason(
+          sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"),
+          "size does not support map inputs")
+      }
+    }
+  }
+
+  // fails with "map is not supported"
+  ignore("size with map input") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+        // Use column references in maps to avoid constant folding
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(map(_8, _9, _10, _11)) from t1 where _8 is not null"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"))
+      }
+    }
+  }
+
   test("map_from_entries") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
@@ -165,7 +197,7 @@ class CometMapExpressionSuite extends CometTestBase {
   test("map_from_entries - fallback for binary type") {
     def fallbackReason(reason: String) = {
       if (CometConf.COMET_NATIVE_SCAN_IMPL.key == CometConf.SCAN_NATIVE_COMET || sys.env
-          .getOrElse("COMET_PARQUET_SCAN_IMPL", "") == CometConf.SCAN_NATIVE_COMET) {
+        .getOrElse("COMET_PARQUET_SCAN_IMPL", "") == CometConf.SCAN_NATIVE_COMET) {
         "Unsupported schema"
       } else {
         reason
@@ -183,4 +215,5 @@ class CometMapExpressionSuite extends CometTestBase {
         fallbackReason(CometMapFromEntries.valueUnsupportedReason))
     }
   }
+
 }

@@ -765,9 +765,6 @@ pub fn process_sorted_row_partition(
     initial_checksum: Option<u32>,
     codec: &CompressionCodec,
 ) -> Result<(i64, Option<u32>), CometError> {
-    // TODO: We can tune this parameter automatically based on row size and cache size.
-    let row_step = 10;
-
     // The current row number we are reading
     let mut current_row = 0;
     // Total number of bytes written
@@ -790,26 +787,19 @@ pub fn process_sorted_row_partition(
         })?;
 
         // Appends rows to the array builders.
-        let mut row_start: usize = current_row;
-        while row_start < current_row + n {
-            let row_end = std::cmp::min(row_start + row_step, current_row + n);
-
-            // For each column, iterating over rows and appending values to corresponding array
-            // builder.
-            for (idx, builder) in data_builders.iter_mut().enumerate() {
-                append_columns(
-                    row_addresses_ptr,
-                    row_sizes_ptr,
-                    row_start,
-                    row_end,
-                    schema,
-                    idx,
-                    builder,
-                    prefer_dictionary_ratio,
-                )?;
-            }
-
-            row_start = row_end;
+        // For each column, iterating over rows and appending values to corresponding array
+        // builder.
+        for (idx, builder) in data_builders.iter_mut().enumerate() {
+            append_columns(
+                row_addresses_ptr,
+                row_sizes_ptr,
+                current_row,
+                current_row + n,
+                schema,
+                idx,
+                builder,
+                prefer_dictionary_ratio,
+            )?;
         }
 
         // Writes a record batch generated from the array builders to the output file.
