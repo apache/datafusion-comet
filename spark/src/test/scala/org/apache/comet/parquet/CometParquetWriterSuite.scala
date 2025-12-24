@@ -99,19 +99,24 @@ class CometParquetWriterSuite extends CometTestBase {
 
       capturedPlan.foreach { qe =>
         val executedPlan = stripAQEPlan(qe.executedPlan)
-        val hasNativeWrite = executedPlan.exists {
-          case _: CometNativeWriteExec => true
+
+        // Count CometNativeWriteExec instances in the plan
+        var nativeWriteCount = 0
+        executedPlan.foreach {
+          case _: CometNativeWriteExec =>
+            nativeWriteCount += 1
           case d: DataWritingCommandExec =>
-            d.child.exists {
-              case _: CometNativeWriteExec => true
-              case _ => false
+            d.child.foreach {
+              case _: CometNativeWriteExec =>
+                nativeWriteCount += 1
+              case _ =>
             }
-          case _ => false
+          case _ =>
         }
 
         assert(
-          hasNativeWrite,
-          s"Expected CometNativeWriteExec in the plan, but got:\n${executedPlan.treeString}")
+          nativeWriteCount == 1,
+          s"Expected exactly one CometNativeWriteExec in the plan, but found $nativeWriteCount:\n${executedPlan.treeString}")
       }
     } finally {
       spark.listenerManager.unregister(listener)
@@ -201,12 +206,13 @@ class CometParquetWriterSuite extends CometTestBase {
 
   test("basic parquet write with repartition") {
     withTempPath { dir =>
-      val outputPath = new File(dir, "output.parquet").getAbsolutePath
-
       // Create test data and write it to a temp parquet file first
       withTempPath { inputDir =>
         val inputPath = createTestData(inputDir)
         Seq(true, false).foreach(adaptive => {
+          // Create a new output path for each AQE value
+          val outputPath = new File(dir, s"output_aqe_$adaptive.parquet").getAbsolutePath
+
           withSQLConf(
             CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
             "spark.sql.adaptive.enabled" -> adaptive.toString,
