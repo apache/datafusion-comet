@@ -125,11 +125,14 @@ object CometConf extends ShimCometConf {
     .doc(
       s"The implementation of Comet Native Scan to use. Available modes are `$SCAN_NATIVE_COMET`," +
         s"`$SCAN_NATIVE_DATAFUSION`, and `$SCAN_NATIVE_ICEBERG_COMPAT`. " +
-        s"`$SCAN_NATIVE_COMET` (DEPRECATED) is for the original Comet native scan which uses a jvm based " +
-        "parquet file reader and native column decoding. Supports simple types only. " +
-        s"`$SCAN_NATIVE_DATAFUSION` is a fully native implementation of scan based on DataFusion. " +
-        s"`$SCAN_NATIVE_ICEBERG_COMPAT` is the recommended native implementation that exposes apis to read " +
-        s"parquet columns natively and supports complex types. `$SCAN_AUTO` (default) chooses the best scan.")
+        s"`$SCAN_NATIVE_COMET` (DEPRECATED) is for the original Comet native scan which " +
+        "uses a jvm based parquet file reader and native column decoding. " +
+        "Supports simple types only. " +
+        s"`$SCAN_NATIVE_DATAFUSION` is a fully native implementation of scan based on " +
+        "DataFusion. " +
+        s"`$SCAN_NATIVE_ICEBERG_COMPAT` is the recommended native implementation that " +
+        "exposes apis to read parquet columns natively and supports complex types. " +
+        s"`$SCAN_AUTO` (default) chooses the best scan.")
     .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
