@@ -45,6 +45,7 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
+use base64::prelude::*;
 use chrono::{DateTime, NaiveDate, TimeZone, Timelike};
 use datafusion::common::{
     cast::as_generic_string_array, internal_err, DataFusionError, Result as DataFusionResult,
@@ -65,8 +66,6 @@ use std::{
     num::Wrapping,
     sync::Arc,
 };
-
-use base64::prelude::*;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -217,12 +216,7 @@ fn can_cast_from_string(to_type: &DataType, options: &SparkCastOptions) -> bool 
     use DataType::*;
     match to_type {
         Boolean | Int8 | Int16 | Int32 | Int64 | Binary => true,
-        Float32 | Float64 => {
-            // https://github.com/apache/datafusion-comet/issues/326
-            // Does not support inputs ending with 'd' or 'f'. Does not support 'inf'.
-            // Does not support ANSI mode.
-            options.allow_incompat
-        }
+        Float32 | Float64 => true,
         Decimal128(_, _) => {
             // https://github.com/apache/datafusion-comet/issues/325
             // Does not support fullwidth digits and null byte handling.
@@ -975,6 +969,7 @@ fn cast_array(
             cast_string_to_timestamp(&array, to_type, eval_mode, &cast_options.timezone)
         }
         (Utf8, Date32) => cast_string_to_date(&array, to_type, eval_mode),
+        (Utf8, Float32 | Float64) => cast_string_to_float(&array, to_type, eval_mode),
         (Utf8 | LargeUtf8, Decimal128(precision, scale)) => {
             cast_string_to_decimal(&array, to_type, precision, scale, eval_mode)
         }
@@ -1046,7 +1041,7 @@ fn cast_array(
         }
         (Binary, Utf8) => Ok(cast_binary_to_string::<i32>(&array, cast_options)?),
         _ if cast_options.is_adapting_schema
-            || is_datafusion_spark_compatible(from_type, to_type, cast_options.allow_incompat) =>
+            || is_datafusion_spark_compatible(from_type, to_type) =>
         {
             // use DataFusion cast only when we know that it is compatible with Spark
             Ok(cast_with_options(&array, to_type, &native_cast_options)?)
@@ -1061,6 +1056,86 @@ fn cast_array(
         }
     };
     Ok(spark_cast_postprocess(cast_result?, from_type, to_type))
+}
+
+fn cast_string_to_float(
+    array: &ArrayRef,
+    to_type: &DataType,
+    eval_mode: EvalMode,
+) -> SparkResult<ArrayRef> {
+    match to_type {
+        DataType::Float32 => cast_string_to_float_impl::<Float32Type>(array, eval_mode, "FLOAT"),
+        DataType::Float64 => cast_string_to_float_impl::<Float64Type>(array, eval_mode, "DOUBLE"),
+        _ => Err(SparkError::Internal(format!(
+            "Unsupported cast to float type: {:?}",
+            to_type
+        ))),
+    }
+}
+
+fn cast_string_to_float_impl<T: ArrowPrimitiveType>(
+    array: &ArrayRef,
+    eval_mode: EvalMode,
+    type_name: &str,
+) -> SparkResult<ArrayRef>
+where
+    T::Native: FromStr + num::Float,
+{
+    let arr = array
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| SparkError::Internal("Expected string array".to_string()))?;
+
+    let mut builder = PrimitiveBuilder::<T>::with_capacity(arr.len());
+
+    for i in 0..arr.len() {
+        if arr.is_null(i) {
+            builder.append_null();
+        } else {
+            let str_value = arr.value(i).trim();
+            match parse_string_to_float(str_value) {
+                Some(v) => builder.append_value(v),
+                None => {
+                    if eval_mode == EvalMode::Ansi {
+                        return Err(invalid_value(arr.value(i), "STRING", type_name));
+                    }
+                    builder.append_null();
+                }
+            }
+        }
+    }
+
+    Ok(Arc::new(builder.finish()))
+}
+
+/// helper to parse floats from string inputs
+fn parse_string_to_float<F>(s: &str) -> Option<F>
+where
+    F: FromStr + num::Float,
+{
+    // Handle +inf / -inf
+    if s.eq_ignore_ascii_case("inf")
+        || s.eq_ignore_ascii_case("+inf")
+        || s.eq_ignore_ascii_case("infinity")
+        || s.eq_ignore_ascii_case("+infinity")
+    {
+        return Some(F::infinity());
+    }
+    if s.eq_ignore_ascii_case("-inf") || s.eq_ignore_ascii_case("-infinity") {
+        return Some(F::neg_infinity());
+    }
+    if s.eq_ignore_ascii_case("nan") {
+        return Some(F::nan());
+    }
+    // Remove D/F suffix if present
+    let pruned_float_str =
+        if s.ends_with("d") || s.ends_with("D") || s.ends_with('f') || s.ends_with('F') {
+            &s[..s.len() - 1]
+        } else {
+            s
+        };
+    // Rust's parse logic already handles scientific notations so we just rely on it
+    pruned_float_str.parse::<F>().ok()
 }
 
 fn cast_binary_to_string<O: OffsetSizeTrait>(
@@ -1133,11 +1208,7 @@ fn cast_binary_formatter(value: &[u8]) -> String {
 
 /// Determines if DataFusion supports the given cast in a way that is
 /// compatible with Spark
-fn is_datafusion_spark_compatible(
-    from_type: &DataType,
-    to_type: &DataType,
-    allow_incompat: bool,
-) -> bool {
+fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> bool {
     if from_type == to_type {
         return true;
     }
@@ -1189,10 +1260,6 @@ fn is_datafusion_spark_compatible(
                 | DataType::Decimal128(_, _)
                 | DataType::Decimal256(_, _)
                 | DataType::Utf8 // note that there can be formatting differences
-        ),
-        DataType::Utf8 if allow_incompat => matches!(
-            to_type,
-            DataType::Binary | DataType::Float32 | DataType::Float64
         ),
         DataType::Utf8 => matches!(to_type, DataType::Binary),
         DataType::Date32 => matches!(to_type, DataType::Utf8),
