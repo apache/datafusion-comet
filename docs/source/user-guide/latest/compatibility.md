@@ -36,7 +36,7 @@ Comet will fall back to Spark for the following expressions when ANSI mode is en
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
 the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
 
-- Average
+- Average (supports all numeric inputs except decimal types)
 - Cast (in some cases)
 
 There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where we are tracking the work to fully implement ANSI support.
