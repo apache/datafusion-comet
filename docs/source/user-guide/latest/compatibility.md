@@ -192,3 +192,47 @@ or strings containing null bytes (e.g \\u0000) |
 
 Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the
 [tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.
+
+### Complex Type Casts
+
+In addition to primitive types, Comet provides native support for a limited set
+of cast operations involving complex types. This section documents the currently
+supported complex type casts and known limitations.
+
+#### Struct Type Casting
+
+- `STRUCT` → `STRING`  
+  Casting a struct to a string is supported and produces a string representation
+  of the struct contents. This includes named structs and nested structs.
+
+  Example:
+  ```sql
+  SELECT CAST(named_struct('a', 1, 'b', 'x') AS STRING);
+  ```
+
+- `STRUCT` → `STRUCT`  
+  Casting between struct types is supported when the number of fields matches.
+  Fields are matched by position rather than by name, consistent with Apache Spark
+  behavior.
+
+  Example:
+  ```sql
+  SELECT CAST(s AS struct<field1:string, field2:string>) FROM table;
+  ```
+
+#### Array Type Casting
+
+- `ARRAY<T>` → `STRING`  
+  Casting an array to a string is supported and produces a string representation
+  of the array contents. This applies to arrays of supported element types.
+
+  Example:
+  ```sql
+  SELECT CAST(array(1, 2, 3) AS STRING);
+  ```
+
+#### Limitations
+
+Other complex type casts, such as `ARRAY` → `ARRAY` or casts involving `MAP` types,
+are not fully supported and may fall back to Spark execution depending on the query
+plan and configuration.
