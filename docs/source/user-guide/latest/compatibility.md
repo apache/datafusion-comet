@@ -20,70 +20,105 @@ under the License.
 # Compatibility Guide
 
 Comet aims to provide consistent results with the version of Apache Spark that is being used.
+This guide documents known differences and limitations.
 
-This guide offers information about areas of functionality where there are known differences.
+---
 
 ## Parquet
 
 Comet has the following limitations when reading Parquet files:
 
-- Comet does not support reading decimals encoded in binary format.
-- No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
+- Decimal values encoded using binary format are not supported.
+- Default values for nested types (e.g., maps, arrays, structs) are not supported.
+  Literal default values are supported.
+
+---
 
 ## ANSI Mode
 
-Comet will fall back to Spark for the following expressions when ANSI mode is enabled. These expressions can be enabled by setting
-`spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
-the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
+When ANSI mode is enabled, Comet falls back to Spark for some expressions to ensure correctness.
 
-- Average
-- Cast (in some cases)
+Affected expressions include:
 
-There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where we are tracking the work to fully implement ANSI support.
+- `Average`
+- `Cast` (in some cases)
+
+Incompatible expressions can be forced to run natively using:
+
+```text
+spark.comet.expression.EXPRNAME.allowIncompatible=true
+```
+
+This is not recommended for production use.
+
+Tracking issue for full ANSI support:
+https://github.com/apache/datafusion-comet/issues/313
+
+---
 
 ## Floating-point Number Comparison
 
-Spark normalizes NaN and zero for floating point numbers for several cases. See `NormalizeFloatingNumbers` optimization rule in Spark.
-However, one exception is comparison. Spark does not normalize NaN and zero when comparing values
-because they are handled well in Spark (e.g., `SQLOrderingUtil.compareFloats`). But the comparison
-functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., [arrow::compute::kernels::cmp::eq](https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#)).
-So Comet adds additional normalization expression of NaN and zero for comparisons, and may still have differences
-to Spark in some cases, especially when the data contains both positive and negative zero. This is likely an edge
-case that is not of concern for many users. If it is a concern, setting `spark.comet.exec.strictFloatingPoint=true`
-will make relevant operations fall back to Spark.
+Spark normalizes NaN and signed zero in most cases, except during comparisons.
+DataFusion (via Arrow) does not apply the same normalization.
+
+Comet adds additional normalization logic but may still differ in rare edge cases,
+especially when both positive and negative zero are present.
+
+To force Spark execution for strict correctness:
+
+```text
+spark.comet.exec.strictFloatingPoint=true
+```
+
+---
 
 ## Incompatible Expressions
 
-Expressions that are not 100% Spark-compatible will fall back to Spark by default and can be enabled by setting
-`spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
-the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
+Expressions that are not fully Spark-compatible fall back to Spark by default.
+They may be enabled using:
+
+```text
+spark.comet.expression.EXPRNAME.allowIncompatible=true
+```
+
+See the [Comet Supported Expressions Guide](expressions.md) for details.
+
+---
 
 ## Regular Expressions
 
-Comet uses the Rust regexp crate for evaluating regular expressions, and this has different behavior from Java's
-regular expression engine. Comet will fall back to Spark for patterns that are known to produce different results, but
-this can be overridden by setting `spark.comet.regexp.allowIncompatible=true`.
+Comet uses Rust's regex crate, which differs from Java's regex engine used by Spark.
+Patterns known to produce different results will fall back to Spark.
+
+This behavior can be overridden using:
+
+```text
+spark.comet.regexp.allowIncompatible=true
+```
+
+---
 
 ## Window Functions
 
-Comet's support for window functions is incomplete and known to be incorrect. It is disabled by default and
-should not be used in production. The feature will be enabled in a future release. Tracking issue: [#2721](https://github.com/apache/datafusion-comet/issues/2721).
+Window functions are disabled by default.
+Support is incomplete and may produce incorrect results.
+
+Tracking issue:
+https://github.com/apache/datafusion-comet/issues/2721
+
+---
 
 ## Cast
 
-Cast operations in Comet fall into three levels of support:
+Cast operations are classified into three categories:
 
-- **Compatible**: The results match Apache Spark
-- **Incompatible**: The results may match Apache Spark for some inputs, but there are known issues where some inputs
-  will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
-  `spark.comet.expression.Cast.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
-  recommended for production use.
-- **Unsupported**: Comet does not provide a native version of this cast expression and the query stage will fall back to
-  Spark.
+- **Compatible** – Results match Spark
+- **Incompatible** – May differ for some inputs; fallback by default
+- **Unsupported** – Always falls back to Spark
 
 ### Compatible Casts
 
-The following cast operations are generally compatible with Spark except for the differences noted here.
+The following casts are generally compatible with Spark, with noted differences.
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 
@@ -136,14 +171,14 @@ The following cast operations are generally compatible with Spark except for the
 | float | integer |  |
 | float | long |  |
 | float | double |  |
-| float | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
+| float | string | Precision differences possible |
 | double | boolean |  |
 | double | byte |  |
 | double | short |  |
 | double | integer |  |
 | double | long |  |
 | double | float |  |
-| double | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
+| double | string | Precision differences possible |
 | decimal | boolean |  |
 | decimal | byte |  |
 | decimal | short |  |
@@ -152,7 +187,7 @@ The following cast operations are generally compatible with Spark except for the
 | decimal | float |  |
 | decimal | double |  |
 | decimal | decimal |  |
-| decimal | string | There can be formatting differences in some case due to Spark using scientific notation where Comet does not |
+| decimal | string | Formatting differences possible |
 | string | boolean |  |
 | string | byte |  |
 | string | short |  |
@@ -161,7 +196,7 @@ The following cast operations are generally compatible with Spark except for the
 | string | float |  |
 | string | double |  |
 | string | binary |  |
-| string | date | Only supports years between 262143 BC and 262142 AD |
+| string | date | Years supported: 262143 BC to 262142 AD |
 | binary | string |  |
 | date | string |  |
 | timestamp | long |  |
@@ -172,7 +207,7 @@ The following cast operations are generally compatible with Spark except for the
 
 ### Incompatible Casts
 
-The following cast operations are not compatible with Spark for all inputs and are disabled by default.
+The following casts may produce different results and are disabled by default.
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 
@@ -180,62 +215,104 @@ The following cast operations are not compatible with Spark for all inputs and a
 <!-- prettier-ignore-start -->
 | From Type | To Type | Notes |
 |-|-|-|
-| float | decimal  | There can be rounding differences |
-| double | decimal  | There can be rounding differences |
-| string | decimal  | Does not support fullwidth unicode digits (e.g \\uFF10)
-or strings containing null bytes (e.g \\u0000) |
-| string | timestamp  | Not all valid formats are supported |
+| float | decimal | Rounding differences |
+| double | decimal | Rounding differences |
+| string | decimal | Fullwidth unicode digits and null bytes not supported |
+| string | timestamp | Not all valid formats supported |
 <!-- prettier-ignore-end -->
 <!--END:INCOMPAT_CAST_TABLE-->
 
 ### Unsupported Casts
 
-Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the
-[tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.
+Any cast not listed above is currently unsupported and will fall back to Spark.
+
+Tracking issue:
+https://github.com/apache/datafusion-comet/issues/286
+
+---
 
 ### Complex Type Casts
 
-In addition to primitive types, Comet provides native support for a limited set
-of cast operations involving complex types. This section documents the currently
-supported complex type casts and known limitations.
+Comet provides native support for a limited set of complex type casts.
+All other complex casts fall back to Spark.
 
 #### Struct Type Casting
 
-- `STRUCT` → `STRING`  
-  Casting a struct to a string is supported and produces a string representation
-  of the struct contents. This includes named structs and nested structs.
+- **`STRUCT` → `STRING`**  
+  Casting a struct to a string is supported.
+  This includes:
+  - Named structs
+  - Nested structs
+  - Structs containing primitive, decimal, date, and timestamp fields
 
   Example:
+
   ```sql
   WITH t AS (
-  SELECT named_struct('field1', 1, 'field2', 'x') AS s
+    SELECT named_struct('a', 1, 'b', 'x') AS s
   )
-  SELECT CAST(named_struct('a', 1, 'b', 'x') AS STRING);
+  SELECT CAST(s AS STRING) FROM t;
   ```
 
-- `STRUCT` → `STRUCT`  
+- **`STRUCT` → `STRUCT`**  
   Casting between struct types is supported when the number of fields matches.
-  Fields are matched by position rather than by name, consistent with Apache Spark
-  behavior.
+  Fields are matched by position, not by name, consistent with Spark behavior.
 
   Example:
+
   ```sql
-  SELECT CAST(s AS struct<field1:string, field2:string>) FROM table;
+  WITH t AS (
+    SELECT named_struct('a', '1', 'b', '2') AS s
+  )
+  SELECT CAST(s AS struct<field1:string, field2:string>) FROM t;
   ```
 
 #### Array Type Casting
 
-- `ARRAY<T>` → `STRING`  
-  Casting an array to a string is supported and produces a string representation
-  of the array contents. This applies to arrays of supported element types.
+- **`ARRAY<T>` → `STRING`**  
+  Casting arrays to strings is supported and produces a string representation
+  of the array contents.
+
+  Supported element types include:
+  - `boolean`
+  - `byte`
+  - `short`
+  - `integer`
+  - `long`
+  - `string`
+  - `decimal`
+
+  Support depends on the scan implementation.
+  Arrays with unsupported element types may fall back to Spark.
 
   Example:
+
   ```sql
   SELECT CAST(array(1, 2, 3) AS STRING);
   ```
 
+#### Binary Type Casting
+
+- **`BINARY` → `STRING`**  
+  Casting binary values to strings is supported when the binary data is valid UTF-8.
+
+- **`STRING` → `BINARY`**  
+  Casting strings to binary values is supported.
+
+  Example:
+
+  ```sql
+  SELECT CAST('abc' AS BINARY);
+  SELECT CAST(binary('abc') AS STRING);
+  ```
+
 #### Limitations
 
-Other complex type casts, such as `ARRAY` → `ARRAY` or casts involving `MAP` types,
-are not fully supported and may fall back to Spark execution depending on the query
-plan and configuration.
+The following complex casts are not supported natively and will fall back to Spark:
+
+- `ARRAY` → `ARRAY`
+- `STRUCT` → `ARRAY`
+- `ARRAY` → `STRUCT`
+- Any cast involving `MAP` types
+
+Fallback behavior may depend on query planning and scan implementation.
