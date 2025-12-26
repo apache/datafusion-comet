@@ -69,6 +69,27 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
 
   protected val tbl = "comet_table"
 
+  /**
+   * Get the number of rows to use for benchmarks, with support for quick mode. Set
+   * COMET_BENCHMARK_QUICK_MODE=1 to run with reduced dataset sizes for faster benchmarking.
+   *
+   * @param defaultRows
+   *   the default number of rows for full benchmark
+   * @return
+   *   the number of rows to use (1/100th of default in quick mode)
+   */
+  protected def getBenchmarkRows(defaultRows: Int): Int = {
+    val quickMode = sys.env
+      .get("COMET_BENCHMARK_QUICK_MODE")
+      .exists(v => v == "1" || v.equalsIgnoreCase("true"))
+    if (quickMode) {
+      // Use 1% of default size in quick mode (minimum 1024)
+      Math.max(1024, defaultRows / 100)
+    } else {
+      defaultRows
+    }
+  }
+
   protected def withTempTable(tableNames: String*)(f: => Unit): Unit = {
     try f
     finally tableNames.foreach(spark.catalog.dropTempView)
