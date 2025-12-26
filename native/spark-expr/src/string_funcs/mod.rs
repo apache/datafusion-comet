@@ -17,6 +17,6 @@
 
 mod string_space;
 mod substring;
-
+pub mod trim;
 pub use string_space::SparkStringSpace;
 pub use substring::SubstringExpr;
