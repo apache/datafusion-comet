@@ -207,6 +207,9 @@ supported complex type casts and known limitations.
 
   Example:
   ```sql
+  WITH t AS (
+  SELECT named_struct('field1', 1, 'field2', 'x') AS s
+  )
   SELECT CAST(named_struct('a', 1, 'b', 'x') AS STRING);
   ```
 
