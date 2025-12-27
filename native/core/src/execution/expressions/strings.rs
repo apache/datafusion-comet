@@ -25,7 +25,7 @@ use datafusion::common::ScalarValue;
 use datafusion::physical_expr::expressions::{LikeExpr, Literal};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_proto::spark_expression::Expr;
-use datafusion_comet_spark_expr::{FromJson, RLike, SubstringExpr};
+use datafusion_comet_spark_expr::{EndsWithExpr, FromJson, RLike, StartsWithExpr, SubstringExpr};
 
 use crate::execution::{
     expressions::extract_expr,
@@ -123,3 +123,58 @@ impl ExpressionBuilder for FromJsonBuilder {
         Ok(Arc::new(FromJson::new(child, schema, &expr.timezone)))
     }
 }
+
+/// Builder for StartsWith expressions
+pub struct StartsWithBuilder;
+
+impl ExpressionBuilder for StartsWithBuilder {
+    fn build(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+        planner: &PhysicalPlanner,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let expr = extract_expr!(spark_expr, StartsWith);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+
+        let pattern = extract_string_literal(&right)?;
+        Ok(Arc::new(StartsWithExpr::new(left, pattern)))
+    }
+}
+
+/// Builder for EndsWith expressions
+pub struct EndsWithBuilder;
+
+impl ExpressionBuilder for EndsWithBuilder {
+    fn build(
+        &self,
+        spark_expr: &Expr,
+        input_schema: SchemaRef,
+        planner: &PhysicalPlanner,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let expr = extract_expr!(spark_expr, EndsWith);
+        let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
+        let right = planner.create_expr(expr.right.as_ref().unwrap(), input_schema)?;
+
+        let pattern = extract_string_literal(&right)?;
+        Ok(Arc::new(EndsWithExpr::new(left, pattern)))
+    }
+}
+
+/// Helper function to extract a string literal from a physical expression
+fn extract_string_literal(expr: &Arc<dyn PhysicalExpr>) -> Result<String, ExecutionError> {
+    match expr.as_any().downcast_ref::<Literal>() {
+        Some(literal) => match literal.value() {
+            ScalarValue::Utf8(Some(s)) => Ok(s.clone()),
+            _ => Err(ExecutionError::GeneralError(
+                "StartsWith/EndsWith pattern must be a string literal".to_string(),
+            )),
+        },
+        None => Err(ExecutionError::GeneralError(
+            "StartsWith/EndsWith pattern must be a literal".to_string(),
+        )),
+    }
+}
+
+

@@ -86,6 +86,8 @@ message Expr {
     EmptyExpr spark_partition_id = 63;
     EmptyExpr monotonically_increasing_id = 64;
     FromJson from_json = 89;
+    BinaryExpr starts_with = 90;
+    BinaryExpr ends_with = 91;
   }
 }
 
