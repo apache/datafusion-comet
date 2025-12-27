@@ -19,13 +19,13 @@ use arrow::array::{Array, BooleanArray, Scalar, StringArray};
 use arrow::buffer::BooleanBuffer;
 use arrow::compute;
 use arrow::datatypes::DataType;
-use datafusion::physical_expr::PhysicalExpr;
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
-use std::sync::Arc;
+use datafusion::physical_expr::PhysicalExpr;
 use std::any::Any;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct StartsWithExpr {
@@ -38,7 +38,10 @@ impl StartsWithExpr {
         // Optimization: Allocate the pattern array ONCE during construction
         // This avoids creating a new StringArray for every single batch
         let pattern_array = Arc::new(StringArray::from(vec![pattern]));
-        Self { child, pattern_array }
+        Self {
+            child,
+            pattern_array,
+        }
     }
 }
 
@@ -59,7 +62,12 @@ impl Eq for StartsWithExpr {}
 
 impl Display for StartsWithExpr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "startsWith({}, \"{}\")", self.child, self.pattern_array.value(0))
+        write!(
+            f,
+            "startsWith({}, \"{}\")",
+            self.child,
+            self.pattern_array.value(0)
+        )
     }
 }
 
@@ -82,15 +90,15 @@ impl PhysicalExpr for StartsWithExpr {
 
     fn evaluate(&self, batch: &arrow::record_batch::RecordBatch) -> Result<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
-        
+
         match arg {
             ColumnarValue::Array(array) => {
                 // Zero-Allocation here: We reuse the pre-allocated pattern_array
                 let scalar = Scalar::new(self.pattern_array.as_ref());
-                
+
                 // Use Arrow's highly optimized SIMD kernel
                 let result = compute::starts_with(&array, &scalar)?;
-                
+
                 Ok(ColumnarValue::Array(Arc::new(result)))
             }
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(str_val))) => {
@@ -101,7 +109,7 @@ impl PhysicalExpr for StartsWithExpr {
                 ))))
             }
             ColumnarValue::Scalar(ScalarValue::Utf8(None)) => {
-                 Ok(ColumnarValue::Scalar(ScalarValue::Boolean(None)))
+                Ok(ColumnarValue::Scalar(ScalarValue::Boolean(None)))
             }
             _ => Err(datafusion::error::DataFusionError::Internal(
                 "StartsWith requires StringArray input".to_string(),
@@ -117,7 +125,10 @@ impl PhysicalExpr for StartsWithExpr {
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(StartsWithExpr::new(children[0].clone(), self.pattern_array.value(0).to_string())))
+        Ok(Arc::new(StartsWithExpr::new(
+            children[0].clone(),
+            self.pattern_array.value(0).to_string(),
+        )))
     }
 }
 
@@ -128,14 +139,18 @@ impl PhysicalExpr for StartsWithExpr {
 #[derive(Debug)]
 pub struct EndsWithExpr {
     pub child: Arc<dyn PhysicalExpr>,
-    pub pattern: String,      // Keep pattern as String for raw byte access
-    pub pattern_len: usize,   // Pre-calculate length
+    pub pattern: String,    // Keep pattern as String for raw byte access
+    pub pattern_len: usize, // Pre-calculate length
 }
 
 impl EndsWithExpr {
     pub fn new(child: Arc<dyn PhysicalExpr>, pattern: String) -> Self {
         let pattern_len = pattern.len();
-        Self { child, pattern, pattern_len }
+        Self {
+            child,
+            pattern,
+            pattern_len,
+        }
     }
 }
 
@@ -179,12 +194,12 @@ impl PhysicalExpr for EndsWithExpr {
 
     fn evaluate(&self, batch: &arrow::record_batch::RecordBatch) -> Result<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
-        
+
         match arg {
             ColumnarValue::Array(array) => {
                 let string_array = array.as_any().downcast_ref::<StringArray>().unwrap();
                 let len = string_array.len();
-                
+
                 let offsets = string_array.value_offsets();
                 let values = string_array.value_data();
                 let pattern_bytes = self.pattern.as_bytes();
@@ -227,13 +242,11 @@ impl PhysicalExpr for EndsWithExpr {
 
                 Ok(ColumnarValue::Array(Arc::new(result_array)))
             }
-            ColumnarValue::Scalar(ScalarValue::Utf8(Some(str_val))) => {
-                Ok(ColumnarValue::Scalar(ScalarValue::Boolean(Some(
-                    str_val.ends_with(&self.pattern),
-                ))))
-            }
-             ColumnarValue::Scalar(ScalarValue::Utf8(None)) => {
-                 Ok(ColumnarValue::Scalar(ScalarValue::Boolean(None)))
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some(str_val))) => Ok(ColumnarValue::Scalar(
+                ScalarValue::Boolean(Some(str_val.ends_with(&self.pattern))),
+            )),
+            ColumnarValue::Scalar(ScalarValue::Utf8(None)) => {
+                Ok(ColumnarValue::Scalar(ScalarValue::Boolean(None)))
             }
             _ => Err(datafusion::error::DataFusionError::Internal(
                 "EndsWith requires StringArray input".to_string(),
@@ -249,6 +262,9 @@ impl PhysicalExpr for EndsWithExpr {
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        Ok(Arc::new(EndsWithExpr::new(children[0].clone(), self.pattern.clone())))
+        Ok(Arc::new(EndsWithExpr::new(
+            children[0].clone(),
+            self.pattern.clone(),
+        )))
     }
 }

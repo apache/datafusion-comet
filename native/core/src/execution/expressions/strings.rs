@@ -176,5 +176,3 @@ fn extract_string_literal(expr: &Arc<dyn PhysicalExpr>) -> Result<String, Execut
         )),
     }
 }
-
-
