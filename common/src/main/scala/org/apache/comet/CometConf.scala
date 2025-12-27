@@ -376,6 +376,17 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(1)
 
+  val COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.columnar.shuffle.complexTypes.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Whether to enable Comet columnar shuffle for complex types (struct, array, map). " +
+          "When disabled (default), queries with complex types will fall back to Spark shuffle " +
+          "for better performance. Enable this only if you need columnar shuffle features for " +
+          "complex types and accept potential performance tradeoffs.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.columnar.shuffle.async.enabled")
       .category(CATEGORY_SHUFFLE)

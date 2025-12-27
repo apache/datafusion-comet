@@ -112,12 +112,42 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     checkSparkAnswer(df)
   }
 
+  test("Fallback to Spark for complex types when config is disabled (default)") {
+    // https://github.com/apache/datafusion-comet/issues/2904
+    // By default, complex types should fall back to Spark shuffle for better performance
+    withSQLConf(CometConf.COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.key -> "false") {
+      // Test struct type
+      withParquetTable(Seq((1, (0, "1")), (2, (3, "3"))), "tbl") {
+        val df = sql("SELECT * FROM tbl").repartition(10, $"_1", $"_2")
+        // Should have 0 Comet shuffle exchanges since complex types are disabled
+        checkCometExchange(df, 0, false)
+        checkSparkAnswer(df)
+      }
+
+      // Test array type
+      withParquetTable((0 until 10).map(i => (Seq(i, i + 1), i + 1)), "tbl2") {
+        val df = sql("SELECT * FROM tbl2").repartition(10, $"_1", $"_2")
+        checkCometExchange(df, 0, false)
+        checkSparkAnswer(df)
+      }
+
+      // Test map type
+      withParquetTable((0 until 10).map(i => (Map(i -> i.toString), i + 1)), "tbl3") {
+        val df = sql("SELECT * FROM tbl3").repartition(10, $"_1", $"_2")
+        checkCometExchange(df, 0, false)
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
   test("columnar shuffle on nested struct including nulls") {
     // https://github.com/apache/datafusion-comet/issues/1538
     assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
-        withSQLConf(CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
+        withSQLConf(
+          CometConf.COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
           withParquetTable(
             (0 until 50).map(i =>
               (i, Seq((i + 1, i.toString), null, (i + 3, (i + 3).toString)), i + 1)),
@@ -137,7 +167,9 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   test("columnar shuffle on struct including nulls") {
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
-        withSQLConf(CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
+        withSQLConf(
+          CometConf.COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
           val data: Seq[(Int, (Int, String))] =
             Seq((1, (0, "1")), (2, (3, "3")), (3, null))
           withParquetTable(data, "tbl") {
@@ -158,6 +190,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
       Seq(10, 201).foreach { numPartitions =>
         Seq("1.0", "10.0").foreach { ratio =>
           withSQLConf(
+            CometConf.COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> execEnabled,
             CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
             withParquetTable((0 until 50).map(i => (Map(Seq(i, i + 1) -> i), i + 1)), "tbl") {
@@ -230,6 +263,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
       Seq(10, 201).foreach { numPartitions =>
         Seq("1.0", "10.0").foreach { ratio =>
           withSQLConf(
+            CometConf.COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> execEnabled,
             CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
             withParquetTable(
@@ -336,7 +370,9 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   def columnarShuffleOnMapTest[K: TypeTag](num: Int, keys: Seq[K]): Unit = {
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
-        withSQLConf(CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
+        withSQLConf(
+          CometConf.COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
           withParquetTable(genTuples(num, keys), "tbl") {
             repartitionAndSort(numPartitions)
           }
@@ -451,7 +487,9 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
-        withSQLConf(CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
+        withSQLConf(
+          CometConf.COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
           withParquetTable(
             (0 until 50).map(i =>
               (
@@ -483,7 +521,9 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     Seq("false", "true").foreach { _ =>
       Seq(10, 201).foreach { numPartitions =>
         Seq("1.0", "10.0").foreach { ratio =>
-          withSQLConf(CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
+          withSQLConf(
+            CometConf.COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
             withParquetTable(
               (0 until 50).map(i => (Seq(Seq(i + 1), Seq(i + 2), Seq(i + 3)), i + 1)),
               "tbl") {
@@ -503,7 +543,9 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   test("columnar shuffle on nested struct") {
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
-        withSQLConf(CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
+        withSQLConf(
+          CometConf.COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> ratio) {
           withParquetTable(
             (0 until 50).map(i =>
               ((i, 2.toString, (i + 1).toLong, (3.toString, i + 1, (i + 2).toLong)), i + 1)),
@@ -871,29 +913,31 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 
   test("columnar shuffle on null struct fields") {
-    withTempDir { dir =>
-      val testData = "{}\n"
-      val path = Paths.get(dir.toString, "test.json")
-      Files.write(path, testData.getBytes)
+    withSQLConf(CometConf.COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.key -> "true") {
+      withTempDir { dir =>
+        val testData = "{}\n"
+        val path = Paths.get(dir.toString, "test.json")
+        Files.write(path, testData.getBytes)
 
-      // Define the nested struct schema
-      val readSchema = StructType(
-        Array(
-          StructField(
-            "metaData",
-            StructType(
-              Array(StructField(
-                "format",
-                StructType(Array(StructField("provider", StringType, nullable = true))),
-                nullable = true))),
-            nullable = true)))
+        // Define the nested struct schema
+        val readSchema = StructType(
+          Array(
+            StructField(
+              "metaData",
+              StructType(
+                Array(StructField(
+                  "format",
+                  StructType(Array(StructField("provider", StringType, nullable = true))),
+                  nullable = true))),
+              nullable = true)))
 
-      // Read JSON with custom schema and repartition, this will repartition rows that contain
-      // null struct fields.
-      val df = spark.read.format("json").schema(readSchema).load(path.toString).repartition(2)
-      assert(df.count() == 1)
-      val row = df.collect()(0)
-      assert(row.getAs[org.apache.spark.sql.Row]("metaData") == null)
+        // Read JSON with custom schema and repartition, this will repartition rows that contain
+        // null struct fields.
+        val df = spark.read.format("json").schema(readSchema).load(path.toString).repartition(2)
+        assert(df.count() == 1)
+        val row = df.collect()(0)
+        assert(row.getAs[org.apache.spark.sql.Row]("metaData") == null)
+      }
     }
   }
 
