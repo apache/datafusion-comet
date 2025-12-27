@@ -148,6 +148,126 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
+  test("split string basic") {
+    // Basic split tests with 2 arguments (no limit)
+    withParquetTable((0 until 5).map(i => (s"value$i,test$i", i)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split('one,two,three', ',') FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(_1, '-') FROM tbl")
+    }
+  }
+
+  test("split string with limit") {
+    // Split tests with 3 arguments (with limit)
+    withParquetTable((0 until 5).map(i => ("a,b,c,d,e", i)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT split(_1, ',', 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',', 3) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',', -1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',', 0) FROM tbl")
+    }
+  }
+
+  test("split string with regex patterns") {
+    // Test with various regex patterns
+    withParquetTable((0 until 5).map(i => ("word1 word2  word3", i)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT split(_1, ' ') FROM tbl")
+      checkSparkAnswerAndOperator("SELECT split(_1, '\\\\s+') FROM tbl")
+    }
+
+    withParquetTable((0 until 5).map(i => ("foo123bar456baz", i)), "tbl2") {
+      checkSparkAnswerAndOperator("SELECT split(_1, '\\\\d+') FROM tbl2")
+    }
+  }
+
+  test("split string edge cases") {
+    // Test edge cases: empty strings, nulls, single character
+    withParquetTable(Seq(("", 0), ("single", 1), (null, 2), ("a", 3)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl")
+    }
+  }
+
+  test("split string with UTF-8 characters") {
+    // Test with multi-byte UTF-8 characters to verify regex engine compatibility
+    // between Java (Spark) and Rust (Comet)
+
+    // CJK characters
+    withParquetTable(Seq(("你好,世界", 0), ("こんにちは,世界", 1)), "tbl_cjk") {
+      checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_cjk")
+    }
+
+    // Emoji and symbols
+    withParquetTable(Seq(("😀,😃,😄", 0), ("🔥,💧,🌍", 1), ("α,β,γ", 2)), "tbl_emoji") {
+      checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_emoji")
+    }
+
+    // Combining characters / grapheme clusters
+    // "é" as combining character (e + combining acute accent)
+    // vs "é" as single character (precomposed)
+    withParquetTable(
+      Seq(
+        ("café,naïve", 0), // precomposed
+        ("café,naïve", 1), // combining (if your editor supports it)
+        ("मानक,हिन्दी", 2)
+      ), // Devanagari script
+      "tbl_graphemes") {
+      checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_graphemes")
+    }
+
+    // Mixed ASCII and multi-byte with regex patterns
+    withParquetTable(
+      Seq(("hello世界test你好", 0), ("foo😀bar😃baz", 1), ("abc한글def", 2)), // Korean Hangul
+      "tbl_mixed") {
+      // Split on ASCII word boundaries
+      checkSparkAnswerAndOperator("SELECT split(_1, '[a-z]+') FROM tbl_mixed")
+    }
+
+    // RTL (Right-to-Left) characters
+    withParquetTable(Seq(("مرحبا,عالم", 0), ("שלום,עולם", 1)), "tbl_rtl") { // Arabic, Hebrew
+      checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_rtl")
+    }
+
+    // Zero-width characters and special Unicode
+    withParquetTable(
+      Seq(
+        ("test\u200Bword", 0), // Zero-width space
+        ("foo\u00ADbar", 1)
+      ), // Soft hyphen
+      "tbl_special") {
+      checkSparkAnswerAndOperator("SELECT split(_1, '\u200B') FROM tbl_special")
+    }
+
+    // Surrogate pairs (4-byte UTF-8)
+    withParquetTable(
+      Seq(
+        ("𝐇𝐞𝐥𝐥𝐨,𝐖𝐨𝐫𝐥𝐝", 0), // Mathematical bold letters (U+1D400 range)
+        ("𠜎,𠜱,𠝹", 1)
+      ), // CJK Extension B
+      "tbl_surrogate") {
+      checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_surrogate")
+    }
+  }
+
+  test("split string with UTF-8 regex patterns") {
+    // Test regex patterns that involve UTF-8 characters
+
+    // Split on Unicode character classes
+    withParquetTable(
+      Seq(
+        ("word1 word2　word3", 0), // Regular space and ideographic space (U+3000)
+        ("test1\u00A0test2", 1)
+      ), // Non-breaking space
+      "tbl_space") {
+      // Split on any whitespace (should match all Unicode whitespace)
+      checkSparkAnswerAndOperator("SELECT split(_1, '\\\\s+') FROM tbl_space")
+    }
+
+    // Split with limit on UTF-8 strings
+    withParquetTable(Seq(("你,好,世,界", 0), ("😀,😃,😄,😁", 1)), "tbl_utf8_limit") {
+      checkSparkAnswerAndOperator("SELECT split(_1, ',', 2) FROM tbl_utf8_limit")
+      checkSparkAnswerAndOperator("SELECT split(_1, ',', -1) FROM tbl_utf8_limit")
+    }
+  }
+
   test("Various String scalar functions") {
     val table = "names"
     withTable(table) {
