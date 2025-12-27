@@ -80,6 +80,14 @@ harness = false
 name = "padding"
 harness = false
 
+[[bench]]
+name = "comparison"
+harness = false
+
+[[bench]]
+name = "normalize_nan"
+harness = false
+
 [[test]]
 name = "test_udf_registration"
 path = "tests/spark_expr_reg.rs"
