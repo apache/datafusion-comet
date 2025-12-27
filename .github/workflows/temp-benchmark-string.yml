@@ -1,0 +1,37 @@
+name: String Expression Benchmark
+
+on:
+  push:
+    branches:
+      - feat/optimize-strings-2973
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: stable
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{env.RUST_VERSION}}
+          jdk-version: 11
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+      - name: Build Comet
+        run: make release
+      - name: Run String Benchmark
+        run: |
+          cd spark && MAVEN_OPTS='-Xmx4g' ../mvnw exec:java -Dexec.mainClass="org.apache.spark.sql.benchmark.CometStringExpressionBenchmark" -Dexec.classpathScope="test"
