@@ -56,7 +56,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, with
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, aggSupportsMixedExecution, exprToProto, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 
 /**
@@ -1067,11 +1067,14 @@ trait CometBaseAggregate {
     val modes = aggregate.aggregateExpressions.map(_.mode).distinct
     // In distinct aggregates there can be a combination of modes
     val multiMode = modes.size > 1
-    // For a final mode HashAggregate, we only need to transform the HashAggregate
-    // if there is Comet partial aggregation.
+    // For a final mode HashAggregate, check if there is Comet partial aggregation.
+    // If not, we can still proceed if all aggregates support mixed execution
+    // (Spark partial / Comet final). See https://github.com/apache/datafusion-comet/issues/2894
     val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
+    val allSupportMixedExecution = aggregate.aggregateExpressions.forall(expr =>
+      aggSupportsMixedExecution(expr.aggregateFunction))
 
-    if (multiMode || sparkFinalMode) {
+    if (multiMode || (sparkFinalMode && !allSupportMixedExecution)) {
       return None
     }
 
