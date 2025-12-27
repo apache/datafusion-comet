@@ -72,6 +72,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("initCap", "select initCap(c1) from parquetV1Table"),
     StringExprConfig("trim", "select trim(c1) from parquetV1Table"),
     StringExprConfig("concatws", "select concat_ws(' ', c1, c1) from parquetV1Table"),
+    StringExprConfig("contains", "select contains(c1, '123') from parquetV1Table"),
     StringExprConfig("length", "select length(c1) from parquetV1Table"),
     StringExprConfig("repeat", "select repeat(c1, 3) from parquetV1Table"),
     StringExprConfig("reverse", "select reverse(c1) from parquetV1Table"),
