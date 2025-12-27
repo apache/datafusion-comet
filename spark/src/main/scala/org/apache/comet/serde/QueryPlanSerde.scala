@@ -258,6 +258,23 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[VariancePop] -> CometVariancePop,
     classOf[VarianceSamp] -> CometVarianceSamp)
 
+  /**
+   * Checks if the given aggregate function supports "Spark partial / Comet final" mixed
+   * execution. This is used to determine if Comet can process a final aggregate even when the
+   * partial aggregate was performed by Spark.
+   *
+   * @param fn
+   *   The aggregate function to check
+   * @return
+   *   true if the aggregate supports mixed execution, false otherwise
+   */
+  def aggSupportsMixedExecution(fn: AggregateFunction): Boolean = {
+    aggrSerdeMap.get(fn.getClass) match {
+      case Some(handler) => handler.supportsSparkPartialCometFinal
+      case None => false
+    }
+  }
+
   def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |

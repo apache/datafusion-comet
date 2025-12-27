@@ -157,7 +157,9 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule should not allow Spark partial and Comet final hash aggregate") {
+  test("CometExecRule should not allow Spark partial and Comet final for unsafe aggregates") {
+    // https://github.com/apache/datafusion-comet/issues/2894
+    // SUM is not safe for mixed execution due to potential overflow handling differences
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
@@ -173,10 +175,38 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
-        // if the partial aggregate cannot be converted to Comet, then neither should be
+        // SUM is not safe for mixed execution, so both partial and final should fall back
         assert(
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  test("CometExecRule should allow Spark partial and Comet final for safe aggregates") {
+    // https://github.com/apache/datafusion-comet/issues/2894
+    // MIN, MAX, COUNT are safe for mixed execution (simple intermediate buffer)
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT MIN(id), MAX(id), COUNT(*) FROM test_data GROUP BY (id % 3)")
+
+      // Count original Spark operators (should be 2: partial + final)
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // MIN, MAX, COUNT support mixed execution, so final should run in Comet
+        // Partial stays in Spark (1 HashAggregateExec), final runs in Comet (1 CometHashAggregateExec)
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1)
       }
     }
   }
