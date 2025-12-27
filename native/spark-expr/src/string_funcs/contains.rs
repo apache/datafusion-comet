@@ -27,7 +27,7 @@
 
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray};
 use arrow::datatypes::DataType;
-use arrow_string::like::contains as arrow_contains;
+use arrow::compute::kernels::comparison::contains as arrow_contains;
 use datafusion::common::{exec_err, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,

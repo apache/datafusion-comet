@@ -28,7 +28,6 @@ edition = { workspace = true }
 
 [dependencies]
 arrow = { workspace = true }
-arrow-string = "57.0.0"
 chrono = { workspace = true }
 datafusion = { workspace = true }
 chrono-tz = { workspace = true }
