@@ -227,8 +227,9 @@ All other complex casts fall back to Spark.
 #### Array Type Casting
 
 - **`ARRAY<T>` → `STRING`**  
-  Casting arrays to strings is supported and produces a string representation
-  of the array contents.
+  Casting arrays to strings is supported and produces a JSON-like string
+  representation of the array contents (for example, `[1, 2, 3]`, with
+  elements separated by commas and enclosed in square brackets).
 
   Supported element types include:
   - `boolean`
@@ -239,8 +240,13 @@ All other complex casts fall back to Spark.
   - `string`
   - `decimal`
 
-  Support depends on the scan implementation.
-  Arrays with unsupported element types may fall back to Spark.
+  Support for these casts is implemented for queries that use the engine’s
+  native/optimized scan for the underlying data source. When a query is planned
+  using a different scan implementation (for example, a connector-specific or
+  Spark-provided scan), the cast may not be pushed down and Spark will evaluate
+  it instead.
+  Arrays whose element types are not in the list above are always handled by
+  Spark and are not evaluated natively by the plugin.
 
   Example:
 
