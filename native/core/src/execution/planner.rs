@@ -644,6 +644,9 @@ impl PhysicalPlanner {
             ExprStruct::MonotonicallyIncreasingId(_) => Ok(Arc::new(
                 MonotonicallyIncreasingId::from_partition_id(self.partition),
             )),
+            ExprStruct::ToCsv(expr) => {
+
+            }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
     }

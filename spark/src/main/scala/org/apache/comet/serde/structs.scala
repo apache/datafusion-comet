@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetArrayStructFields, GetStructField, JsonToStructs, StructsToJson}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetArrayStructFields, GetStructField, JsonToStructs, StructsToCsv, StructsToJson}
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, MapType, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -229,5 +229,15 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
         .build()
       ExprOuterClass.Expr.newBuilder().setFromJson(fromJson).build()
     }
+  }
+}
+
+object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
+
+  override def convert(
+      expr: StructsToCsv,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    None
   }
 }
