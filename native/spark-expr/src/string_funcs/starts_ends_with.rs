@@ -126,7 +126,7 @@ impl PhysicalExpr for StartsWithExpr {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(StartsWithExpr::new(
-            children[0].clone(),
+            Arc::clone(&children[0]),
             self.pattern_array.value(0).to_string(),
         )))
     }
@@ -205,7 +205,7 @@ impl PhysicalExpr for EndsWithExpr {
                 let pattern_bytes = self.pattern.as_bytes();
                 let p_len = self.pattern_len;
 
-                let mut buffer = Vec::with_capacity((len + 7) / 8);
+                let mut buffer = Vec::with_capacity(len.div_ceil(8));
                 let mut current_byte: u8 = 0;
                 let mut bit_mask: u8 = 1;
 
@@ -263,7 +263,7 @@ impl PhysicalExpr for EndsWithExpr {
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
         Ok(Arc::new(EndsWithExpr::new(
-            children[0].clone(),
+            Arc::clone(&children[0]),
             self.pattern.clone(),
         )))
     }
