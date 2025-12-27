@@ -91,7 +91,7 @@ where
             // Microsecond truncation is a no-op for microsecond timestamps
             // Just copy the values directly
             let result: TimestampMicrosecondArray =
-                array.iter().map(|opt| opt.map(|v| i64::from(v))).collect();
+                array.iter().map(|opt| opt.map(i64::from)).collect();
             return Ok(Some(result));
         }
         "MILLISECOND" => MICROS_PER_MILLISECOND,
