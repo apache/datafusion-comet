@@ -46,6 +46,69 @@ macro_rules! return_compute_error_with {
 // and the beginning of the Unix Epoch (1970-01-01)
 const DAYS_TO_UNIX_EPOCH: i32 = 719_163;
 
+// Microseconds per time unit - used for fast arithmetic-based truncation
+const MICROS_PER_MILLISECOND: i64 = 1_000;
+const MICROS_PER_SECOND: i64 = 1_000_000;
+const MICROS_PER_MINUTE: i64 = 60 * MICROS_PER_SECOND;
+const MICROS_PER_HOUR: i64 = 60 * MICROS_PER_MINUTE;
+
+/// Fast arithmetic-based timestamp truncation for sub-day formats.
+/// These operations are timezone-independent because they only affect
+/// the time portion which is the same across all timezones.
+///
+/// For example, truncating 14:30:45.123456 to MINUTE gives 14:30:00.000000
+/// regardless of whether this is interpreted as UTC or America/New_York.
+#[inline]
+fn truncate_micros_to_unit(micros: i64, unit_size: i64) -> i64 {
+    // For positive timestamps, simple floor division works
+    // For negative timestamps (before 1970), we need to round toward negative infinity
+    if micros >= 0 {
+        micros - (micros % unit_size)
+    } else {
+        // For negative numbers, we want floor division behavior
+        // e.g., -1 truncated to seconds should be -1_000_000, not 0
+        let remainder = micros % unit_size;
+        if remainder == 0 {
+            micros
+        } else {
+            micros - remainder - unit_size
+        }
+    }
+}
+
+/// Truncate timestamp array using fast arithmetic for sub-day formats.
+/// Returns Ok(Some(array)) if the format was handled, Ok(None) if not applicable.
+fn try_truncate_timestamp_arithmetic<T>(
+    array: &PrimitiveArray<T>,
+    format: &str,
+) -> Result<Option<TimestampMicrosecondArray>, SparkError>
+where
+    T: ArrowTemporalType + ArrowNumericType,
+    i64: From<T::Native>,
+{
+    let unit_size = match format {
+        "MICROSECOND" => {
+            // Microsecond truncation is a no-op for microsecond timestamps
+            // Just copy the values directly
+            let result: TimestampMicrosecondArray =
+                array.iter().map(|opt| opt.map(|v| i64::from(v))).collect();
+            return Ok(Some(result));
+        }
+        "MILLISECOND" => MICROS_PER_MILLISECOND,
+        "SECOND" => MICROS_PER_SECOND,
+        "MINUTE" => MICROS_PER_MINUTE,
+        "HOUR" => MICROS_PER_HOUR,
+        _ => return Ok(None), // Format requires timezone-aware handling
+    };
+
+    let result: TimestampMicrosecondArray = array
+        .iter()
+        .map(|opt| opt.map(|v| truncate_micros_to_unit(i64::from(v), unit_size)))
+        .collect();
+
+    Ok(Some(result))
+}
+
 // Copied from arrow_arith/temporal.rs with modification to the output datatype
 // Transforms a array of NaiveDate to an array of Date32 after applying an operation
 fn as_datetime_with_op<A: ArrayAccessor<Item = T::Native>, T: ArrowTemporalType, F>(
@@ -530,66 +593,48 @@ where
     T: ArrowTemporalType + ArrowNumericType,
     i64: From<T::Native>,
 {
+    let format_upper = format.to_uppercase();
+
+    // Fast path: sub-day truncations can use simple arithmetic
+    // These are timezone-independent since they only affect the time portion
+    if let Some(result) = try_truncate_timestamp_arithmetic(array, &format_upper)? {
+        return Ok(result);
+    }
+
+    // Slow path: date-level truncations require timezone-aware DateTime operations
     let builder = TimestampMicrosecondBuilder::with_capacity(array.len());
     let iter = ArrayIter::new(array);
     match array.data_type() {
-        DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
-            match format.to_uppercase().as_str() {
-                "YEAR" | "YYYY" | "YY" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_year(dt))
-                    })
-                }
-                "QUARTER" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_quarter(dt))
-                    })
-                }
-                "MONTH" | "MON" | "MM" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_month(dt))
-                    })
-                }
-                "WEEK" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_week(dt))
-                    })
-                }
-                "DAY" | "DD" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_day(dt))
-                    })
-                }
-                "HOUR" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_hour(dt))
-                    })
-                }
-                "MINUTE" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_minute(dt))
-                    })
-                }
-                "SECOND" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_second(dt))
-                    })
-                }
-                "MILLISECOND" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_ms(dt))
-                    })
-                }
-                "MICROSECOND" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_microsec(dt))
-                    })
-                }
-                _ => Err(SparkError::Internal(format!(
-                    "Unsupported format: {format:?} for function 'timestamp_trunc'"
-                ))),
+        DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => match format_upper.as_str() {
+            "YEAR" | "YYYY" | "YY" => {
+                as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
+                    as_micros_from_unix_epoch_utc(trunc_date_to_year(dt))
+                })
             }
-        }
+            "QUARTER" => {
+                as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
+                    as_micros_from_unix_epoch_utc(trunc_date_to_quarter(dt))
+                })
+            }
+            "MONTH" | "MON" | "MM" => {
+                as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
+                    as_micros_from_unix_epoch_utc(trunc_date_to_month(dt))
+                })
+            }
+            "WEEK" => {
+                as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
+                    as_micros_from_unix_epoch_utc(trunc_date_to_week(dt))
+                })
+            }
+            "DAY" | "DD" => {
+                as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
+                    as_micros_from_unix_epoch_utc(trunc_date_to_day(dt))
+                })
+            }
+            _ => Err(SparkError::Internal(format!(
+                "Unsupported format: {format:?} for function 'timestamp_trunc'"
+            ))),
+        },
         dt => return_compute_error_with!(
             "Unsupported input type '{:?}' for function 'timestamp_trunc'",
             dt
