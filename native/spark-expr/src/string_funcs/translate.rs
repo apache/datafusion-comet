@@ -70,13 +70,13 @@ fn build_translation_map(from: &str, to: &str) -> HashMap<char, TranslateAction>
 
     for (i, from_char) in from_chars.into_iter().enumerate() {
         // Only insert the first occurrence of each character to match Spark behaviour
-        if !map.contains_key(&from_char) {
+        map.entry(from_char).or_insert_with(|| {
             if i < to_chars.len() {
-                map.insert(from_char, TranslateAction::Replace(to_chars[i]));
+                TranslateAction::Replace(to_chars[i])
             } else {
-                map.insert(from_char, TranslateAction::Delete);
+                TranslateAction::Delete
             }
-        }
+        });
     }
 
     map
