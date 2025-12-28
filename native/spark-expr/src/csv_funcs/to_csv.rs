@@ -15,10 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{RecordBatch, StringBuilder, StructArray};
-use arrow::array::{Array, ArrayRef, StringArray};
+use arrow::array::{
+    Array, ArrayRef, BooleanArray, Int16Array, Int32Array, Int64Array, Int8Array, LargeStringArray,
+    StringArray, StringBuilder,
+};
+use arrow::array::{RecordBatch, StructArray};
 use arrow::datatypes::{DataType, Schema};
-use datafusion::common::Result;
+use datafusion::common::{exec_err, Result};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::any::Any;
@@ -30,9 +33,9 @@ use std::sync::Arc;
 #[derive(Debug, Eq)]
 pub struct ToCsv {
     expr: Arc<dyn PhysicalExpr>,
-    delimiter: char,
-    quote: char,
-    escape: char,
+    delimiter: String,
+    quote: String,
+    escape: String,
     null_value: String,
 }
 
@@ -58,18 +61,29 @@ impl PartialEq for ToCsv {
 
 impl ToCsv {
     pub fn new(
-        expr: Arc<dyn PhysicalExpr>, delimiter: char,
-        quote: char,
-        escape: char,
-        null_value: String
+        expr: Arc<dyn PhysicalExpr>,
+        delimiter: &str,
+        quote: &str,
+        escape: &str,
+        null_value: &str,
     ) -> Self {
-        Self { expr, delimiter, quote, escape, null_value }
+        Self {
+            expr,
+            delimiter: delimiter.to_owned(),
+            quote: quote.to_owned(),
+            escape: escape.to_owned(),
+            null_value: null_value.to_owned(),
+        }
     }
 }
 
 impl Display for ToCsv {
-    fn fmt(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
-        unimplemented!()
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "to_csv({}, delimiter={}, quote={}, escape={}, null_value={})",
+            self.expr, self.delimiter, self.quote, self.escape, self.null_value
+        )
     }
 }
 
@@ -83,25 +97,16 @@ impl PhysicalExpr for ToCsv {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        let input_value = self.expr.evaluate(batch)?;
+        let input_value = self.expr.evaluate(batch)?.into_array(batch.num_rows())?;
 
-        let array = match input_value {
-            ColumnarValue::Array(arr) => arr,
-            ColumnarValue::Scalar(scalar) => scalar.to_array()?,
-        };
+        let struct_array = input_value
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("A StructType is expected");
 
-        let mut builder = StringBuilder::with_capacity(array.len(), 1024);
+        let result = struct_to_csv(struct_array, &self.delimiter, &self.null_value)?;
 
-        for row_idx in 0..array.len() {
-            if array.is_null(row_idx) {
-                builder.append_null();
-            } else {
-                let csv_string = struct_to_csv(&array, row_idx)?;
-                builder.append_value(&csv_string);
-            }
-        }
-
-        Ok(Arc::new(builder.finish()))
+        Ok(ColumnarValue::Array(result))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -112,7 +117,13 @@ impl PhysicalExpr for ToCsv {
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        todo!()
+        Ok(Arc::new(Self::new(
+            Arc::clone(&children[0]),
+            &self.delimiter,
+            &self.quote,
+            &self.escape,
+            &self.null_value,
+        )))
     }
 
     fn fmt_sql(&self, _: &mut Formatter<'_>) -> std::fmt::Result {
@@ -120,126 +131,93 @@ impl PhysicalExpr for ToCsv {
     }
 }
 
-fn struct_to_csv(array: &StructArray, row_idx: usize) -> Result<String> {
-    use arrow::array::StructArray;
-
-    let struct_array = array
-        .as_any()
-        .downcast_ref::<StructArray>()
-        .unwrap();
-
-    let mut csv_string = String::new();
-    let num_columns = struct_array.num_columns();
-
-    for (col_idx, column) in struct_array.columns().iter().enumerate() {
-        if col_idx > 0 {
-            csv_string.push(self.options.delimiter);
-        }
-
-        if column.is_null(row_idx) {
-            csv_string.push_str(&self.options.null_value);
+fn struct_to_csv(array: &StructArray, delimiter: &str, null_value: &str) -> Result<ArrayRef> {
+    let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
+    let mut csv_string = String::with_capacity(array.len() * 16);
+    for row_idx in 0..array.len() {
+        if array.is_null(row_idx) {
+            builder.append_null();
         } else {
-            let value = self.format_value(column, row_idx)?;
-            let escaped = self.escape_value(&value);
-            csv_string.push_str(&escaped);
+            csv_string.clear();
+            for (col_idx, column) in array.columns().iter().enumerate() {
+                if col_idx > 0 {
+                    csv_string.push_str(delimiter);
+                }
+                if column.is_null(row_idx) {
+                    csv_string.push_str(null_value);
+                } else {
+                    let value = convert_to_string(column, row_idx)?;
+                    csv_string.push_str(&value);
+                }
+            }
         }
+        builder.append_value(&csv_string);
     }
-
-    Ok(csv_string)
+    Ok(Arc::new(builder.finish()))
 }
 
-fn format_value(array: &ArrayRef, row_idx: usize) -> Result<String> {
-    use arrow::array::*;
-
+fn convert_to_string(array: &ArrayRef, row_idx: usize) -> Result<String> {
     match array.data_type() {
-        DataType::Null => Ok(self.options.null_value.clone()),
         DataType::Boolean => {
-            let arr = array.as_any().downcast_ref::<BooleanArray>().unwrap();
-            Ok(arr.value(row_idx).to_string())
+            let array = array.as_any().downcast_ref::<BooleanArray>().unwrap();
+            Ok(array.value(row_idx).to_string())
         }
         DataType::Int8 => {
-            let arr = array.as_any().downcast_ref::<Int8Array>().unwrap();
-            Ok(arr.value(row_idx).to_string())
+            let array = array.as_any().downcast_ref::<Int8Array>().unwrap();
+            Ok(array.value(row_idx).to_string())
         }
         DataType::Int16 => {
-            let arr = array.as_any().downcast_ref::<Int16Array>().unwrap();
-            Ok(arr.value(row_idx).to_string())
+            let array = array.as_any().downcast_ref::<Int16Array>().unwrap();
+            Ok(array.value(row_idx).to_string())
         }
         DataType::Int32 => {
-            let arr = array.as_any().downcast_ref::<Int32Array>().unwrap();
-            Ok(arr.value(row_idx).to_string())
+            let array = array.as_any().downcast_ref::<Int32Array>().unwrap();
+            Ok(array.value(row_idx).to_string())
         }
         DataType::Int64 => {
-            let arr = array.as_any().downcast_ref::<Int64Array>().unwrap();
-            Ok(arr.value(row_idx).to_string())
-        }
-        DataType::UInt8 => {
-            let arr = array.as_any().downcast_ref::<UInt8Array>().unwrap();
-            Ok(arr.value(row_idx).to_string())
-        }
-        DataType::UInt16 => {
-            let arr = array.as_any().downcast_ref::<UInt16Array>().unwrap();
-            Ok(arr.value(row_idx).to_string())
-        }
-        DataType::UInt32 => {
-            let arr = array.as_any().downcast_ref::<UInt32Array>().unwrap();
-            Ok(arr.value(row_idx).to_string())
-        }
-        DataType::UInt64 => {
-            let arr = array.as_any().downcast_ref::<UInt64Array>().unwrap();
-            Ok(arr.value(row_idx).to_string())
-        }
-        DataType::Float32 => {
-            let arr = array.as_any().downcast_ref::<Float32Array>().unwrap();
-            Ok(arr.value(row_idx).to_string())
-        }
-        DataType::Float64 => {
-            let arr = array.as_any().downcast_ref::<Float64Array>().unwrap();
-            Ok(arr.value(row_idx).to_string())
+            let array = array.as_any().downcast_ref::<Int64Array>().unwrap();
+            Ok(array.value(row_idx).to_string())
         }
         DataType::Utf8 => {
-            let arr = array.as_any().downcast_ref::<StringArray>().unwrap();
-            Ok(arr.value(row_idx).to_string())
+            let array = array.as_any().downcast_ref::<StringArray>().unwrap();
+            Ok(array.value(row_idx).to_string())
         }
         DataType::LargeUtf8 => {
-            let arr = array.as_any().downcast_ref::<LargeStringArray>().unwrap();
-            Ok(arr.value(row_idx).to_string())
+            let array = array.as_any().downcast_ref::<LargeStringArray>().unwrap();
+            Ok(array.value(row_idx).to_string())
         }
-        DataType::Binary => {
-            let arr = array.as_any().downcast_ref::<BinaryArray>().unwrap();
-            let bytes = arr.value(row_idx);
-            Ok(format!("{:?}", bytes))
-        }
-        DataType::Date32 => {
-            let arr = array.as_any().downcast_ref::<Date32Array>().unwrap();
-            Ok(arr.value(row_idx).to_string())
-        }
-        DataType::Date64 => {
-            let arr = array.as_any().downcast_ref::<Date64Array>().unwrap();
-            Ok(arr.value(row_idx).to_string())
-        }
-        DataType::Timestamp(unit, tz) => {
-            let arr = array.as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
-            Ok(arr.value(row_idx).to_string())
-        }
-        DataType::Decimal128(precision, scale) => {
-            let arr = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
-            let value = arr.value(row_idx);
-            let divisor = 10_i128.pow(*scale as u32);
-            let integer_part = value / divisor;
-            let fractional_part = (value % divisor).abs();
-            Ok(format!("{}.{:0width$}", integer_part, fractional_part, width = *scale as usize))
-        }
-        DataType::List(_) | DataType::LargeList(_) => {
-            // Для массивов рекурсивно форматируем
-            Ok(format!("[...]")) // Упрощенная версия
-        }
-        DataType::Struct(_) => {
-            // Вложенные структуры - рекурсивный вызов
-            self.struct_to_csv(array, row_idx)
-        }
-        _ => Err(DataFusionError::NotImplemented(
-            format!("to_csv not implemented for type: {:?}", array.data_type())
-        )),
+        _ => exec_err!("to_csv not implemented for type: {:?}", array.data_type()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::csv_funcs::to_csv::struct_to_csv;
+    use arrow::array::{as_string_array, ArrayRef, Int32Array, StringArray, StructArray};
+    use arrow::datatypes::{DataType, Field};
+    use datafusion::common::Result;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_to_csv_basic() -> Result<()> {
+        let struct_array = StructArray::from(vec![
+            (
+                Arc::new(Field::new("a", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("b", DataType::Utf8, true)),
+                Arc::new(StringArray::from(vec![Some("foo"), None, Some("baz")])) as ArrayRef,
+            ),
+        ]);
+
+        let expected = &StringArray::from(vec!["1,foo", "2,", "3,baz"]);
+
+        let result = struct_to_csv(&Arc::new(struct_array), ",", "")?;
+        let result = as_string_array(&result);
+
+        assert_eq!(result, expected);
+
+        Ok(())
     }
 }

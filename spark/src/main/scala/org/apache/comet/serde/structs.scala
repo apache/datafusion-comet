@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetArrayStructFields, GetStructField, JsonToStructs, StructsToCsv, StructsToJson}
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, MapType, StructType}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
@@ -234,10 +234,31 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
 
 object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
 
+  override def getSupportLevel(expr: StructsToCsv): SupportLevel = {
+    val isSupportedSchema = expr.inputSchema.fields
+      .forall(sf => QueryPlanSerde.supportedDataType(sf.dataType, allowComplex = false))
+    if (!isSupportedSchema) {
+      return Unsupported(Some(s"Unsupported data type: ${expr.inputSchema}"))
+    }
+    Incompatible()
+  }
+
   override def convert(
       expr: StructsToCsv,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    None
+    for {
+      childProto <- exprToProtoInternal(expr.child, inputs, binding)
+    } yield {
+      val toCsv = ExprOuterClass.ToCsv
+        .newBuilder()
+        .setChild(childProto)
+        .setDelimiter(expr.options.getOrElse("delimiter", ","))
+        .setQuote(expr.options.getOrElse("quote", "\""))
+        .setEscape(expr.options.getOrElse("escape", "\\"))
+        .setEscape(expr.options.getOrElse("nullValue", ""))
+        .build()
+      ExprOuterClass.Expr.newBuilder().setToCsv(toCsv).build()
+    }
   }
 }

@@ -16,3 +16,5 @@
 // under the License.
 
 mod to_csv;
+
+pub use to_csv::ToCsv;
