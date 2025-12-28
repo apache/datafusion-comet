@@ -23,7 +23,10 @@ import java.util.Locale
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkException
+import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
@@ -155,6 +158,17 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
   override def createExec(nativeOp: Operator, op: DataWritingCommandExec): CometNativeExec = {
     val cmd = op.cmd.asInstanceOf[InsertIntoHadoopFsRelationCommand]
     val outputPath = cmd.outputPath.toString
+
+    // SaveMode.Overwrite - delete existing output in the driver itself
+    if (cmd.mode == SaveMode.Overwrite) {
+//      Delete the end directory if exists in overwrite mode
+      val outputPathObj = new Path(outputPath)
+      val fs = outputPathObj.getFileSystem(new Configuration())
+
+      if (fs.exists(outputPathObj)) {
+        fs.delete(outputPathObj, true)
+      }
+    }
 
     // Get the child plan from the WriteFilesExec or use the child directly
     val childPlan = op.child match {
