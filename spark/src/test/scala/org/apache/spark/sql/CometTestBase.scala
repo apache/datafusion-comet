@@ -528,6 +528,30 @@ abstract class CometTestBase
     }
   }
 
+  /**
+   * Override waitForTasksToFinish to ensure SparkContext is active before checking tasks. This
+   * fixes the issue where waitForTasksToFinish returns -1 when SparkContext is not active.
+   */
+  override protected def waitForTasksToFinish(): Unit = {
+    // Ensure SparkContext is active before checking tasks
+    // The parent implementation uses SparkContext.getActive.map(_.activeTasks).getOrElse(-1)
+    // If SparkContext is not active, it returns -1 which causes the assertion to fail.
+    // We ensure we have an active SparkContext before calling the parent method.
+    if (SparkContext.getActive.isEmpty) {
+      // Ensure we have a SparkContext from the spark session
+      if (_spark != null) {
+        // SparkContext from spark session should already be active
+        // but if not, getOrCreate will make it active
+        val _ = _spark.sparkContext
+      } else {
+        // Fallback to sparkContext which will get or create one
+        val _ = sparkContext
+      }
+    }
+    // Now call parent implementation which should find an active SparkContext
+    super.waitForTasksToFinish()
+  }
+
   protected def readResourceParquetFile(name: String): DataFrame = {
     spark.read.parquet(getResourceParquetFilePath(name))
   }
