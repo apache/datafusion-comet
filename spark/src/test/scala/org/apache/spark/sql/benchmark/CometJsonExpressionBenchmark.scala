@@ -43,9 +43,8 @@ case class JsonExprConfig(
 // spotless:off
 /**
  * Benchmark to measure performance of Comet JSON expressions. To run this benchmark:
- * `SPARK_GENERATE_BENCHMARK_FILES=1 make
- * benchmark-org.apache.spark.sql.benchmark.CometJsonExpressionBenchmark` Results will be written
- * to "spark/benchmarks/CometJsonExpressionBenchmark-**results.txt".
+ * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometJsonExpressionBenchmark`
+ * Results will be written to "spark/benchmarks/CometJsonExpressionBenchmark-**results.txt".
  */
 // spotless:on
 object CometJsonExpressionBenchmark extends CometBenchmarkBase {
