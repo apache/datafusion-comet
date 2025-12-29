@@ -125,7 +125,7 @@ object CometJsonExpressionBenchmark extends CometBenchmarkBase {
           values,
           config.query,
           extraConfigs,
-          isANSIEnabled = false)
+          isAnsiMode = false)
       }
     }
   }

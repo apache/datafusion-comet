@@ -35,7 +35,7 @@ object CometConditionalExpressionBenchmark extends CometBenchmarkBase {
         val query =
           "select CASE WHEN c1 < 0 THEN '<0' WHEN c1 = 0 THEN '=0' ELSE '>0' END from parquetV1Table"
 
-        runExpressionBenchmark("Case When Expr", values, query, isANSIEnabled = false)
+        runExpressionBenchmark("Case When Expr", values, query, isAnsiMode = false)
       }
     }
   }
@@ -47,7 +47,7 @@ object CometConditionalExpressionBenchmark extends CometBenchmarkBase {
 
         val query = "select IF (c1 < 0, '<0', '>=0') from parquetV1Table"
 
-        runExpressionBenchmark("If Expr", values, query, isANSIEnabled = false)
+        runExpressionBenchmark("If Expr", values, query, isAnsiMode = false)
       }
     }
   }

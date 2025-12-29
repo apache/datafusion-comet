@@ -88,7 +88,7 @@ object CometCastBenchmark extends CometBenchmarkBase {
 
         val extraConfigs = Map(SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString)
 
-        runExpressionBenchmark(name, values, query, extraConfigs, isAnsiMode)
+        runExpressionBenchmark(name, values, query, isAnsiMode)
       }
     }
   }

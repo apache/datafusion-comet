@@ -38,7 +38,7 @@ object CometPredicateExpressionBenchmark extends CometBenchmarkBase {
 
         val query = "select * from parquetV1Table where c1 in ('positive', 'zero')"
 
-        runExpressionBenchmark("in Expr", values, query, isANSIEnabled = false)
+        runExpressionBenchmark("in Expr", values, query, isAnsiMode = false)
       }
     }
   }

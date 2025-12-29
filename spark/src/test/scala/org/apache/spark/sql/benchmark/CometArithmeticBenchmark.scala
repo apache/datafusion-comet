@@ -44,7 +44,7 @@ object CometArithmeticBenchmark extends CometBenchmarkBase {
         val name = s"Binary op ${dataType.sql}, dictionary = $useDictionary"
         val query = s"SELECT c1 ${op.sig} c2 FROM $table"
 
-        runExpressionBenchmark(name, values, query, isANSIEnabled = false)
+        runExpressionBenchmark(name, values, query, isAnsiMode = false)
       }
     }
   }
@@ -64,7 +64,7 @@ object CometArithmeticBenchmark extends CometBenchmarkBase {
         val name = s"Binary op ${dataType.sql}, dictionary = $useDictionary"
         val query = s"SELECT c1 ${op.sig} c2 FROM $table"
 
-        runExpressionBenchmark(name, values, query, isANSIEnabled = false)
+        runExpressionBenchmark(name, values, query, isAnsiMode = false)
       }
     }
   }

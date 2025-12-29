@@ -88,28 +88,6 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
     }
   }
 
-  /** Runs function `f` with Comet on and off. */
-  final def runWithComet(name: String, cardinality: Long)(f: => Unit): Unit = {
-    val benchmark = new Benchmark(name, cardinality, output = output)
-
-    benchmark.addCase(s"$name - Spark ") { _ =>
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        f
-      }
-    }
-
-    benchmark.addCase(s"$name - Comet") { _ =>
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        SQLConf.ANSI_ENABLED.key -> "false") {
-        f
-      }
-    }
-
-    benchmark.run()
-  }
-
   /**
    * Runs an expression benchmark with standard cases: Spark, Comet (Scan), Comet (Scan + Exec).
    * This provides a consistent benchmark structure for expression evaluation.
@@ -127,32 +105,37 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
       name: String,
       cardinality: Long,
       query: String,
-      extraCometConfigs: Map[String, String] = Map.empty,
-      isANSIEnabled: Boolean): Unit = {
+      isAnsiMode: Boolean,
+      extraCometConfigs: Map[String, String] = Map.empty): Unit = {
+
     val benchmark = new Benchmark(name, cardinality, output = output)
 
     benchmark.addCase("Spark") { _ =>
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        spark.sql(query).noop()
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
+        runSparkCommand(spark, query, isAnsiMode)
       }
     }
 
     benchmark.addCase("Comet (Scan)") { _ =>
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "false") {
-        runSparkCommand(spark, query, isANSIEnabled)
+        CometConf.COMET_EXEC_ENABLED.key -> "false",
+        SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
+        runSparkCommand(spark, query, isAnsiMode)
       }
     }
 
     val cometExecConfigs = Map(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      "spark.sql.optimizer.constantFolding.enabled" -> "false") ++ extraCometConfigs
+      "spark.sql.optimizer.constantFolding.enabled" -> "false",
+      SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) ++ extraCometConfigs
 
     benchmark.addCase("Comet (Scan + Exec)") { _ =>
       withSQLConf(cometExecConfigs.toSeq: _*) {
-        runSparkCommand(spark, query, isANSIEnabled)
+        runSparkCommand(spark, query, isAnsiMode)
       }
     }
 
