@@ -19,14 +19,10 @@
 
 package org.apache.spark.sql.benchmark
 
-import scala.util.Try
-
-import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataType, LongType}
 
-import org.apache.comet.CometConf
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{Compatible, Incompatible, Unsupported}
 
@@ -81,48 +77,20 @@ object CometCastBenchmark extends CometBenchmarkBase {
       toDataType: DataType,
       isAnsiMode: Boolean): Unit = {
 
-    val benchmark =
-      new Benchmark(
-        s"Cast function to : ${toDataType} , ansi mode enabled : ${isAnsiMode}",
-        values,
-        output = output)
-
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         prepareTable(dir, spark.sql(s"SELECT value FROM $tbl"))
+
         val functionSQL = castExprSQL(toDataType, "value")
         val query = s"SELECT $functionSQL FROM parquetV1Table"
+        val name =
+          s"Cast function to : ${toDataType} , ansi mode enabled : ${isAnsiMode}"
 
-        benchmark.addCase(
-          s"SQL Parquet - Spark Cast expr from ${fromDataType.sql} to : ${toDataType.sql} , " +
-            s"ansi mode enabled : ${isAnsiMode}") { _ =>
-          withSQLConf(SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
-            if (isAnsiMode) {
-              Try { spark.sql(query).noop() }
-            } else {
-              spark.sql(query).noop()
-            }
-          }
-        }
+        val extraConfigs = Map(SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString)
 
-        benchmark.addCase(
-          s"SQL Parquet - Comet Cast expr from ${fromDataType.sql} to : ${toDataType.sql} , " +
-            s"ansi mode enabled : ${isAnsiMode}") { _ =>
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
-            if (isAnsiMode) {
-              Try { spark.sql(query).noop() }
-            } else {
-              spark.sql(query).noop()
-            }
-          }
-        }
-        benchmark.run()
+        runExpressionBenchmark(name, values, query, extraConfigs)
       }
     }
-
   }
 
 }
