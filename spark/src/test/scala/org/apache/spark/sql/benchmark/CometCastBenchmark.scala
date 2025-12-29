@@ -85,9 +85,7 @@ object CometCastBenchmark extends CometBenchmarkBase {
         val query = s"SELECT $functionSQL FROM parquetV1Table"
         val name =
           s"Cast function from : ${fromDataType} to : ${toDataType} , ansi mode enabled : ${isAnsiMode}"
-
-        val extraConfigs = Map(SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString)
-
+        
         runExpressionBenchmark(name, values, query, isAnsiMode)
       }
     }
