@@ -161,7 +161,6 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
 
     // SaveMode.Overwrite - delete existing output in the driver itself
     if (cmd.mode == SaveMode.Overwrite) {
-//      Delete the end directory if exists in overwrite mode
       val outputPathObj = new Path(outputPath)
       val fs = outputPathObj.getFileSystem(new Configuration())
 
