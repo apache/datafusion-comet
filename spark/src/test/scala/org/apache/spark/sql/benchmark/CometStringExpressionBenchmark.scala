@@ -59,8 +59,8 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
           config.name,
           values,
           config.query,
-          extraConfigs,
-          isAnsiMode = false)
+          isAnsiMode = false,
+          extraConfigs)
       }
     }
   }
