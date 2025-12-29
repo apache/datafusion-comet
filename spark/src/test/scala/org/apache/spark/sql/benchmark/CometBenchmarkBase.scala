@@ -23,7 +23,7 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 
-import scala.util.Random
+import scala.util.{Random, Try}
 
 import org.apache.parquet.crypto.DecryptionPropertiesFactory
 import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFactory}
@@ -127,7 +127,8 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
       name: String,
       cardinality: Long,
       query: String,
-      extraCometConfigs: Map[String, String] = Map.empty): Unit = {
+      extraCometConfigs: Map[String, String] = Map.empty,
+      isANSIEnabled: Boolean): Unit = {
     val benchmark = new Benchmark(name, cardinality, output = output)
 
     benchmark.addCase("Spark") { _ =>
@@ -140,7 +141,7 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "false") {
-        spark.sql(query).noop()
+        runSparkCommand(spark, query, isANSIEnabled)
       }
     }
 
@@ -151,11 +152,21 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
 
     benchmark.addCase("Comet (Scan + Exec)") { _ =>
       withSQLConf(cometExecConfigs.toSeq: _*) {
-        spark.sql(query).noop()
+        runSparkCommand(spark, query, isANSIEnabled)
       }
     }
 
     benchmark.run()
+  }
+
+  private def runSparkCommand(spark: SparkSession, query: String, isANSIMode: Boolean): Unit = {
+    if (isANSIMode) {
+      Try {
+        spark.sql(query).noop()
+      }
+    } else {
+      spark.sql(query).noop()
+    }
   }
 
   protected def prepareTable(dir: File, df: DataFrame, partition: Option[String] = None): Unit = {

@@ -55,7 +55,12 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
         val extraConfigs =
           Map(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") ++ config.extraCometConfigs
 
-        runExpressionBenchmark(config.name, values, config.query, extraConfigs)
+        runExpressionBenchmark(
+          config.name,
+          values,
+          config.query,
+          extraConfigs,
+          isANSIEnabled = false)
       }
     }
   }

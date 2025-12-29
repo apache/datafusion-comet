@@ -41,7 +41,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
           val isDictionary = if (useDictionary) "(Dictionary)" else ""
           val name = s"Date Truncate $isDictionary - $level"
           val query = s"select trunc(dt, '$level') from parquetV1Table"
-          runExpressionBenchmark(name, values, query)
+          runExpressionBenchmark(name, values, query, isANSIEnabled = false)
         }
       }
     }
@@ -70,7 +70,7 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
           val isDictionary = if (useDictionary) "(Dictionary)" else ""
           val name = s"Timestamp Truncate $isDictionary - $level"
           val query = s"select date_trunc('$level', ts) from parquetV1Table"
-          runExpressionBenchmark(name, values, query)
+          runExpressionBenchmark(name, values, query, isANSIEnabled = false)
         }
       }
     }

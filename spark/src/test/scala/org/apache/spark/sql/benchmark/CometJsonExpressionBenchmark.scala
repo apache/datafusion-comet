@@ -120,7 +120,12 @@ object CometJsonExpressionBenchmark extends CometBenchmarkBase {
           CometConf.getExprAllowIncompatConfigKey(
             classOf[JsonToStructs]) -> "true") ++ config.extraCometConfigs
 
-        runExpressionBenchmark(config.name, values, config.query, extraConfigs)
+        runExpressionBenchmark(
+          config.name,
+          values,
+          config.query,
+          extraConfigs,
+          isANSIEnabled = false)
       }
     }
   }
