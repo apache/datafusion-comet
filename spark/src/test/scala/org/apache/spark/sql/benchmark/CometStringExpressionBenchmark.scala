@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.benchmark
 
-import org.apache.spark.benchmark.Benchmark
-
 import org.apache.comet.CometConf
 
 /**
@@ -50,37 +48,14 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
    * Generic method to run a string expression benchmark with the given configuration.
    */
   def runStringExprBenchmark(config: StringExprConfig, values: Int): Unit = {
-    val benchmark = new Benchmark(config.name, values, output = output)
-
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         prepareTable(dir, spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 100) AS c1 FROM $tbl"))
 
-        benchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark.sql(config.query).noop()
-        }
+        val extraConfigs =
+          Map(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") ++ config.extraCometConfigs
 
-        benchmark.addCase("SQL Parquet - Comet (Scan)") { _ =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
-            spark.sql(config.query).noop()
-          }
-        }
-
-        benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
-          val baseConfigs =
-            Map(
-              CometConf.COMET_ENABLED.key -> "true",
-              CometConf.COMET_EXEC_ENABLED.key -> "true",
-              CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true",
-              "spark.sql.optimizer.constantFolding.enabled" -> "false")
-          val allConfigs = baseConfigs ++ config.extraCometConfigs
-
-          withSQLConf(allConfigs.toSeq: _*) {
-            spark.sql(config.query).noop()
-          }
-        }
-
-        benchmark.run()
+        runExpressionBenchmark(config.name, values, config.query, extraConfigs)
       }
     }
   }

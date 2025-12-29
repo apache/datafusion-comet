@@ -159,6 +159,26 @@ message IcebergScan {
 
   // Table metadata file path for FileIO initialization
   string metadata_location = 4;
+
+  // Deduplication pools - shared data referenced by index from tasks
+  repeated string schema_pool = 5;
+  repeated string partition_type_pool = 6;
+  repeated string partition_spec_pool = 7;
+  repeated string name_mapping_pool = 8;
+  repeated ProjectFieldIdList project_field_ids_pool = 9;
+  repeated string partition_data_pool = 10;
+  repeated DeleteFileList delete_files_pool = 11;
+  repeated spark.spark_expression.Expr residual_pool = 12;
+}
+
+// Helper message for deduplicating field ID lists
+message ProjectFieldIdList {
+  repeated int32 field_ids = 1;
+}
+
+// Helper message for deduplicating delete file lists
+message DeleteFileList {
+  repeated IcebergDeleteFile delete_files = 1;
 }
 
 // Groups FileScanTasks for a single Spark partition
@@ -178,42 +198,15 @@ message IcebergFileScanTask {
   // Record count if reading entire file
   optional uint64 record_count = 4;
 
-  // File format (PARQUET, AVRO, or ORC)
-  string data_file_format = 5;
-
-  // File schema as JSON (may differ due to schema evolution)
-  string schema_json = 6;
-
-  // Field IDs to project
-  repeated int32 project_field_ids = 7;
-
-  // Delete files for MOR tables
-  repeated IcebergDeleteFile delete_files = 8;
-
-  // Residual filter after partition pruning (applied at row-group level)
-  // Example: if scan filter is "date >= '2024-01-01' AND status = 'active'"
-  // and file partition is date='2024-06-15', residual is "status = 'active'"
-  optional spark.spark_expression.Expr residual = 9;
-
-  // Partition data from manifest entry (for proper constant identification)
-  // Serialized as JSON to represent the Struct of partition values
-  optional string partition_data_json = 10;
-
-  // Partition type schema as JSON (Iceberg StructType for partition fields)
-  // Used to deserialize partition_data_json into proper Iceberg types
-  optional string partition_type_json = 12;
-
-  // Partition spec as JSON (entire PartitionSpec object)
-  // Used to determine which partition fields are identity-transformed (constants)
-  // The spec includes spec-id embedded in the JSON.
-  optional string partition_spec_json = 13;
-
-  // Name mapping from table metadata (property: schema.name-mapping.default)
-  // Used to resolve field IDs from column names when Parquet files lack field IDs
-  // or have field ID conflicts (e.g., Hive table migrations via add_files).
-  // Per Iceberg spec rule #2: "Use schema.name-mapping.default metadata to map
-  // field id to columns without field id".
-  optional string name_mapping_json = 14;
+  // Indices into IcebergScan deduplication pools
+  uint32 schema_idx = 15;
+  optional uint32 partition_type_idx = 16;
+  optional uint32 partition_spec_idx = 17;
+  optional uint32 name_mapping_idx = 18;
+  uint32 project_field_ids_idx = 19;
+  optional uint32 partition_data_idx = 20;
+  optional uint32 delete_files_idx = 21;
+  optional uint32 residual_idx = 22;
 }
 
 // Iceberg delete file for MOR tables (positional or equality deletes)
