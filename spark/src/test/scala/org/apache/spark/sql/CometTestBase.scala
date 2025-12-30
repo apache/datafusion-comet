@@ -22,6 +22,7 @@ package org.apache.spark.sql
 import java.util.concurrent.atomic.AtomicInteger
 
 import scala.concurrent.duration._
+import scala.jdk.CollectionConverters._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.{Success, Try}
@@ -43,7 +44,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal._
 import org.apache.spark.sql.test._
-import org.apache.spark.sql.types.{DecimalType, StructType}
+import org.apache.spark.sql.types.{DecimalType, StringType, StructType}
 
 import org.apache.comet._
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
@@ -119,6 +120,10 @@ abstract class CometTestBase
     if (withTol.isDefined) {
       checkAnswerWithTolerance(dfComet, expected, withTol.get)
     } else {
+      val df =
+        spark.createDataFrame(expected.toList.asJava, new StructType().add("value", StringType))
+      df.show(false)
+      df.printSchema()
       checkAnswer(dfComet, expected)
     }
 

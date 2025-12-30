@@ -16,11 +16,11 @@
 // under the License.
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, Int16Array, Int32Array, Int64Array, Int8Array, LargeStringArray,
-    StringArray, StringBuilder,
+    as_boolean_array, as_largestring_array, as_string_array, Array, ArrayRef, StringBuilder,
 };
 use arrow::array::{RecordBatch, StructArray};
 use arrow::datatypes::{DataType, Schema};
+use datafusion::common::cast::{as_int16_array, as_int32_array, as_int64_array, as_int8_array};
 use datafusion::common::{exec_err, Result};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
@@ -96,6 +96,10 @@ impl PhysicalExpr for ToCsv {
         Ok(DataType::Utf8)
     }
 
+    fn nullable(&self, input_schema: &Schema) -> Result<bool> {
+        self.expr.nullable(input_schema)
+    }
+
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         let input_value = self.expr.evaluate(batch)?.into_array(batch.num_rows())?;
 
@@ -134,6 +138,7 @@ impl PhysicalExpr for ToCsv {
 fn struct_to_csv(array: &StructArray, delimiter: &str, null_value: &str) -> Result<ArrayRef> {
     let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
     let mut csv_string = String::with_capacity(array.len() * 16);
+
     for row_idx in 0..array.len() {
         if array.is_null(row_idx) {
             builder.append_null();
@@ -146,8 +151,7 @@ fn struct_to_csv(array: &StructArray, delimiter: &str, null_value: &str) -> Resu
                 if column.is_null(row_idx) {
                     csv_string.push_str(null_value);
                 } else {
-                    let value = convert_to_string(column, row_idx)?;
-                    csv_string.push_str(&value);
+                    convert_to_string(column, &mut csv_string, row_idx)?;
                 }
             }
         }
@@ -156,38 +160,40 @@ fn struct_to_csv(array: &StructArray, delimiter: &str, null_value: &str) -> Resu
     Ok(Arc::new(builder.finish()))
 }
 
-fn convert_to_string(array: &ArrayRef, row_idx: usize) -> Result<String> {
+#[inline]
+fn convert_to_string(array: &ArrayRef, csv_string: &mut String, row_idx: usize) -> Result<()> {
     match array.data_type() {
         DataType::Boolean => {
-            let array = array.as_any().downcast_ref::<BooleanArray>().unwrap();
-            Ok(array.value(row_idx).to_string())
+            let array = as_boolean_array(array);
+            csv_string.push_str(&array.value(row_idx).to_string())
         }
         DataType::Int8 => {
-            let array = array.as_any().downcast_ref::<Int8Array>().unwrap();
-            Ok(array.value(row_idx).to_string())
+            let array = as_int8_array(array)?;
+            csv_string.push_str(&array.value(row_idx).to_string())
         }
         DataType::Int16 => {
-            let array = array.as_any().downcast_ref::<Int16Array>().unwrap();
-            Ok(array.value(row_idx).to_string())
+            let array = as_int16_array(array)?;
+            csv_string.push_str(&array.value(row_idx).to_string())
         }
         DataType::Int32 => {
-            let array = array.as_any().downcast_ref::<Int32Array>().unwrap();
-            Ok(array.value(row_idx).to_string())
+            let array = as_int32_array(array)?;
+            csv_string.push_str(&array.value(row_idx).to_string())
         }
         DataType::Int64 => {
-            let array = array.as_any().downcast_ref::<Int64Array>().unwrap();
-            Ok(array.value(row_idx).to_string())
+            let array = as_int64_array(array)?;
+            csv_string.push_str(&array.value(row_idx).to_string())
         }
         DataType::Utf8 => {
-            let array = array.as_any().downcast_ref::<StringArray>().unwrap();
-            Ok(array.value(row_idx).to_string())
+            let array = as_string_array(array);
+            csv_string.push_str(&array.value(row_idx).to_string())
         }
         DataType::LargeUtf8 => {
-            let array = array.as_any().downcast_ref::<LargeStringArray>().unwrap();
-            Ok(array.value(row_idx).to_string())
+            let array = as_largestring_array(array);
+            csv_string.push_str(&array.value(row_idx).to_string())
         }
-        _ => exec_err!("to_csv not implemented for type: {:?}", array.data_type()),
+        _ => return exec_err!("to_csv not implemented for type: {:?}", array.data_type()),
     }
+    Ok(())
 }
 
 #[cfg(test)]

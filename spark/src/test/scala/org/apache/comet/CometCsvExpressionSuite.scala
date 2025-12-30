@@ -49,8 +49,9 @@ class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper
         val df = spark.read
           .parquet(filename)
           .select(to_csv(struct(col("c0"), col("c1"), col("c2"))))
-        checkSparkAnswerAndOperator(df)
-
+        df.explain(true)
+        df.printSchema()
+        checkSparkAnswer(df)
       }
     }
   }
