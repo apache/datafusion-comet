@@ -26,8 +26,8 @@
 //! scalar path in arrow-rs.
 
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray};
-use arrow::datatypes::DataType;
 use arrow::compute::kernels::comparison::contains as arrow_contains;
+use arrow::datatypes::DataType;
 use datafusion::common::{exec_err, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,

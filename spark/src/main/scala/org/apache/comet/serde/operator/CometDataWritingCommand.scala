@@ -50,6 +50,11 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
   override def getSupportLevel(op: DataWritingCommandExec): SupportLevel = {
     op.cmd match {
       case cmd: InsertIntoHadoopFsRelationCommand =>
+        // Skip INSERT OVERWRITE DIRECTORY operations (catalogTable is None for directory writes)
+        if (cmd.catalogTable.isEmpty) {
+          return Unsupported(Some("INSERT OVERWRITE DIRECTORY is not supported"))
+        }
+
         cmd.fileFormat match {
           case _: ParquetFileFormat =>
             if (!cmd.outputPath.toString.startsWith("file:")) {
