@@ -25,11 +25,18 @@ import scala.util.Random
 
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.benchmark.CometExecBenchmark.withSQLConf
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.testing.{CsvGenerator, FuzzDataGenerator, SchemaGenOptions}
 
+/**
+ * Benchmark to measure Comet read performance. To run this benchmark:
+ * `SPARK_GENERATE_BENCHMARK_FILES=1 make
+ * benchmark-org.apache.spark.sql.benchmark.CometNativeCsvReadBenchmark` Results will be written
+ * to "spark/benchmarks/CometNativeCsvReadBenchmark-**results.txt".
+ */
 object CometNativeCsvReadBenchmark extends CometBenchmarkBase {
 
   private def prepareCsvTable(dir: File, schema: StructType, numRows: Int): Unit = {
@@ -58,13 +65,14 @@ object CometNativeCsvReadBenchmark extends CometBenchmarkBase {
       benchmark.addCase("Simple read") { _ =>
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
           CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
           CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true",
-          "spark.sql.sources.useV1SourceList" -> "") {
+          SQLConf.USE_V1_SOURCE_LIST.key -> "") {
           spark.read
             .schema(schema)
             .csv(dir.getCanonicalPath)
-            .foreach(_ => ())
+            .noop()
         }
       }
       benchmark.run()
