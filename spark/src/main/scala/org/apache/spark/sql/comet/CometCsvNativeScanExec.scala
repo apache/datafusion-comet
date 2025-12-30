@@ -30,13 +30,11 @@ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
-import com.google.protobuf.ByteString
-
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.serde.{CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.operator.schema2Proto
+import org.apache.comet.serde.operator.{partition2Proto, schema2Proto}
 
 case class CometCsvNativeScanExec(
     override val nativeOp: Operator,
@@ -64,7 +62,7 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
     CometConf.COMET_CSV_V2_NATIVE_ENABLED)
 
   override def getSupportLevel(operator: CometBatchScanExec): SupportLevel = {
-    Incompatible()
+    Compatible()
   }
 
   override def convert(
@@ -73,26 +71,26 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
       childOp: Operator*): Option[Operator] = {
     val csvScanBuilder = OperatorOuterClass.CsvScan.newBuilder()
     val csvScan = op.wrapped.scan.asInstanceOf[CSVScan]
-    val columnPruning = op.session.sessionState.conf.csvColumnPruning
-    val timeZone = op.session.sessionState.conf.sessionLocalTimeZone
+    val sessionState = op.session.sessionState
+    val columnPruning = sessionState.conf.csvColumnPruning
+    val timeZone = sessionState.conf.sessionLocalTimeZone
 
     val filePartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
     val csvOptionsProto = csvOptions2Proto(csvScan.options, columnPruning, timeZone)
-    val schemaProto = schema2Proto(op.schema.fields)
+    val schemaProto = schema2Proto(csvScan.readDataSchema.fields)
     val partitionSchemaProto = schema2Proto(csvScan.readPartitionSchema.fields)
-    val partitionsProto = filePartitions.map(partition2Proto)
+    val partitionsProto = filePartitions.map(partition2Proto(_, csvScan.readPartitionSchema))
 
-    val hadoopConf = op.session.sessionState
-      .newHadoopConfWithOptions(op.session.sparkContext.conf.getAll.toMap)
-    op.inputPartitions.headOption.foreach { partitionFile =>
-      val objectStoreOptions =
-        NativeConfig.extractObjectStoreOptions(
-          hadoopConf,
-          partitionFile.asInstanceOf[FilePartition].files.head.pathUri)
-      objectStoreOptions.foreach { case (key, value) =>
-        csvScanBuilder.putObjectStoreOptions(key, value)
+    val objectStoreOptions = filePartitions.headOption
+      .flatMap { partitionFile =>
+        val hadoopConf = sessionState
+          .newHadoopConfWithOptions(op.session.sparkContext.conf.getAll.toMap)
+        partitionFile.files.headOption
+          .map(file => NativeConfig.extractObjectStoreOptions(hadoopConf, file.pathUri))
       }
-    }
+      .getOrElse(Map.empty)
+
+    csvScanBuilder.putAllObjectStoreOptions(objectStoreOptions.asJava)
     csvScanBuilder.setCsvOptions(csvOptionsProto)
     csvScanBuilder.addAllFilePartitions(partitionsProto.asJava)
     csvScanBuilder.addAllRequiredSchema(schemaProto.toIterable.asJava)
@@ -120,19 +118,5 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
       csvOptionsBuilder.setComment(options.comment.toString)
     }
     csvOptionsBuilder.build()
-  }
-
-  private def partition2Proto(partition: FilePartition): OperatorOuterClass.SparkFilePartition = {
-    val partitionBuilder = OperatorOuterClass.SparkFilePartition.newBuilder()
-    partition.files.foreach { file =>
-      val filePartitionBuilder = OperatorOuterClass.SparkPartitionedFile.newBuilder()
-      filePartitionBuilder
-        .setLength(file.length)
-        .setFilePath(file.filePath.toString)
-        .setStart(file.start)
-        .setFileSize(file.fileSize)
-      partitionBuilder.addPartitionedFile(filePartitionBuilder.build())
-    }
-    partitionBuilder.build()
   }
 }

@@ -19,9 +19,11 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.types.StructField
+import org.apache.spark.sql.catalyst.expressions.Literal
+import org.apache.spark.sql.execution.datasources.FilePartition
+import org.apache.spark.sql.types.{StructField, StructType}
 
-import org.apache.comet.serde.QueryPlanSerde.serializeDataType
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 package object operator {
 
@@ -33,5 +35,36 @@ package object operator {
       fieldBuilder.setNullable(field.nullable)
       fieldBuilder.build()
     }
+  }
+
+  def partition2Proto(
+      partition: FilePartition,
+      partitionSchema: StructType): OperatorOuterClass.SparkFilePartition = {
+    val partitionBuilder = OperatorOuterClass.SparkFilePartition.newBuilder()
+    partition.files.foreach(file => {
+      // Process the partition values
+      val partitionValues = file.partitionValues
+      assert(partitionValues.numFields == partitionSchema.length)
+      val partitionVals =
+        partitionValues.toSeq(partitionSchema).zipWithIndex.map { case (value, i) =>
+          val attr = partitionSchema(i)
+          val valueProto = exprToProto(Literal(value, attr.dataType), Seq.empty)
+          // In `CometScanRule`, we have already checked that all partition values are
+          // supported. So, we can safely use `get` here.
+          assert(
+            valueProto.isDefined,
+            s"Unsupported partition value: $value, type: ${attr.dataType}")
+          valueProto.get
+        }
+      val fileBuilder = OperatorOuterClass.SparkPartitionedFile.newBuilder()
+      partitionVals.foreach(fileBuilder.addPartitionValues)
+      fileBuilder
+        .setFilePath(file.filePath.toString)
+        .setStart(file.start)
+        .setLength(file.length)
+        .setFileSize(file.fileSize)
+      partitionBuilder.addPartitionedFile(fileBuilder.build())
+    })
+    partitionBuilder.build()
   }
 }
