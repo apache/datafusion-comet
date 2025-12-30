@@ -1124,6 +1124,7 @@ impl PhysicalPlanner {
             }
             OpStruct::CsvScan(scan) => {
                 let data_schema = convert_spark_types_to_arrow_schema(scan.required_schema.as_slice());
+                let partition_schema = convert_spark_types_to_arrow_schema(scan.partition_schema.as_slice());
                 let object_store_options: HashMap<String, String> = scan
                     .object_store_options
                     .iter()
@@ -1147,6 +1148,7 @@ impl PhysicalPlanner {
                     object_store_url,
                     file_groups,
                     data_schema,
+                    Some(partition_schema),
                     &scan.csv_options.clone().unwrap()
                 )?;
                 Ok((

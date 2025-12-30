@@ -34,7 +34,7 @@ import com.google.protobuf.ByteString
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
+import org.apache.comet.serde.{CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.schema2Proto
 
@@ -60,10 +60,12 @@ case class CometCsvNativeScanExec(
 
 object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
 
-  private val DEFAULT_DATE_FORMAT = "yyyy-MM-dd"
-
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_CSV_V2_NATIVE_ENABLED)
+
+  override def getSupportLevel(operator: CometBatchScanExec): SupportLevel = {
+    Incompatible()
+  }
 
   override def convert(
       op: CometBatchScanExec,
@@ -74,13 +76,12 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
     val columnPruning = op.session.sessionState.conf.csvColumnPruning
     val timeZone = op.session.sessionState.conf.sessionLocalTimeZone
 
+    val filePartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
     val csvOptionsProto = csvOptions2Proto(csvScan.options, columnPruning, timeZone)
-    csvScanBuilder.setCsvOptions(csvOptionsProto)
-
     val schemaProto = schema2Proto(op.schema.fields)
-    val partitionsProto =
-      op.inputPartitions.map(partition => partition2Proto(partition.asInstanceOf[FilePartition]))
-    csvScanBuilder.addAllFilePartitions(partitionsProto.asJava)
+    val partitionSchemaProto = schema2Proto(csvScan.readPartitionSchema.fields)
+    val partitionsProto = filePartitions.map(partition2Proto)
+
     val hadoopConf = op.session.sessionState
       .newHadoopConfWithOptions(op.session.sparkContext.conf.getAll.toMap)
     op.inputPartitions.headOption.foreach { partitionFile =>
@@ -92,7 +93,10 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
         csvScanBuilder.putObjectStoreOptions(key, value)
       }
     }
+    csvScanBuilder.setCsvOptions(csvOptionsProto)
+    csvScanBuilder.addAllFilePartitions(partitionsProto.asJava)
     csvScanBuilder.addAllRequiredSchema(schemaProto.toIterable.asJava)
+    csvScanBuilder.addAllPartitionSchema(partitionSchemaProto.toIterable.asJava)
     Some(builder.setCsvScan(csvScanBuilder).build())
   }
 
@@ -110,11 +114,11 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
     csvOptionsBuilder.setHasHeader(options.headerFlag)
     csvOptionsBuilder.setQuote(options.quote.toString)
     csvOptionsBuilder.setEscape(options.escape.toString)
-    csvOptionsBuilder.setNullValue(options.nullValue)
+    csvOptionsBuilder.setTerminator(options.lineSeparator.getOrElse("\n"))
+    csvOptionsBuilder.setTruncatedRows(options.multiLine)
     if (options.isCommentSet) {
       csvOptionsBuilder.setComment(options.comment.toString)
     }
-    csvOptionsBuilder.setDateFormat(options.dateFormatInRead.getOrElse(DEFAULT_DATE_FORMAT))
     csvOptionsBuilder.build()
   }
 

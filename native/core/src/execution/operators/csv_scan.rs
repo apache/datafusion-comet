@@ -16,23 +16,25 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{Field, SchemaRef};
+use datafusion::common::DataFusionError;
 use datafusion::common::Result;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::datasource::physical_plan::CsvSource;
+use datafusion_comet_proto::spark_operator::CsvOptions;
 use datafusion_datasource::file_groups::FileGroup;
 use datafusion_datasource::file_scan_config::{FileScanConfig, FileScanConfigBuilder};
 use datafusion_datasource::source::DataSourceExec;
 use datafusion_datasource::PartitionedFile;
+use itertools::Itertools;
 use std::sync::Arc;
-use datafusion_common::DataFusionError;
-use datafusion_comet_proto::spark_operator::CsvOptions;
 
 pub fn init_csv_datasource_exec(
     object_store_url: ObjectStoreUrl,
     file_groups: Vec<Vec<PartitionedFile>>,
     data_schema: SchemaRef,
-    csv_options: &CsvOptions
+    partition_schema: Option<SchemaRef>,
+    csv_options: &CsvOptions,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     let csv_source = build_csv_source(csv_options.clone());
 
@@ -41,26 +43,48 @@ pub fn init_csv_datasource_exec(
         .map(|files| FileGroup::new(files.clone()))
         .collect();
 
+    let partition_fields = partition_schema
+        .map(|schema| {
+            schema
+                .fields()
+                .iter()
+                .map(|field| {
+                    Field::new(field.name(), field.data_type().clone(), field.is_nullable())
+                })
+                .collect_vec()
+        })
+        .unwrap_or(vec![]);
+
     let file_scan_config: FileScanConfig =
         FileScanConfigBuilder::new(object_store_url, data_schema, csv_source)
             .with_file_groups(file_groups)
+            .with_table_partition_cols(partition_fields)
             .build();
 
     Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))
 }
 
 fn build_csv_source(options: CsvOptions) -> Arc<CsvSource> {
-    let delimiter = char_to_u8(options.delimiter.chars().next().unwrap(), "delimiter").unwrap();
-    let quote = char_to_u8(options.quote.chars().next().unwrap(), "quote").unwrap();
-    let csv_source = CsvSource::new(options.has_header, delimiter, quote);
-
+    let delimiter = string_to_u8(&options.delimiter, "delimiter").unwrap();
+    let quote = string_to_u8(&options.quote, "quote").unwrap();
+    let escape = string_to_u8(&options.escape, "escape").unwrap();
+    let terminator = string_to_u8(&options.terminator, "terminator").unwrap();
+    let comment = options
+        .comment
+        .map(|c| string_to_u8(&c, "comment").unwrap());
+    let csv_source = CsvSource::new(options.has_header, delimiter, quote)
+        .with_escape(Some(escape))
+        .with_comment(comment)
+        .with_terminator(Some(terminator))
+        .with_truncate_rows(options.truncated_rows);
     Arc::new(csv_source)
 }
 
-fn char_to_u8(c: char, option: &str) -> Result<u8> {
-    if c.is_ascii() {
-        Ok(c as u8)
-    } else {
-        Err(DataFusionError::Configuration(format!("invalid {option} character '{c}': must be an ASCII character")))
+fn string_to_u8(option: &str, option_name: &str) -> Result<u8> {
+    match option.as_bytes().first() {
+        Some(&ch) if ch.is_ascii() => Ok(ch),
+        _ => Err(DataFusionError::Configuration(format!(
+            "invalid {option_name} character '{option}': must be an ASCII character"
+        ))),
     }
 }
