@@ -1983,29 +1983,23 @@ fn do_cast_string_to_int<
     let trimmed_str = &str[start..end];
     let len = trimmed_str.len();
     let trimmed_bytes = trimmed_str.as_bytes();
-
     let mut result: T = T::zero();
-    let mut negative = false;
+    let mut idx = 0;
+    let first_char = trimmed_bytes[0];
+    let negative = first_char == b'-';
+    if negative || first_char == b'+' {
+        idx = 1;
+        if len == 1{
+            return none_or_err(eval_mode, type_name, str);
+        }
+    }
+
     let radix = T::from(10);
     let stop_value = min_value / radix;
     let mut parse_sign_and_digits = true;
 
-    for i in 0..len {
-        let ch = trimmed_bytes[i];
+    for &ch in &trimmed_bytes[idx..]  {
         if parse_sign_and_digits {
-            if i == 0 {
-                negative = ch == b'-';
-                let positive = ch == b'+';
-                if negative || positive {
-                    if i + 1 == len {
-                        // input string is just "+" or "-"
-                        return none_or_err(eval_mode, type_name, str);
-                    }
-                    // consume this char
-                    continue;
-                }
-            }
-
             if ch == b'.' {
                 if eval_mode == EvalMode::Legacy {
                     // truncate decimal in legacy mode
@@ -2016,11 +2010,11 @@ fn do_cast_string_to_int<
                 }
             }
 
-            let digit = if ch.is_ascii_digit() {
-                (ch as u32) - ('0' as u32)
-            } else {
+            if !ch.is_ascii_digit() {
                 return none_or_err(eval_mode, type_name, str);
-            };
+            }
+            let digit = T::from((ch - b'0') as i32);
+            result = result * radix - digit;
 
             // We are going to process the new digit and accumulate the result. However, before
             // doing this, if the result is already smaller than the
@@ -2029,17 +2023,11 @@ fn do_cast_string_to_int<
             if result < stop_value {
                 return none_or_err(eval_mode, type_name, str);
             }
-
             // Since the previous result is greater than or equal to stopValue(Integer.MIN_VALUE /
             // radix), we can just use `result > 0` to check overflow. If result
             // overflows, we should stop
-            let v = result * radix;
-            let digit = (digit as i32).into();
-            match v.checked_sub(&digit) {
-                Some(x) if x <= T::zero() => result = x,
-                _ => {
-                    return none_or_err(eval_mode, type_name, str);
-                }
+            if result > T::zero() {
+                return none_or_err(eval_mode, type_name, str);
             }
         } else {
             // make sure fractional digits are valid digits but ignore them
