@@ -192,3 +192,90 @@ or strings containing null bytes (e.g \\u0000) |
 
 Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the
 [tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.
+
+### Complex Type Casts
+
+Comet provides native support for a limited set of complex type casts.
+All other complex casts fall back to Spark.
+
+#### Struct Type Casting
+
+- **`STRUCT` → `STRING`**  
+  Casting a struct to a string is supported.
+  This includes:
+  - Named structs
+  - Nested structs
+  - Structs containing primitive, decimal, date, and timestamp fields
+
+  Example:
+
+  ```sql
+  SELECT CAST(named_struct('a', 1, 'b', 'x') AS STRING);
+  ```
+
+- **`STRUCT` → `STRUCT`**  
+  Casting between struct types is supported when the number of fields matches.
+  Fields are matched by position, not by name, consistent with Spark behavior.
+
+  Example:
+
+  ```sql
+  SELECT CAST(s AS struct<field1:string, field2:string>) 
+  FROM (SELECT named_struct('a', '1', 'b', '2') AS s);
+  ```
+
+#### Array Type Casting
+
+- **`ARRAY<T>` → `STRING`**  
+  Casting arrays to strings is supported and produces a JSON-like string
+  representation of the array contents (for example, `[1, 2, 3]`, with
+  elements separated by commas and enclosed in square brackets).
+
+  Supported element types include:
+  - `boolean`
+  - `byte`
+  - `short`
+  - `integer`
+  - `long`
+  - `string`
+  - `decimal`
+
+  Support for these casts is implemented for queries that use the engine’s
+  native/optimized scan for the underlying data source. When a query is planned
+  using a different scan implementation (for example, a connector-specific or
+  Spark-provided scan), the cast may not be pushed down and Spark will evaluate
+  it instead.
+  Arrays whose element types are not in the list above are always handled by
+  Spark and are not evaluated natively by the plugin.
+
+  Example:
+
+  ```sql
+  SELECT CAST(array(1, 2, 3) AS STRING);
+  ```
+
+#### Binary Type Casting
+
+- **`BINARY` → `STRING`**  
+  Casting binary values to strings is supported when the binary data is valid UTF-8.
+
+- **`STRING` → `BINARY`**  
+  Casting strings to binary values is supported.
+
+  Example:
+
+  ```sql
+  SELECT CAST('abc' AS BINARY);
+  SELECT CAST(CAST('abc' AS BINARY) AS STRING);
+  ```
+
+#### Limitations
+
+The following complex casts are not supported natively and will fall back to Spark:
+
+- `ARRAY` → `ARRAY`
+- `STRUCT` → `ARRAY`
+- `ARRAY` → `STRUCT`
+- Any cast involving `MAP` types
+
+Fallback behavior may depend on query planning and scan implementation.
