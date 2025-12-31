@@ -124,12 +124,19 @@ fn array_to_json_string(arr: &Arc<dyn Array>, timezone: &str) -> Result<ArrayRef
     if let Some(struct_array) = arr.as_any().downcast_ref::<StructArray>() {
         struct_to_json(struct_array, timezone)
     } else {
-        spark_cast(
+        let array = spark_cast(
             ColumnarValue::Array(Arc::clone(arr)),
             &DataType::Utf8,
             &SparkCastOptions::new(EvalMode::Legacy, timezone, false),
         )?
-        .into_array(arr.len())
+        .into_array(arr.len())?;
+
+        let string_array = array
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("Utf8 array");
+
+        Ok(normalize_special_floats(string_array))
     }
 }
 
@@ -179,6 +186,23 @@ fn escape_string(input: &str) -> String {
         }
     }
     escaped_string
+}
+
+fn normalize_special_floats(arr: &StringArray) -> ArrayRef {
+    let mut builder = StringBuilder::with_capacity(arr.len(), arr.len() * 8);
+
+    for i in 0..arr.len() {
+        if arr.is_null(i) {
+            builder.append_null();
+        } else {
+            match arr.value(i) {
+                "Infinity" | "-Infinity" | "NaN" => builder.append_null(),
+                v => builder.append_value(v),
+            }
+        }
+    }
+
+    Arc::new(builder.finish())
 }
 
 fn struct_to_json(array: &StructArray, timezone: &str) -> Result<ArrayRef> {
@@ -328,6 +352,34 @@ mod test {
         assert_eq!(r#"{"a":{"a":true}}"#, json.value(1));
         assert_eq!(r#"{"a":{"a":false,"b":2147483647}}"#, json.value(2));
         assert_eq!(r#"{"a":{"a":false,"b":-2147483648}}"#, json.value(3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_to_json_infinity() -> Result<()> {
+        use arrow::array::{Float64Array, StructArray};
+        use arrow::datatypes::{DataType, Field};
+
+        let values: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+            Some(f64::NAN),
+            Some(1.5),
+        ]));
+
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("a", DataType::Float64, true)),
+            values,
+        )]);
+
+        let json = struct_to_json(&struct_array, "UTC")?;
+        let json = json.as_any().downcast_ref::<StringArray>().unwrap();
+
+        assert_eq!(r#"{}"#, json.value(0));
+        assert_eq!(r#"{}"#, json.value(1));
+        assert_eq!(r#"{}"#, json.value(2));
+        assert_eq!(r#"{"a":1.5}"#, json.value(3));
+
         Ok(())
     }
 
