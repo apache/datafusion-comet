@@ -1965,22 +1965,37 @@ fn do_cast_string_to_int<
     type_name: &str,
     min_value: T,
 ) -> SparkResult<Option<T>> {
-    let trimmed_str = str.trim();
-    if trimmed_str.is_empty() {
+
+    let bytes = str.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    if start == end {
         return none_or_err(eval_mode, type_name, str);
     }
+    let trimmed_str = &str[start..end];
     let len = trimmed_str.len();
+    let trimmed_bytes = trimmed_str.as_bytes();
+
     let mut result: T = T::zero();
     let mut negative = false;
     let radix = T::from(10);
     let stop_value = min_value / radix;
     let mut parse_sign_and_digits = true;
 
-    for (i, ch) in trimmed_str.char_indices() {
+    for i in 0..len {
+        let ch = trimmed_bytes[i];
         if parse_sign_and_digits {
             if i == 0 {
-                negative = ch == '-';
-                let positive = ch == '+';
+                negative = ch == b'-';
+                let positive = ch == b'+';
                 if negative || positive {
                     if i + 1 == len {
                         // input string is just "+" or "-"
@@ -1991,7 +2006,7 @@ fn do_cast_string_to_int<
                 }
             }
 
-            if ch == '.' {
+            if ch == b'.' {
                 if eval_mode == EvalMode::Legacy {
                     // truncate decimal in legacy mode
                     parse_sign_and_digits = false;
