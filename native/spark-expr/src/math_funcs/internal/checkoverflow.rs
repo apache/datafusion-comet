@@ -15,10 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::utils::is_valid_decimal_precision;
 use arrow::datatypes::{DataType, Schema};
 use arrow::{
-    array::{as_primitive_array, Array, ArrayRef, Decimal128Array},
-    datatypes::{Decimal128Type, DecimalType},
+    array::{as_primitive_array, Array, Decimal128Array},
+    datatypes::Decimal128Type,
     record_batch::RecordBatch,
 };
 use datafusion::common::{DataFusionError, ScalarValue};
@@ -101,8 +102,8 @@ impl PhysicalExpr for CheckOverflow {
             ColumnarValue::Array(array)
                 if matches!(array.data_type(), DataType::Decimal128(_, _)) =>
             {
-                let (precision, scale) = match &self.data_type {
-                    DataType::Decimal128(p, s) => (p, s),
+                let (target_precision, target_scale) = match &self.data_type {
+                    DataType::Decimal128(p, s) => (*p, *s),
                     dt => {
                         return Err(DataFusionError::Execution(format!(
                             "CheckOverflow expects only Decimal128, but got {dt:?}"
@@ -112,38 +113,89 @@ impl PhysicalExpr for CheckOverflow {
 
                 let decimal_array = as_primitive_array::<Decimal128Type>(&array);
 
-                let casted_array = if self.fail_on_error {
-                    // Returning error if overflow
-                    decimal_array.validate_decimal_precision(*precision)?;
-                    decimal_array
-                } else {
-                    // Overflowing gets null value
-                    &decimal_array.null_if_overflow_precision(*precision)
+                // Get input precision to check if we can skip validation
+                let (input_precision, input_scale) = match decimal_array.data_type() {
+                    DataType::Decimal128(p, s) => (*p, *s),
+                    _ => unreachable!(),
                 };
 
-                let new_array = Decimal128Array::from(casted_array.into_data())
-                    .with_precision_and_scale(*precision, *scale)
-                    .map(|a| Arc::new(a) as ArrayRef)?;
+                // Optimization: if input precision <= target precision and scales match,
+                // no overflow is possible - just update metadata
+                if input_precision <= target_precision && input_scale == target_scale {
+                    let new_array = decimal_array
+                        .clone()
+                        .with_precision_and_scale(target_precision, target_scale)?;
+                    return Ok(ColumnarValue::Array(Arc::new(new_array)));
+                }
 
-                Ok(ColumnarValue::Array(new_array))
+                let result_array = if self.fail_on_error {
+                    // ANSI mode: validate and return error on overflow
+                    // Use optimized validation that avoids error string allocation until needed
+                    for i in 0..decimal_array.len() {
+                        if decimal_array.is_valid(i) {
+                            let value = decimal_array.value(i);
+                            if !is_valid_decimal_precision(value, target_precision) {
+                                return Err(DataFusionError::ArrowError(
+                                    Box::new(arrow::error::ArrowError::InvalidArgumentError(
+                                        format!(
+                                            "{} is not a valid Decimal128 value with precision {}",
+                                            value, target_precision
+                                        ),
+                                    )),
+                                    None,
+                                ));
+                            }
+                        }
+                    }
+                    // Validation passed - just update metadata without copying data
+                    decimal_array
+                        .clone()
+                        .with_precision_and_scale(target_precision, target_scale)?
+                } else {
+                    // Legacy/Try mode: convert overflows to null
+                    // Use Arrow's optimized null_if_overflow_precision which does a single pass
+                    let result = decimal_array.null_if_overflow_precision(target_precision);
+                    result.with_precision_and_scale(target_precision, target_scale)?
+                };
+
+                Ok(ColumnarValue::Array(Arc::new(result_array)))
             }
-            ColumnarValue::Scalar(ScalarValue::Decimal128(v, precision, scale)) => {
-                // `fail_on_error` is only true when ANSI is enabled, which we don't support yet
-                // (Java side will simply fallback to Spark when it is enabled)
-                assert!(
-                    !self.fail_on_error,
-                    "fail_on_error (ANSI mode) is not supported yet"
-                );
+            ColumnarValue::Scalar(ScalarValue::Decimal128(v, _, _)) => {
+                let (target_precision, target_scale) = match &self.data_type {
+                    DataType::Decimal128(p, s) => (*p, *s),
+                    dt => {
+                        return Err(DataFusionError::Execution(format!(
+                            "CheckOverflow expects only Decimal128 for scalar, but got {dt:?}"
+                        )))
+                    }
+                };
 
-                let new_v: Option<i128> = v.and_then(|v| {
-                    Decimal128Type::validate_decimal_precision(v, precision, scale)
-                        .map(|_| v)
-                        .ok()
-                });
-
-                Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(
-                    new_v, precision, scale,
-                )))
+                if self.fail_on_error {
+                    if let Some(value) = v {
+                        if !is_valid_decimal_precision(value, target_precision) {
+                            return Err(DataFusionError::ArrowError(
+                                Box::new(arrow::error::ArrowError::InvalidArgumentError(format!(
+                                    "{} is not a valid Decimal128 value with precision {}",
+                                    value, target_precision
+                                ))),
+                                None,
+                            ));
+                        }
+                    }
+                    Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(
+                        v,
+                        target_precision,
+                        target_scale,
+                    )))
+                } else {
+                    // Use optimized bool check instead of Result-returning validation
+                    let new_v = v.filter(|&val| is_valid_decimal_precision(val, target_precision));
+                    Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(
+                        new_v,
+                        target_precision,
+                        target_scale,
+                    )))
+                }
             }
             v => Err(DataFusionError::Execution(format!(
                 "CheckOverflow's child expression should be decimal array, but found {v:?}"
