@@ -41,6 +41,7 @@ import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 import org.apache.comet.{CometConf, CometNativeException, DataTypeSupport}
 import org.apache.comet.CometConf._
@@ -240,11 +241,28 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         if (!partitionSchemaSupported) {
           fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
         }
-        if (schemaSupported && partitionSchemaSupported) {
+        val columnNameOfCorruptedRecords =
+          SQLConf.get.getConf(SQLConf.COLUMN_NAME_OF_CORRUPT_RECORD)
+        val hasNoCorruptedColumn =
+          !scan.readDataSchema.fieldNames.contains(columnNameOfCorruptedRecords)
+        if (!hasNoCorruptedColumn) {
+          fallbackReasons += "Comet doesn't support the processing of corrupted records in Spark"
+        }
+        val inferSchemaEnabled = scan.options.getBoolean("inferSchema", false)
+        if (inferSchemaEnabled) {
+          fallbackReasons += "Comet doesn't support inferSchema=true option"
+        }
+        val delimiter = scan.options.get("delimiter")
+        val isSingleCharDelimiter = delimiter.length == 1
+        if (!isSingleCharDelimiter) {
+          fallbackReasons += s"Comet doesn't support delimiter: '$delimiter' " +
+            s"with more then one character"
+        }
+        if (schemaSupported && partitionSchemaSupported && hasNoCorruptedColumn
+          && !inferSchemaEnabled && isSingleCharDelimiter) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
-            runtimeFilters = scanExec.runtimeFilters,
-            fileFormat = new CSVFileFormat)
+            runtimeFilters = scanExec.runtimeFilters)
         } else {
           withInfos(scanExec, fallbackReasons.toSet)
         }

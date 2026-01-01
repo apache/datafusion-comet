@@ -62,7 +62,15 @@ object CometNativeCsvReadBenchmark extends CometBenchmarkBase {
           DataTypes.DateType,
           DataTypes.StringType)))
       prepareCsvTable(dir, schema, numRows)
-      benchmark.addCase("Simple read") { _ =>
+      benchmark.addCase("Simple csv v2 read - spark") { _ =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+          spark.read
+            .schema(schema)
+            .csv(dir.getCanonicalPath)
+            .noop()
+        }
+      }
+      benchmark.addCase("Simple csv v2 read - comet native") { _ =>
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true",

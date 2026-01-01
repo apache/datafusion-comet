@@ -28,8 +28,6 @@ import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.util.truncatedString
 import org.apache.spark.sql.connector.read._
 import org.apache.spark.sql.execution._
-import org.apache.spark.sql.execution.datasources.FileFormat
-import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2._
 import org.apache.spark.sql.execution.metric._
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StructType}
@@ -43,8 +41,7 @@ import org.apache.comet.iceberg.CometIcebergNativeScanMetadata
 case class CometBatchScanExec(
     wrapped: BatchScanExec,
     runtimeFilters: Seq[Expression],
-    nativeIcebergScanMetadata: Option[CometIcebergNativeScanMetadata] = None,
-    fileFormat: FileFormat = ParquetFileFormat.asInstanceOf[FileFormat])
+    nativeIcebergScanMetadata: Option[CometIcebergNativeScanMetadata] = None)
     extends DataSourceV2ScanExecBase
     with CometPlan {
   def ordering: Option[Seq[SortOrder]] = wrapped.ordering

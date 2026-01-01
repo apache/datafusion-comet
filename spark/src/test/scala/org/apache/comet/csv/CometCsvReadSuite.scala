@@ -21,13 +21,15 @@ package org.apache.comet.csv
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{IntegerType, StructType}
+import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 
 import org.apache.comet.CometConf
 
 class CometCsvReadSuite extends CometTestBase {
+  private val TEST_CSV_PATH_NO_HEADER = "src/test/resources/test-data/csv-test-1.csv"
+  private val TEST_CSV_PATH_HAS_HEADER = "src/test/resources/test-data/csv-test-2.csv"
 
-  test("native csv read") {
+  test("Native csv read - with schema") {
     withSQLConf(
       CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
       SQLConf.USE_V1_SOURCE_LIST.key -> "") {
@@ -35,13 +37,53 @@ class CometCsvReadSuite extends CometTestBase {
         .add("a", IntegerType)
         .add("b", IntegerType)
         .add("c", IntegerType)
-
       val df = spark.read
         .options(Map("header" -> "false", "delimiter" -> ","))
         .schema(schema)
-        .csv("/Users/tendoo/Desktop/datafusion-comet/spark/src/test/resources/test-data/csv-test-1.csv")
-      df.explain(true)
-      df.show(false)
+        .csv(TEST_CSV_PATH_NO_HEADER)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("Native csv read - without schema") {
+    withSQLConf(
+      CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+      val df = spark.read
+        .options(Map("header" -> "true", "delimiter" -> ","))
+        .csv(TEST_CSV_PATH_HAS_HEADER)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("Native csv read - test fallback reasons") {
+    withSQLConf(
+      CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+      val columnNameOfCorruptedRecords =
+        SQLConf.get.getConf(SQLConf.COLUMN_NAME_OF_CORRUPT_RECORD)
+      val schema = new StructType()
+        .add("a", IntegerType)
+        .add("b", IntegerType)
+        .add("c", IntegerType)
+        .add(columnNameOfCorruptedRecords, StringType)
+      var df = spark.read
+        .options(Map("header" -> "false", "delimiter" -> ","))
+        .schema(schema)
+        .csv(TEST_CSV_PATH_NO_HEADER)
+      checkSparkAnswerAndFallbackReason(
+        df,
+        "Comet doesn't support the processing of corrupted records in Spark")
+      df = spark.read
+        .options(Map("header" -> "false", "delimiter" -> ",", "inferSchema" -> "true"))
+        .csv(TEST_CSV_PATH_NO_HEADER)
+      checkSparkAnswerAndFallbackReason(df, "Comet doesn't support inferSchema=true option")
+      df = spark.read
+        .options(Map("header" -> "false", "delimiter" -> ",,"))
+        .csv(TEST_CSV_PATH_NO_HEADER)
+      checkSparkAnswerAndFallbackReason(
+        df,
+        "Comet doesn't support delimiter: ',,' with more then one character")
     }
   }
 }

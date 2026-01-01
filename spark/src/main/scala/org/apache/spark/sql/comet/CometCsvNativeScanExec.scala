@@ -28,7 +28,6 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.datasources.FilePartition
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
-import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.objectstore.NativeConfig
@@ -72,11 +71,13 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
     val csvScanBuilder = OperatorOuterClass.CsvScan.newBuilder()
     val csvScan = op.wrapped.scan.asInstanceOf[CSVScan]
     val sessionState = op.session.sessionState
-    val columnPruning = sessionState.conf.csvColumnPruning
-    val timeZone = sessionState.conf.sessionLocalTimeZone
-
+    val options = {
+      val columnPruning = sessionState.conf.csvColumnPruning
+      val timeZone = sessionState.conf.sessionLocalTimeZone
+      new CSVOptions(csvScan.options.asScala.toMap, columnPruning, timeZone)
+    }
     val filePartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
-    val csvOptionsProto = csvOptions2Proto(csvScan.options, columnPruning, timeZone)
+    val csvOptionsProto = csvOptions2Proto(options)
     val schemaProto = schema2Proto(csvScan.readDataSchema.fields)
     val partitionSchemaProto = schema2Proto(csvScan.readPartitionSchema.fields)
     val partitionsProto = filePartitions.map(partition2Proto(_, csvScan.readPartitionSchema))
@@ -102,12 +103,8 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
     CometCsvNativeScanExec(nativeOp, op.output, op.wrapped, SerializedPlan(None))
   }
 
-  private def csvOptions2Proto(
-      parameters: CaseInsensitiveStringMap,
-      columnPruning: Boolean,
-      timeZone: String): OperatorOuterClass.CsvOptions = {
+  private def csvOptions2Proto(options: CSVOptions): OperatorOuterClass.CsvOptions = {
     val csvOptionsBuilder = OperatorOuterClass.CsvOptions.newBuilder()
-    val options = new CSVOptions(parameters.asScala.toMap, columnPruning, timeZone)
     csvOptionsBuilder.setDelimiter(options.delimiter)
     csvOptionsBuilder.setHasHeader(options.headerFlag)
     csvOptionsBuilder.setQuote(options.quote.toString)
