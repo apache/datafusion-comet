@@ -389,19 +389,32 @@ macro_rules! cast_utf8_to_int {
     ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
         let len = $array.len();
         let mut cast_array = PrimitiveArray::<$array_type>::builder(len);
-        for i in 0..len {
-            if $array.is_null(i) {
-                cast_array.append_null()
-            } else if let Some(cast_value) = $cast_method($array.value(i), $eval_mode)? {
-                cast_array.append_value(cast_value);
-            } else {
-                cast_array.append_null()
+
+        if $array.null_count() == 0 {
+            for i in 0..len {
+                if let Some(cast_value) = $cast_method($array.value(i), $eval_mode)? {
+                    cast_array.append_value(cast_value);
+                } else {
+                    cast_array.append_null()
+                }
+            }
+        } else {
+            for i in 0..len {
+                if $array.is_null(i) {
+                    cast_array.append_null()
+                } else if let Some(cast_value) = $cast_method($array.value(i), $eval_mode)? {
+                    cast_array.append_value(cast_value);
+                } else {
+                    cast_array.append_null()
+                }
             }
         }
+
         let result: SparkResult<ArrayRef> = Ok(Arc::new(cast_array.finish()) as ArrayRef);
         result
     }};
 }
+
 macro_rules! cast_utf8_to_timestamp {
     ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident, $tz:expr) => {{
         let len = $array.len();
@@ -1931,6 +1944,35 @@ fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i16>
 
 /// Equivalent to org.apache.spark.unsafe.types.UTF8String.toInt(IntWrapper intWrapper)
 fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> {
+    // happy path
+    let bytes = str.as_bytes();
+    let len = bytes.len();
+    if len > 0 && len <= 10 {
+        // SAFETY: We checked len > 0 above
+        let first = unsafe { *bytes.get_unchecked(0) };
+        // Must start with digit for happy path
+        if first >= b'0' && first <= b'9' {
+            let mut result: i64 = (first - b'0') as i64;
+            let mut i = 1;
+
+            // Try to parse remaining digits
+            while i < len {
+                let b = bytes[i];
+                if b >= b'0' && b <= b'9' {
+                    result = result * 10 + (b - b'0') as i64;
+                    i += 1;
+                } else {
+                    // Hit non-digit (space, sign, decimal, etc.) - Bail to slow path
+                    break;
+                }
+            }
+            if i == len && result <= i32::MAX as i64 {
+                return Ok(Some(result as i32));
+            }
+            // Otherwise fall through to slow path
+        }
+    }
+
     do_cast_string_to_int::<i32>(str, eval_mode, "INT", i32::MIN)
 }
 
@@ -1965,7 +2007,6 @@ fn do_cast_string_to_int<
     type_name: &str,
     min_value: T,
 ) -> SparkResult<Option<T>> {
-
     let bytes = str.as_bytes();
     let mut start = 0;
     let mut end = bytes.len();
@@ -1989,7 +2030,7 @@ fn do_cast_string_to_int<
     let negative = first_char == b'-';
     if negative || first_char == b'+' {
         idx = 1;
-        if len == 1{
+        if len == 1 {
             return none_or_err(eval_mode, type_name, str);
         }
     }
@@ -1998,7 +2039,7 @@ fn do_cast_string_to_int<
     let stop_value = min_value / radix;
     let mut parse_sign_and_digits = true;
 
-    for &ch in &trimmed_bytes[idx..]  {
+    for &ch in &trimmed_bytes[idx..] {
         if parse_sign_and_digits {
             if ch == b'.' {
                 if eval_mode == EvalMode::Legacy {
@@ -2014,6 +2055,7 @@ fn do_cast_string_to_int<
                 return none_or_err(eval_mode, type_name, str);
             }
             let digit = T::from((ch - b'0') as i32);
+            result = (result << 3) + (result << 1) - digit;
             result = result * radix - digit;
 
             // We are going to process the new digit and accumulate the result. However, before
