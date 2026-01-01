@@ -50,6 +50,20 @@ trait CometAggregateExpressionSerde[T <: AggregateFunction] {
   def getSupportLevel(expr: T): SupportLevel = Compatible(None)
 
   /**
+   * Indicates whether this aggregate function supports "Spark partial / Comet final" mixed
+   * execution. This requires the intermediate buffer format to be compatible between Spark and
+   * Comet.
+   *
+   * Only aggregates with simple, compatible intermediate buffers should return true. Aggregates
+   * with complex buffers or those with known incompatibilities (e.g., decimal overflow handling
+   * differences) should return false.
+   *
+   * @return
+   *   true if the aggregate can safely run with Spark partial and Comet final, false otherwise
+   */
+  def supportsSparkPartialCometFinal: Boolean = false
+
+  /**
    * Convert a Spark expression into a protocol buffer representation that can be passed into
    * native code.
    *
