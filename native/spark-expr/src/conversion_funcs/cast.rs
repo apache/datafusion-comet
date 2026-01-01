@@ -389,7 +389,6 @@ macro_rules! cast_utf8_to_int {
     ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
         let len = $array.len();
         let mut cast_array = PrimitiveArray::<$array_type>::builder(len);
-
         if $array.null_count() == 0 {
             for i in 0..len {
                 if let Some(cast_value) = $cast_method($array.value(i), $eval_mode)? {
@@ -409,12 +408,10 @@ macro_rules! cast_utf8_to_int {
                 }
             }
         }
-
         let result: SparkResult<ArrayRef> = Ok(Arc::new(cast_array.finish()) as ArrayRef);
         result
     }};
 }
-
 macro_rules! cast_utf8_to_timestamp {
     ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident, $tz:expr) => {{
         let len = $array.len();
@@ -1944,35 +1941,6 @@ fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i16>
 
 /// Equivalent to org.apache.spark.unsafe.types.UTF8String.toInt(IntWrapper intWrapper)
 fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> {
-    // happy path
-    let bytes = str.as_bytes();
-    let len = bytes.len();
-    if len > 0 && len <= 10 {
-        // SAFETY: We checked len > 0 above
-        let first = unsafe { *bytes.get_unchecked(0) };
-        // Must start with digit for happy path
-        if first >= b'0' && first <= b'9' {
-            let mut result: i64 = (first - b'0') as i64;
-            let mut i = 1;
-
-            // Try to parse remaining digits
-            while i < len {
-                let b = bytes[i];
-                if b >= b'0' && b <= b'9' {
-                    result = result * 10 + (b - b'0') as i64;
-                    i += 1;
-                } else {
-                    // Hit non-digit (space, sign, decimal, etc.) - Bail to slow path
-                    break;
-                }
-            }
-            if i == len && result <= i32::MAX as i64 {
-                return Ok(Some(result as i32));
-            }
-            // Otherwise fall through to slow path
-        }
-    }
-
     do_cast_string_to_int::<i32>(str, eval_mode, "INT", i32::MIN)
 }
 
@@ -2051,12 +2019,11 @@ fn do_cast_string_to_int<
                 }
             }
 
-            if !ch.is_ascii_digit() {
+            let digit = if ch.is_ascii_digit() {
+                (ch as u32) - ('0' as u32)
+            } else {
                 return none_or_err(eval_mode, type_name, str);
-            }
-            let digit = T::from((ch - b'0') as i32);
-            result = (result << 3) + (result << 1) - digit;
-            result = result * radix - digit;
+            };
 
             // We are going to process the new digit and accumulate the result. However, before
             // doing this, if the result is already smaller than the
@@ -2068,8 +2035,13 @@ fn do_cast_string_to_int<
             // Since the previous result is greater than or equal to stopValue(Integer.MIN_VALUE /
             // radix), we can just use `result > 0` to check overflow. If result
             // overflows, we should stop
-            if result > T::zero() {
-                return none_or_err(eval_mode, type_name, str);
+            let v = result * radix;
+            let digit = (digit as i32).into();
+            match v.checked_sub(&digit) {
+                Some(x) if x <= T::zero() => result = x,
+                _ => {
+                    return none_or_err(eval_mode, type_name, str);
+                }
             }
         } else {
             // make sure fractional digits are valid digits but ignore them
