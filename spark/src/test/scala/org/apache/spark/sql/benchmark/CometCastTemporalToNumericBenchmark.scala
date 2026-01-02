@@ -24,14 +24,15 @@ case class CastTemporalToNumericConfig(
     query: String,
     extraCometConfigs: Map[String, String] = Map.empty)
 
-// spotless:off
 /**
  * Benchmark to measure performance of Comet cast from temporal types to numeric types. To run
  * this benchmark:
- * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCastTemporalToNumericBenchmark`
- * Results will be written to "spark/benchmarks/CometCastTemporalToNumericBenchmark-**results.txt".
+ * {{{
+ *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCastTemporalToNumericBenchmark
+ * }}}
+ * Results will be written to
+ * "spark/benchmarks/CometCastTemporalToNumericBenchmark-**results.txt".
  */
-// spotless:on
 object CometCastTemporalToNumericBenchmark extends CometBenchmarkBase {
 
   private val castFunctions = Seq("CAST", "TRY_CAST")

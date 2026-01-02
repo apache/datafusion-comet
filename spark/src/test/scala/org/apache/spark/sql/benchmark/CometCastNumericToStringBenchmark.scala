@@ -24,14 +24,14 @@ case class CastNumericToStringConfig(
     query: String,
     extraCometConfigs: Map[String, String] = Map.empty)
 
-// spotless:off
 /**
  * Benchmark to measure performance of Comet cast from numeric types to String. To run this
  * benchmark:
- * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCastNumericToStringBenchmark`
+ * {{{
+ *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCastNumericToStringBenchmark
+ * }}}
  * Results will be written to "spark/benchmarks/CometCastNumericToStringBenchmark-**results.txt".
  */
-// spotless:on
 object CometCastNumericToStringBenchmark extends CometBenchmarkBase {
 
   private val castFunctions = Seq("CAST", "TRY_CAST")

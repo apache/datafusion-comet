@@ -24,14 +24,14 @@ case class CastStringToTemporalConfig(
     query: String,
     extraCometConfigs: Map[String, String] = Map.empty)
 
-// spotless:off
 /**
  * Benchmark to measure performance of Comet cast from String to temporal types. To run this
  * benchmark:
- * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCastStringToTemporalBenchmark`
+ * {{{
+ *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCastStringToTemporalBenchmark
+ * }}}
  * Results will be written to "spark/benchmarks/CometCastStringToTemporalBenchmark-**results.txt".
  */
-// spotless:on
 object CometCastStringToTemporalBenchmark extends CometBenchmarkBase {
 
   // Configuration for String to temporal cast benchmarks

@@ -24,14 +24,14 @@ case class CastBooleanConfig(
     query: String,
     extraCometConfigs: Map[String, String] = Map.empty)
 
-// spotless:off
 /**
  * Benchmark to measure performance of Comet cast operations involving Boolean type. To run this
  * benchmark:
- * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCastBooleanBenchmark`
+ * {{{
+ *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCastBooleanBenchmark
+ * }}}
  * Results will be written to "spark/benchmarks/CometCastBooleanBenchmark-**results.txt".
  */
-// spotless:on
 object CometCastBooleanBenchmark extends CometBenchmarkBase {
 
   private val castFunctions = Seq("CAST", "TRY_CAST")
