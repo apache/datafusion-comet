@@ -92,7 +92,7 @@ object CometCastNumericToNumericBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = getBenchmarkRows(1024 * 1024 * 5) // 5M rows default
+    val values = 1024 * 1024 * 5 // 5M rows
 
     // Generate input data once with all numeric types
     runBenchmarkWithTable("Numeric to Numeric casts", values) { v =>

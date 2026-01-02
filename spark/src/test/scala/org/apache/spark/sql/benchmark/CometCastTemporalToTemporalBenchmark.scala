@@ -19,47 +19,42 @@
 
 package org.apache.spark.sql.benchmark
 
-case class CastTemporalToNumericConfig(
+case class CastTemporalToTemporalConfig(
     name: String,
     query: String,
     extraCometConfigs: Map[String, String] = Map.empty)
 
 /**
- * Benchmark to measure performance of Comet cast from temporal types to numeric types. To run
- * this benchmark:
+ * Benchmark to measure performance of Comet cast between temporal types. To run this benchmark:
  * {{{
- *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCastTemporalToNumericBenchmark
+ *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCastTemporalToTemporalBenchmark
  * }}}
  * Results will be written to
- * "spark/benchmarks/CometCastTemporalToNumericBenchmark-**results.txt".
+ * "spark/benchmarks/CometCastTemporalToTemporalBenchmark-**results.txt".
  */
-object CometCastTemporalToNumericBenchmark extends CometBenchmarkBase {
+object CometCastTemporalToTemporalBenchmark extends CometBenchmarkBase {
 
   private val castFunctions = Seq("CAST", "TRY_CAST")
 
-  // DATE to numeric types
-  private val dateToNumericTypes = Seq("BYTE", "SHORT", "INT", "LONG")
-  private val dateToNumericConfigs = for {
+  // Date to Timestamp
+  private val dateToTimestampConfigs = for {
     castFunc <- castFunctions
-    targetType <- dateToNumericTypes
-  } yield CastTemporalToNumericConfig(
-    s"$castFunc Date to $targetType",
-    s"SELECT $castFunc(c_date AS $targetType) FROM parquetV1Table")
+  } yield CastTemporalToTemporalConfig(
+    s"$castFunc Date to Timestamp",
+    s"SELECT $castFunc(c_date AS TIMESTAMP) FROM parquetV1Table")
 
-  // TIMESTAMP to numeric types
-  private val timestampToNumericTypes = Seq("BYTE", "SHORT", "INT", "LONG")
-  private val timestampToNumericConfigs = for {
+  // Timestamp to Date
+  private val timestampToDateConfigs = for {
     castFunc <- castFunctions
-    targetType <- timestampToNumericTypes
-  } yield CastTemporalToNumericConfig(
-    s"$castFunc Timestamp to $targetType",
-    s"SELECT $castFunc(c_timestamp AS $targetType) FROM parquetV1Table")
+  } yield CastTemporalToTemporalConfig(
+    s"$castFunc Timestamp to Date",
+    s"SELECT $castFunc(c_timestamp AS DATE) FROM parquetV1Table")
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024 * 5 // 5M rows
 
-    // Generate DATE data once for all date-to-numeric benchmarks
-    runBenchmarkWithTable("Date to Numeric casts", values) { v =>
+    // Generate DATE data for Date -> Timestamp benchmarks
+    runBenchmarkWithTable("Date to Timestamp casts", values) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
           prepareTable(
@@ -72,15 +67,15 @@ object CometCastTemporalToNumericBenchmark extends CometBenchmarkBase {
               FROM $tbl
             """))
 
-          dateToNumericConfigs.foreach { config =>
+          dateToTimestampConfigs.foreach { config =>
             runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
           }
         }
       }
     }
 
-    // Generate TIMESTAMP data once for all timestamp-to-numeric benchmarks
-    runBenchmarkWithTable("Timestamp to Numeric casts", values) { v =>
+    // Generate TIMESTAMP data for Timestamp -> Date benchmarks
+    runBenchmarkWithTable("Timestamp to Date casts", values) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
           prepareTable(
@@ -93,7 +88,7 @@ object CometCastTemporalToNumericBenchmark extends CometBenchmarkBase {
               FROM $tbl
             """))
 
-          timestampToNumericConfigs.foreach { config =>
+          timestampToDateConfigs.foreach { config =>
             runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)
           }
         }
