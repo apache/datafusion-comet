@@ -52,7 +52,7 @@ object CometCastStringToTemporalBenchmark extends CometBenchmarkBase {
       "SELECT TRY_CAST(c1 AS TIMESTAMP) FROM parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024 * 10 // 10M rows
+    val values = 1024 * 1024 // 1M rows
 
     // Generate date data once with ~10% invalid values
     runBenchmarkWithTable("date data generation", values) { v =>

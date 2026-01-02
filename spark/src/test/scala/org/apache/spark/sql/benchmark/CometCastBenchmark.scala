@@ -61,7 +61,7 @@ object CometCastBenchmark extends CometBenchmarkBase {
           case Compatible(notes) =>
             runBenchmarkWithTable(
               s"Running benchmark cast operation from : $LongType to : $toDataType",
-              1024 * 1024 * 10) { v =>
+              1024 * 1024) { v => // 1M rows
               castBenchmark(v, LongType, toDataType, isAnsiMode = ansiMode)
             }
           case Incompatible(notes) => None

@@ -56,7 +56,7 @@ object CometCastTemporalToNumericBenchmark extends CometBenchmarkBase {
     s"SELECT $castFunc(c_timestamp AS $targetType) FROM parquetV1Table")
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024 * 5 // 5M rows
+    val values = 1024 * 1024 // 1M rows
 
     // Generate DATE data once for all date-to-numeric benchmarks
     runBenchmarkWithTable("Date to Numeric casts", values) { v =>
