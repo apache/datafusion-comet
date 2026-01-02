@@ -142,6 +142,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
     scanExec.relation match {
       case r: HadoopFsRelation =>
+        println(s"Found HadoopFsRelation: $r")
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
           return withInfo(scanExec, s"Unsupported file format ${r.fileFormat}")
         }
@@ -155,6 +156,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         if (scanImpl == SCAN_AUTO) {
           scanImpl = selectScan(scanExec, r.partitionSchema, hadoopConf)
         }
+
+        println(s"Using scan impl: $scanImpl")
 
         if (scanImpl == SCAN_NATIVE_DATAFUSION && !CometNativeScan.isSupported(scanExec)) {
           return scanExec
@@ -188,6 +191,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         } else {
           // this is confusing, but we always insert a CometScanExec here, which may replaced
           // with a CometNativeExec when CometExecRule runs, depending on the scanImpl value.
+          println("Creatin scan")
           CometScanExec(scanExec, session, scanImpl)
         }
 
