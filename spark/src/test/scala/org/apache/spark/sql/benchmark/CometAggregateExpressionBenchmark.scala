@@ -24,14 +24,14 @@ case class AggExprConfig(
     query: String,
     extraCometConfigs: Map[String, String] = Map.empty)
 
-// spotless:off
 /**
  * Comprehensive benchmark for Comet aggregate functions. To run this benchmark:
- * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometAggregateFunctionBenchmark`
+ * {{{
+ *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometAggregateExpressionBenchmark
+ * }}}
  * Results will be written to "spark/benchmarks/CometAggregateFunctionBenchmark-**results.txt".
  */
-// spotless:on
-object CometAggregateFunctionBenchmark extends CometBenchmarkBase {
+object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
 
   private val basicAggregates = List(
     AggExprConfig("count", "SELECT COUNT(*) FROM parquetV1Table GROUP BY grp"),
@@ -104,7 +104,7 @@ object CometAggregateFunctionBenchmark extends CometBenchmarkBase {
       "SELECT COUNT(DISTINCT c_int) FROM parquetV1Table GROUP BY high_card_grp"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = getBenchmarkRows(1024 * 1024 * 10) // 10M rows default for aggregates
+    val values = 1024 * 1024
 
     runBenchmarkWithTable("Aggregate function benchmarks", values) { v =>
       withTempPath { dir =>
