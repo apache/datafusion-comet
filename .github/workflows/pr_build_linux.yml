@@ -27,11 +27,17 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   pull_request:
     paths-ignore:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
