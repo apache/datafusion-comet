@@ -84,7 +84,7 @@ object CometArithmeticBenchmark extends CometBenchmarkBase {
 
     Seq(true, false).foreach { useDictionary =>
       Seq(Minus, Mul).foreach { op =>
-        runBenchmarkWithTable(op.name, TOTAL, useDictionary) { v =>
+        runBenchmarkWithSafeTable(op.name, TOTAL, useDictionary) { v =>
           integerArithmeticBenchmark(v, op, useDictionary)
         }
       }

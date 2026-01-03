@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.benchmark
 
-import scala.util.Try
-
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.internal.SQLConf
@@ -87,7 +85,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
           s"SQL Parquet - Spark (${aggregateFunction.toString}) ansi mode enabled : ${isAnsiMode}") {
           _ =>
             withSQLConf(SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
-              Try { spark.sql(query).noop() }
+              spark.sql(query).noop()
             }
         }
 
@@ -98,7 +96,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
               CometConf.COMET_ENABLED.key -> "true",
               CometConf.COMET_EXEC_ENABLED.key -> "true",
               SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
-              Try { spark.sql(query).noop() }
+              spark.sql(query).noop()
             }
         }
 
@@ -137,7 +135,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
           benchmark.addCase(
             s"SQL Parquet - Spark (${aggregateFunction.toString}) ansi mode enabled : ${isAnsiMode}") {
             _ =>
-              Try { spark.sql(query).noop() }
+              spark.sql(query).noop()
           }
         }
 
@@ -148,7 +146,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
               CometConf.COMET_ENABLED.key -> "true",
               CometConf.COMET_EXEC_ENABLED.key -> "true",
               SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
-              Try { spark.sql(query).noop() }
+              spark.sql(query).noop()
             }
         }
 
@@ -185,7 +183,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
           s"SQL Parquet - Spark (${aggregateFunction.toString}) isANSIMode: ${isAnsiMode.toString}") {
           _ =>
             withSQLConf(SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
-              Try { spark.sql(query).noop() }
+              spark.sql(query).noop()
             }
         }
 
@@ -197,7 +195,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
               CometConf.COMET_EXEC_ENABLED.key -> "true",
               CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key -> "1G",
               SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
-              Try { spark.sql(query).noop() }
+              spark.sql(query).noop()
             }
         }
 
@@ -236,7 +234,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
           s"SQL Parquet - Spark (${aggregateFunction.toString}) isANSIMode: ${isAnsiMode.toString}") {
           _ =>
             withSQLConf(SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
-              Try { spark.sql(query).noop() }
+              spark.sql(query).noop()
             }
         }
 
@@ -247,7 +245,7 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
               CometConf.COMET_ENABLED.key -> "true",
               CometConf.COMET_EXEC_ENABLED.key -> "true",
               SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
-              Try { spark.sql(query).noop() }
+              spark.sql(query).noop()
             }
         }
 
@@ -260,36 +258,36 @@ object CometAggregateBenchmark extends CometBenchmarkBase {
     val total = 1024 * 1024 * 10
     val combinations = List(100, 1024, 1024 * 1024) // number of distinct groups
     benchmarkAggFuncs.foreach { aggFunc =>
-      Seq(true, false).foreach(k => {
-        runBenchmarkWithTable(
+      Seq(true, false).foreach(ansiMode => {
+        runBenchmarkWithSafeTable(
           s"Grouped Aggregate (single group key + single aggregate $aggFunc)",
           total) { v =>
           for (card <- combinations) {
-            singleGroupAndAggregate(v, card, aggFunc, k)
+            singleGroupAndAggregate(v, card, aggFunc, ansiMode)
           }
         }
 
-        runBenchmarkWithTable(
+        runBenchmarkWithSafeTable(
           s"Grouped Aggregate (multiple group keys + single aggregate $aggFunc)",
           total) { v =>
           for (card <- combinations) {
-            multiGroupKeys(v, card, aggFunc, k)
+            multiGroupKeys(v, card, aggFunc, ansiMode)
           }
         }
 
-        runBenchmarkWithTable(
+        runBenchmarkWithSafeTable(
           s"Grouped Aggregate (single group key + multiple aggregates $aggFunc)",
           total) { v =>
           for (card <- combinations) {
-            multiAggregates(v, card, aggFunc, k)
+            multiAggregates(v, card, aggFunc, ansiMode)
           }
         }
 
-        runBenchmarkWithTable(
+        runBenchmarkWithSafeTable(
           s"Grouped Aggregate (single group key + single aggregate $aggFunc on decimal)",
           total) { v =>
           for (card <- combinations) {
-            singleGroupAndAggregateDecimal(v, DecimalType(18, 10), card, aggFunc, k)
+            singleGroupAndAggregateDecimal(v, DecimalType(18, 10), card, aggFunc, ansiMode)
           }
         }
       })

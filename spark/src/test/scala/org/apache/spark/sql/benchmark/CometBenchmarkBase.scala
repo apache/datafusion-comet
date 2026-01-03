@@ -23,7 +23,7 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 
-import scala.util.{Random, Try}
+import scala.util.Random
 
 import org.apache.parquet.crypto.DecryptionPropertiesFactory
 import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFactory}
@@ -33,7 +33,7 @@ import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, DataFrameWriter, Row, SparkSession}
 import org.apache.spark.sql.execution.benchmark.SqlBasedBenchmark
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.DecimalType
+import org.apache.spark.sql.types.{DataType, DecimalType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions
@@ -85,6 +85,54 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
         .map(_ => if (useDictionary) Random.nextLong % 5 else Random.nextLong)
         .createOrReplaceTempView(tbl)
       runBenchmark(benchmarkName)(f(values))
+    }
+  }
+
+  /**
+   * Creates a table with ANSI-safe values that won't overflow in arithmetic operations. Use this
+   * instead of runBenchmarkWithTable for arithmetic/aggregate benchmarks.
+   */
+  protected def runBenchmarkWithSafeTable(
+      benchmarkName: String,
+      values: Int,
+      useDictionary: Boolean = false)(f: Int => Any): Unit = {
+    withTempTable(tbl) {
+      import spark.implicits._
+      spark
+        .range(values)
+        .map(i => if (useDictionary) i % 5 else i % 10000)
+        .createOrReplaceTempView(tbl)
+      runBenchmark(benchmarkName)(f(values))
+    }
+  }
+
+  /**
+   * Generates ANSI-safe data for casting from Long to the specified target type. Returns a SQL
+   * expression that transforms the base "value" column to be within safe ranges.
+   *
+   * @param targetType
+   *   The target data type for casting
+   * @return
+   *   SQL expression to generate safe data
+   */
+  protected def generateAnsiSafeData(targetType: DataType): String = {
+    import org.apache.spark.sql.types._
+
+//    we generate long inputs initially and this case statement translates them into right data type so that the code doesn't fail in ANSI mode
+    targetType match {
+      case ByteType => "CAST((value % 128) AS BIGINT)"
+      case ShortType => "CAST((value % 32768) AS BIGINT)"
+      case IntegerType => "CAST((value % 2147483648) AS BIGINT)"
+      case LongType => "value"
+      case FloatType => "CAST((value % 1000000) AS BIGINT)"
+      case DoubleType => "value"
+      case _: DecimalType => "CAST((value % 100000000) AS BIGINT)"
+      case StringType => "CAST(value AS STRING)"
+      case BooleanType => "CAST((value % 2) AS BIGINT)"
+      case DateType => "CAST((value % 18262) AS BIGINT)"
+      case TimestampType => "value"
+      case BinaryType => "value"
+      case _ => "value"
     }
   }
 
@@ -143,13 +191,8 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
   }
 
   private def runSparkCommand(spark: SparkSession, query: String, isANSIMode: Boolean): Unit = {
-    if (isANSIMode) {
-      Try {
-        spark.sql(query).noop()
-      }
-    } else {
-      spark.sql(query).noop()
-    }
+    // With ANSI-safe data generation, queries should not throw exceptions
+    spark.sql(query).noop()
   }
 
   protected def prepareTable(dir: File, df: DataFrame, partition: Option[String] = None): Unit = {
@@ -244,10 +287,12 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
       useDictionary: Boolean): DataFrame = {
     import spark.implicits._
 
-    val div = if (useDictionary) 5 else values
+    // Use safe range to avoid overflow in decimal operations
+    val maxValue = 10000
+    val div = if (useDictionary) 5 else maxValue
     spark
       .range(values)
-      .map(_ % div)
+      .map(i => i % div)
       .select((($"value" - 500) / 100.0) cast decimal as Symbol("dec"))
   }
 }

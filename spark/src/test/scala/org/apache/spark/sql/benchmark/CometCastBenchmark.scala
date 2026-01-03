@@ -79,7 +79,15 @@ object CometCastBenchmark extends CometBenchmarkBase {
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
-        prepareTable(dir, spark.sql(s"SELECT value FROM $tbl"))
+        // Generate ANSI-safe data when in ANSI mode to avoid overflow exceptions
+        // In legacy mode, use raw values to test overflow handling
+        val dataExpr = if (isAnsiMode) {
+          generateAnsiSafeData(toDataType)
+        } else {
+          "value"
+        }
+
+        prepareTable(dir, spark.sql(s"SELECT $dataExpr as value FROM $tbl"))
 
         val functionSQL = castExprSQL(toDataType, "value")
         val query = s"SELECT $functionSQL FROM parquetV1Table"
