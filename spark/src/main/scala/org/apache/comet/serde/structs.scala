@@ -111,26 +111,6 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
       withInfo(expr, "StructsToJson with options is not supported")
       None
     } else {
-
-      def isSupportedType(dt: DataType): Boolean = {
-        dt match {
-          case StructType(fields) =>
-            fields.forall(f => isSupportedType(f.dataType))
-          case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
-              DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
-              DataTypes.DoubleType | DataTypes.StringType =>
-            true
-          case DataTypes.DateType | DataTypes.TimestampType =>
-            // TODO implement these types with tests for formatting options and timezone
-            false
-          case _: MapType | _: ArrayType =>
-            // Spark supports map and array in StructsToJson but this is not yet
-            // implemented in Comet
-            false
-          case _ => false
-        }
-      }
-
       val isSupported = expr.child.dataType match {
         case s: StructType =>
           s.fields.forall(f => isSupportedType(f.dataType))
@@ -164,6 +144,25 @@ object CometStructsToJson extends CometExpressionSerde[StructsToJson] {
         withInfo(expr, "Unsupported data type", expr.child)
         None
       }
+    }
+  }
+
+  def isSupportedType(dt: DataType): Boolean = {
+    dt match {
+      case StructType(fields) =>
+        fields.forall(f => isSupportedType(f.dataType))
+      case DataTypes.BooleanType | DataTypes.ByteType | DataTypes.ShortType |
+          DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType |
+          DataTypes.DoubleType | DataTypes.StringType =>
+        true
+      case DataTypes.DateType | DataTypes.TimestampType =>
+        // TODO implement these types with tests for formatting options and timezone
+        false
+      case _: MapType | _: ArrayType =>
+        // Spark supports map and array in StructsToJson but this is not yet
+        // implemented in Comet
+        false
+      case _ => false
     }
   }
 }
