@@ -32,8 +32,7 @@ object DeltaReflection extends Logging {
   /**
    * Iceberg class names used throughout Comet.
    */
-  object ClassNames {
-  }
+  object ClassNames {}
 
   /**
    * Iceberg content types.
@@ -78,7 +77,8 @@ object DeltaReflection extends Logging {
     } catch {
       case e: Exception =>
         logError(
-          s"Delta reflection failure: Failed to get minReaderVersion from protocol: ${e.getMessage}")
+          "Delta reflection failure: Failed to get minReaderVersion from protocol: " +
+            s"${e.getMessage}")
         None
     }
   }
@@ -90,7 +90,8 @@ object DeltaReflection extends Logging {
     } catch {
       case e: Exception =>
         logError(
-          s"Delta reflection failure: Failed to get minReaderVersion from protocol: ${e.getMessage}")
+          "Delta reflection failure: Failed to get minReaderVersion from protocol: " +
+            s"${e.getMessage}")
         None
     }
   }
