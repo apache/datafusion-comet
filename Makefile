@@ -105,5 +105,35 @@ release-nogit:
 	./mvnw install -Prelease -DskipTests $(PROFILES) -Dmaven.gitcommitid.skip=true
 benchmark-%: release
 	cd spark && COMET_CONF_DIR=$(shell pwd)/conf MAVEN_OPTS='-Xmx20g ${call spark_jvm_17_extra_args}' ../mvnw exec:java -Dexec.mainClass="$*" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="$(filter-out $@,$(MAKECMDGOALS))" $(PROFILES)
+
+# Discover all benchmark classes dynamically
+BENCHMARK_CLASSES := $(shell find spark/src/test/scala/org/apache/spark/sql/benchmark -name "Comet*Benchmark.scala" -type f | \
+	xargs grep -l "object.*Benchmark.*extends.*CometBenchmarkBase" | \
+	sed 's|spark/src/test/scala/||g' | \
+	sed 's|/|.|g' | \
+	sed 's|.scala||g' | \
+	sort)
+
+# Run all discovered benchmarks
+benchmark-all:
+	@echo "Discovered benchmarks:"
+	@echo "$(BENCHMARK_CLASSES)" | tr ' ' '\n'
+	@echo ""
+	@echo "Running all benchmarks (this will take a long time)..."
+	@for benchmark in $(BENCHMARK_CLASSES); do \
+		echo ""; \
+		echo "======================================"; \
+		echo "Running: $$benchmark"; \
+		echo "======================================"; \
+		SPARK_GENERATE_BENCHMARK_FILES=1 $(MAKE) benchmark-$$benchmark || echo "WARNING: $$benchmark failed"; \
+	done
+	@echo ""
+	@echo "All benchmarks completed!"
+
+# List all available benchmarks
+list-benchmarks:
+	@echo "Available benchmarks:"
+	@echo "$(BENCHMARK_CLASSES)" | tr ' ' '\n'
+
 .DEFAULT:
 	@: # ignore arguments provided to benchmarks e.g. "make benchmark-foo -- --bar", we do not want to treat "--bar" as target

@@ -33,7 +33,7 @@ import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, DataFrameWriter, Row, SparkSession}
 import org.apache.spark.sql.execution.benchmark.SqlBasedBenchmark
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.DecimalType
+import org.apache.spark.sql.types.{DataType, DecimalType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions
@@ -88,26 +88,52 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
     }
   }
 
-  /** Runs function `f` with Comet on and off. */
-  final def runWithComet(name: String, cardinality: Long)(f: => Unit): Unit = {
-    val benchmark = new Benchmark(name, cardinality, output = output)
-
-    benchmark.addCase(s"$name - Spark ") { _ =>
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        f
-      }
+  /**
+   * Creates a table with ANSI-safe values that won't overflow in arithmetic operations. Use this
+   * instead of runBenchmarkWithTable for arithmetic/aggregate benchmarks.
+   */
+  protected def runBenchmarkWithSafeTable(
+      benchmarkName: String,
+      values: Int,
+      useDictionary: Boolean = false)(f: Int => Any): Unit = {
+    withTempTable(tbl) {
+      import spark.implicits._
+      spark
+        .range(values)
+        .map(i => if (useDictionary) i % 5 else i % 10000)
+        .createOrReplaceTempView(tbl)
+      runBenchmark(benchmarkName)(f(values))
     }
+  }
 
-    benchmark.addCase(s"$name - Comet") { _ =>
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        SQLConf.ANSI_ENABLED.key -> "false") {
-        f
-      }
+  /**
+   * Generates ANSI-safe data for casting from Long to the specified target type. Returns a SQL
+   * expression that transforms the base "value" column to be within safe ranges.
+   *
+   * @param targetType
+   *   The target data type for casting
+   * @return
+   *   SQL expression to generate safe data
+   */
+  protected def generateAnsiSafeData(targetType: DataType): String = {
+    import org.apache.spark.sql.types._
+
+//    we generate long inputs initially and this case statement translates them into right data type so that the code doesn't fail in ANSI mode
+    targetType match {
+      case ByteType => "CAST((value % 128) AS BIGINT)"
+      case ShortType => "CAST((value % 32768) AS BIGINT)"
+      case IntegerType => "CAST((value % 2147483648) AS BIGINT)"
+      case LongType => "value"
+      case FloatType => "CAST((value % 1000000) AS BIGINT)"
+      case DoubleType => "value"
+      case _: DecimalType => "CAST((value % 100000000) AS BIGINT)"
+      case StringType => "CAST(value AS STRING)"
+      case BooleanType => "CAST((value % 2) AS BIGINT)"
+      case DateType => "CAST((value % 18262) AS BIGINT)"
+      case TimestampType => "value"
+      case BinaryType => "value"
+      case _ => "value"
     }
-
-    benchmark.run()
   }
 
   /**
@@ -127,35 +153,46 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
       name: String,
       cardinality: Long,
       query: String,
+      isAnsiMode: Boolean,
       extraCometConfigs: Map[String, String] = Map.empty): Unit = {
+
     val benchmark = new Benchmark(name, cardinality, output = output)
 
     benchmark.addCase("Spark") { _ =>
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        spark.sql(query).noop()
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
+        runSparkCommand(spark, query, isAnsiMode)
       }
     }
 
     benchmark.addCase("Comet (Scan)") { _ =>
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "false") {
-        spark.sql(query).noop()
+        CometConf.COMET_EXEC_ENABLED.key -> "false",
+        SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) {
+        runSparkCommand(spark, query, isAnsiMode)
       }
     }
 
     val cometExecConfigs = Map(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      "spark.sql.optimizer.constantFolding.enabled" -> "false") ++ extraCometConfigs
+      "spark.sql.optimizer.constantFolding.enabled" -> "false",
+      SQLConf.ANSI_ENABLED.key -> isAnsiMode.toString) ++ extraCometConfigs
 
     benchmark.addCase("Comet (Scan + Exec)") { _ =>
       withSQLConf(cometExecConfigs.toSeq: _*) {
-        spark.sql(query).noop()
+        runSparkCommand(spark, query, isAnsiMode)
       }
     }
 
     benchmark.run()
+  }
+
+  private def runSparkCommand(spark: SparkSession, query: String, isANSIMode: Boolean): Unit = {
+    // With ANSI-safe data generation, queries should not throw exceptions
+    spark.sql(query).noop()
   }
 
   protected def prepareTable(dir: File, df: DataFrame, partition: Option[String] = None): Unit = {
@@ -250,7 +287,9 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
       useDictionary: Boolean): DataFrame = {
     import spark.implicits._
 
-    val div = if (useDictionary) 5 else values
+    // Use safe range to avoid overflow in decimal operations
+    val maxValue = 10000
+    val div = if (useDictionary) 5 else maxValue
     spark
       .range(values)
       .map(_ % div)
