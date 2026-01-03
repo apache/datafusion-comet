@@ -292,7 +292,7 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
     val div = if (useDictionary) 5 else maxValue
     spark
       .range(values)
-      .map(i => i % div)
+      .map(_ % div)
       .select((($"value" - 500) / 100.0) cast decimal as Symbol("dec"))
   }
 }
