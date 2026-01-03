@@ -44,22 +44,6 @@ case class StringExprConfig(
 // spotless:on
 object CometStringExpressionBenchmark extends CometBenchmarkBase {
 
-  /**
-   * Generic method to run a string expression benchmark with the given configuration.
-   */
-  def runStringExprBenchmark(config: StringExprConfig, values: Int): Unit = {
-    withTempPath { dir =>
-      withTempTable("parquetV1Table") {
-        prepareTable(dir, spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 100) AS c1 FROM $tbl"))
-
-        val extraConfigs =
-          Map(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") ++ config.extraCometConfigs
-
-        runExpressionBenchmark(config.name, values, config.query, extraConfigs)
-      }
-    }
-  }
-
   // Configuration for all string expression benchmarks
   private val stringExpressions = List(
     StringExprConfig("Substring", "select substring(c1, 1, 100) from parquetV1Table"),
@@ -71,7 +55,16 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("chr", "select chr(c1) from parquetV1Table"),
     StringExprConfig("initCap", "select initCap(c1) from parquetV1Table"),
     StringExprConfig("trim", "select trim(c1) from parquetV1Table"),
+    StringExprConfig("btrim", "select btrim(c1) from parquetV1Table"),
+    StringExprConfig("ltrim", "select ltrim(c1) from parquetV1Table"),
+    StringExprConfig("rtrim", "select rtrim(c1) from parquetV1Table"),
+    StringExprConfig("lpad", "select lpad(c1, 120, 'x') from parquetV1Table"),
+    StringExprConfig("rpad", "select rpad(c1, 120, 'x') from parquetV1Table"),
+    StringExprConfig("concat", "select concat(c1, c1) from parquetV1Table"),
     StringExprConfig("concatws", "select concat_ws(' ', c1, c1) from parquetV1Table"),
+    StringExprConfig("contains", "select contains(c1, '123') from parquetV1Table"),
+    StringExprConfig("startsWith", "select startswith(c1, '123') from parquetV1Table"),
+    StringExprConfig("endsWith", "select endswith(c1, '123') from parquetV1Table"),
     StringExprConfig("length", "select length(c1) from parquetV1Table"),
     StringExprConfig("repeat", "select repeat(c1, 3) from parquetV1Table"),
     StringExprConfig("reverse", "select reverse(c1) from parquetV1Table"),
@@ -81,11 +74,22 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("translate", "select translate(c1, '123456', 'aBcDeF') from parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024;
+    runBenchmarkWithTable("String expressions", 1024) { v =>
+      withTempPath { dir =>
+        withTempTable("parquetV1Table") {
+          prepareTable(
+            dir,
+            spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 10) AS c1 FROM $tbl"))
 
-    stringExpressions.foreach { config =>
-      runBenchmarkWithTable(config.name, values) { v =>
-        runStringExprBenchmark(config, v)
+          val extraConfigs = Map(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true")
+
+          stringExpressions.foreach { config =>
+            val allConfigs = extraConfigs ++ config.extraCometConfigs
+            runBenchmark(config.name) {
+              runExpressionBenchmark(config.name, v, config.query, allConfigs)
+            }
+          }
+        }
       }
     }
   }
