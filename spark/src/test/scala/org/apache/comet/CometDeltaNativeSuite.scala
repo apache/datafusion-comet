@@ -176,6 +176,38 @@ class CometDeltaNativeSuite extends CometTestBase {
     }
   }
 
+  test("change data feed enabled") {
+    import testImplicits._
+
+    withTempDir { dir =>
+      withTable("test_table") {
+        DeltaTable
+          .create(spark)
+          .tableName("test_table")
+          .addColumn("id", "INT")
+          .addColumn("name", "STRING")
+          .addColumn("value", "DOUBLE")
+          .property("delta.enableChangeDataFeed", "true")
+          .location(dir.getAbsolutePath)
+          .execute()
+
+        Seq((1, "Alice", 10.5), (2, "Bob", 20.3), (3, "Charlie", 30.7))
+          .toDF("id", "name", "value")
+          .write
+          .format("delta")
+          .mode("append")
+          .save(dir.getAbsolutePath)
+
+        // Reading from a table with change data feed enabled is supported if not reading change
+        // feed
+        checkNativeScan("SELECT * FROM test_table ORDER BY id", true)
+
+        // Read a change feed uses a different relation that is not supported
+        checkNativeScan("SELECT * FROM table_changes('test_table', 0)", false)
+      }
+    }
+  }
+
   test("complex Delta table") {
 
     withTempDir { dir =>
