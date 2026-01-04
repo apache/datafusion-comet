@@ -54,8 +54,8 @@ use datafusion::common::{
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use num::{
-    cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, Num,
-    ToPrimitive, Zero,
+    cast::AsPrimitive, integer::div_floor, traits::CheckedNeg, CheckedSub, Integer, ToPrimitive,
+    Zero,
 };
 use regex::Regex;
 use std::str::FromStr;
@@ -1967,9 +1967,7 @@ fn cast_string_to_int_with_range_check(
 /// Equivalent to
 /// - org.apache.spark.unsafe.types.UTF8String.toInt(IntWrapper intWrapper, boolean allowDecimal)
 /// - org.apache.spark.unsafe.types.UTF8String.toLong(LongWrapper longWrapper, boolean allowDecimal)
-fn do_cast_string_to_int<
-    T: Num + PartialOrd + Integer + CheckedSub + CheckedNeg + From<i32> + Copy,
->(
+fn do_cast_string_to_int<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>(
     str: &str,
     eval_mode: EvalMode,
     type_name: &str,
@@ -1989,9 +1987,8 @@ fn do_cast_string_to_int<
     if start == end {
         return none_or_err(eval_mode, type_name, str);
     }
-    let trimmed_str = &str[start..end];
-    let len = trimmed_str.len();
-    let trimmed_bytes = trimmed_str.as_bytes();
+    let trimmed_bytes = &bytes[start..end];
+    let len = trimmed_bytes.len();
     let mut result: T = T::zero();
     let mut idx = 0;
     let first_char = trimmed_bytes[0];
@@ -2003,7 +2000,7 @@ fn do_cast_string_to_int<
         }
     }
 
-    let radix = T::from(10);
+    let radix = T::from(10_u8);
     let stop_value = min_value / radix;
     let mut parse_sign_and_digits = true;
 
@@ -2019,11 +2016,12 @@ fn do_cast_string_to_int<
                 }
             }
 
-            let digit = if ch.is_ascii_digit() {
-                (ch as u32) - ('0' as u32)
-            } else {
+            if !ch.is_ascii_digit() {
                 return none_or_err(eval_mode, type_name, str);
-            };
+            }
+
+            // Direct conversion: u8 digit (0-9) → T
+            let digit: T = T::from(ch - b'0');
 
             // We are going to process the new digit and accumulate the result. However, before
             // doing this, if the result is already smaller than the
@@ -2036,7 +2034,6 @@ fn do_cast_string_to_int<
             // radix), we can just use `result > 0` to check overflow. If result
             // overflows, we should stop
             let v = result * radix;
-            let digit = (digit as i32).into();
             match v.checked_sub(&digit) {
                 Some(x) if x <= T::zero() => result = x,
                 _ => {
