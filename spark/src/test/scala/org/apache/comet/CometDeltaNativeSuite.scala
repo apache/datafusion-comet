@@ -19,9 +19,6 @@
 
 package org.apache.comet
 
-import java.io.File
-import java.nio.file.Files
-
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SparkConf
@@ -188,7 +185,6 @@ class CometDeltaNativeSuite extends CometTestBase {
   }
 
   test("complex Delta table") {
-    import testImplicits._
 
     withTempDir { dir =>
       val table = DeltaTable
