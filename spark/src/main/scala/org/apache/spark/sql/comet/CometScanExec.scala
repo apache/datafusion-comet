@@ -21,7 +21,6 @@ package org.apache.spark.sql.comet
 
 import scala.collection.mutable.HashMap
 import scala.concurrent.duration.NANOSECONDS
-import scala.jdk.CollectionConverters._
 import scala.reflect.ClassTag
 
 import org.apache.hadoop.fs.Path
@@ -610,7 +609,7 @@ object CometScanExec {
       case 1 => true
       case 2 => false
       case 3 =>
-        deltaMetadata.readerFeatures.asScala.intersect(unsupportedDeltaReaderFeatures).isEmpty
+        deltaMetadata.readerFeatures.intersect(unsupportedDeltaReaderFeatures).isEmpty
     }
   }
 

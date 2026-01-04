@@ -116,6 +116,7 @@ under the License.
       <groupId>com.google.guava</groupId>
       <artifactId>failureaccess</artifactId>
       <version>1.0.3</version>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.codehaus.jackson</groupId>
@@ -191,6 +192,12 @@ under the License.
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
           <version>1.5.2</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <groupId>io.delta</groupId>
+          <artifactId>delta-core_${scala.binary.version}</artifactId>
+          <version>2.4.0</version>
           <scope>test</scope>
         </dependency>
         <!-- Jetty 9.4.x for Spark 3.4 (JDK 11, javax.* packages) -->
