@@ -85,9 +85,6 @@ uuid = "1.18.1"
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.18.0"
 
-[target.'cfg(target_os = "macos")'.dependencies]
-hdrs = { version = "0.3.2", features = ["vendored"] }
-
 [dev-dependencies]
 pprof = { version = "0.15", features = ["flamegraph"] }
 criterion = { version = "0.7", features = ["async", "async_tokio", "async_std"] }

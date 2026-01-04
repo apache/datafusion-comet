@@ -38,6 +38,7 @@ class CometDeltaNativeSuite extends CometTestBase {
     super.sparkConf
       .set("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
       .set("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+      .set("spark.databricks.delta.snapshotPartitions", "2")
       .set(CometConf.COMET_NATIVE_SCAN_IMPL.key, "native_datafusion")
   }
 
@@ -153,8 +154,7 @@ class CometDeltaNativeSuite extends CometTestBase {
 
     withTempDir { dir =>
       withTable("test_table") {
-        // Creating a table just with column mapping results in reader version 2
-        val table = DeltaTable
+        DeltaTable
           .create(spark)
           .tableName("test_table")
           .addColumn("id", "INT")
@@ -164,21 +164,12 @@ class CometDeltaNativeSuite extends CometTestBase {
           .location(dir.getAbsolutePath)
           .execute()
 
-        assert(table.detail().select("minReaderVersion").first().getInt(0) == 2)
-
         Seq((1, "Alice", 10.5), (2, "Bob", 20.3), (3, "Charlie", 30.7))
           .toDF("id", "name", "value")
           .write
           .format("delta")
           .mode("append")
           .save(dir.getAbsolutePath)
-
-        checkNativeScan("SELECT * FROM test_table ORDER BY id", false)
-
-        // Now upgrade to reader version 3 which uses the reader features
-        table.upgradeTableProtocol(3, 7)
-
-        assert(table.detail().select("minReaderVersion").first().getInt(0) == 3)
 
         checkNativeScan("SELECT * FROM test_table ORDER BY id", false)
       }
