@@ -529,6 +529,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast DecimalType(10,2) to ShortType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.ShortType)
+    castTest(
+      generateDecimalsPrecision10Scale2(Seq(BigDecimal("-96833550.07"))),
+      DataTypes.ShortType)
   }
 
   test("cast DecimalType(10,2) to IntegerType") {
@@ -1205,6 +1208,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       BigDecimal("32768.678"),
       BigDecimal("123456.789"),
       BigDecimal("99999999.999"))
+    generateDecimalsPrecision10Scale2(values)
+  }
+
+  private def generateDecimalsPrecision10Scale2(values: Seq[BigDecimal]): DataFrame = {
     withNulls(values).toDF("b").withColumn("a", col("b").cast(DecimalType(10, 2))).drop("b")
   }
 
