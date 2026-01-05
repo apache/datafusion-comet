@@ -44,26 +44,11 @@ case class StringExprConfig(
  */
 object CometStringExpressionBenchmark extends CometBenchmarkBase {
 
-  /**
-   * Generic method to run a string expression benchmark with the given configuration.
-   */
-  def runStringExprBenchmark(config: StringExprConfig, values: Int): Unit = {
-    withTempPath { dir =>
-      withTempTable("parquetV1Table") {
-        prepareTable(dir, spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 20) AS c1 FROM $tbl"))
-
-        val extraConfigs =
-          Map(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") ++ config.extraCometConfigs
-
-        runExpressionBenchmark(config.name, values, config.query, extraConfigs)
-      }
-    }
-  }
-
   // Configuration for all string expression benchmarks
   private val stringExpressions = List(
     StringExprConfig("ascii", "select ascii(c1) from parquetV1Table"),
     StringExprConfig("bit_length", "select bit_length(c1) from parquetV1Table"),
+    StringExprConfig("btrim", "select btrim(c1) from parquetV1Table"),
     StringExprConfig("chr", "select chr(c1) from parquetV1Table"),
     StringExprConfig("concat", "select concat(c1, c1) from parquetV1Table"),
     StringExprConfig("concat_ws", "select concat_ws(' ', c1, c1) from parquetV1Table"),
@@ -94,11 +79,22 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("upper", "select upper(c1) from parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val values = 1024 * 1024;
+    runBenchmarkWithTable("String expressions", 1024) { v =>
+      withTempPath { dir =>
+        withTempTable("parquetV1Table") {
+          prepareTable(
+            dir,
+            spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 10) AS c1 FROM $tbl"))
 
-    stringExpressions.foreach { config =>
-      runBenchmarkWithTable(config.name, values) { v =>
-        runStringExprBenchmark(config, v)
+          val extraConfigs = Map(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true")
+
+          stringExpressions.foreach { config =>
+            val allConfigs = extraConfigs ++ config.extraCometConfigs
+            runBenchmark(config.name) {
+              runExpressionBenchmark(config.name, v, config.query, allConfigs)
+            }
+          }
+        }
       }
     }
   }
