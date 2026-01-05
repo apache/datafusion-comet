@@ -875,14 +875,16 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
   test("size - respect to legacySizeOfNull") {
     val table = "t1"
-    withTable(table) {
-      sql(s"create table $table(col array<string>) using parquet")
-      sql(s"insert into $table values(null)")
-      withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "false") {
-        checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
-      }
-      withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "true") {
-        checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
+      withTable(table) {
+        sql(s"create table $table(col array<string>) using parquet")
+        sql(s"insert into $table values(null)")
+        withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "false") {
+          checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+        }
+        withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "true") {
+          checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+        }
       }
     }
   }
