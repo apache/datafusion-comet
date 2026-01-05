@@ -546,7 +546,7 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
 object CometSize extends CometExpressionSerde[Size] {
 
   override def getSupportLevel(expr: Size): SupportLevel = {
-Куызусе    expr.child.dataType match {
+    expr.child.dataType match {
       case _: ArrayType => Compatible()
       case _: MapType => Unsupported(Some("size does not support map inputs"))
       case other =>
@@ -560,7 +560,7 @@ object CometSize extends CometExpressionSerde[Size] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val arrayExprProto = exprToProto(expr.child, inputs, binding)
-    val caseWhenExpr = for {
+    for {
       isNotNullExprProto <- createIsNotNullExprProto(expr, inputs, binding)
       sizeScalarExprProto <- scalarFunctionExprToProto("size", arrayExprProto)
       emptyLiteralExprProto <- createLiteralExprProto(expr.legacySizeOfNull)
@@ -576,7 +576,6 @@ object CometSize extends CometExpressionSerde[Size] {
         .setCaseWhen(caseWhenExpr)
         .build()
     }
-    optExprWithInfo(caseWhenExpr, expr, expr.children: _*)
   }
 
   private def createIsNotNullExprProto(
