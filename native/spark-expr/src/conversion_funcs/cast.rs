@@ -1967,9 +1967,88 @@ fn cast_string_to_int_with_range_check(
 /// Equivalent to
 /// - org.apache.spark.unsafe.types.UTF8String.toInt(IntWrapper intWrapper, boolean allowDecimal)
 /// - org.apache.spark.unsafe.types.UTF8String.toLong(LongWrapper longWrapper, boolean allowDecimal)
-fn do_cast_string_to_int<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>(
+fn do_parse_string_to_int_legacy<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>(
     str: &str,
-    eval_mode: EvalMode,
+    min_value: T,
+) -> SparkResult<Option<T>> {
+    let bytes = str.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    if start == end {
+        return Ok(None);
+    }
+    let trimmed_bytes = &bytes[start..end];
+    let len = trimmed_bytes.len();
+    let mut result: T = T::zero();
+    let mut idx = 0;
+    let first_char = trimmed_bytes[0];
+    let negative = first_char == b'-';
+    if negative || first_char == b'+' {
+        idx = 1;
+        if len == 1 {
+            return Ok(None);
+        }
+    }
+
+    let radix = T::from(10_u8);
+    let stop_value = min_value / radix;
+    let mut parse_sign_and_digits = true;
+
+    for &ch in &trimmed_bytes[idx..] {
+        if parse_sign_and_digits {
+            if ch == b'.' {
+                // truncate decimal in legacy mode
+                parse_sign_and_digits = false;
+                continue;
+            }
+
+            if !ch.is_ascii_digit() {
+                return Ok(None);
+            }
+
+            let digit: T = T::from(ch - b'0');
+
+            if result < stop_value {
+                return Ok(None);
+            }
+            let v = result * radix;
+            match v.checked_sub(&digit) {
+                Some(x) if x <= T::zero() => result = x,
+                _ => {
+                    return Ok(None);
+                }
+            }
+        } else {
+            if !ch.is_ascii_digit() {
+                return Ok(None);
+            }
+        }
+    }
+
+    if !negative {
+        if let Some(neg) = result.checked_neg() {
+            if neg < T::zero() {
+                return Ok(None);
+            }
+            result = neg;
+        } else {
+            return Ok(None);
+        }
+    }
+
+    Ok(Some(result))
+}
+
+fn do_parse_string_to_int_ansi<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>(
+    str: &str,
     type_name: &str,
     min_value: T,
 ) -> SparkResult<Option<T>> {
@@ -1985,7 +2064,7 @@ fn do_cast_string_to_int<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>
     }
 
     if start == end {
-        return none_or_err(eval_mode, type_name, str);
+        return Err(invalid_value(str, "STRING", type_name));
     }
     let trimmed_bytes = &bytes[start..end];
     let len = trimmed_bytes.len();
@@ -1996,7 +2075,7 @@ fn do_cast_string_to_int<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>
     if negative || first_char == b'+' {
         idx = 1;
         if len == 1 {
-            return none_or_err(eval_mode, type_name, str);
+            return Err(invalid_value(str, "STRING", type_name));
         }
     }
 
@@ -2007,43 +2086,28 @@ fn do_cast_string_to_int<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>
     for &ch in &trimmed_bytes[idx..] {
         if parse_sign_and_digits {
             if ch == b'.' {
-                if eval_mode == EvalMode::Legacy {
-                    // truncate decimal in legacy mode
-                    parse_sign_and_digits = false;
-                    continue;
-                } else {
-                    return none_or_err(eval_mode, type_name, str);
-                }
+                return Err(invalid_value(str, "STRING", type_name));
             }
 
             if !ch.is_ascii_digit() {
-                return none_or_err(eval_mode, type_name, str);
+                return Err(invalid_value(str, "STRING", type_name));
             }
 
-            // Direct conversion: u8 digit (0-9) → T
             let digit: T = T::from(ch - b'0');
 
-            // We are going to process the new digit and accumulate the result. However, before
-            // doing this, if the result is already smaller than the
-            // stopValue(Integer.MIN_VALUE / radix), then result * 10 will definitely be
-            // smaller than minValue, and we can stop
             if result < stop_value {
-                return none_or_err(eval_mode, type_name, str);
+                return Err(invalid_value(str, "STRING", type_name));
             }
-            // Since the previous result is greater than or equal to stopValue(Integer.MIN_VALUE /
-            // radix), we can just use `result > 0` to check overflow. If result
-            // overflows, we should stop
             let v = result * radix;
             match v.checked_sub(&digit) {
                 Some(x) if x <= T::zero() => result = x,
                 _ => {
-                    return none_or_err(eval_mode, type_name, str);
+                    return Err(invalid_value(str, "STRING", type_name));
                 }
             }
         } else {
-            // make sure fractional digits are valid digits but ignore them
             if !ch.is_ascii_digit() {
-                return none_or_err(eval_mode, type_name, str);
+                return Err(invalid_value(str, "STRING", type_name));
             }
         }
     }
@@ -2051,15 +2115,106 @@ fn do_cast_string_to_int<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>
     if !negative {
         if let Some(neg) = result.checked_neg() {
             if neg < T::zero() {
-                return none_or_err(eval_mode, type_name, str);
+                return Err(invalid_value(str, "STRING", type_name));
             }
             result = neg;
         } else {
-            return none_or_err(eval_mode, type_name, str);
+            return Err(invalid_value(str, "STRING", type_name));
         }
     }
 
     Ok(Some(result))
+}
+
+fn do_parse_string_to_int_try<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>(
+    str: &str,
+    min_value: T,
+) -> SparkResult<Option<T>> {
+    let bytes = str.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    if start == end {
+        return Ok(None);
+    }
+    let trimmed_bytes = &bytes[start..end];
+    let len = trimmed_bytes.len();
+    let mut result: T = T::zero();
+    let mut idx = 0;
+    let first_char = trimmed_bytes[0];
+    let negative = first_char == b'-';
+    if negative || first_char == b'+' {
+        idx = 1;
+        if len == 1 {
+            return Ok(None);
+        }
+    }
+
+    let radix = T::from(10_u8);
+    let stop_value = min_value / radix;
+    let mut parse_sign_and_digits = true;
+
+    for &ch in &trimmed_bytes[idx..] {
+        if parse_sign_and_digits {
+            if ch == b'.' {
+                return Ok(None);
+            }
+
+            if !ch.is_ascii_digit() {
+                return Ok(None);
+            }
+
+            let digit: T = T::from(ch - b'0');
+
+            if result < stop_value {
+                return Ok(None);
+            }
+            let v = result * radix;
+            match v.checked_sub(&digit) {
+                Some(x) if x <= T::zero() => result = x,
+                _ => {
+                    return Ok(None);
+                }
+            }
+        } else {
+            if !ch.is_ascii_digit() {
+                return Ok(None);
+            }
+        }
+    }
+
+    if !negative {
+        if let Some(neg) = result.checked_neg() {
+            if neg < T::zero() {
+                return Ok(None);
+            }
+            result = neg;
+        } else {
+            return Ok(None);
+        }
+    }
+
+    Ok(Some(result))
+}
+
+fn do_cast_string_to_int<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>(
+    str: &str,
+    eval_mode: EvalMode,
+    type_name: &str,
+    min_value: T,
+) -> SparkResult<Option<T>> {
+    match eval_mode {
+        EvalMode::Legacy => do_parse_string_to_int_legacy(str, min_value),
+        EvalMode::Ansi => do_parse_string_to_int_ansi(str, type_name, min_value),
+        EvalMode::Try => do_parse_string_to_int_try(str, min_value),
+    }
 }
 
 fn cast_string_to_decimal(
