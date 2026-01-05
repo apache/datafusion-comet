@@ -73,7 +73,7 @@ impl AggregateUDFImpl for Avg {
     }
 
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
-        // instantiate specialized accumulator based for the type
+        // All numeric types use Float64 accumulation after casting
         match (&self.input_data_type, &self.result_data_type) {
             (Float64, Float64) => Ok(Box::<AvgAccumulator>::default()),
             _ => not_impl_err!(
@@ -115,7 +115,6 @@ impl AggregateUDFImpl for Avg {
         &self,
         _args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
-        // instantiate specialized accumulator based for the type
         match (&self.input_data_type, &self.result_data_type) {
             (Float64, Float64) => Ok(Box::new(AvgGroupsAccumulator::<Float64Type, _>::new(
                 &self.input_data_type,
@@ -172,7 +171,7 @@ impl Accumulator for AvgAccumulator {
         // counts are summed
         self.count += sum(states[1].as_primitive::<Int64Type>()).unwrap_or_default();
 
-        // sums are summed
+        // sums are summed - no overflow checking in all Eval Modes
         if let Some(x) = sum(states[0].as_primitive::<Float64Type>()) {
             let v = self.sum.get_or_insert(0.);
             *v += x;
@@ -182,7 +181,7 @@ impl Accumulator for AvgAccumulator {
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
         if self.count == 0 {
-            // If all input are nulls, count will be 0 and we will get null after the division.
+            // If all input are nulls, count will be 0, and we will get null after the division.
             // This is consistent with Spark Average implementation.
             Ok(ScalarValue::Float64(None))
         } else {
@@ -198,7 +197,8 @@ impl Accumulator for AvgAccumulator {
 }
 
 /// An accumulator to compute the average of `[PrimitiveArray<T>]`.
-/// Stores values as native types, and does overflow checking
+/// Stores values as native types (
+/// no overflow check all eval modes since inf is a perfectly valid value per spark impl)
 ///
 /// F: Function that calculates the average value from a sum of
 /// T::Native and a total count
@@ -260,6 +260,7 @@ where
         if values.null_count() == 0 {
             for (&group_index, &value) in iter {
                 let sum = &mut self.sums[group_index];
+                // No overflow checking - Infinity is a valid result
                 *sum = (*sum).add_wrapping(value);
                 self.counts[group_index] += 1;
             }
@@ -296,7 +297,7 @@ where
             self.counts[group_index] += partial_count;
         }
 
-        // update sums
+        // update sums - no overflow checking (in all eval modes)
         self.sums.resize(total_num_groups, T::default_value());
         let iter2 = group_indices.iter().zip(partial_sums.values().iter());
         for (&group_index, &new_value) in iter2 {
@@ -325,7 +326,6 @@ where
         Ok(Arc::new(array))
     }
 
-    // return arrays for sums and counts
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
         let counts = emit_to.take_needed(&mut self.counts);
         let counts = Int64Array::new(counts.into(), None);
