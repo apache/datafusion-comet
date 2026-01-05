@@ -89,6 +89,14 @@ abstract class CometTestBase
     // this is an edge case, and we expect most users to allow sorts on floating point, so we
     // enable this for the tests
     conf.set(CometConf.getExprAllowIncompatConfigKey("SortOrder"), "true")
+    // For spark 4.0 tests, we need limit the thread threshold to avoid OOM, see:
+    //  https://github.com/apache/datafusion-comet/issues/2965
+    conf.set(
+      "spark.sql.shuffleExchange.maxThreadThreshold",
+      sys.env.getOrElse("SPARK_TEST_SQL_SHUFFLE_EXCHANGE_MAX_THREAD_THRESHOLD", "1024"))
+    conf.set(
+      "spark.sql.resultQueryStage.maxThreadThreshold",
+      sys.env.getOrElse("SPARK_TEST_SQL_RESULT_QUERY_STAGE_MAX_THREAD_THRESHOLD", "1024"))
     conf
   }
 

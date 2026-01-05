@@ -58,7 +58,37 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
    */
   private[this] val taskIdMapsForShuffle = new ConcurrentHashMap[Int, OpenHashSet[Long]]()
 
-  private lazy val shuffleExecutorComponents = loadShuffleExecutorComponents(conf)
+  // Lazy initialization to avoid accessing SparkEnv.get during ShuffleManager construction,
+  // which can cause hangs when SparkEnv is not fully initialized (e.g., during Hive metastore ops)
+  // This is only initialized when getWriter/getReader is called (during task execution),
+  // at which point SparkEnv should be fully available
+  @volatile private var _shuffleExecutorComponents: ShuffleExecutorComponents = _
+
+  private def shuffleExecutorComponents: ShuffleExecutorComponents = {
+    if (_shuffleExecutorComponents == null) {
+      synchronized {
+        if (_shuffleExecutorComponents == null) {
+          val executorComponents = ShuffleDataIOUtils.loadShuffleDataIO(conf).executor()
+          val extraConfigs =
+            conf.getAllWithPrefix(ShuffleDataIOUtils.SHUFFLE_SPARK_CONF_PREFIX).toMap
+          // SparkEnv.get should be available when getWriter/getReader is called
+          // (during task execution), but check for null to avoid hangs
+          val env = SparkEnv.get
+          if (env == null) {
+            throw new IllegalStateException(
+              "SparkEnv.get is null during shuffleExecutorComponents initialization. " +
+                "This may indicate a timing issue with SparkEnv initialization.")
+          }
+          executorComponents.initializeExecutor(
+            conf.getAppId,
+            env.executorId,
+            extraConfigs.asJava)
+          _shuffleExecutorComponents = executorComponents
+        }
+      }
+    }
+    _shuffleExecutorComponents
+  }
 
   override val shuffleBlockResolver: IndexShuffleBlockResolver = {
     // The patch versions of Spark 3.4 have different constructor signatures:
@@ -252,19 +282,6 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
 }
 
 object CometShuffleManager extends Logging {
-
-  /**
-   * Loads executor components for shuffle data IO.
-   */
-  private def loadShuffleExecutorComponents(conf: SparkConf): ShuffleExecutorComponents = {
-    val executorComponents = ShuffleDataIOUtils.loadShuffleDataIO(conf).executor()
-    val extraConfigs = conf.getAllWithPrefix(ShuffleDataIOUtils.SHUFFLE_SPARK_CONF_PREFIX).toMap
-    executorComponents.initializeExecutor(
-      conf.getAppId,
-      SparkEnv.get.executorId,
-      extraConfigs.asJava)
-    executorComponents
-  }
 
   def shouldBypassMergeSort(conf: SparkConf, dep: ShuffleDependency[_, _, _]): Boolean = {
     // We cannot bypass sorting if we need to do map-side aggregation.
