@@ -480,14 +480,16 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
         // Check for transform functions in residual expressions
         // Non-identity transforms (truncate, bucket, year, month, day, hour) in residuals
-        // are now supported - they skip row-group filtering and are handled post-scan by CometFilter.
+        // are now supported - they skip row-group filtering and are handled
+        // post-scan by CometFilter.
         // This is less optimal than row-group filtering but still allows native execution.
         val transformFunctionsSupported =
           try {
             IcebergReflection.findNonIdentityTransformInResiduals(metadata.tasks) match {
               case Some(transformType) =>
                 // Found non-identity transform - log info and continue with native scan
-                // Row-group filtering will skip these predicates, but post-scan filtering will apply
+                // Row-group filtering will skip these predicates, but post-scan
+                // filtering will apply
                 logInfo(
                   s"Iceberg residual contains transform '$transformType' - " +
                     "row-group filtering will skip this predicate, " +
