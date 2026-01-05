@@ -685,11 +685,18 @@ macro_rules! cast_decimal_to_int16_down {
                 .map(|value| match value {
                     Some(value) => {
                         let divisor = 10_i128.pow($scale as u32);
-                        let (truncated, decimal) = (value / divisor, (value % divisor).abs());
+                        let truncated = value / divisor;
                         let is_overflow = truncated.abs() > i32::MAX.into();
                         if is_overflow {
                             return Err(cast_overflow(
-                                &format!("{}.{}BD", truncated, decimal),
+                                &format!(
+                                    "{}BD",
+                                    format_decimal_str(
+                                        &value.to_string(),
+                                        $precision as usize,
+                                        $scale
+                                    )
+                                ),
                                 &format!("DECIMAL({},{})", $precision, $scale),
                                 $dest_type_str,
                             ));
@@ -698,7 +705,14 @@ macro_rules! cast_decimal_to_int16_down {
                         <$rust_dest_type>::try_from(i32_value)
                             .map_err(|_| {
                                 cast_overflow(
-                                    &format!("{}.{}BD", truncated, decimal),
+                                    &format!(
+                                        "{}BD",
+                                        format_decimal_str(
+                                            &value.to_string(),
+                                            $precision as usize,
+                                            $scale
+                                        )
+                                    ),
                                     &format!("DECIMAL({},{})", $precision, $scale),
                                     $dest_type_str,
                                 )
@@ -748,11 +762,18 @@ macro_rules! cast_decimal_to_int32_up {
                 .map(|value| match value {
                     Some(value) => {
                         let divisor = 10_i128.pow($scale as u32);
-                        let (truncated, decimal) = (value / divisor, (value % divisor).abs());
+                        let truncated = value / divisor;
                         let is_overflow = truncated.abs() > $max_dest_val.into();
                         if is_overflow {
                             return Err(cast_overflow(
-                                &format!("{}.{}BD", truncated, decimal),
+                                &format!(
+                                    "{}BD",
+                                    format_decimal_str(
+                                        &value.to_string(),
+                                        $precision as usize,
+                                        $scale
+                                    )
+                                ),
                                 &format!("DECIMAL({},{})", $precision, $scale),
                                 $dest_type_str,
                             ));
@@ -778,6 +799,30 @@ macro_rules! cast_decimal_to_int32_up {
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
+}
+
+// copied from arrow::dataTypes::Decimal128Type since Decimal128Type::format_decimal can't be called directly
+fn format_decimal_str(value_str: &str, precision: usize, scale: i8) -> String {
+    let (sign, rest) = match value_str.strip_prefix('-') {
+        Some(stripped) => ("-", stripped),
+        None => ("", value_str),
+    };
+    let bound = precision.min(rest.len()) + sign.len();
+    let value_str = &value_str[0..bound];
+
+    if scale == 0 {
+        value_str.to_string()
+    } else if scale < 0 {
+        let padding = value_str.len() + scale.unsigned_abs() as usize;
+        format!("{value_str:0<padding$}")
+    } else if rest.len() > scale as usize {
+        // Decimal separator is in the middle of the string
+        let (whole, decimal) = value_str.split_at(value_str.len() - scale as usize);
+        format!("{whole}.{decimal}")
+    } else {
+        // String has to be padded
+        format!("{}0.{:0>width$}", sign, rest, width = scale as usize)
+    }
 }
 
 impl Cast {
@@ -1866,12 +1911,12 @@ fn spark_cast_nonintegral_numeric_to_integral(
         ),
         (DataType::Decimal128(precision, scale), DataType::Int8) => {
             cast_decimal_to_int16_down!(
-                array, eval_mode, Int8Array, i8, "TINYINT", precision, *scale
+                array, eval_mode, Int8Array, i8, "TINYINT", *precision, *scale
             )
         }
         (DataType::Decimal128(precision, scale), DataType::Int16) => {
             cast_decimal_to_int16_down!(
-                array, eval_mode, Int16Array, i16, "SMALLINT", precision, *scale
+                array, eval_mode, Int16Array, i16, "SMALLINT", *precision, *scale
             )
         }
         (DataType::Decimal128(precision, scale), DataType::Int32) => {
