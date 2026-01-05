@@ -29,6 +29,10 @@ use std::{
 
 use opendal::Operator;
 
+use crate::execution::shuffle::CompressionCodec;
+use crate::parquet::parquet_support::{
+    create_hdfs_operator, is_hdfs_scheme, prepare_object_store_with_configs,
+};
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
@@ -50,9 +54,7 @@ use parquet::{
     basic::{Compression, ZstdLevel},
     file::properties::WriterProperties,
 };
-
-use crate::execution::shuffle::CompressionCodec;
-use crate::parquet::parquet_support::prepare_object_store_with_configs;
+use url::Url;
 
 /// Enum representing different types of Arrow writers based on storage backend
 enum ParquetWriter {
@@ -276,17 +278,14 @@ impl ParquetWriterExec {
         runtime_env: Arc<datafusion::execution::runtime_env::RuntimeEnv>,
         object_store_options: &HashMap<String, String>,
     ) -> Result<ParquetWriter> {
-        // Determine storage scheme from output_file_path
-        let storage_scheme = if output_file_path.starts_with("hdfs://") {
-            "hdfs"
-        } else if output_file_path.starts_with("s3://") || output_file_path.starts_with("s3a://") {
-            "s3"
-        } else {
-            "local"
-        };
+        // Parse URL and match on storage scheme directly
+        let url = Url::parse(output_file_path).map_err(|e| {
+            DataFusionError::Execution(format!("Failed to parse URL '{}': {}", output_file_path, e))
+        })?;
 
-        match storage_scheme {
-            "hdfs" => {
+        if is_hdfs_scheme(&url, object_store_options) {
+            // HDFS storage
+            {
                 // Use prepare_object_store_with_configs to create and register the object store
                 let (_object_store_url, object_store_path) = prepare_object_store_with_configs(
                     runtime_env,
@@ -305,41 +304,16 @@ impl ParquetWriterExec {
                 let cursor = Cursor::new(buffer);
                 let arrow_parquet_buffer_writer = ArrowWriter::try_new(cursor, schema, Some(props))
                     .map_err(|e| {
-                        DataFusionError::Execution(format!(
-                            "Failed to create {} writer: {}",
-                            storage_scheme, e
-                        ))
+                        DataFusionError::Execution(format!("Failed to create HDFS writer: {}", e))
                     })?;
 
-                // Get the registered object store URL to retrieve the operator
-                // prepare_object_store_with_configs registers an object_store, but we need OpenDAL Operator
-                // For now, we'll create the operator directly but using the path from prepare_object_store_with_configs
-                let url = url::Url::parse(output_file_path).map_err(|e| {
+                // Create HDFS operator with configuration options using the helper function
+                let op = create_hdfs_operator(&url).map_err(|e| {
                     DataFusionError::Execution(format!(
-                        "Failed to parse URL '{}': {}",
+                        "Failed to create HDFS operator for '{}': {}",
                         output_file_path, e
                     ))
                 })?;
-
-                // Extract namenode for OpenDAL
-                let namenode = format!(
-                    "{}://{}{}",
-                    url.scheme(),
-                    url.host_str().unwrap_or("localhost"),
-                    url.port()
-                        .map(|p| format!(":{}", p))
-                        .unwrap_or_else(|| ":9000".to_string())
-                );
-
-                let builder = opendal::services::Hdfs::default().name_node(&namenode);
-                let op = Operator::new(builder)
-                    .map_err(|e| {
-                        DataFusionError::Execution(format!(
-                            "Failed to create HDFS operator for '{}' (namenode: {}): {}",
-                            output_file_path, namenode, e
-                        ))
-                    })?
-                    .finish();
 
                 // HDFS writer will be created lazily on first write
                 // Use the path from prepare_object_store_with_configs
@@ -350,7 +324,12 @@ impl ParquetWriterExec {
                     object_store_path.to_string(),
                 ))
             }
-            "local" => {
+        } else if output_file_path.starts_with("file://")
+            || output_file_path.starts_with("file:")
+            || !output_file_path.contains("://")
+        {
+            // Local file system
+            {
                 // For a local file system, write directly to file
                 // Strip file:// or file: prefix if present
                 let local_path = output_file_path
@@ -387,10 +366,12 @@ impl ParquetWriterExec {
                 })?;
                 Ok(ParquetWriter::LocalFile(writer))
             }
-            _ => Err(DataFusionError::Execution(format!(
-                "Unsupported storage scheme: {}",
-                storage_scheme
-            ))),
+        } else {
+            // Unsupported storage scheme
+            Err(DataFusionError::Execution(format!(
+                "Unsupported storage scheme in path: {}",
+                output_file_path
+            )))
         }
     }
 }
