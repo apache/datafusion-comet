@@ -19,6 +19,7 @@
 
 use std::{
     any::Any,
+    collections::HashMap,
     fmt,
     fmt::{Debug, Formatter},
     fs::File,
@@ -26,8 +27,7 @@ use std::{
     sync::Arc,
 };
 
-use opendal::{services::Hdfs, Operator};
-use url::Url;
+use opendal::Operator;
 
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
@@ -52,6 +52,7 @@ use parquet::{
 };
 
 use crate::execution::shuffle::CompressionCodec;
+use crate::parquet::parquet_support::prepare_object_store_with_configs;
 
 /// Enum representing different types of Arrow writers based on storage backend
 enum ParquetWriter {
@@ -200,6 +201,8 @@ pub struct ParquetWriterExec {
     partition_id: i32,
     /// Column names to use in the output Parquet file
     column_names: Vec<String>,
+    /// Object store configuration options
+    object_store_options: HashMap<String, String>,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     /// Cache for plan properties
@@ -218,6 +221,7 @@ impl ParquetWriterExec {
         compression: CompressionCodec,
         partition_id: i32,
         column_names: Vec<String>,
+        object_store_options: HashMap<String, String>,
     ) -> Result<Self> {
         // Preserve the input's partitioning so each partition writes its own file
         let input_partitioning = input.output_partitioning().clone();
@@ -238,6 +242,7 @@ impl ParquetWriterExec {
             compression,
             partition_id,
             column_names,
+            object_store_options,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
         })
@@ -255,10 +260,11 @@ impl ParquetWriterExec {
     /// Create an Arrow writer based on the storage scheme
     ///
     /// # Arguments
-    /// * `storage_scheme` - The storage backend ("hdfs", "s3", or "local")
     /// * `output_file_path` - The full path to the output file
     /// * `schema` - The Arrow schema for the Parquet file
     /// * `props` - Writer properties including compression
+    /// * `runtime_env` - Runtime environment for object store registration
+    /// * `object_store_options` - Configuration options for object store
     ///
     /// # Returns
     /// * `Ok(ParquetWriter)` - A writer appropriate for the storage scheme
@@ -267,6 +273,8 @@ impl ParquetWriterExec {
         output_file_path: &str,
         schema: SchemaRef,
         props: WriterProperties,
+        runtime_env: Arc<datafusion::execution::runtime_env::RuntimeEnv>,
+        object_store_options: &HashMap<String, String>,
     ) -> Result<ParquetWriter> {
         // Determine storage scheme from output_file_path
         let storage_scheme = if output_file_path.starts_with("hdfs://") {
@@ -279,27 +287,18 @@ impl ParquetWriterExec {
 
         match storage_scheme {
             "hdfs" => {
-                // Parse the output_file_path to extract namenode and path
-                // Expected format: hdfs://namenode:port/path/to/file
-                let url = Url::parse(output_file_path).map_err(|e| {
+                // Use prepare_object_store_with_configs to create and register the object store
+                let (_object_store_url, object_store_path) = prepare_object_store_with_configs(
+                    runtime_env,
+                    output_file_path.to_string(),
+                    object_store_options,
+                )
+                .map_err(|e| {
                     DataFusionError::Execution(format!(
-                        "Failed to parse HDFS URL '{}': {}",
+                        "Failed to prepare object store for '{}': {}",
                         output_file_path, e
                     ))
                 })?;
-
-                // Extract namenode (scheme + host + port)
-                let namenode = format!(
-                    "{}://{}{}",
-                    url.scheme(),
-                    url.host_str().unwrap_or("localhost"),
-                    url.port()
-                        .map(|p| format!(":{}", p))
-                        .unwrap_or_else(|| ":9000".to_string())
-                );
-
-                // Extract the path (without the scheme and host)
-                let hdfs_path = url.path().to_string();
 
                 // For remote storage (HDFS, S3), write to an in-memory buffer
                 let buffer = Vec::new();
@@ -312,7 +311,27 @@ impl ParquetWriterExec {
                         ))
                     })?;
 
-                let builder = Hdfs::default().name_node(&namenode);
+                // Get the registered object store URL to retrieve the operator
+                // prepare_object_store_with_configs registers an object_store, but we need OpenDAL Operator
+                // For now, we'll create the operator directly but using the path from prepare_object_store_with_configs
+                let url = url::Url::parse(output_file_path).map_err(|e| {
+                    DataFusionError::Execution(format!(
+                        "Failed to parse URL '{}': {}",
+                        output_file_path, e
+                    ))
+                })?;
+
+                // Extract namenode for OpenDAL
+                let namenode = format!(
+                    "{}://{}{}",
+                    url.scheme(),
+                    url.host_str().unwrap_or("localhost"),
+                    url.port()
+                        .map(|p| format!(":{}", p))
+                        .unwrap_or_else(|| ":9000".to_string())
+                );
+
+                let builder = opendal::services::Hdfs::default().name_node(&namenode);
                 let op = Operator::new(builder)
                     .map_err(|e| {
                         DataFusionError::Execution(format!(
@@ -323,12 +342,12 @@ impl ParquetWriterExec {
                     .finish();
 
                 // HDFS writer will be created lazily on first write
-                // Use only the path part for the HDFS writer
+                // Use the path from prepare_object_store_with_configs
                 Ok(ParquetWriter::Remote(
                     arrow_parquet_buffer_writer,
                     None,
                     op,
-                    hdfs_path,
+                    object_store_path.to_string(),
                 ))
             }
             "local" => {
@@ -435,6 +454,7 @@ impl ExecutionPlan for ParquetWriterExec {
                 self.compression.clone(),
                 self.partition_id,
                 self.column_names.clone(),
+                self.object_store_options.clone(),
             )?)),
             _ => Err(DataFusionError::Internal(
                 "ParquetWriterExec requires exactly one child".to_string(),
@@ -454,6 +474,7 @@ impl ExecutionPlan for ParquetWriterExec {
         let bytes_written = MetricBuilder::new(&self.metrics).counter("bytes_written", partition);
         let rows_written = MetricBuilder::new(&self.metrics).counter("rows_written", partition);
 
+        let runtime_env = context.runtime_env();
         let input = self.input.execute(partition, context)?;
         let input_schema = self.input.schema();
         let work_dir = self.work_dir.clone();
@@ -488,7 +509,14 @@ impl ExecutionPlan for ParquetWriterExec {
             .set_compression(compression)
             .build();
 
-        let mut writer = Self::create_arrow_writer(&part_file, Arc::clone(&output_schema), props)?;
+        let object_store_options = self.object_store_options.clone();
+        let mut writer = Self::create_arrow_writer(
+            &part_file,
+            Arc::clone(&output_schema),
+            props,
+            runtime_env,
+            &object_store_options,
+        )?;
 
         // Clone schema for use in async closure
         let schema_for_write = Arc::clone(&output_schema);
@@ -732,10 +760,14 @@ mod tests {
         // Create ParquetWriter using the create_arrow_writer method
         // Use full HDFS URL format
         let full_output_path = format!("hdfs://namenode:9000{}", output_path);
+        let session_ctx = datafusion::prelude::SessionContext::new();
+        let runtime_env = session_ctx.runtime_env();
         let mut writer = ParquetWriterExec::create_arrow_writer(
             &full_output_path,
             create_test_record_batch(1)?.schema(),
             props,
+            runtime_env,
+            &HashMap::new(),
         )?;
 
         // Write 5 batches in a loop
@@ -802,6 +834,7 @@ mod tests {
             CompressionCodec::None,
             0, // partition_id
             column_names,
+            HashMap::new(), // object_store_options
         )?;
 
         // Create a session context and execute the plan
