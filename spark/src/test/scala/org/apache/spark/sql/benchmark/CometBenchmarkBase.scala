@@ -92,28 +92,6 @@ trait CometBenchmarkBase extends SqlBasedBenchmark with AdaptiveSparkPlanHelper 
     }
   }
 
-  /** Runs function `f` with Comet on and off. */
-  final def runWithComet(name: String, cardinality: Long)(f: => Unit): Unit = {
-    val benchmark = new Benchmark(name, cardinality, output = output)
-
-    benchmark.addCase(s"$name - Spark ") { _ =>
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        f
-      }
-    }
-
-    benchmark.addCase(s"$name - Comet") { _ =>
-      withSQLConf(
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        SQLConf.ANSI_ENABLED.key -> "false") {
-        f
-      }
-    }
-
-    benchmark.run()
-  }
-
   /**
    * Runs an expression benchmark with standard cases: Spark, Comet (Scan), Comet (Scan + Exec).
    * This provides a consistent benchmark structure for expression evaluation.
@@ -153,15 +131,10 @@ trait CometBenchmarkBase extends SqlBasedBenchmark with AdaptiveSparkPlanHelper 
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       "spark.sql.optimizer.constantFolding.enabled" -> "false") ++ extraCometConfigs
 
-    benchmark.addCase("Comet (Scan + Exec)") { _ =>
-      withSQLConf(cometExecConfigs.toSeq: _*) {
-        spark.sql(query).noop()
-      }
-    }
-
     // Check that the plan is fully Comet native before running the benchmark
     withSQLConf(cometExecConfigs.toSeq: _*) {
       val df = spark.sql(query)
+      df.noop()
       val plan = stripAQEPlan(df.queryExecution.executedPlan)
       findFirstNonCometOperator(plan) match {
         case Some(op) =>
@@ -178,6 +151,12 @@ trait CometBenchmarkBase extends SqlBasedBenchmark with AdaptiveSparkPlanHelper 
         // scalastyle:on println
         case None =>
         // All operators are Comet native, no warning needed
+      }
+    }
+
+    benchmark.addCase("Comet (Scan + Exec)") { _ =>
+      withSQLConf(cometExecConfigs.toSeq: _*) {
+        spark.sql(query).noop()
       }
     }
 
