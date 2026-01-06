@@ -2049,39 +2049,36 @@ fn do_parse_string_to_int_legacy<T: Integer + CheckedSub + CheckedNeg + From<u8>
     };
 
     let mut result: T = T::zero();
-
     let radix = T::from(10_u8);
     let stop_value = min_value / radix;
-    let mut parse_sign_and_digits = true;
 
-    for &ch in &trimmed_bytes[idx..] {
-        if parse_sign_and_digits {
-            if ch == b'.' {
-                // truncate decimal in legacy mode
-                parse_sign_and_digits = false;
-                continue;
-            }
+    let mut iter = trimmed_bytes[idx..].iter();
 
-            if !ch.is_ascii_digit() {
-                return Ok(None);
-            }
+    // Parse integer portion until '.' or end
+    for &ch in iter.by_ref() {
+        if ch == b'.' {
+            break;
+        }
 
-            if result < stop_value {
-                return Ok(None);
-            }
-            let v = result * radix;
-            let digit: T = T::from(ch - b'0');
-            match v.checked_sub(&digit) {
-                Some(x) if x <= T::zero() => result = x,
-                _ => {
-                    return Ok(None);
-                }
-            }
-        } else {
-            // in legacy mode we still process chars after the dot and make sure the chars are digits
-            if !ch.is_ascii_digit() {
-                return Ok(None);
-            }
+        if !ch.is_ascii_digit() {
+            return Ok(None);
+        }
+
+        if result < stop_value {
+            return Ok(None);
+        }
+        let v = result * radix;
+        let digit: T = T::from(ch - b'0');
+        match v.checked_sub(&digit) {
+            Some(x) if x <= T::zero() => result = x,
+            _ => return Ok(None),
+        }
+    }
+
+    // Validate decimal portion (digits only, values ignored)
+    for &ch in iter {
+        if !ch.is_ascii_digit() {
+            return Ok(None);
         }
     }
 
