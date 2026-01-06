@@ -2066,12 +2066,11 @@ fn do_parse_string_to_int_legacy<T: Integer + CheckedSub + CheckedNeg + From<u8>
                 return Ok(None);
             }
 
-            let digit: T = T::from(ch - b'0');
-
             if result < stop_value {
                 return Ok(None);
             }
             let v = result * radix;
+            let digit: T = T::from(ch - b'0');
             match v.checked_sub(&digit) {
                 Some(x) if x <= T::zero() => result = x,
                 _ => {
@@ -2130,12 +2129,11 @@ fn do_parse_string_to_int_ansi<T: Integer + CheckedSub + CheckedNeg + From<u8> +
             return Err(invalid_value(str, "STRING", type_name));
         }
 
-        let digit: T = T::from(ch - b'0');
-
         if result < stop_value {
             return Err(invalid_value(str, "STRING", type_name));
         }
         let v = result * radix;
+        let digit: T = T::from(ch - b'0');
         match v.checked_sub(&digit) {
             Some(x) if x <= T::zero() => result = x,
             _ => {
@@ -2188,12 +2186,11 @@ fn do_parse_string_to_int_try<T: Integer + CheckedSub + CheckedNeg + From<u8> + 
             return Ok(None);
         }
 
-        let digit: T = T::from(ch - b'0');
-
         if result < stop_value {
             return Ok(None);
         }
         let v = result * radix;
+        let digit: T = T::from(ch - b'0');
         match v.checked_sub(&digit) {
             Some(x) if x <= T::zero() => result = x,
             _ => {
