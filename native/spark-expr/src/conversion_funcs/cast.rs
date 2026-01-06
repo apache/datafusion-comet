@@ -2009,21 +2009,6 @@ fn cast_string_to_int_with_range_check(
     }
 }
 
-// Returns (start, end) indices after trimming whitespace
-fn trim_whitespace(bytes: &[u8]) -> (usize, usize) {
-    let mut start = 0;
-    let mut end = bytes.len();
-
-    while start < end && bytes[start].is_ascii_whitespace() {
-        start += 1;
-    }
-    while end > start && bytes[end - 1].is_ascii_whitespace() {
-        end -= 1;
-    }
-
-    (start, end)
-}
-
 // Parses sign and returns (is_negative, start_idx after sign)
 // Returns None if invalid (e.g., just "+" or "-")
 fn parse_sign(trimmed_bytes: &[u8]) -> Option<(bool, usize)> {
@@ -2052,13 +2037,11 @@ fn do_parse_string_to_int_legacy<T: Integer + CheckedSub + CheckedNeg + From<u8>
     str: &str,
     min_value: T,
 ) -> SparkResult<Option<T>> {
-    let bytes = str.as_bytes();
-    let (start, end) = trim_whitespace(bytes);
+    let trimmed_bytes = str.as_bytes().trim_ascii();
 
-    if start == end {
+    if trimmed_bytes.is_empty() {
         return Ok(None);
     }
-    let trimmed_bytes = &bytes[start..end];
 
     let (negative, idx) = match parse_sign(trimmed_bytes) {
         Some(result) => result,
@@ -2122,13 +2105,11 @@ fn do_parse_string_to_int_ansi<T: Integer + CheckedSub + CheckedNeg + From<u8> +
     type_name: &str,
     min_value: T,
 ) -> SparkResult<Option<T>> {
-    let bytes = str.as_bytes();
-    let (start, end) = trim_whitespace(bytes);
+    let trimmed_bytes = str.as_bytes().trim_ascii();
 
-    if start == end {
+    if trimmed_bytes.is_empty() {
         return Err(invalid_value(str, "STRING", type_name));
     }
-    let trimmed_bytes = &bytes[start..end];
 
     let (negative, idx) = match parse_sign(trimmed_bytes) {
         Some(result) => result,
@@ -2181,13 +2162,11 @@ fn do_parse_string_to_int_try<T: Integer + CheckedSub + CheckedNeg + From<u8> + 
     str: &str,
     min_value: T,
 ) -> SparkResult<Option<T>> {
-    let bytes = str.as_bytes();
-    let (start, end) = trim_whitespace(bytes);
+    let trimmed_bytes = str.as_bytes().trim_ascii();
 
-    if start == end {
+    if trimmed_bytes.is_empty() {
         return Ok(None);
     }
-    let trimmed_bytes = &bytes[start..end];
 
     let (negative, idx) = match parse_sign(trimmed_bytes) {
         Some(result) => result,
