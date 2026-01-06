@@ -33,8 +33,8 @@ use datafusion::physical_plan::ColumnarValue;
 use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::{Cast, SparkCastOptions};
 use datafusion_physical_expr_adapter::{
-    DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter, PhysicalExprAdapterFactory,
-    replace_columns_with_literals,
+    replace_columns_with_literals, DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter,
+    PhysicalExprAdapterFactory,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -568,11 +568,9 @@ mod test {
         spark_parquet_options.allow_cast_unsigned_ints = true;
 
         // Create expression adapter factory for Spark-compatible schema adaptation
-        let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> =
-            Arc::new(SparkPhysicalExprAdapterFactory::new(
-                spark_parquet_options,
-                None,
-            ));
+        let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
+            SparkPhysicalExprAdapterFactory::new(spark_parquet_options, None),
+        );
 
         let parquet_source = ParquetSource::new(TableParquetOptions::new());
 

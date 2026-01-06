@@ -299,14 +299,14 @@ impl IcebergFileStream {
                 .map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)))
                 .and_then(move |batch| {
                     let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-                    let result = adapt_batch_with_expressions(
-                        batch,
-                        &target_schema,
-                        &spark_options,
-                    )
-                    .map_err(|e| {
-                        DataFusionError::Execution(format!("Batch adaptation failed: {}", e))
-                    });
+                    let result =
+                        adapt_batch_with_expressions(batch, &target_schema, &spark_options)
+                            .map_err(|e| {
+                                DataFusionError::Execution(format!(
+                                    "Batch adaptation failed: {}",
+                                    e
+                                ))
+                            });
                     futures::future::ready(result)
                 });
 

@@ -106,11 +106,9 @@ pub(crate) fn init_datasource_exec(
     }
 
     // Create the expression adapter factory for Spark-compatible schema adaptation
-    let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> =
-        Arc::new(SparkPhysicalExprAdapterFactory::new(
-            spark_parquet_options,
-            default_values,
-        ));
+    let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
+        SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
+    );
 
     let file_source: Arc<dyn FileSource> = Arc::new(parquet_source);
 
