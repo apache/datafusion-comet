@@ -50,6 +50,10 @@ object CometHashExpressionBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("Hash expression benchmarks", values) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
+          // Data distribution: 1% NULL per column
+          // - c_str: unique strings "string_0" through "string_N"
+          // - c_int: integers 0-999,999 (cycling)
+          // - c_long: large values 0 to ~1 billion
           prepareTable(
             dir,
             spark.sql(s"""
