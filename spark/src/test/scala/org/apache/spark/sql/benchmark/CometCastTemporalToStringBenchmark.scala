@@ -55,6 +55,7 @@ object CometCastTemporalToStringBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("Date to String casts", values) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
+          // Data distribution: 1% NULL, dates spanning ~10 years from 2020-01-01
           prepareTable(
             dir,
             spark.sql(s"""
@@ -76,6 +77,7 @@ object CometCastTemporalToStringBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("Timestamp to String casts", values) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
+          // Data distribution: 1% NULL, timestamps spanning ~1 year from 2020-01-01
           prepareTable(
             dir,
             spark.sql(s"""

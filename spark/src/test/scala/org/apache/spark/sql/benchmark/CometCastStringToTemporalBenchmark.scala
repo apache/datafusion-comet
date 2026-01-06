@@ -58,6 +58,7 @@ object CometCastStringToTemporalBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("date data generation", values) { v =>
       withTempPath { dateDir =>
         withTempTable("parquetV1Table") {
+          // Data distribution: 10% invalid strings, 90% valid date strings spanning ~10 years
           prepareTable(
             dateDir,
             spark.sql(s"""
@@ -80,6 +81,7 @@ object CometCastStringToTemporalBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("timestamp data generation", values) { v =>
       withTempPath { timestampDir =>
         withTempTable("parquetV1Table") {
+          // Data distribution: 10% invalid strings, 90% valid timestamp strings (1970 epoch range)
           prepareTable(
             timestampDir,
             spark.sql(s"""

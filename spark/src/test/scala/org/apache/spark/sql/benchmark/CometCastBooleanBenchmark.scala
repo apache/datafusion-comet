@@ -77,6 +77,7 @@ object CometCastBooleanBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("Boolean to other types casts", values) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
+          // Data distribution: 1% NULL, 50/50 true/false
           prepareTable(
             dir,
             spark.sql(s"""
@@ -98,6 +99,7 @@ object CometCastBooleanBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("Numeric to Boolean casts", values) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
+          // Data distribution: 1% NULL per column, values in {-1, 0, 1} (~33% each)
           prepareTable(
             dir,
             spark.sql(s"""

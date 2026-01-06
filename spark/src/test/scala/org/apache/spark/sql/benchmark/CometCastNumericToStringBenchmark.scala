@@ -60,7 +60,13 @@ object CometCastNumericToStringBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("Numeric to String casts", values) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
-          // Generate varied numeric data including edge cases
+          // Data distribution: 1% NULL per column
+          // - c_bool: 50/50 true/false
+          // - c_byte: full range -64 to 63
+          // - c_short: full range -16384 to 16383
+          // - c_int/c_long: large values centered around 0
+          // - c_float/c_double: 3% special values (NaN/Infinity), rest centered around 0
+          // - c_decimal: values from -25000.00 to +25000.00
           prepareTable(
             dir,
             spark.sql(s"""

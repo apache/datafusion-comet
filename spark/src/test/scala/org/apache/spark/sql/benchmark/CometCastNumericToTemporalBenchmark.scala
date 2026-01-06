@@ -58,8 +58,7 @@ object CometCastNumericToTemporalBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("Int to Date casts", values) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
-          // Generate INT values representing days since epoch (1970-01-01)
-          // Range: ~-18000 to +18000 days (roughly 1920 to 2020)
+          // Data distribution: 1% NULL, days since epoch spanning ~100 years (1920-2020)
           prepareTable(
             dir,
             spark.sql(s"""
@@ -81,8 +80,7 @@ object CometCastNumericToTemporalBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("Long to Timestamp casts", values) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
-          // Generate LONG values representing microseconds since epoch
-          // Range: 2020-2021 timestamps
+          // Data distribution: 1% NULL, microseconds since epoch spanning ~1 year from 2020-01-01
           prepareTable(
             dir,
             spark.sql(s"""
