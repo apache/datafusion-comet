@@ -3004,6 +3004,15 @@ mod tests {
 
     use super::*;
 
+    /// Test helper that wraps the mode-specific parse functions
+    fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i8>> {
+        match eval_mode {
+            EvalMode::Legacy => parse_string_to_i8_legacy(str),
+            EvalMode::Ansi => parse_string_to_i8_ansi(str),
+            EvalMode::Try => parse_string_to_i8_try(str),
+        }
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)] // test takes too long with miri
     fn timestamp_parser_test() {

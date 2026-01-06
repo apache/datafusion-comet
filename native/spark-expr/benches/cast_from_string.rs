@@ -23,6 +23,7 @@ use datafusion_comet_spark_expr::{Cast, EvalMode, SparkCastOptions};
 use std::sync::Arc;
 
 fn criterion_benchmark(c: &mut Criterion) {
+    let small_int_batch = create_small_int_string_batch();
     let int_batch = create_int_string_batch();
     let decimal_batch = create_decimal_string_batch();
     let expr = Arc::new(Column::new("a", 0));
@@ -33,10 +34,18 @@ fn criterion_benchmark(c: &mut Criterion) {
         (EvalMode::Try, "try"),
     ] {
         let spark_cast_options = SparkCastOptions::new(mode, "", false);
+        let cast_to_i8 = Cast::new(expr.clone(), DataType::Int8, spark_cast_options.clone());
+        let cast_to_i16 = Cast::new(expr.clone(), DataType::Int16, spark_cast_options.clone());
         let cast_to_i32 = Cast::new(expr.clone(), DataType::Int32, spark_cast_options.clone());
         let cast_to_i64 = Cast::new(expr.clone(), DataType::Int64, spark_cast_options);
 
         let mut group = c.benchmark_group(format!("cast_string_to_int/{}", mode_name));
+        group.bench_function("i8", |b| {
+            b.iter(|| cast_to_i8.evaluate(&small_int_batch).unwrap());
+        });
+        group.bench_function("i16", |b| {
+            b.iter(|| cast_to_i16.evaluate(&small_int_batch).unwrap());
+        });
         group.bench_function("i32", |b| {
             b.iter(|| cast_to_i32.evaluate(&int_batch).unwrap());
         });
@@ -59,6 +68,21 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| cast_to_i64.evaluate(&decimal_batch).unwrap());
     });
     group.finish();
+}
+
+/// Create batch with small integer strings that fit in i8 range (for i8/i16 benchmarks)
+fn create_small_int_string_batch() -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
+    let mut b = StringBuilder::new();
+    for i in 0..1000 {
+        if i % 10 == 0 {
+            b.append_null();
+        } else {
+            b.append_value(format!("{}", rand::random::<i8>()));
+        }
+    }
+    let array = b.finish();
+    RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
 }
 
 /// Create batch with valid integer strings (works for all eval modes)
