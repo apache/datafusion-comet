@@ -386,12 +386,13 @@ fn can_cast_from_decimal(
 }
 
 macro_rules! cast_utf8_to_int {
-    ($array:expr, $eval_mode:expr, $array_type:ty, $cast_method:ident) => {{
+    ($array:expr, $array_type:ty, $parse_fn:expr) => {{
         let len = $array.len();
         let mut cast_array = PrimitiveArray::<$array_type>::builder(len);
+        let parse_fn = $parse_fn;
         if $array.null_count() == 0 {
             for i in 0..len {
-                if let Some(cast_value) = $cast_method($array.value(i), $eval_mode)? {
+                if let Some(cast_value) = parse_fn($array.value(i))? {
                     cast_array.append_value(cast_value);
                 } else {
                     cast_array.append_null()
@@ -401,7 +402,7 @@ macro_rules! cast_utf8_to_int {
             for i in 0..len {
                 if $array.is_null(i) {
                     cast_array.append_null()
-                } else if let Some(cast_value) = $cast_method($array.value(i), $eval_mode)? {
+                } else if let Some(cast_value) = parse_fn($array.value(i))? {
                     cast_array.append_value(cast_value);
                 } else {
                     cast_array.append_null()
@@ -1473,22 +1474,70 @@ fn cast_string_to_int<OffsetSize: OffsetSizeTrait>(
         .downcast_ref::<GenericStringArray<OffsetSize>>()
         .expect("cast_string_to_int expected a string array");
 
-    let cast_array: ArrayRef = match to_type {
-        DataType::Int8 => cast_utf8_to_int!(string_array, eval_mode, Int8Type, cast_string_to_i8)?,
-        DataType::Int16 => {
-            cast_utf8_to_int!(string_array, eval_mode, Int16Type, cast_string_to_i16)?
-        }
-        DataType::Int32 => {
-            cast_utf8_to_int!(string_array, eval_mode, Int32Type, cast_string_to_i32)?
-        }
-        DataType::Int64 => {
-            cast_utf8_to_int!(string_array, eval_mode, Int64Type, cast_string_to_i64)?
-        }
-        dt => unreachable!(
-            "{}",
-            format!("invalid integer type {dt} in cast from string")
-        ),
-    };
+    // Select parse function once per batch based on eval_mode
+    let cast_array: ArrayRef =
+        match (to_type, eval_mode) {
+            (DataType::Int8, EvalMode::Legacy) => {
+                cast_utf8_to_int!(string_array, Int8Type, parse_string_to_i8_legacy)?
+            }
+            (DataType::Int8, EvalMode::Ansi) => {
+                cast_utf8_to_int!(string_array, Int8Type, parse_string_to_i8_ansi)?
+            }
+            (DataType::Int8, EvalMode::Try) => {
+                cast_utf8_to_int!(string_array, Int8Type, parse_string_to_i8_try)?
+            }
+            (DataType::Int16, EvalMode::Legacy) => {
+                cast_utf8_to_int!(string_array, Int16Type, parse_string_to_i16_legacy)?
+            }
+            (DataType::Int16, EvalMode::Ansi) => {
+                cast_utf8_to_int!(string_array, Int16Type, parse_string_to_i16_ansi)?
+            }
+            (DataType::Int16, EvalMode::Try) => {
+                cast_utf8_to_int!(string_array, Int16Type, parse_string_to_i16_try)?
+            }
+            (DataType::Int32, EvalMode::Legacy) => cast_utf8_to_int!(
+                string_array,
+                Int32Type,
+                |s| do_parse_string_to_int_legacy::<i32>(s, i32::MIN)
+            )?,
+            (DataType::Int32, EvalMode::Ansi) => {
+                cast_utf8_to_int!(string_array, Int32Type, |s| do_parse_string_to_int_ansi::<
+                    i32,
+                >(
+                    s, "INT", i32::MIN
+                ))?
+            }
+            (DataType::Int32, EvalMode::Try) => {
+                cast_utf8_to_int!(
+                    string_array,
+                    Int32Type,
+                    |s| do_parse_string_to_int_try::<i32>(s, i32::MIN)
+                )?
+            }
+            (DataType::Int64, EvalMode::Legacy) => cast_utf8_to_int!(
+                string_array,
+                Int64Type,
+                |s| do_parse_string_to_int_legacy::<i64>(s, i64::MIN)
+            )?,
+            (DataType::Int64, EvalMode::Ansi) => {
+                cast_utf8_to_int!(string_array, Int64Type, |s| do_parse_string_to_int_ansi::<
+                    i64,
+                >(
+                    s, "BIGINT", i64::MIN
+                ))?
+            }
+            (DataType::Int64, EvalMode::Try) => {
+                cast_utf8_to_int!(
+                    string_array,
+                    Int64Type,
+                    |s| do_parse_string_to_int_try::<i64>(s, i64::MIN)
+                )?
+            }
+            (dt, _) => unreachable!(
+                "{}",
+                format!("invalid integer type {dt} in cast from string")
+            ),
+        };
     Ok(cast_array)
 }
 
@@ -1960,51 +2009,50 @@ fn spark_cast_nonintegral_numeric_to_integral(
     }
 }
 
-/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toByte
-fn cast_string_to_i8(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i8>> {
-    Ok(cast_string_to_int_with_range_check(
-        str,
-        eval_mode,
-        "TINYINT",
-        i8::MIN as i32,
-        i8::MAX as i32,
-    )?
-    .map(|v| v as i8))
-}
-
-/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toShort
-fn cast_string_to_i16(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i16>> {
-    Ok(cast_string_to_int_with_range_check(
-        str,
-        eval_mode,
-        "SMALLINT",
-        i16::MIN as i32,
-        i16::MAX as i32,
-    )?
-    .map(|v| v as i16))
-}
-
-/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toInt(IntWrapper intWrapper)
-fn cast_string_to_i32(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> {
-    do_cast_string_to_int::<i32>(str, eval_mode, "INT", i32::MIN)
-}
-
-/// Equivalent to org.apache.spark.unsafe.types.UTF8String.toLong(LongWrapper intWrapper)
-fn cast_string_to_i64(str: &str, eval_mode: EvalMode) -> SparkResult<Option<i64>> {
-    do_cast_string_to_int::<i64>(str, eval_mode, "BIGINT", i64::MIN)
-}
-
-fn cast_string_to_int_with_range_check(
-    str: &str,
-    eval_mode: EvalMode,
-    type_name: &str,
-    min: i32,
-    max: i32,
-) -> SparkResult<Option<i32>> {
-    match do_cast_string_to_int(str, eval_mode, type_name, i32::MIN)? {
+fn parse_string_to_i8_legacy(str: &str) -> SparkResult<Option<i8>> {
+    match do_parse_string_to_int_legacy::<i32>(str, i32::MIN)? {
         None => Ok(None),
-        Some(v) if v >= min && v <= max => Ok(Some(v)),
-        _ if eval_mode == EvalMode::Ansi => Err(invalid_value(str, "STRING", type_name)),
+        Some(v) if v >= i8::MIN as i32 && v <= i8::MAX as i32 => Ok(Some(v as i8)),
+        _ => Ok(None),
+    }
+}
+
+fn parse_string_to_i8_ansi(str: &str) -> SparkResult<Option<i8>> {
+    match do_parse_string_to_int_ansi::<i32>(str, "TINYINT", i32::MIN)? {
+        None => Ok(None),
+        Some(v) if v >= i8::MIN as i32 && v <= i8::MAX as i32 => Ok(Some(v as i8)),
+        _ => Err(invalid_value(str, "STRING", "TINYINT")),
+    }
+}
+
+fn parse_string_to_i8_try(str: &str) -> SparkResult<Option<i8>> {
+    match do_parse_string_to_int_try::<i32>(str, i32::MIN)? {
+        None => Ok(None),
+        Some(v) if v >= i8::MIN as i32 && v <= i8::MAX as i32 => Ok(Some(v as i8)),
+        _ => Ok(None),
+    }
+}
+
+fn parse_string_to_i16_legacy(str: &str) -> SparkResult<Option<i16>> {
+    match do_parse_string_to_int_legacy::<i32>(str, i32::MIN)? {
+        None => Ok(None),
+        Some(v) if v >= i16::MIN as i32 && v <= i16::MAX as i32 => Ok(Some(v as i16)),
+        _ => Ok(None),
+    }
+}
+
+fn parse_string_to_i16_ansi(str: &str) -> SparkResult<Option<i16>> {
+    match do_parse_string_to_int_ansi::<i32>(str, "SMALLINT", i32::MIN)? {
+        None => Ok(None),
+        Some(v) if v >= i16::MIN as i32 && v <= i16::MAX as i32 => Ok(Some(v as i16)),
+        _ => Err(invalid_value(str, "STRING", "SMALLINT")),
+    }
+}
+
+fn parse_string_to_i16_try(str: &str) -> SparkResult<Option<i16>> {
+    match do_parse_string_to_int_try::<i32>(str, i32::MIN)? {
+        None => Ok(None),
+        Some(v) if v >= i16::MIN as i32 && v <= i16::MAX as i32 => Ok(Some(v as i16)),
         _ => Ok(None),
     }
 }
@@ -2208,19 +2256,6 @@ fn do_parse_string_to_int_try<T: Integer + CheckedSub + CheckedNeg + From<u8> + 
     }
 
     Ok(Some(result))
-}
-
-fn do_cast_string_to_int<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>(
-    str: &str,
-    eval_mode: EvalMode,
-    type_name: &str,
-    min_value: T,
-) -> SparkResult<Option<T>> {
-    match eval_mode {
-        EvalMode::Legacy => do_parse_string_to_int_legacy(str, min_value),
-        EvalMode::Ansi => do_parse_string_to_int_ansi(str, type_name, min_value),
-        EvalMode::Try => do_parse_string_to_int_try(str, min_value),
-    }
 }
 
 fn cast_string_to_decimal(
