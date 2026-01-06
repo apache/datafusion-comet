@@ -61,6 +61,10 @@ object CometComparisonExpressionBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("Comparison expression benchmarks", values) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
+          // Data distribution:
+          // - c_int: 10% NULL, integers -50,000 to 49,999
+          // - c_int2: 10% NULL, integers 0-999
+          // - c_float/c_double: 2% NULL, 2% NaN, rest are values 0.00-99.99
           prepareTable(
             dir,
             spark.sql(s"""
