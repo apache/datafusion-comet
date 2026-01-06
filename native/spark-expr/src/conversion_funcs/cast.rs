@@ -2057,24 +2057,23 @@ fn parse_string_to_i16_try(str: &str) -> SparkResult<Option<i16>> {
     }
 }
 
-// Parses sign and returns (is_negative, start_idx after sign)
-// Returns None if invalid (e.g., just "+" or "-")
-fn parse_sign(trimmed_bytes: &[u8]) -> Option<(bool, usize)> {
-    let len = trimmed_bytes.len();
-    if len == 0 {
-        return None;
+/// Parses sign and returns (is_negative, remaining_bytes after sign)
+/// Returns None if invalid (empty input, or just "+" or "-")
+fn parse_sign(bytes: &[u8]) -> Option<(bool, &[u8])> {
+    let (&first, rest) = bytes.split_first()?;
+    match first {
+        b'-' if !rest.is_empty() => Some((true, rest)),
+        b'+' if !rest.is_empty() => Some((false, rest)),
+        _ => Some((false, bytes)),
     }
+}
 
-    let first_char = trimmed_bytes[0];
-    let negative = first_char == b'-';
-
-    if negative || first_char == b'+' {
-        if len == 1 {
-            return None;
-        }
-        Some((negative, 1))
+/// Finalizes the result by applying the sign. Returns None if overflow would occur.
+fn finalize_int_result<T: Integer + CheckedNeg + Copy>(result: T, negative: bool) -> Option<T> {
+    if negative {
+        Some(result)
     } else {
-        Some((false, 0))
+        result.checked_neg().filter(|&n| n >= T::zero())
     }
 }
 
@@ -2087,11 +2086,7 @@ fn do_parse_string_to_int_legacy<T: Integer + CheckedSub + CheckedNeg + From<u8>
 ) -> SparkResult<Option<T>> {
     let trimmed_bytes = str.as_bytes().trim_ascii();
 
-    if trimmed_bytes.is_empty() {
-        return Ok(None);
-    }
-
-    let (negative, idx) = match parse_sign(trimmed_bytes) {
+    let (negative, digits) = match parse_sign(trimmed_bytes) {
         Some(result) => result,
         None => return Ok(None),
     };
@@ -2100,7 +2095,7 @@ fn do_parse_string_to_int_legacy<T: Integer + CheckedSub + CheckedNeg + From<u8>
     let radix = T::from(10_u8);
     let stop_value = min_value / radix;
 
-    let mut iter = trimmed_bytes[idx..].iter();
+    let mut iter = digits.iter();
 
     // Parse integer portion until '.' or end
     for &ch in iter.by_ref() {
@@ -2130,18 +2125,7 @@ fn do_parse_string_to_int_legacy<T: Integer + CheckedSub + CheckedNeg + From<u8>
         }
     }
 
-    if !negative {
-        if let Some(neg) = result.checked_neg() {
-            if neg < T::zero() {
-                return Ok(None);
-            }
-            result = neg;
-        } else {
-            return Ok(None);
-        }
-    }
-
-    Ok(Some(result))
+    Ok(finalize_int_result(result, negative))
 }
 
 fn do_parse_string_to_int_ansi<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>(
@@ -2149,56 +2133,38 @@ fn do_parse_string_to_int_ansi<T: Integer + CheckedSub + CheckedNeg + From<u8> +
     type_name: &str,
     min_value: T,
 ) -> SparkResult<Option<T>> {
+    let error = || Err(invalid_value(str, "STRING", type_name));
+
     let trimmed_bytes = str.as_bytes().trim_ascii();
 
-    if trimmed_bytes.is_empty() {
-        return Err(invalid_value(str, "STRING", type_name));
-    }
-
-    let (negative, idx) = match parse_sign(trimmed_bytes) {
+    let (negative, digits) = match parse_sign(trimmed_bytes) {
         Some(result) => result,
-        None => return Err(invalid_value(str, "STRING", type_name)),
+        None => return error(),
     };
 
     let mut result: T = T::zero();
-
     let radix = T::from(10_u8);
     let stop_value = min_value / radix;
 
-    for &ch in &trimmed_bytes[idx..] {
-        if ch == b'.' {
-            return Err(invalid_value(str, "STRING", type_name));
-        }
-
-        if !ch.is_ascii_digit() {
-            return Err(invalid_value(str, "STRING", type_name));
+    for &ch in digits {
+        if ch == b'.' || !ch.is_ascii_digit() {
+            return error();
         }
 
         if result < stop_value {
-            return Err(invalid_value(str, "STRING", type_name));
+            return error();
         }
         let v = result * radix;
         let digit: T = T::from(ch - b'0');
         match v.checked_sub(&digit) {
             Some(x) if x <= T::zero() => result = x,
-            _ => {
-                return Err(invalid_value(str, "STRING", type_name));
-            }
+            _ => return error(),
         }
     }
 
-    if !negative {
-        if let Some(neg) = result.checked_neg() {
-            if neg < T::zero() {
-                return Err(invalid_value(str, "STRING", type_name));
-            }
-            result = neg;
-        } else {
-            return Err(invalid_value(str, "STRING", type_name));
-        }
-    }
-
-    Ok(Some(result))
+    finalize_int_result(result, negative)
+        .map(Some)
+        .ok_or_else(|| invalid_value(str, "STRING", type_name))
 }
 
 fn do_parse_string_to_int_try<T: Integer + CheckedSub + CheckedNeg + From<u8> + Copy>(
@@ -2207,27 +2173,17 @@ fn do_parse_string_to_int_try<T: Integer + CheckedSub + CheckedNeg + From<u8> + 
 ) -> SparkResult<Option<T>> {
     let trimmed_bytes = str.as_bytes().trim_ascii();
 
-    if trimmed_bytes.is_empty() {
-        return Ok(None);
-    }
-
-    let (negative, idx) = match parse_sign(trimmed_bytes) {
+    let (negative, digits) = match parse_sign(trimmed_bytes) {
         Some(result) => result,
         None => return Ok(None),
     };
 
     let mut result: T = T::zero();
-
     let radix = T::from(10_u8);
     let stop_value = min_value / radix;
 
-    // we don't have to go beyond decimal point in try eval mode - early return NULL
-    for &ch in &trimmed_bytes[idx..] {
-        if ch == b'.' {
-            return Ok(None);
-        }
-
-        if !ch.is_ascii_digit() {
+    for &ch in digits {
+        if ch == b'.' || !ch.is_ascii_digit() {
             return Ok(None);
         }
 
@@ -2238,24 +2194,11 @@ fn do_parse_string_to_int_try<T: Integer + CheckedSub + CheckedNeg + From<u8> + 
         let digit: T = T::from(ch - b'0');
         match v.checked_sub(&digit) {
             Some(x) if x <= T::zero() => result = x,
-            _ => {
-                return Ok(None);
-            }
+            _ => return Ok(None),
         }
     }
 
-    if !negative {
-        if let Some(neg) = result.checked_neg() {
-            if neg < T::zero() {
-                return Ok(None);
-            }
-            result = neg;
-        } else {
-            return Ok(None);
-        }
-    }
-
-    Ok(Some(result))
+    Ok(finalize_int_result(result, negative))
 }
 
 fn cast_string_to_decimal(
