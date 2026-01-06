@@ -369,11 +369,7 @@ impl IcebergFileStream {
                         }
                     }
 
-                    match ready!(self
-                        .metrics
-                        .baseline
-                        .record_poll(current.poll_next_unpin(cx)))
-                    {
+                    match ready!(current.poll_next_unpin(cx)) {
                         Some(result) => {
                             // Stop time_scanning_until_data on first batch (idempotent)
                             self.metrics.file_stream.time_scanning_until_data.stop();
@@ -428,7 +424,7 @@ impl Stream for IcebergFileStream {
         self.metrics.file_stream.time_processing.start();
         let result = self.poll_inner(cx);
         self.metrics.file_stream.time_processing.stop();
-        result
+        self.metrics.baseline.record_poll(result)
     }
 }
 
