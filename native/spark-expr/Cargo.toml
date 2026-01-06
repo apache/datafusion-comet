@@ -81,6 +81,10 @@ name = "padding"
 harness = false
 
 [[bench]]
+name = "date_trunc"
+harness = false
+
+[[bench]]
 name = "normalize_nan"
 harness = false
 
