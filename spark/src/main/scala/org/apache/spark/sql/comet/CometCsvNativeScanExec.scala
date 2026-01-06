@@ -29,12 +29,17 @@ import org.apache.spark.sql.execution.datasources.FilePartition
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 
+import com.google.common.base.Objects
+
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
+import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.{partition2Proto, schema2Proto}
 
+/*
+ * Native CSV scan operator that delegates file reading to datafusion.
+ */
 case class CometCsvNativeScanExec(
     override val nativeOp: Operator,
     override val output: Seq[Attribute],
@@ -53,16 +58,27 @@ case class CometCsvNativeScanExec(
   override protected def doCanonicalize(): SparkPlan = {
     CometCsvNativeScanExec(nativeOp, output, originalPlan, serializedPlanOpt)
   }
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometCsvNativeScanExec =>
+        this.output == other.output &&
+        this.serializedPlanOpt == other.serializedPlanOpt &&
+        this.originalPlan == other.originalPlan
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int = {
+    Objects.hashCode(output, serializedPlanOpt, originalPlan)
+  }
 }
 
 object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_CSV_V2_NATIVE_ENABLED)
-
-  override def getSupportLevel(operator: CometBatchScanExec): SupportLevel = {
-    Compatible()
-  }
 
   override def convert(
       op: CometBatchScanExec,

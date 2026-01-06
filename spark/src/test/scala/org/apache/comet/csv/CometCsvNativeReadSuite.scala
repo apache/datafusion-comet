@@ -25,7 +25,7 @@ import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
 
 import org.apache.comet.CometConf
 
-class CometCsvReadSuite extends CometTestBase {
+class CometCsvNativeReadSuite extends CometTestBase {
   private val TEST_CSV_PATH_NO_HEADER = "src/test/resources/test-data/csv-test-1.csv"
   private val TEST_CSV_PATH_HAS_HEADER = "src/test/resources/test-data/csv-test-2.csv"
 
@@ -73,7 +73,7 @@ class CometCsvReadSuite extends CometTestBase {
         .csv(TEST_CSV_PATH_NO_HEADER)
       checkSparkAnswerAndFallbackReason(
         df,
-        "Comet doesn't support the processing of corrupted records in Spark")
+        "Comet doesn't support the processing of corrupted records")
       df = spark.read
         .options(Map("header" -> "false", "delimiter" -> ",", "inferSchema" -> "true"))
         .csv(TEST_CSV_PATH_NO_HEADER)
@@ -83,7 +83,7 @@ class CometCsvReadSuite extends CometTestBase {
         .csv(TEST_CSV_PATH_NO_HEADER)
       checkSparkAnswerAndFallbackReason(
         df,
-        "Comet doesn't support delimiter: ',,' with more then one character")
+        "Comet supports only single-character delimiters, but got: ',,'")
     }
   }
 }

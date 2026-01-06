@@ -241,25 +241,25 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         if (!partitionSchemaSupported) {
           fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
         }
-        val columnNameOfCorruptedRecords =
+        val corruptedRecordsColumnName =
           SQLConf.get.getConf(SQLConf.COLUMN_NAME_OF_CORRUPT_RECORD)
-        val hasNoCorruptedColumn =
-          !scan.readDataSchema.fieldNames.contains(columnNameOfCorruptedRecords)
-        if (!hasNoCorruptedColumn) {
-          fallbackReasons += "Comet doesn't support the processing of corrupted records in Spark"
+        val containsCorruptedRecordsColumn =
+          !scan.readDataSchema.fieldNames.contains(corruptedRecordsColumnName)
+        if (!containsCorruptedRecordsColumn) {
+          fallbackReasons += "Comet doesn't support the processing of corrupted records"
         }
-        val inferSchemaEnabled = scan.options.getBoolean("inferSchema", false)
-        if (inferSchemaEnabled) {
+        val isInferSchemaEnabled = scan.options.getBoolean("inferSchema", false)
+        if (isInferSchemaEnabled) {
           fallbackReasons += "Comet doesn't support inferSchema=true option"
         }
         val delimiter = scan.options.get("delimiter")
-        val isSingleCharDelimiter = delimiter.length == 1
-        if (!isSingleCharDelimiter) {
-          fallbackReasons += s"Comet doesn't support delimiter: '$delimiter' " +
-            s"with more then one character"
+        val isSingleCharacterDelimiter = delimiter.length == 1
+        if (!isSingleCharacterDelimiter) {
+          fallbackReasons +=
+            s"Comet supports only single-character delimiters, but got: '$delimiter'"
         }
-        if (schemaSupported && partitionSchemaSupported && hasNoCorruptedColumn
-          && !inferSchemaEnabled && isSingleCharDelimiter) {
+        if (schemaSupported && partitionSchemaSupported && containsCorruptedRecordsColumn
+          && !isInferSchemaEnabled && isSingleCharacterDelimiter) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)
