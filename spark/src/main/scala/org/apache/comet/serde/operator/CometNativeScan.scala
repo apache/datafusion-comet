@@ -27,9 +27,8 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, Literal, PlanExpre
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.FileSourceScanExec
-import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
+import org.apache.spark.sql.execution.datasources.PartitionedFile
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{StructField, StructType}
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
