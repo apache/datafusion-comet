@@ -67,13 +67,12 @@ abstract class CometTestBase
   protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
-    conf.set("spark.ui.enabled", "true")
+    conf.set("spark.ui.enabled", "false")
     conf.set(SQLConf.SHUFFLE_PARTITIONS, 10) // reduce parallelism in tests
     conf.set(SQLConf.ANSI_ENABLED.key, "false")
     conf.set(SHUFFLE_MANAGER, shuffleManager)
     conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
-    conf.set(MEMORY_OFFHEAP_SIZE.key, "1200m")
-    conf.set("spark.driver.memory", "2g")
+    conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
     conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "1g")
     conf.set(SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key, "1g")
     conf.set(CometConf.COMET_ENABLED.key, "true")
