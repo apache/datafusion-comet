@@ -18,7 +18,7 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
+use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
 use datafusion::config::TableParquetOptions;
 use datafusion::datasource::listing::PartitionedFile;
@@ -32,6 +32,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::EvalMode;
+use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -104,9 +105,14 @@ pub(crate) fn init_datasource_exec(
         );
     }
 
-    let file_source = parquet_source.with_schema_adapter_factory(Arc::new(
-        SparkSchemaAdapterFactory::new(spark_parquet_options, default_values),
-    ))?;
+    // Create the expression adapter factory for Spark-compatible schema adaptation
+    let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> =
+        Arc::new(SparkPhysicalExprAdapterFactory::new(
+            spark_parquet_options,
+            default_values,
+        ));
+
+    let file_source: Arc<dyn FileSource> = Arc::new(parquet_source);
 
     let file_groups = file_groups
         .iter()
@@ -124,6 +130,7 @@ pub(crate) fn init_datasource_exec(
             )
             .with_projection_indices(Some(projection_vector))
             .with_table_partition_cols(partition_fields)
+            .with_expr_adapter(Some(expr_adapter_factory))
             .build()
         }
         _ => get_file_config_builder(
@@ -133,8 +140,11 @@ pub(crate) fn init_datasource_exec(
             object_store_url,
             file_source,
         )
+        .with_expr_adapter(Some(expr_adapter_factory))
         .build(),
     };
+    // Note: expr_adapter_factory is only used in one branch due to the match,
+    // so no clone is needed
 
     Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))
 }

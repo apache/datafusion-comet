@@ -42,8 +42,7 @@ use iceberg::io::FileIO;
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
-use datafusion::datasource::schema_adapter::SchemaAdapterFactory;
+use crate::parquet::schema_adapter::adapt_batch_with_expressions;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::file_stream::FileStreamMetrics;
 
@@ -294,27 +293,20 @@ impl IcebergFileStream {
             let target_schema = Arc::clone(&schema);
 
             // Schema adaptation handles differences in Arrow field names and metadata
-            // between the file schema and expected output schema
+            // between the file schema and expected output schema using expression-based
+            // adaptation (PhysicalExprAdapter approach)
             let mapped_stream = stream
                 .map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)))
                 .and_then(move |batch| {
                     let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-                    let adapter_factory = SparkSchemaAdapterFactory::new(spark_options, None);
-                    let file_schema = batch.schema();
-                    let adapter = adapter_factory
-                        .create(Arc::clone(&target_schema), Arc::clone(&file_schema));
-
-                    let result = match adapter.map_schema(file_schema.as_ref()) {
-                        Ok((schema_mapper, _projection)) => {
-                            schema_mapper.map_batch(batch).map_err(|e| {
-                                DataFusionError::Execution(format!("Batch mapping failed: {}", e))
-                            })
-                        }
-                        Err(e) => Err(DataFusionError::Execution(format!(
-                            "Schema mapping failed: {}",
-                            e
-                        ))),
-                    };
+                    let result = adapt_batch_with_expressions(
+                        batch,
+                        &target_schema,
+                        &spark_options,
+                    )
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!("Batch adaptation failed: {}", e))
+                    });
                     futures::future::ready(result)
                 });
 
