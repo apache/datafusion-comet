@@ -43,7 +43,7 @@ use iceberg::io::FileIO;
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
-use datafusion::datasource::schema_adapter::SchemaAdapterFactory;
+use datafusion::datasource::schema_adapter::{SchemaAdapterFactory, SchemaMapper};
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::file_stream::FileStreamMetrics;
 
@@ -248,6 +248,8 @@ struct IcebergFileStream {
     tasks: VecDeque<iceberg::scan::FileScanTask>,
     state: FileStreamState,
     metrics: IcebergScanMetrics,
+    /// Schema adapter factory, shared across all files
+    adapter_factory: SparkSchemaAdapterFactory,
 }
 
 impl IcebergFileStream {
@@ -258,6 +260,9 @@ impl IcebergFileStream {
         schema: SchemaRef,
         metrics: IcebergScanMetrics,
     ) -> DFResult<Self> {
+        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let adapter_factory = SparkSchemaAdapterFactory::new(spark_options, None);
+
         Ok(Self {
             schema,
             file_io,
@@ -265,6 +270,7 @@ impl IcebergFileStream {
             tasks: tasks.into_iter().collect(),
             state: FileStreamState::Idle,
             metrics,
+            adapter_factory,
         })
     }
 
@@ -278,6 +284,7 @@ impl IcebergFileStream {
         let file_io = self.file_io.clone();
         let batch_size = self.batch_size;
         let schema = Arc::clone(&self.schema);
+        let adapter_factory = self.adapter_factory.clone();
 
         Some(Box::pin(async move {
             let task_stream = futures::stream::iter(vec![Ok(task)]).boxed();
@@ -291,36 +298,15 @@ impl IcebergFileStream {
                 DataFusionError::Execution(format!("Failed to read Iceberg task: {}", e))
             })?;
 
-            let target_schema = Arc::clone(&schema);
-
-            // Schema adaptation handles differences in Arrow field names and metadata
-            // between the file schema and expected output schema
+            // Schema adaptation will be performed lazily in IcebergStreamWrapper
             let mapped_stream = stream
-                .map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)))
-                .and_then(move |batch| {
-                    let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-                    let adapter_factory = SparkSchemaAdapterFactory::new(spark_options, None);
-                    let file_schema = batch.schema();
-                    let adapter = adapter_factory
-                        .create(Arc::clone(&target_schema), Arc::clone(&file_schema));
-
-                    let result = match adapter.map_schema(file_schema.as_ref()) {
-                        Ok((schema_mapper, _projection)) => {
-                            schema_mapper.map_batch(batch).map_err(|e| {
-                                DataFusionError::Execution(format!("Batch mapping failed: {}", e))
-                            })
-                        }
-                        Err(e) => Err(DataFusionError::Execution(format!(
-                            "Schema mapping failed: {}",
-                            e
-                        ))),
-                    };
-                    futures::future::ready(result)
-                });
+                .map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)));
 
             Ok(Box::pin(IcebergStreamWrapper {
                 inner: mapped_stream,
                 schema,
+                schema_mapper: None,
+                adapter_factory,
             }) as SendableRecordBatchStream)
         }))
     }
@@ -434,11 +420,20 @@ impl RecordBatchStream for IcebergFileStream {
     }
 }
 
-/// Wrapper around iceberg-rust's stream that avoids strict schema checks.
-/// Returns the expected output schema to prevent rejection of batches with metadata differences.
+/// Wrapper around iceberg-rust's stream that performs schema adaptation.
+/// Returns the expected output schema and lazily creates a schema adapter
+/// on the first batch, reusing it for all subsequent batches from the same file/task.
+///
+/// TODO: Could optimize further by caching schema adapters at file path granularity
+/// to share adapters across multiple FileScanTasks that read different byte ranges
+/// of the same file. Currently caches per-task which still eliminates per-batch overhead.
 struct IcebergStreamWrapper<S> {
     inner: S,
     schema: SchemaRef,
+    /// Schema adapter created lazily on first batch and reused for all subsequent batches
+    schema_mapper: Option<Arc<dyn SchemaMapper>>,
+    /// Schema adapter factory for creating the mapper on first batch
+    adapter_factory: SparkSchemaAdapterFactory,
 }
 
 impl<S> Stream for IcebergStreamWrapper<S>
@@ -448,7 +443,44 @@ where
     type Item = DFResult<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.inner.poll_next_unpin(cx)
+        let poll_result = self.inner.poll_next_unpin(cx);
+
+        match poll_result {
+            Poll::Ready(Some(Ok(batch))) => {
+                // Lazily create schema adapter on first batch
+                if self.schema_mapper.is_none() {
+                    let file_schema = batch.schema();
+                    let adapter = self
+                        .adapter_factory
+                        .create(Arc::clone(&self.schema), Arc::clone(&file_schema));
+
+                    match adapter.map_schema(file_schema.as_ref()) {
+                        Ok((schema_mapper, _projection)) => {
+                            self.schema_mapper = Some(schema_mapper);
+                        }
+                        Err(e) => {
+                            return Poll::Ready(Some(Err(DataFusionError::Execution(format!(
+                                "Schema mapping failed: {}",
+                                e
+                            )))));
+                        }
+                    }
+                }
+
+                // Apply schema mapping to batch
+                let result = self
+                    .schema_mapper
+                    .as_ref()
+                    .expect("schema_mapper should be initialized")
+                    .map_batch(batch)
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!("Batch mapping failed: {}", e))
+                    });
+
+                Poll::Ready(Some(result))
+            }
+            other => other,
+        }
     }
 }
 
