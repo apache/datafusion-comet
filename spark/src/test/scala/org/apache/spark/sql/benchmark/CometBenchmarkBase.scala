@@ -31,9 +31,7 @@ import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, DataFrameWriter, Row, SparkSession}
-import org.apache.spark.sql.comet._
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
-import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.comet.CometPlanChecker
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.benchmark.SqlBasedBenchmark
 import org.apache.spark.sql.internal.SQLConf
@@ -42,7 +40,10 @@ import org.apache.spark.sql.types.DecimalType
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions
 
-trait CometBenchmarkBase extends SqlBasedBenchmark with AdaptiveSparkPlanHelper {
+trait CometBenchmarkBase
+    extends SqlBasedBenchmark
+    with AdaptiveSparkPlanHelper
+    with CometPlanChecker {
   override def getSparkSession: SparkSession = {
     val conf = new SparkConf()
       .setAppName("CometReadBenchmark")
@@ -161,28 +162,6 @@ trait CometBenchmarkBase extends SqlBasedBenchmark with AdaptiveSparkPlanHelper 
     }
 
     benchmark.run()
-  }
-
-  /**
-   * Finds the first non-Comet operator in the plan, if any. This is used to verify that
-   * benchmarks are running fully on Comet native when expected.
-   *
-   * Based on CometTestBase.findFirstNonCometOperator.
-   */
-  protected def findFirstNonCometOperator(plan: SparkPlan): Option[SparkPlan] = {
-    plan.foreach {
-      case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec |
-          _: CometIcebergNativeScanExec =>
-      case _: CometSinkPlaceHolder | _: CometScanWrapper =>
-      case _: CometColumnarToRowExec =>
-      case _: CometSparkToColumnarExec =>
-      case _: CometExec | _: CometShuffleExchangeExec =>
-      case _: CometBroadcastExchangeExec =>
-      case _: WholeStageCodegenExec | _: ColumnarToRowExec | _: InputAdapter =>
-      case op =>
-        return Some(op)
-    }
-    None
   }
 
   protected def prepareTable(dir: File, df: DataFrame, partition: Option[String] = None): Unit = {
