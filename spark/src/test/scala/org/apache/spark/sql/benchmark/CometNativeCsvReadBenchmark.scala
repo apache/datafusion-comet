@@ -81,14 +81,14 @@ object CometNativeCsvReadBenchmark extends CometBenchmarkBase {
   }
 
   private val testCases = Seq(
-    /* NativeCsvReadConfig("orders", ordersSchema),
-    NativeCsvReadConfig("region", regionSchema),*/
-    NativeCsvReadConfig("nation", nationSchema)
-    /*NativeCsvReadConfig("part", partSchema),
+    NativeCsvReadConfig("orders", ordersSchema),
+    NativeCsvReadConfig("region", regionSchema),
+    NativeCsvReadConfig("nation", nationSchema),
+    NativeCsvReadConfig("part", partSchema),
     NativeCsvReadConfig("supplier", supplierSchema),
     NativeCsvReadConfig("partsupp", partsuppSchema),
     NativeCsvReadConfig("customer", customerSchema),
-    NativeCsvReadConfig("lineitem", lineitemSchema)*/ )
+    NativeCsvReadConfig("lineitem", lineitemSchema))
 
   override def runCometBenchmark(args: Array[String]): Unit = {
     val benchmarkArgs = new TPCDSQueryBenchmarkArguments(args)
