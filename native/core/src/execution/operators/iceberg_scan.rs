@@ -186,7 +186,7 @@ impl IcebergScanExec {
         let wrapped_stream = IcebergStreamWrapper {
             inner: adapted_stream,
             schema: output_schema,
-            schema_mapper: None,
+            cached_adapter: None,
             adapter_factory,
             baseline_metrics: metrics.baseline,
         };
@@ -229,17 +229,14 @@ impl IcebergScanMetrics {
 }
 
 /// Wrapper around iceberg-rust's stream that performs schema adaptation.
-/// Returns the expected output schema and lazily creates a schema adapter
-/// on the first batch, reusing it for all subsequent batches from the same file/task.
-///
-/// TODO: Could optimize further by caching schema adapters at file path granularity
-/// to share adapters across multiple FileScanTasks that read different byte ranges
-/// of the same file. Currently caches per-task which still eliminates per-batch overhead.
+/// Handles batches from multiple files that may have different Arrow schemas
+/// (metadata, field IDs, etc.). Caches schema adapters by source schema to avoid
+/// recreating them for every batch from the same file.
 struct IcebergStreamWrapper<S> {
     inner: S,
     schema: SchemaRef,
-    /// Cached schema adapter, created lazily on first batch
-    schema_mapper: Option<Arc<dyn SchemaMapper>>,
+    /// Cached schema adapter with its source schema. Created when schema changes.
+    cached_adapter: Option<(SchemaRef, Arc<dyn SchemaMapper>)>,
     /// Factory for creating schema adapters
     adapter_factory: SparkSchemaAdapterFactory,
     /// Metrics for output tracking
@@ -257,17 +254,22 @@ where
 
         let result = match poll_result {
             Poll::Ready(Some(Ok(batch))) => {
-                // Defer schema adapter creation until first batch to avoid upfront overhead
-                // when actual file schema is unknown
-                if self.schema_mapper.is_none() {
-                    let file_schema = batch.schema();
+                let file_schema = batch.schema();
+
+                // Check if we need to create a new adapter for this file's schema
+                let needs_new_adapter = match &self.cached_adapter {
+                    Some((cached_schema, _)) => !Arc::ptr_eq(cached_schema, &file_schema),
+                    None => true,
+                };
+
+                if needs_new_adapter {
                     let adapter = self
                         .adapter_factory
                         .create(Arc::clone(&self.schema), Arc::clone(&file_schema));
 
                     match adapter.map_schema(file_schema.as_ref()) {
                         Ok((schema_mapper, _projection)) => {
-                            self.schema_mapper = Some(schema_mapper);
+                            self.cached_adapter = Some((file_schema, schema_mapper));
                         }
                         Err(e) => {
                             return Poll::Ready(Some(Err(DataFusionError::Execution(format!(
@@ -279,9 +281,10 @@ where
                 }
 
                 let result = self
-                    .schema_mapper
+                    .cached_adapter
                     .as_ref()
-                    .expect("schema_mapper should be initialized")
+                    .expect("cached_adapter should be initialized")
+                    .1
                     .map_batch(batch)
                     .map_err(|e| {
                         DataFusionError::Execution(format!("Batch mapping failed: {}", e))
