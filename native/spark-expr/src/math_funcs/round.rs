@@ -21,11 +21,11 @@ use arrow::array::{Array, ArrowNativeTypeOp};
 use arrow::array::{Int16Array, Int32Array, Int64Array, Int8Array};
 use arrow::datatypes::{DataType, Field};
 use arrow::error::ArrowError;
-use datafusion::common::{exec_err, internal_err, DataFusionError, ScalarValue};
 use datafusion::common::config::ConfigOptions;
-use datafusion::physical_plan::ColumnarValue;
+use datafusion::common::{exec_err, internal_err, DataFusionError, ScalarValue};
 use datafusion::functions::math::round::RoundFunc;
-use datafusion::logical_expr::{ScalarUDFImpl, ScalarFunctionArgs};
+use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDFImpl};
+use datafusion::physical_plan::ColumnarValue;
 use std::{cmp::min, sync::Arc};
 
 macro_rules! integer_round {
@@ -133,10 +133,7 @@ pub fn spark_round(
                 let round_udf = RoundFunc::new();
                 let return_field = Arc::new(Field::new("round", array.data_type().clone(), true));
                 let args_for_round = ScalarFunctionArgs {
-                    args: vec![
-                        ColumnarValue::Array(Arc::clone(array)),
-                        args[1].clone(),
-                    ],
+                    args: vec![ColumnarValue::Array(Arc::clone(array)), args[1].clone()],
                     number_rows: array.len(),
                     return_field,
                     arg_fields: vec![],
@@ -169,10 +166,7 @@ pub fn spark_round(
                 let data_type = a.data_type();
                 let return_field = Arc::new(Field::new("round", data_type, true));
                 let args_for_round = ScalarFunctionArgs {
-                    args: vec![
-                        ColumnarValue::Scalar(a.clone()),
-                        args[1].clone(),
-                    ],
+                    args: vec![ColumnarValue::Scalar(a.clone()), args[1].clone()],
                     number_rows: 1,
                     return_field,
                     arg_fields: vec![],
