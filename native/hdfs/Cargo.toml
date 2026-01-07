@@ -33,7 +33,7 @@ edition = { workspace = true }
 
 [features]
 default = ["hdfs", "try_spawn_blocking"]
-hdfs = ["fs-hdfs"]
+hdfs = ["fs_hdfs"]
 hdfs3 = ["fs-hdfs3"]
 # Used for trying to spawn a blocking thread for implementing each object store interface when running in a tokio runtime
 try_spawn_blocking = []
@@ -42,7 +42,7 @@ try_spawn_blocking = []
 async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
-fs-hdfs = { version = "^0.1.12", optional = true }
+fs_hdfs = { package = "datafusion-comet-fs-hdfs3", path = "../fs-hdfs", optional = true }
 fs-hdfs3 = { version = "^0.1.12", optional = true }
 futures = { workspace = true }
 object_store = { workspace = true }
