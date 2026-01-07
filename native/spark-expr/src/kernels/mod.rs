@@ -18,4 +18,4 @@
 //! Kernels
 
 pub mod strings;
-pub(crate) mod temporal;
+pub mod temporal;

@@ -68,8 +68,11 @@ object CometCastStringToNumericBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("String to numeric casts", values) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
-          // Generate numeric strings with both integer and decimal values
-          // Also include some special values: nulls (~2%), NaN (~2%), Infinity (~2%)
+          // Data distribution:
+          // - 2% NULL, 2% 'NaN', 2% 'Infinity', 2% '-Infinity'
+          // - 12% small integers (0-98)
+          // - 40% medium integers (0-999,998)
+          // - 40% decimals centered around 0 (approx -5000.00 to +5000.00)
           prepareTable(
             dir,
             spark.sql(s"""
