@@ -85,7 +85,9 @@ pub(crate) fn init_datasource_exec(
             let partition_fields: Vec<_> = partition_schema
                 .fields()
                 .iter()
-                .map(|f| Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable())) as _)
+                .map(|f| {
+                    Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable())) as _
+                })
                 .collect();
             TableSchema::new(Arc::clone(data_schema), partition_fields)
         } else {
@@ -95,8 +97,8 @@ pub(crate) fn init_datasource_exec(
         TableSchema::from_file_schema(Arc::clone(&required_schema))
     };
 
-    let mut parquet_source = ParquetSource::new(table_schema)
-        .with_table_parquet_options(table_parquet_options);
+    let mut parquet_source =
+        ParquetSource::new(table_schema).with_table_parquet_options(table_parquet_options);
 
     // Create a conjunctive form of the vector because ParquetExecBuilder takes
     // a single expression
@@ -129,13 +131,14 @@ pub(crate) fn init_datasource_exec(
         .map(|files| FileGroup::new(files.clone()))
         .collect();
 
-    let mut file_scan_config_builder = FileScanConfigBuilder::new(object_store_url, file_source)
-        .with_file_groups(file_groups);
-    
+    let mut file_scan_config_builder =
+        FileScanConfigBuilder::new(object_store_url, file_source).with_file_groups(file_groups);
+
     if let Some(projection_vector) = projection_vector {
-        file_scan_config_builder = file_scan_config_builder.with_projection_indices(Some(projection_vector))?;
+        file_scan_config_builder =
+            file_scan_config_builder.with_projection_indices(Some(projection_vector))?;
     }
-    
+
     let file_scan_config = file_scan_config_builder.build();
 
     Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))

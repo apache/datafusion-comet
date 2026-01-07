@@ -4064,14 +4064,13 @@ mod tests {
 
         let source = Arc::new(
             ParquetSource::new(Arc::new(read_schema.clone()))
-                .with_table_parquet_options(TableParquetOptions::new())
+                .with_table_parquet_options(TableParquetOptions::new()),
         ) as Arc<dyn FileSource>;
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
-        let file_scan_config =
-            FileScanConfigBuilder::new(object_store_url, source)
-                .with_file_groups(file_groups)
-                .build();
+        let file_scan_config = FileScanConfigBuilder::new(object_store_url, source)
+            .with_file_groups(file_groups)
+            .build();
 
         // Run native read
         let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
