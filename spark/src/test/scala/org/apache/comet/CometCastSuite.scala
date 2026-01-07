@@ -529,6 +529,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast DecimalType(10,2) to ShortType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.ShortType)
+    castTest(
+      generateDecimalsPrecision10Scale2(Seq(BigDecimal("-96833550.07"))),
+      DataTypes.ShortType)
   }
 
   test("cast DecimalType(10,2) to IntegerType") {
@@ -553,14 +556,23 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast DecimalType(38,18) to ShortType") {
     castTest(generateDecimalsPrecision38Scale18(), DataTypes.ShortType)
+    castTest(
+      generateDecimalsPrecision38Scale18(Seq(BigDecimal("-99999999999999999999.07"))),
+      DataTypes.ShortType)
   }
 
   test("cast DecimalType(38,18) to IntegerType") {
     castTest(generateDecimalsPrecision38Scale18(), DataTypes.IntegerType)
+    castTest(
+      generateDecimalsPrecision38Scale18(Seq(BigDecimal("-99999999999999999999.07"))),
+      DataTypes.IntegerType)
   }
 
   test("cast DecimalType(38,18) to LongType") {
     castTest(generateDecimalsPrecision38Scale18(), DataTypes.LongType)
+    castTest(
+      generateDecimalsPrecision38Scale18(Seq(BigDecimal("-99999999999999999999.07"))),
+      DataTypes.LongType)
   }
 
   test("cast DecimalType(10,2) to StringType") {
@@ -1205,6 +1217,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       BigDecimal("32768.678"),
       BigDecimal("123456.789"),
       BigDecimal("99999999.999"))
+    generateDecimalsPrecision10Scale2(values)
+  }
+
+  private def generateDecimalsPrecision10Scale2(values: Seq[BigDecimal]): DataFrame = {
     withNulls(values).toDF("b").withColumn("a", col("b").cast(DecimalType(10, 2))).drop("b")
   }
 
@@ -1227,6 +1243,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // Long Max
       BigDecimal("9223372036854775808.234567"),
       BigDecimal("99999999999999999999.999999999999"))
+    generateDecimalsPrecision38Scale18(values)
+  }
+
+  private def generateDecimalsPrecision38Scale18(values: Seq[BigDecimal]): DataFrame = {
     withNulls(values).toDF("a")
   }
 
