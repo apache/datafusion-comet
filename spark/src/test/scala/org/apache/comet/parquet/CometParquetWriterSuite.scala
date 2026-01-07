@@ -54,7 +54,8 @@ class CometParquetWriterSuite extends CometTestBase {
 
   private def writeWithCometNativeWriteExec(
       inputPath: String,
-      outputPath: String): Option[QueryExecution] = {
+      outputPath: String,
+      num_partitions: Option[Int] = None): Option[QueryExecution] = {
     val df = spark.read.parquet(inputPath)
 
     // Use a listener to capture the execution plan during write
@@ -77,8 +78,8 @@ class CometParquetWriterSuite extends CometTestBase {
     spark.listenerManager.register(listener)
 
     try {
-      // Perform native write
-      df.write.parquet(outputPath)
+      // Perform native write with optional partitioning
+      num_partitions.fold(df)(n => df.repartition(n)).write.parquet(outputPath)
 
       // Wait for listener to be called with timeout
       val maxWaitTimeMs = 15000
@@ -97,20 +98,25 @@ class CometParquetWriterSuite extends CometTestBase {
         s"Listener was not called within ${maxWaitTimeMs}ms - no execution plan captured")
 
       capturedPlan.foreach { qe =>
-        val executedPlan = qe.executedPlan
-        val hasNativeWrite = executedPlan.exists {
-          case _: CometNativeWriteExec => true
+        val executedPlan = stripAQEPlan(qe.executedPlan)
+
+        // Count CometNativeWriteExec instances in the plan
+        var nativeWriteCount = 0
+        executedPlan.foreach {
+          case _: CometNativeWriteExec =>
+            nativeWriteCount += 1
           case d: DataWritingCommandExec =>
-            d.child.exists {
-              case _: CometNativeWriteExec => true
-              case _ => false
+            d.child.foreach {
+              case _: CometNativeWriteExec =>
+                nativeWriteCount += 1
+              case _ =>
             }
-          case _ => false
+          case _ =>
         }
 
         assert(
-          hasNativeWrite,
-          s"Expected CometNativeWriteExec in the plan, but got:\n${executedPlan.treeString}")
+          nativeWriteCount == 1,
+          s"Expected exactly one CometNativeWriteExec in the plan, but found $nativeWriteCount:\n${executedPlan.treeString}")
       }
     } finally {
       spark.listenerManager.unregister(listener)
@@ -194,6 +200,31 @@ class CometParquetWriterSuite extends CometTestBase {
             verifyWrittenFile(outputPath)
           }
         }
+      }
+    }
+  }
+
+  test("basic parquet write with repartition") {
+    withTempPath { dir =>
+      // Create test data and write it to a temp parquet file first
+      withTempPath { inputDir =>
+        val inputPath = createTestData(inputDir)
+        Seq(true, false).foreach(adaptive => {
+          // Create a new output path for each AQE value
+          val outputPath = new File(dir, s"output_aqe_$adaptive.parquet").getAbsolutePath
+
+          withSQLConf(
+            CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+            "spark.sql.adaptive.enabled" -> adaptive.toString,
+            SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
+            CometConf.getOperatorAllowIncompatConfigKey(
+              classOf[DataWritingCommandExec]) -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
+
+            writeWithCometNativeWriteExec(inputPath, outputPath, Some(10))
+            verifyWrittenFile(outputPath)
+          }
+        })
       }
     }
   }

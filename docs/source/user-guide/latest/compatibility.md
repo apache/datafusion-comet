@@ -32,12 +32,11 @@ Comet has the following limitations when reading Parquet files:
 
 ## ANSI Mode
 
-Comet will fall back to Spark for the following expressions when ANSI mode is enabled. Thes expressions can be enabled by setting
+Comet will fall back to Spark for the following expressions when ANSI mode is enabled. These expressions can be enabled by setting
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
 the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
 
-- Average
-- Sum
+- Average (supports all numeric inputs except decimal types)
 - Cast (in some cases)
 
 There is an [epic](https://github.com/apache/datafusion-comet/issues/313) where we are tracking the work to fully implement ANSI support.
@@ -159,6 +158,8 @@ The following cast operations are generally compatible with Spark except for the
 | string | short |  |
 | string | integer |  |
 | string | long |  |
+| string | float |  |
+| string | double |  |
 | string | binary |  |
 | string | date | Only supports years between 262143 BC and 262142 AD |
 | binary | string |  |
@@ -181,9 +182,8 @@ The following cast operations are not compatible with Spark for all inputs and a
 |-|-|-|
 | float | decimal  | There can be rounding differences |
 | double | decimal  | There can be rounding differences |
-| string | float  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
-| string | double  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. |
-| string | decimal  | Does not support inputs ending with 'd' or 'f'. Does not support 'inf'. Does not support ANSI mode. Returns 0.0 instead of null if input contains no digits |
+| string | decimal  | Does not support fullwidth unicode digits (e.g \\uFF10)
+or strings containing null bytes (e.g \\u0000) |
 | string | timestamp  | Not all valid formats are supported |
 <!-- prettier-ignore-end -->
 <!--END:INCOMPAT_CAST_TABLE-->
