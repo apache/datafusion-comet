@@ -159,7 +159,7 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  test("map_from_entries") {
+  test("map_from_entries - convert from Parquet") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       val filename = path.toString
@@ -190,6 +190,35 @@ class CometMapExpressionSuite extends CometTestBase {
             spark.sql(
               s"SELECT map_from_entries(array(struct($field as a, $field as b))) FROM t1"))
         }
+      }
+    }
+  }
+
+  test("map_from_entries - native Parquet reader") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "test.parquet")
+      val filename = path.toString
+      val random = new Random(42)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val schemaGenOptions =
+          SchemaGenOptions(
+            generateArray = false,
+            generateStruct = false,
+            primitiveTypes = SchemaGenOptions.defaultPrimitiveTypes.filterNot(_ == BinaryType))
+        val dataGenOptions = DataGenOptions(allowNull = false, generateNegativeZero = false)
+        ParquetGenerator.makeParquetFile(
+          random,
+          spark,
+          filename,
+          100,
+          schemaGenOptions,
+          dataGenOptions)
+      }
+      val df = spark.read.parquet(filename)
+      df.createOrReplaceTempView("t1")
+      for (field <- df.schema.fieldNames) {
+        checkSparkAnswerAndOperator(
+          spark.sql(s"SELECT map_from_entries(array(struct($field as a, $field as b))) FROM t1"))
       }
     }
   }
