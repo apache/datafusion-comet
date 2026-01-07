@@ -19,9 +19,7 @@
 
 package org.apache.spark.sql.benchmark
 
-import org.apache.spark.sql.benchmark.CometJsonExpressionBenchmark.{prepareTable, runExpressionBenchmark, withTempPath, withTempTable}
-import org.apache.spark.sql.benchmark.CometStringExpressionBenchmark.{spark, tbl}
-import org.apache.spark.sql.catalyst.expressions.{CsvToStructs, JsonToStructs}
+import org.apache.spark.sql.catalyst.expressions.CsvToStructs
 
 import org.apache.comet.CometConf
 
@@ -43,8 +41,9 @@ case class CsvExprConfig(
 // spotless:off
 /**
  * Benchmark to measure performance of Comet CSV expressions. To run this benchmark:
- * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCsvExpressionBenchmark`
- * Results will be written to "spark/benchmarks/CometCsvExpressionBenchmark-**results.txt".
+ * `SPARK_GENERATE_BENCHMARK_FILES=1 make
+ * benchmark-org.apache.spark.sql.benchmark.CometCsvExpressionBenchmark` Results will be written
+ * to "spark/benchmarks/CometCsvExpressionBenchmark-**results.txt".
  */
 // spotless:on
 object CometCsvExpressionBenchmark extends CometBenchmarkBase {

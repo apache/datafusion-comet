@@ -235,7 +235,7 @@ object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
 
   override def getSupportLevel(expr: StructsToCsv): SupportLevel = {
     val isSupportedSchema = expr.inputSchema.fields
-      .forall(sf => QueryPlanSerde.supportedDataType(sf.dataType, allowComplex = false))
+      .forall(sf => QueryPlanSerde.supportedDataType(sf.dataType))
     if (!isSupportedSchema) {
       return Unsupported(Some(s"Unsupported data type: ${expr.inputSchema}"))
     }
@@ -249,15 +249,23 @@ object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
     for {
       childProto <- exprToProtoInternal(expr.child, inputs, binding)
     } yield {
+      val optionsProto = options2Proto(expr.options)
       val toCsv = ExprOuterClass.ToCsv
         .newBuilder()
         .setChild(childProto)
-        .setDelimiter(expr.options.getOrElse("delimiter", ","))
-        .setQuote(expr.options.getOrElse("quote", "\""))
-        .setEscape(expr.options.getOrElse("escape", "\\"))
-        .setEscape(expr.options.getOrElse("nullValue", ""))
+        .setOptions(optionsProto)
         .build()
       ExprOuterClass.Expr.newBuilder().setToCsv(toCsv).build()
     }
+  }
+
+  private def options2Proto(options: Map[String, String]): ExprOuterClass.CsvWriteOptions = {
+    ExprOuterClass.CsvWriteOptions
+      .newBuilder()
+      .setDelimiter(options.getOrElse("delimiter", ","))
+      .setQuote(options.getOrElse("quote", "\""))
+      .setEscape(options.getOrElse("escape", "\\"))
+      .setEscape(options.getOrElse("nullValue", ""))
+      .build()
   }
 }

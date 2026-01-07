@@ -278,10 +278,14 @@ message FromJson {
 
 message ToCsv {
   Expr child = 1;
-  string delimiter = 2;
-  string quote = 3;
-  string escape = 4;
-  string null_value = 5;
+  CsvWriteOptions options = 2;
+}
+
+message CsvWriteOptions {
+  string delimiter = 1;
+  string quote = 2;
+  string escape = 3;
+  string null_value = 4;
 }
 
 enum BinaryOutputStyle {

@@ -15,9 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{
-    as_boolean_array, as_largestring_array, as_string_array, Array, ArrayRef, StringBuilder,
-};
+use arrow::array::{as_boolean_array, as_largestring_array, as_string_array, as_struct_array, Array, ArrayRef, StringBuilder};
 use arrow::array::{RecordBatch, StructArray};
 use arrow::datatypes::{DataType, Schema};
 use datafusion::common::cast::{as_int16_array, as_int32_array, as_int64_array, as_int8_array};
@@ -103,10 +101,7 @@ impl PhysicalExpr for ToCsv {
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         let input_value = self.expr.evaluate(batch)?.into_array(batch.num_rows())?;
 
-        let struct_array = input_value
-            .as_any()
-            .downcast_ref::<StructArray>()
-            .expect("A StructType is expected");
+        let struct_array = as_struct_array(&input_value);
 
         let result = struct_to_csv(struct_array, &self.delimiter, &self.null_value)?;
 
@@ -135,7 +130,7 @@ impl PhysicalExpr for ToCsv {
     }
 }
 
-fn struct_to_csv(array: &StructArray, delimiter: &str, null_value: &str) -> Result<ArrayRef> {
+pub fn struct_to_csv(array: &StructArray, delimiter: &str, null_value: &str) -> Result<ArrayRef> {
     let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
     let mut csv_string = String::with_capacity(array.len() * 16);
 

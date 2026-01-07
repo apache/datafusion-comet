@@ -647,12 +647,13 @@ impl PhysicalPlanner {
             ExprStruct::ToCsv(expr) => {
                 let csv_struct_expr =
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                let options = expr.options.clone().unwrap();
                 Ok(Arc::new(ToCsv::new(
                     csv_struct_expr,
-                    &expr.delimiter,
-                    &expr.quote,
-                    &expr.escape,
-                    &expr.null_value,
+                    &options.delimiter,
+                    &options.quote,
+                    &options.escape,
+                    &options.null_value,
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),

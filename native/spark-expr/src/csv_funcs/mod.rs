@@ -17,4 +17,4 @@
 
 mod to_csv;
 
-pub use to_csv::ToCsv;
+pub use to_csv::{ToCsv, struct_to_csv};
