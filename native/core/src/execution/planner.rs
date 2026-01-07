@@ -994,42 +994,6 @@ impl PhysicalPlanner {
                     .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
                     .collect();
 
-                let default_values: Option<HashMap<usize, ScalarValue>> = if !scan
-                    .default_values
-                    .is_empty()
-                {
-                    // We have default values. Extract the two lists (same length) of values and
-                    // indexes in the schema, and then create a HashMap to use in the SchemaMapper.
-                    let default_values: Result<Vec<ScalarValue>, DataFusionError> = scan
-                        .default_values
-                        .iter()
-                        .map(|expr| {
-                            let literal = self.create_expr(expr, Arc::clone(&required_schema))?;
-                            let df_literal = literal
-                                .as_any()
-                                .downcast_ref::<DataFusionLiteral>()
-                                .ok_or_else(|| {
-                                GeneralError("Expected literal of default value.".to_string())
-                            })?;
-                            Ok(df_literal.value().clone())
-                        })
-                        .collect();
-                    let default_values = default_values?;
-                    let default_values_indexes: Vec<usize> = scan
-                        .default_values_indexes
-                        .iter()
-                        .map(|offset| *offset as usize)
-                        .collect();
-                    Some(
-                        default_values_indexes
-                            .into_iter()
-                            .zip(default_values)
-                            .collect(),
-                    )
-                } else {
-                    None
-                };
-
                 // Get one file from this partition (we know it's not empty due to early return above)
                 let one_file = partition_files
                     .partitioned_file
@@ -1053,23 +1017,15 @@ impl PhysicalPlanner {
                 let files =
                     self.get_partitioned_files(&scan.file_partitions[self.partition as usize])?;
                 let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
-                let partition_fields: Vec<Field> = partition_schema
-                    .fields()
-                    .iter()
-                    .map(|field| {
-                        Field::new(field.name(), field.data_type().clone(), field.is_nullable())
-                    })
-                    .collect_vec();
+
                 let scan = init_datasource_exec(
                     required_schema,
                     Some(data_schema),
                     Some(partition_schema),
-                    Some(partition_fields),
                     object_store_url,
                     file_groups,
                     Some(projection_vector),
                     Some(data_filters?),
-                    default_values,
                     scan.session_timezone.as_str(),
                     scan.case_sensitive,
                     self.session_ctx(),
@@ -3459,8 +3415,6 @@ mod tests {
 
     use crate::execution::operators::ExecutionError;
     use crate::execution::planner::literal_to_array_ref;
-    use crate::parquet::parquet_support::SparkParquetOptions;
-    use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::spark_expression::ListLiteral;
     use datafusion_comet_proto::{
@@ -3470,7 +3424,6 @@ mod tests {
         spark_operator,
         spark_operator::{operator::OpStruct, Operator},
     };
-    use datafusion_comet_spark_expr::EvalMode;
 
     #[test]
     fn test_unpack_dictionary_primitive() {
