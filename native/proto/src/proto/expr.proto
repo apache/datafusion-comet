@@ -286,6 +286,13 @@ message CsvWriteOptions {
   string quote = 2;
   string escape = 3;
   string null_value = 4;
+  bool quote_all = 5;
+  bool ignore_leading_white_space = 6;
+  bool ignore_trailing_white_space = 7;
+  string date_format = 8;
+  string timestamp_format = 9;
+  string timestamp_ntz_format = 10;
+  string timezone = 11;
 }
 
 enum BinaryOutputStyle {

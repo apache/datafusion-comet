@@ -20,6 +20,7 @@
 package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
+import scala.util.Try
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetArrayStructFields, GetStructField, JsonToStructs, StructsToCsv, StructsToJson}
 import org.apache.spark.sql.types._
@@ -249,7 +250,7 @@ object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
     for {
       childProto <- exprToProtoInternal(expr.child, inputs, binding)
     } yield {
-      val optionsProto = options2Proto(expr.options)
+      val optionsProto = options2Proto(expr.options, expr.timeZoneId)
       val toCsv = ExprOuterClass.ToCsv
         .newBuilder()
         .setChild(childProto)
@@ -259,13 +260,33 @@ object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
     }
   }
 
-  private def options2Proto(options: Map[String, String]): ExprOuterClass.CsvWriteOptions = {
+  private def options2Proto(
+      options: Map[String, String],
+      timeZoneId: Option[String]): ExprOuterClass.CsvWriteOptions = {
     ExprOuterClass.CsvWriteOptions
       .newBuilder()
       .setDelimiter(options.getOrElse("delimiter", ","))
       .setQuote(options.getOrElse("quote", "\""))
       .setEscape(options.getOrElse("escape", "\\"))
       .setEscape(options.getOrElse("nullValue", ""))
+      .setTimezone(timeZoneId.getOrElse("UTC"))
+      .setIgnoreLeadingWhiteSpace(options
+        .get("ignoreLeadingWhiteSpace")
+        .flatMap(ignoreLeadingWhiteSpace => Try(ignoreLeadingWhiteSpace.toBoolean).toOption)
+        .getOrElse(true))
+      .setIgnoreTrailingWhiteSpace(options
+        .get("ignoreTrailingWhiteSpace")
+        .flatMap(ignoreTrailingWhiteSpace => Try(ignoreTrailingWhiteSpace.toBoolean).toOption)
+        .getOrElse(true))
+      .setQuoteAll(options
+        .get("quoteAll")
+        .flatMap(quoteAll => Try(quoteAll.toBoolean).toOption)
+        .getOrElse(false))
+      .setDateFormat(options.getOrElse("dateFormat", "yyyy-MM-dd"))
+      .setTimestampFormat(options
+        .getOrElse("timestampFormat", "yyyy-MM-dd'T'HH:mm:ss[.SSS][XXX]"))
+      .setTimestampNtzFormat(options
+        .getOrElse("timestampNTZFormat", "yyyy-MM-dd'T'HH:mm:ss[.SSS]"))
       .build()
   }
 }

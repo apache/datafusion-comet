@@ -35,6 +35,7 @@ pub struct ToCsv {
     quote: String,
     escape: String,
     null_value: String,
+    quote_all: bool,
 }
 
 impl Hash for ToCsv {
@@ -44,6 +45,7 @@ impl Hash for ToCsv {
         self.quote.hash(state);
         self.escape.hash(state);
         self.null_value.hash(state);
+        self.quote_all.hash(state);
     }
 }
 
@@ -54,6 +56,7 @@ impl PartialEq for ToCsv {
             && self.quote.eq(&other.quote)
             && self.escape.eq(&other.escape)
             && self.null_value.eq(&other.null_value)
+            && self.quote_all.eq(&other.quote_all)
     }
 }
 
@@ -64,6 +67,7 @@ impl ToCsv {
         quote: &str,
         escape: &str,
         null_value: &str,
+        quote_all: bool
     ) -> Self {
         Self {
             expr,
@@ -71,6 +75,7 @@ impl ToCsv {
             quote: quote.to_owned(),
             escape: escape.to_owned(),
             null_value: null_value.to_owned(),
+            quote_all,
         }
     }
 }
@@ -79,8 +84,8 @@ impl Display for ToCsv {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "to_csv({}, delimiter={}, quote={}, escape={}, null_value={})",
-            self.expr, self.delimiter, self.quote, self.escape, self.null_value
+            "to_csv({}, delimiter={}, quote={}, escape={}, null_value={}, quote_all={})",
+            self.expr, self.delimiter, self.quote, self.escape, self.null_value, self.quote_all
         )
     }
 }
@@ -122,6 +127,7 @@ impl PhysicalExpr for ToCsv {
             &self.quote,
             &self.escape,
             &self.null_value,
+            self.quote_all,
         )))
     }
 
@@ -130,7 +136,7 @@ impl PhysicalExpr for ToCsv {
     }
 }
 
-pub fn struct_to_csv(array: &StructArray, delimiter: &str, null_value: &str) -> Result<ArrayRef> {
+pub fn struct_to_csv(array: &StructArray, delimiter: &str, null_value: &str, quote_all: bool) -> Result<ArrayRef> {
     let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
     let mut csv_string = String::with_capacity(array.len() * 16);
 
