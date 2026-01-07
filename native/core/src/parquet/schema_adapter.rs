@@ -344,14 +344,14 @@ mod test {
         let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
         spark_parquet_options.allow_cast_unsigned_ints = true;
 
-        let parquet_source =
-            ParquetSource::new(TableParquetOptions::new()).with_schema_adapter_factory(
-                Arc::new(SparkSchemaAdapterFactory::new(spark_parquet_options, None)),
-            )?;
+        let parquet_source = Arc::new(
+            ParquetSource::new(Arc::clone(&required_schema))
+                .with_table_parquet_options(TableParquetOptions::new())
+        ) as Arc<dyn FileSource>;
 
         let files = FileGroup::new(vec![PartitionedFile::from_path(filename.to_string())?]);
         let file_scan_config =
-            FileScanConfigBuilder::new(object_store_url, required_schema, parquet_source)
+            FileScanConfigBuilder::new(object_store_url, parquet_source)
                 .with_file_groups(vec![files])
                 .build();
 
