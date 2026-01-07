@@ -18,7 +18,6 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
 use datafusion::config::TableParquetOptions;
 use datafusion::datasource::listing::PartitionedFile;
@@ -30,11 +29,8 @@ use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_expr::expressions::BinaryExpr;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::prelude::SessionContext;
-use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::TableSchema;
-use itertools::Itertools;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Initializes a DataSourceExec plan with a ParquetSource. This may be used by either the
@@ -61,18 +57,16 @@ pub(crate) fn init_datasource_exec(
     required_schema: SchemaRef,
     data_schema: Option<SchemaRef>,
     partition_schema: Option<SchemaRef>,
-    partition_fields: Option<Vec<Field>>,
     object_store_url: ObjectStoreUrl,
     file_groups: Vec<Vec<PartitionedFile>>,
     projection_vector: Option<Vec<usize>>,
     data_filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
-    default_values: Option<HashMap<usize, ScalarValue>>,
     session_timezone: &str,
     case_sensitive: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    let (table_parquet_options, spark_parquet_options) = get_options(
+    let (table_parquet_options, _) = get_options(
         session_timezone,
         case_sensitive,
         &object_store_url,
