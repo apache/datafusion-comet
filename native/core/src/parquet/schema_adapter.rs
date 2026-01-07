@@ -346,14 +346,13 @@ mod test {
 
         let parquet_source = Arc::new(
             ParquetSource::new(Arc::clone(&required_schema))
-                .with_table_parquet_options(TableParquetOptions::new())
+                .with_table_parquet_options(TableParquetOptions::new()),
         ) as Arc<dyn FileSource>;
 
         let files = FileGroup::new(vec![PartitionedFile::from_path(filename.to_string())?]);
-        let file_scan_config =
-            FileScanConfigBuilder::new(object_store_url, parquet_source)
-                .with_file_groups(vec![files])
-                .build();
+        let file_scan_config = FileScanConfigBuilder::new(object_store_url, parquet_source)
+            .with_file_groups(vec![files])
+            .build();
 
         let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
 
