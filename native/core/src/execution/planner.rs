@@ -3442,6 +3442,7 @@ mod tests {
     use arrow::array::{Array, DictionaryArray, Int32Array, ListArray, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema};
     use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::config::TableParquetOptions;
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::object_store::ObjectStoreUrl;
     use datafusion::datasource::physical_plan::{
@@ -4061,16 +4062,14 @@ mod tests {
             }
         }
 
-        let source = ParquetSource::default().with_schema_adapter_factory(Arc::new(
-            SparkSchemaAdapterFactory::new(
-                SparkParquetOptions::new(EvalMode::Ansi, "", false),
-                None,
-            ),
-        ))?;
+        let source = Arc::new(
+            ParquetSource::new(Arc::new(read_schema.clone()))
+                .with_table_parquet_options(TableParquetOptions::new())
+        ) as Arc<dyn FileSource>;
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
         let file_scan_config =
-            FileScanConfigBuilder::new(object_store_url, read_schema.into(), source)
+            FileScanConfigBuilder::new(object_store_url, source)
                 .with_file_groups(file_groups)
                 .build();
 

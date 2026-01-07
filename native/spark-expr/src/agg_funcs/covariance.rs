@@ -24,7 +24,7 @@ use arrow::{
     datatypes::{DataType, Field},
 };
 use datafusion::common::{
-    downcast_value, unwrap_or_internal_err, DataFusionError, Result, ScalarValue,
+    downcast_value, unwrap_or_internal_err, Result, ScalarValue,
 };
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::type_coercion::aggregates::NUMERICS;
