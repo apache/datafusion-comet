@@ -70,5 +70,7 @@ runs:
       shell: bash
       run: |
         cd native
+        # Set LD_LIBRARY_PATH to include JVM library path for tests that use JNI
+        export LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
         RUST_BACKTRACE=1 cargo nextest run
 

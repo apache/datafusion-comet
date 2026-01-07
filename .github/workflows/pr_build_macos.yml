@@ -27,11 +27,17 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   pull_request:
     paths-ignore:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -133,14 +139,6 @@ jobs:
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite
 
-        exclude:
-          # Skip fuzz suite for Spark 4.0
-          # https://github.com/apache/datafusion-comet/issues/2965
-          - profile:
-              name: "Spark 4.0, JDK 17, Scala 2.13"
-            suite:
-              name: "fuzz"
-
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
@@ -153,6 +151,14 @@ jobs:
           jdk-version: ${{ matrix.profile.java_version }}
           jdk-architecture: aarch64
           protoc-architecture: aarch_64
+      - name: Set thread thresholds envs for spark test on macOS
+        # see: https://github.com/apache/datafusion-comet/issues/2965
+        shell: bash
+        run: |
+          echo "SPARK_TEST_SQL_SHUFFLE_EXCHANGE_MAX_THREAD_THRESHOLD=256" >> $GITHUB_ENV
+          echo "SPARK_TEST_SQL_RESULT_QUERY_STAGE_MAX_THREAD_THRESHOLD=256" >> $GITHUB_ENV
+          echo "SPARK_TEST_HIVE_SHUFFLE_EXCHANGE_MAX_THREAD_THRESHOLD=48" >> $GITHUB_ENV
+          echo "SPARK_TEST_HIVE_RESULT_QUERY_STAGE_MAX_THREAD_THRESHOLD=48" >> $GITHUB_ENV
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
