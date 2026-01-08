@@ -32,7 +32,7 @@ publish = false
 readme = "README.md"
 
 [lib]
-name = "hdfs"
+name = "fs_hdfs"
 path = "src/lib.rs"
 
 [features]
@@ -53,4 +53,4 @@ log = "^0.4"
 
 [dev-dependencies]
 uuid = {version = "^1.18", features = ["v4"]}
-tempfile = "^3.2"
+tempfile = "^3.24"

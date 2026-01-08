@@ -39,10 +39,17 @@ use log4rs::{
 };
 use once_cell::sync::OnceCell;
 
-#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[cfg(all(
+    not(target_env = "msvc"),
+    feature = "jemalloc",
+    not(feature = "mimalloc")
+))]
 use tikv_jemallocator::Jemalloc;
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(
+    feature = "mimalloc",
+    not(all(not(target_env = "msvc"), feature = "jemalloc"))
+))]
 use mimalloc::MiMalloc;
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
@@ -55,11 +62,18 @@ pub mod execution;
 mod jvm_bridge;
 pub mod parquet;
 
-#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[cfg(all(
+    not(target_env = "msvc"),
+    feature = "jemalloc",
+    not(feature = "mimalloc")
+))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(
+    feature = "mimalloc",
+    not(all(not(target_env = "msvc"), feature = "jemalloc"))
+))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 

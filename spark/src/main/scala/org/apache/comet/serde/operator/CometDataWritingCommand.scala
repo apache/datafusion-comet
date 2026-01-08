@@ -52,8 +52,9 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       case cmd: InsertIntoHadoopFsRelationCommand =>
         cmd.fileFormat match {
           case _: ParquetFileFormat =>
-            if (!cmd.outputPath.toString.startsWith("file:")) {
-              return Unsupported(Some("Only local filesystem output paths are supported"))
+            if (!cmd.outputPath.toString.startsWith("file:") && !cmd.outputPath.toString
+                .startsWith("hdfs:")) {
+              return Unsupported(Some("Only HDFS/local filesystems output paths are supported"))
             }
 
             if (cmd.bucketSpec.isDefined) {
