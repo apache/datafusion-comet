@@ -896,6 +896,164 @@ fn make_batch(arrays: Vec<ArrayRef>, row_count: usize) -> Result<RecordBatch, Ar
     RecordBatch::try_new_with_options(schema, arrays, &options)
 }
 
+/// Processes sorted rows for ALL partitions and writes them to a single output file.
+/// This is more efficient than calling `process_sorted_row_partition` once per partition
+/// as it reduces JNI overhead and file I/O operations.
+///
+/// Returns (partition_lengths, checksums) where:
+/// - partition_lengths: Vec<i64> of bytes written for each partition
+/// - checksums: Vec<Option<u32>> of checksum for each partition (None if checksums disabled)
+#[allow(clippy::too_many_arguments)]
+pub fn process_sorted_row_partition_all(
+    row_num: usize,
+    batch_size: usize,
+    row_addresses_ptr: *mut jlong,
+    row_sizes_ptr: *mut jint,
+    partition_idxs_ptr: *mut jint,
+    schema: &[DataType],
+    output_path: String,
+    prefer_dictionary_ratio: f64,
+    checksum_enabled: bool,
+    checksum_algo: i32,
+    initial_checksums: Option<Vec<u32>>,
+    codec: &CompressionCodec,
+    num_partitions: usize,
+) -> Result<(Vec<i64>, Vec<Option<u32>>), CometError> {
+    let mut partition_lengths: Vec<i64> = vec![0; num_partitions];
+    let mut partition_checksums: Vec<Option<u32>> = vec![None; num_partitions];
+
+    if row_num == 0 {
+        return Ok((partition_lengths, partition_checksums));
+    }
+
+    // Open the output file once for all partitions
+    let mut output_file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&output_path)?;
+
+    // Find partition boundaries by scanning partition indices
+    // Since rows are sorted by partition, we can find where each partition starts/ends
+    let mut partition_ranges: Vec<(usize, usize)> = Vec::with_capacity(num_partitions);
+
+    let mut current_partition = unsafe { *partition_idxs_ptr } as usize;
+    let mut partition_start = 0usize;
+
+    for i in 1..row_num {
+        let partition = unsafe { *partition_idxs_ptr.add(i) } as usize;
+        if partition != current_partition {
+            // Record the range for current partition
+            partition_ranges.push((partition_start, i));
+
+            // Handle any empty partitions between current and new partition
+            for _ in (current_partition + 1)..partition {
+                partition_ranges.push((i, i)); // empty range
+            }
+
+            current_partition = partition;
+            partition_start = i;
+        }
+    }
+    // Record the last partition
+    partition_ranges.push((partition_start, row_num));
+
+    // Handle any trailing empty partitions
+    for _ in partition_ranges.len()..num_partitions {
+        partition_ranges.push((row_num, row_num));
+    }
+
+    // Process each partition
+    for (partition_id, &(start_row, end_row)) in partition_ranges.iter().enumerate() {
+        let partition_row_num = end_row - start_row;
+
+        if partition_row_num == 0 {
+            // Empty partition
+            partition_lengths[partition_id] = 0;
+            if checksum_enabled {
+                partition_checksums[partition_id] = initial_checksums
+                    .as_ref()
+                    .map(|c| c.get(partition_id).copied())
+                    .flatten();
+            }
+            continue;
+        }
+
+        // Initialize checksum for this partition
+        let mut current_checksum = if checksum_enabled {
+            let initial = initial_checksums
+                .as_ref()
+                .and_then(|c| c.get(partition_id).copied());
+            Some(Checksum::try_new(checksum_algo, initial)?)
+        } else {
+            None
+        };
+
+        let mut partition_written: i64 = 0;
+        let mut current_row = start_row;
+
+        // Process rows in batches for this partition
+        while current_row < end_row {
+            let n = std::cmp::min(batch_size, end_row - current_row);
+
+            // Create builders for this batch
+            let mut data_builders: Vec<Box<dyn ArrayBuilder>> = vec![];
+            schema.iter().try_for_each(|dt| {
+                make_builders(dt, n, prefer_dictionary_ratio)
+                    .map(|builder| data_builders.push(builder))?;
+                Ok::<(), CometError>(())
+            })?;
+
+            // Append rows to builders
+            for (idx, builder) in data_builders.iter_mut().enumerate() {
+                append_columns(
+                    row_addresses_ptr,
+                    row_sizes_ptr,
+                    current_row,
+                    current_row + n,
+                    schema,
+                    idx,
+                    builder,
+                    prefer_dictionary_ratio,
+                )?;
+            }
+
+            // Build arrays and record batch
+            let array_refs: Result<Vec<ArrayRef>, _> = data_builders
+                .iter_mut()
+                .zip(schema.iter())
+                .map(|(builder, datatype)| {
+                    builder_to_array(builder, datatype, prefer_dictionary_ratio)
+                })
+                .collect();
+            let batch = make_batch(array_refs?, n)?;
+
+            // Write batch to buffer
+            let mut frozen: Vec<u8> = vec![];
+            let mut cursor = Cursor::new(&mut frozen);
+            cursor.seek(SeekFrom::End(0))?;
+
+            let ipc_time = Time::default();
+            let block_writer = ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone())?;
+            partition_written += block_writer.write_batch(&batch, &mut cursor, &ipc_time)? as i64;
+
+            // Update checksum
+            if let Some(checksum) = &mut current_checksum {
+                checksum.update(&mut cursor)?;
+            }
+
+            // Write to file
+            output_file.write_all(&frozen)?;
+            current_row += n;
+        }
+
+        partition_lengths[partition_id] = partition_written;
+        partition_checksums[partition_id] = current_checksum.map(|c| c.finalize());
+    }
+
+    Ok((partition_lengths, partition_checksums))
+}
+
 #[cfg(test)]
 mod test {
     use arrow::datatypes::Fields;

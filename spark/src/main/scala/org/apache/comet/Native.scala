@@ -151,6 +151,62 @@ class Native extends NativeBase {
   // scalastyle:on
 
   /**
+   * Used by Comet shuffle external sorter to write sorted records for ALL partitions to disk in a
+   * single JNI call. This is more efficient than calling writeSortedFileNative once per
+   * partition.
+   *
+   * @param addresses
+   *   the array of addresses of Spark unsafe rows (all partitions, sorted by partition ID).
+   * @param rowSizes
+   *   the row sizes of Spark unsafe rows.
+   * @param partitionIdxs
+   *   array of partition IDs for each row (same length as addresses).
+   * @param datatypes
+   *   the datatypes of fields in Spark unsafe rows.
+   * @param file
+   *   the file path to write to.
+   * @param preferDictionaryRatio
+   *   the ratio that determines when to use dictionary encoding for string columns.
+   * @param batchSize
+   *   the batch size for row to columnar conversion.
+   * @param checksumEnabled
+   *   whether to compute checksum.
+   * @param checksumAlgo
+   *   the checksum algorithm (0 for CRC32, 1 for Adler32).
+   * @param initialChecksums
+   *   initial checksum values for each partition, or null if checksums disabled.
+   * @param compressionCodec
+   *   the compression codec.
+   * @param compressionLevel
+   *   the compression level.
+   * @param numPartitions
+   *   total number of partitions.
+   * @param tracingEnabled
+   *   whether tracing is enabled.
+   * @return
+   *   array containing: [partition0_length, partition1_length, ..., partitionN_length,
+   *   partition0_checksum, partition1_checksum, ..., partitionN_checksum] Length is 2 *
+   *   numPartitions. Checksums are Long.MIN_VALUE if disabled.
+   */
+  // scalastyle:off
+  @native def writeSortedFileAllPartitions(
+      addresses: Array[Long],
+      rowSizes: Array[Int],
+      partitionIdxs: Array[Int],
+      datatypes: Array[Array[Byte]],
+      file: String,
+      preferDictionaryRatio: Double,
+      batchSize: Int,
+      checksumEnabled: Boolean,
+      checksumAlgo: Int,
+      initialChecksums: Array[Long],
+      compressionCodec: String,
+      compressionLevel: Int,
+      numPartitions: Int,
+      tracingEnabled: Boolean): Array[Long]
+  // scalastyle:on
+
+  /**
    * Sorts partition ids of Spark unsafe rows in place. Used by Comet shuffle external sorter.
    *
    * @param addr

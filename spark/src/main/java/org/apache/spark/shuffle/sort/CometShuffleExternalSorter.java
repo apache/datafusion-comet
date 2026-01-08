@@ -535,42 +535,16 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
         writeMetricsToUse = new ShuffleWriteMetrics();
       }
 
-      int currentPartition = -1;
+      // Collect ALL rows in a single pass, then make one JNI call for all partitions.
+      // This is more efficient than calling native code once per partition.
+      long[] rowAddresses = new long[pos];
+      int[] rowSizes = new int[pos];
+      int[] partitionIdxs = new int[pos];
 
-      final RowPartition rowPartition = new RowPartition(initialSize);
-
+      int rowIdx = 0;
       while (sortedRecords.hasNext()) {
         sortedRecords.loadNext();
         final int partition = sortedRecords.packedRecordPointer.getPartitionId();
-        assert (partition >= currentPartition);
-        if (partition != currentPartition) {
-          // Switch to the new partition
-          if (currentPartition != -1) {
-
-            if (partitionChecksums.length > 0) {
-              // If checksum is enabled, we need to update the checksum for the current partition.
-              setChecksum(partitionChecksums[currentPartition]);
-              setChecksumAlgo(checksumAlgorithm);
-            }
-
-            long written =
-                doSpilling(
-                    dataTypes,
-                    spillInfo.file,
-                    rowPartition,
-                    writeMetricsToUse,
-                    preferDictionaryRatio,
-                    compressionCodec,
-                    compressionLevel,
-                    tracingEnabled);
-            spillInfo.partitionLengths[currentPartition] = written;
-
-            // Store the checksum for the current partition.
-            partitionChecksums[currentPartition] = getChecksum();
-          }
-          currentPartition = partition;
-        }
-
         final long recordPointer = sortedRecords.packedRecordPointer.getRecordPointer();
         final long recordOffsetInPage = allocator.getOffsetInPage(recordPointer);
         // Note that we need to skip over record key (partition id)
@@ -578,25 +552,60 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
         // null.
         int recordSizeInBytes = UnsafeAlignedOffset.getSize(null, recordOffsetInPage) - 4;
         long recordReadPosition = recordOffsetInPage + uaoSize + 4; // skip over record length too
-        rowPartition.addRow(recordReadPosition, recordSizeInBytes);
+
+        rowAddresses[rowIdx] = recordReadPosition;
+        rowSizes[rowIdx] = recordSizeInBytes;
+        partitionIdxs[rowIdx] = partition;
+        rowIdx++;
       }
 
-      if (currentPartition != -1) {
-        long written =
-            doSpilling(
-                dataTypes,
-                spillInfo.file,
-                rowPartition,
-                writeMetricsToUse,
-                preferDictionaryRatio,
-                compressionCodec,
-                compressionLevel,
-                tracingEnabled);
-        spillInfo.partitionLengths[currentPartition] = written;
+      // Prepare initial checksums array if checksums are enabled
+      long[] initialChecksums = null;
+      if (partitionChecksums.length > 0) {
+        initialChecksums = partitionChecksums.clone();
+      }
 
-        synchronized (spills) {
-          spills.add(spillInfo);
+      // Get batch size from config
+      int batchSize = (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_BATCH_SIZE().get();
+
+      // Make a single JNI call to process all partitions
+      long startTime = System.nanoTime();
+      long[] results =
+          nativeLib.writeSortedFileAllPartitions(
+              rowAddresses,
+              rowSizes,
+              partitionIdxs,
+              dataTypes,
+              spillInfo.file.getAbsolutePath(),
+              preferDictionaryRatio,
+              batchSize,
+              partitionChecksums.length > 0,
+              checksumAlgorithm.equalsIgnoreCase("crc32") ? 0 : 1,
+              initialChecksums,
+              compressionCodec,
+              compressionLevel,
+              numPartitions,
+              tracingEnabled);
+
+      // Parse results: [partition_lengths..., checksums...]
+      long totalWritten = 0;
+      for (int i = 0; i < numPartitions; i++) {
+        spillInfo.partitionLengths[i] = results[i];
+        totalWritten += results[i];
+        if (partitionChecksums.length > 0) {
+          partitionChecksums[i] = results[numPartitions + i];
         }
+      }
+
+      // Update metrics
+      synchronized (writeMetricsToUse) {
+        writeMetricsToUse.incWriteTime(System.nanoTime() - startTime);
+        writeMetricsToUse.incRecordsWritten(pos);
+        writeMetricsToUse.incBytesWritten(totalWritten);
+      }
+
+      synchronized (spills) {
+        spills.add(spillInfo);
       }
 
       if (!isLastFile) { // i.e. this is a spill file

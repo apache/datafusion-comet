@@ -725,6 +725,123 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
     })
 }
 
+/// Used by Comet shuffle external sorter to write sorted records for ALL partitions
+/// to disk in a single JNI call.
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileAllPartitions(
+    e: JNIEnv,
+    _class: JClass,
+    row_addresses: JLongArray,
+    row_sizes: JIntArray,
+    partition_idxs: JIntArray,
+    serialized_datatypes: JObjectArray,
+    file_path: JString,
+    prefer_dictionary_ratio: jdouble,
+    batch_size: jlong,
+    checksum_enabled: jboolean,
+    checksum_algo: jint,
+    initial_checksums: JLongArray,
+    compression_codec: JString,
+    compression_level: jint,
+    num_partitions: jint,
+    tracing_enabled: jboolean,
+) -> jlongArray {
+    use crate::execution::shuffle::row::process_sorted_row_partition_all;
+
+    try_unwrap_or_throw(&e, |mut env| unsafe {
+        with_trace(
+            "writeSortedFileAllPartitions",
+            tracing_enabled != JNI_FALSE,
+            || {
+                let data_types = convert_datatype_arrays(&mut env, serialized_datatypes)?;
+
+                let row_num = env.get_array_length(&row_addresses)? as usize;
+                let row_addresses =
+                    env.get_array_elements(&row_addresses, ReleaseMode::NoCopyBack)?;
+                let row_sizes = env.get_array_elements(&row_sizes, ReleaseMode::NoCopyBack)?;
+                let partition_idxs =
+                    env.get_array_elements(&partition_idxs, ReleaseMode::NoCopyBack)?;
+
+                let row_addresses_ptr = row_addresses.as_ptr();
+                let row_sizes_ptr = row_sizes.as_ptr();
+                let partition_idxs_ptr = partition_idxs.as_ptr();
+
+                let output_path: String = env.get_string(&file_path).unwrap().into();
+
+                let checksum_enabled = checksum_enabled == 1;
+                let num_partitions = num_partitions as usize;
+
+                // Get initial checksums if enabled
+                let initial_checksums: Option<Vec<u32>> = if checksum_enabled
+                    && !initial_checksums.is_null()
+                {
+                    let checksums =
+                        env.get_array_elements(&initial_checksums, ReleaseMode::NoCopyBack)?;
+                    let checksums_slice =
+                        std::slice::from_raw_parts(checksums.as_ptr(), num_partitions);
+                    Some(
+                        checksums_slice
+                            .iter()
+                            .map(|&c| {
+                                if c == i64::MIN {
+                                    0u32
+                                } else {
+                                    c as u32
+                                }
+                            })
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
+
+                let compression_codec: String = env.get_string(&compression_codec).unwrap().into();
+                let compression_codec = match compression_codec.as_str() {
+                    "zstd" => CompressionCodec::Zstd(compression_level),
+                    "lz4" => CompressionCodec::Lz4Frame,
+                    "snappy" => CompressionCodec::Snappy,
+                    _ => CompressionCodec::Lz4Frame,
+                };
+
+                let (partition_lengths, checksums) = process_sorted_row_partition_all(
+                    row_num,
+                    batch_size as usize,
+                    row_addresses_ptr,
+                    row_sizes_ptr,
+                    partition_idxs_ptr,
+                    &data_types,
+                    output_path,
+                    prefer_dictionary_ratio,
+                    checksum_enabled,
+                    checksum_algo,
+                    initial_checksums,
+                    &compression_codec,
+                    num_partitions,
+                )?;
+
+                // Return array: [partition_lengths..., checksums...]
+                let result_len = num_partitions * 2;
+                let long_array = env.new_long_array(result_len as i32)?;
+
+                let mut result: Vec<i64> = partition_lengths;
+                result.extend(checksums.iter().map(|c: &Option<u32>| {
+                    if let Some(checksum) = c {
+                        *checksum as i64
+                    } else {
+                        i64::MIN
+                    }
+                }));
+
+                env.set_long_array_region(&long_array, 0, &result)?;
+
+                Ok(long_array.into_raw())
+            },
+        )
+    })
+}
+
 #[no_mangle]
 /// Used by Comet shuffle external sorter to sort in-memory row partition ids.
 pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
