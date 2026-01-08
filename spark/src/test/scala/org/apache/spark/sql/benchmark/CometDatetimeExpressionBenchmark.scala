@@ -52,11 +52,20 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
         prepareTable(
           dir,
           spark.sql(s"select timestamp_micros(cast(value/100000 as integer)) as ts FROM $tbl"))
-        Seq("YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND", "WEEK", "QUARTER").foreach {
-          level =>
-            val name = s"Timestamp Truncate - $level"
-            val query = s"select date_trunc('$level', ts) from parquetV1Table"
-            runExpressionBenchmark(name, values, query)
+        Seq(
+          "YEAR",
+          "QUARTER",
+          "MONTH",
+          "WEEK",
+          "DAY",
+          "HOUR",
+          "MINUTE",
+          "SECOND",
+          "MILLISECOND",
+          "MICROSECOND").foreach { level =>
+          val name = s"Timestamp Truncate - $level"
+          val query = s"select date_trunc('$level', ts) from parquetV1Table"
+          runExpressionBenchmark(name, values, query)
         }
       }
     }
