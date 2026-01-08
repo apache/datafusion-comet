@@ -599,14 +599,10 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
                     let v = int_array.value(i).to_i64().ok_or_else(|| {
                         DataFusionError::Internal("Failed to convert value to i64".to_string())
                     })?;
-                    sums[group_index] = Some(
-                        sums[group_index]
-                            .unwrap_or(0)
-                            .add_checked(v)
-                            .map_err(|_| {
-                                DataFusionError::from(arithmetic_overflow_error("integer"))
-                            })?,
-                    );
+                    sums[group_index] =
+                        Some(sums[group_index].unwrap_or(0).add_checked(v).map_err(|_| {
+                            DataFusionError::from(arithmetic_overflow_error("integer"))
+                        })?);
                 }
             }
             Ok(())
@@ -886,7 +882,10 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorTry {
             }
 
             // Both sides have non-null values
-            match self.sums[group_index].unwrap().add_checked(that_sum.unwrap()) {
+            match self.sums[group_index]
+                .unwrap()
+                .add_checked(that_sum.unwrap())
+            {
                 Ok(v) => self.sums[group_index] = Some(v),
                 Err(_) => {
                     self.sums[group_index] = None;
