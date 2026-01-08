@@ -882,7 +882,9 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "false") {
           checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
         }
-        withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "true") {
+        withSQLConf(
+          SQLConf.LEGACY_SIZE_OF_NULL.key -> "true",
+          SQLConf.ANSI_ENABLED.key -> "false") {
           checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
         }
       }
