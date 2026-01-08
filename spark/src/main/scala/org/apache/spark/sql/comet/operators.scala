@@ -1069,7 +1069,13 @@ trait CometBaseAggregate {
     val multiMode = modes.size > 1
     // For a final mode HashAggregate, we only need to transform the HashAggregate
     // if there is Comet partial aggregation.
-    val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
+    // Exception: BloomFilterAggregate supports Spark partial / Comet final because
+    // merge_filter() handles Spark's serialization format (12-byte header + bits).
+    val hasBloomFilterAgg = aggregate.aggregateExpressions.exists(expr =>
+      expr.aggregateFunction.getClass.getSimpleName == "BloomFilterAggregate")
+    val sparkFinalMode = modes.contains(Final) &&
+      findCometPartialAgg(aggregate.child).isEmpty &&
+      !hasBloomFilterAgg
 
     if (multiMode || sparkFinalMode) {
       return None
