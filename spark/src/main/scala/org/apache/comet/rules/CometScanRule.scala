@@ -190,6 +190,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       // there are still issues with Spark 4 support
       return None
     }
+    if (scanExec.bucketedScan) {
+      // bucketed scans are not supported by native_datafusion
+      return None
+    }
     if (!CometNativeScan.isSupported(scanExec)) {
       return None
     }
