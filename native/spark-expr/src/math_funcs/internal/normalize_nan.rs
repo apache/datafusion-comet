@@ -15,10 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use arrow::compute::unary;
 use arrow::datatypes::{DataType, Schema};
 use arrow::{
-    array::{as_primitive_array, ArrayAccessor, ArrayIter, Float32Array, Float64Array},
-    datatypes::{ArrowNativeType, Float32Type, Float64Type},
+    array::{as_primitive_array, Float32Array, Float64Array},
+    datatypes::{Float32Type, Float64Type},
     record_batch::RecordBatch,
 };
 use datafusion::logical_expr::ColumnarValue;
@@ -78,14 +79,16 @@ impl PhysicalExpr for NormalizeNaNAndZero {
 
         match &self.data_type {
             DataType::Float32 => {
-                let v = eval_typed(as_primitive_array::<Float32Type>(&array));
-                let new_array = Float32Array::from(v);
-                Ok(ColumnarValue::Array(Arc::new(new_array)))
+                let input = as_primitive_array::<Float32Type>(&array);
+                // Use unary which operates directly on values buffer without intermediate allocation
+                let result: Float32Array = unary(input, normalize_float);
+                Ok(ColumnarValue::Array(Arc::new(result)))
             }
             DataType::Float64 => {
-                let v = eval_typed(as_primitive_array::<Float64Type>(&array));
-                let new_array = Float64Array::from(v);
-                Ok(ColumnarValue::Array(Arc::new(new_array)))
+                let input = as_primitive_array::<Float64Type>(&array);
+                // Use unary which operates directly on values buffer without intermediate allocation
+                let result: Float64Array = unary(input, normalize_float);
+                Ok(ColumnarValue::Array(Arc::new(result)))
             }
             dt => panic!("Unexpected data type {dt:?}"),
         }
@@ -106,60 +109,21 @@ impl PhysicalExpr for NormalizeNaNAndZero {
     }
 }
 
-fn eval_typed<V: FloatDouble, T: ArrayAccessor<Item = V>>(input: T) -> Vec<Option<V>> {
-    let iter = ArrayIter::new(input);
-    iter.map(|o| {
-        o.map(|v| {
-            if v.is_nan() {
-                v.nan()
-            } else if v.is_neg_zero() {
-                v.zero()
-            } else {
-                v
-            }
-        })
-    })
-    .collect()
+/// Normalize a floating point value by converting all NaN representations to a canonical NaN
+/// and negative zero to positive zero. This is used for Spark's comparison semantics.
+#[inline]
+fn normalize_float<T: num::Float>(v: T) -> T {
+    if v.is_nan() {
+        T::nan()
+    } else if v == T::neg_zero() {
+        T::zero()
+    } else {
+        v
+    }
 }
 
 impl Display for NormalizeNaNAndZero {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "FloatNormalize [child: {}]", self.child)
-    }
-}
-
-trait FloatDouble: ArrowNativeType {
-    fn is_nan(&self) -> bool;
-    fn nan(&self) -> Self;
-    fn is_neg_zero(&self) -> bool;
-    fn zero(&self) -> Self;
-}
-
-impl FloatDouble for f32 {
-    fn is_nan(&self) -> bool {
-        f32::is_nan(*self)
-    }
-    fn nan(&self) -> Self {
-        f32::NAN
-    }
-    fn is_neg_zero(&self) -> bool {
-        *self == -0.0
-    }
-    fn zero(&self) -> Self {
-        0.0
-    }
-}
-impl FloatDouble for f64 {
-    fn is_nan(&self) -> bool {
-        f64::is_nan(*self)
-    }
-    fn nan(&self) -> Self {
-        f64::NAN
-    }
-    fn is_neg_zero(&self) -> bool {
-        *self == -0.0
-    }
-    fn zero(&self) -> Self {
-        0.0
     }
 }
