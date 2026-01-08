@@ -107,10 +107,6 @@ impl AggregateUDFImpl for SumInteger {
     }
 }
 
-// ============================================================================
-// Legacy Mode Accumulators - uses wrapping arithmetic (no overflow checking)
-// ============================================================================
-
 #[derive(Debug)]
 struct SumIntegerAccumulatorLegacy {
     sum: Option<i64>,
@@ -203,10 +199,6 @@ impl Accumulator for SumIntegerAccumulatorLegacy {
         Ok(())
     }
 }
-
-// ============================================================================
-// Ansi Mode Accumulators - uses checked arithmetic (error on overflow)
-// ============================================================================
 
 #[derive(Debug)]
 struct SumIntegerAccumulatorAnsi {
@@ -307,10 +299,6 @@ impl Accumulator for SumIntegerAccumulatorAnsi {
         Ok(())
     }
 }
-
-// ============================================================================
-// Try Mode Accumulators - uses checked arithmetic (returns None on overflow)
-// ============================================================================
 
 #[derive(Debug)]
 struct SumIntegerAccumulatorTry {
@@ -447,10 +435,6 @@ impl Accumulator for SumIntegerAccumulatorTry {
     }
 }
 
-// ============================================================================
-// Legacy Mode Groups Accumulator
-// ============================================================================
-
 struct SumIntGroupsAccumulatorLegacy {
     sums: Vec<Option<i64>>,
 }
@@ -582,10 +566,6 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorLegacy {
         std::mem::size_of_val(self)
     }
 }
-
-// ============================================================================
-// Ansi Mode Groups Accumulator
-// ============================================================================
 
 struct SumIntGroupsAccumulatorAnsi {
     sums: Vec<Option<i64>>,
@@ -729,10 +709,6 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
         std::mem::size_of_val(self)
     }
 }
-
-// ============================================================================
-// Try Mode Groups Accumulator
-// ============================================================================
 
 struct SumIntGroupsAccumulatorTry {
     sums: Vec<Option<i64>>,
