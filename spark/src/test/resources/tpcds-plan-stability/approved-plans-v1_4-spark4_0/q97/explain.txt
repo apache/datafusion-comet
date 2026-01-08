@@ -15,7 +15,7 @@
                :                 +- CometBroadcastExchange (5)
                :                    +- CometProject (4)
                :                       +- CometFilter (3)
-               :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (2)
+               :                          +- CometNativeScan parquet spark_catalog.default.date_dim (2)
                +- CometSort (19)
                   +- CometHashAggregate (18)
                      +- CometExchange (17)
@@ -33,7 +33,7 @@ Location: InMemoryFileIndex []
 PartitionFilters: [isnotnull(ss_sold_date_sk#3), dynamicpruningexpression(ss_sold_date_sk#3 IN dynamicpruning#4)]
 ReadSchema: struct<ss_item_sk:int,ss_customer_sk:int>
 
-(2) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+(2) CometNativeScan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#5, d_month_seq#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]
@@ -149,10 +149,10 @@ BroadcastExchange (30)
 +- * CometColumnarToRow (29)
    +- CometProject (28)
       +- CometFilter (27)
-         +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (26)
+         +- CometNativeScan parquet spark_catalog.default.date_dim (26)
 
 
-(26) CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+(26) CometNativeScan parquet spark_catalog.default.date_dim
 Output [2]: [d_date_sk#5, d_month_seq#6]
 Batched: true
 Location [not included in comparison]/{warehouse_dir}/date_dim]

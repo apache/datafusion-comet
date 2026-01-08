@@ -21,15 +21,15 @@ CometColumnarToRow
          :     :     :                 :     :              +- CometColumnarToRow
          :     :     :                 :     :                 +- CometProject
          :     :     :                 :     :                    +- CometFilter
-         :     :     :                 :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+         :     :     :                 :     :                       +- CometNativeScan parquet spark_catalog.default.date_dim
          :     :     :                 :     +- CometBroadcastExchange
          :     :     :                 :        +- CometProject
          :     :     :                 :           +- CometFilter
-         :     :     :                 :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+         :     :     :                 :              +- CometNativeScan parquet spark_catalog.default.date_dim
          :     :     :                 +- CometBroadcastExchange
          :     :     :                    +- CometProject
          :     :     :                       +- CometFilter
-         :     :     :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
+         :     :     :                          +- CometNativeScan parquet spark_catalog.default.customer_address
          :     :     +- CometBroadcastExchange
          :     :        +- CometFilter
          :     :           +- CometHashAggregate
@@ -48,18 +48,18 @@ CometColumnarToRow
          :     :                                   :     +- CometBroadcastExchange
          :     :                                   :        +- CometProject
          :     :                                   :           +- CometFilter
-         :     :                                   :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+         :     :                                   :              +- CometNativeScan parquet spark_catalog.default.date_dim
          :     :                                   +- CometBroadcastExchange
          :     :                                      +- CometProject
          :     :                                         +- CometFilter
-         :     :                                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
+         :     :                                            +- CometNativeScan parquet spark_catalog.default.customer_address
          :     +- CometBroadcastExchange
          :        +- CometProject
          :           +- CometFilter
-         :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
+         :              +- CometNativeScan parquet spark_catalog.default.customer
          +- CometBroadcastExchange
             +- CometProject
                +- CometFilter
-                  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address
+                  +- CometNativeScan parquet spark_catalog.default.customer_address
 
 Comet accelerated 58 out of 61 eligible operators (95%). Final plan contains 2 transitions between Spark and Comet.

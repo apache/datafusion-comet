@@ -36,11 +36,11 @@ TakeOrderedAndProject
                :                    :                       :                             :              +- CometColumnarToRow
                :                    :                       :                             :                 +- CometProject
                :                    :                       :                             :                    +- CometFilter
-               :                    :                       :                             :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               :                    :                       :                             :                       +- CometNativeScan parquet spark_catalog.default.date_dim
                :                    :                       :                             +- CometBroadcastExchange
                :                    :                       :                                +- CometProject
                :                    :                       :                                   +- CometFilter
-               :                    :                       :                                      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               :                    :                       :                                      +- CometNativeScan parquet spark_catalog.default.date_dim
                :                    :                       +- BroadcastExchange
                :                    :                          +- Project
                :                    :                             +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
@@ -59,11 +59,11 @@ TakeOrderedAndProject
                :                    :                                                        :              +- CometColumnarToRow
                :                    :                                                        :                 +- CometProject
                :                    :                                                        :                    +- CometFilter
-               :                    :                                                        :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               :                    :                                                        :                       +- CometNativeScan parquet spark_catalog.default.date_dim
                :                    :                                                        +- CometBroadcastExchange
                :                    :                                                           +- CometProject
                :                    :                                                              +- CometFilter
-               :                    :                                                                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               :                    :                                                                 +- CometNativeScan parquet spark_catalog.default.date_dim
                :                    +- CometSort
                :                       +- CometColumnarExchange
                :                          +- HashAggregate
@@ -88,7 +88,7 @@ TakeOrderedAndProject
                :                                            :                             +- CometBroadcastExchange
                :                                            :                                +- CometProject
                :                                            :                                   +- CometFilter
-               :                                            :                                      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               :                                            :                                      +- CometNativeScan parquet spark_catalog.default.date_dim
                :                                            +- BroadcastExchange
                :                                               +- Project
                :                                                  +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
@@ -106,7 +106,7 @@ TakeOrderedAndProject
                :                                                                             +- CometBroadcastExchange
                :                                                                                +- CometProject
                :                                                                                   +- CometFilter
-               :                                                                                      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+               :                                                                                      +- CometNativeScan parquet spark_catalog.default.date_dim
                +- BroadcastExchange
                   +- Project
                      +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
@@ -141,11 +141,11 @@ TakeOrderedAndProject
                                           :                       :                             :              +- CometColumnarToRow
                                           :                       :                             :                 +- CometProject
                                           :                       :                             :                    +- CometFilter
-                                          :                       :                             :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                          :                       :                             :                       +- CometNativeScan parquet spark_catalog.default.date_dim
                                           :                       :                             +- CometBroadcastExchange
                                           :                       :                                +- CometProject
                                           :                       :                                   +- CometFilter
-                                          :                       :                                      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                          :                       :                                      +- CometNativeScan parquet spark_catalog.default.date_dim
                                           :                       +- BroadcastExchange
                                           :                          +- Project
                                           :                             +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
@@ -164,11 +164,11 @@ TakeOrderedAndProject
                                           :                                                        :              +- CometColumnarToRow
                                           :                                                        :                 +- CometProject
                                           :                                                        :                    +- CometFilter
-                                          :                                                        :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                          :                                                        :                       +- CometNativeScan parquet spark_catalog.default.date_dim
                                           :                                                        +- CometBroadcastExchange
                                           :                                                           +- CometProject
                                           :                                                              +- CometFilter
-                                          :                                                                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                          :                                                                 +- CometNativeScan parquet spark_catalog.default.date_dim
                                           +- CometSort
                                              +- CometColumnarExchange
                                                 +- HashAggregate
@@ -193,7 +193,7 @@ TakeOrderedAndProject
                                                                   :                             +- CometBroadcastExchange
                                                                   :                                +- CometProject
                                                                   :                                   +- CometFilter
-                                                                  :                                      +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                                                  :                                      +- CometNativeScan parquet spark_catalog.default.date_dim
                                                                   +- BroadcastExchange
                                                                      +- Project
                                                                         +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
@@ -211,6 +211,6 @@ TakeOrderedAndProject
                                                                                                    +- CometBroadcastExchange
                                                                                                       +- CometProject
                                                                                                          +- CometFilter
-                                                                                                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
+                                                                                                            +- CometNativeScan parquet spark_catalog.default.date_dim
 
 Comet accelerated 138 out of 196 eligible operators (70%). Final plan contains 18 transitions between Spark and Comet.
