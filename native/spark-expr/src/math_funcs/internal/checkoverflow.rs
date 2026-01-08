@@ -18,7 +18,7 @@
 use crate::utils::is_valid_decimal_precision;
 use arrow::datatypes::{DataType, Schema};
 use arrow::{
-    array::{as_primitive_array, Array, Decimal128Array},
+    array::{as_primitive_array, Array},
     datatypes::Decimal128Type,
     record_batch::RecordBatch,
 };
@@ -112,21 +112,6 @@ impl PhysicalExpr for CheckOverflow {
                 };
 
                 let decimal_array = as_primitive_array::<Decimal128Type>(&array);
-
-                // Get input precision to check if we can skip validation
-                let (input_precision, input_scale) = match decimal_array.data_type() {
-                    DataType::Decimal128(p, s) => (*p, *s),
-                    _ => unreachable!(),
-                };
-
-                // Optimization: if input precision <= target precision and scales match,
-                // no overflow is possible - just update metadata
-                if input_precision <= target_precision && input_scale == target_scale {
-                    let new_array = decimal_array
-                        .clone()
-                        .with_precision_and_scale(target_precision, target_scale)?;
-                    return Ok(ColumnarValue::Array(Arc::new(new_array)));
-                }
 
                 let result_array = if self.fail_on_error {
                     // ANSI mode: validate and return error on overflow
