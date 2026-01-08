@@ -192,3 +192,122 @@ or strings containing null bytes (e.g \\u0000) |
 
 Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the
 [tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.
+
+### Cast Support by Eval Mode
+
+The following table shows cast support levels for each evaluation mode (LEGACY, ANSI, TRY).
+
+<!--BEGIN:CAST_EVAL_MODE_TABLE-->
+<!-- prettier-ignore-start -->
+| From Type | To Type | LEGACY | ANSI | TRY |
+|-|-|-|-|-|
+| boolean | byte | Compatible | Compatible | Compatible |
+| boolean | short | Compatible | Compatible | Compatible |
+| boolean | integer | Compatible | Compatible | Compatible |
+| boolean | long | Compatible | Compatible | Compatible |
+| boolean | float | Compatible | Compatible | Compatible |
+| boolean | double | Compatible | Compatible | Compatible |
+| boolean | decimal | Unsupported | Unsupported | Unsupported |
+| boolean | string | Compatible | Compatible | Compatible |
+| boolean | timestamp | Unsupported | Unsupported | Unsupported |
+| byte | boolean | Compatible | Compatible | Compatible |
+| byte | short | Compatible | Compatible | Compatible |
+| byte | integer | Compatible | Compatible | Compatible |
+| byte | long | Compatible | Compatible | Compatible |
+| byte | float | Compatible | Compatible | Compatible |
+| byte | double | Compatible | Compatible | Compatible |
+| byte | decimal | Compatible | Compatible | Compatible |
+| byte | string | Compatible | Compatible | Compatible |
+| byte | binary | Unsupported | Unsupported | Unsupported |
+| byte | timestamp | Unsupported | Unsupported | Unsupported |
+| short | boolean | Compatible | Compatible | Compatible |
+| short | byte | Compatible | Compatible | Compatible |
+| short | integer | Compatible | Compatible | Compatible |
+| short | long | Compatible | Compatible | Compatible |
+| short | float | Compatible | Compatible | Compatible |
+| short | double | Compatible | Compatible | Compatible |
+| short | decimal | Compatible | Compatible | Compatible |
+| short | string | Compatible | Compatible | Compatible |
+| short | binary | Unsupported | Unsupported | Unsupported |
+| short | timestamp | Unsupported | Unsupported | Unsupported |
+| integer | boolean | Compatible | Compatible | Compatible |
+| integer | byte | Compatible | Compatible | Compatible |
+| integer | short | Compatible | Compatible | Compatible |
+| integer | long | Compatible | Compatible | Compatible |
+| integer | float | Compatible | Compatible | Compatible |
+| integer | double | Compatible | Compatible | Compatible |
+| integer | decimal | Compatible | Compatible | Compatible |
+| integer | string | Compatible | Compatible | Compatible |
+| integer | binary | Unsupported | Unsupported | Unsupported |
+| integer | timestamp | Unsupported | Unsupported | Unsupported |
+| long | boolean | Compatible | Compatible | Compatible |
+| long | byte | Compatible | Compatible | Compatible |
+| long | short | Compatible | Compatible | Compatible |
+| long | integer | Compatible | Compatible | Compatible |
+| long | float | Compatible | Compatible | Compatible |
+| long | double | Compatible | Compatible | Compatible |
+| long | decimal | Compatible | Compatible | Compatible |
+| long | string | Compatible | Compatible | Compatible |
+| long | binary | Unsupported | Unsupported | Unsupported |
+| long | timestamp | Unsupported | Unsupported | Unsupported |
+| float | boolean | Compatible | Compatible | Compatible |
+| float | byte | Compatible | Compatible | Compatible |
+| float | short | Compatible | Compatible | Compatible |
+| float | integer | Compatible | Compatible | Compatible |
+| float | long | Compatible | Compatible | Compatible |
+| float | double | Compatible | Compatible | Compatible |
+| float | decimal | Incompatible | Incompatible | Incompatible |
+| float | string | Compatible | Compatible | Compatible |
+| float | timestamp | Unsupported | Unsupported | Unsupported |
+| double | boolean | Compatible | Compatible | Compatible |
+| double | byte | Compatible | Compatible | Compatible |
+| double | short | Compatible | Compatible | Compatible |
+| double | integer | Compatible | Compatible | Compatible |
+| double | long | Compatible | Compatible | Compatible |
+| double | float | Compatible | Compatible | Compatible |
+| double | decimal | Incompatible | Incompatible | Incompatible |
+| double | string | Compatible | Compatible | Compatible |
+| double | timestamp | Unsupported | Unsupported | Unsupported |
+| decimal | boolean | Compatible | Compatible | Compatible |
+| decimal | byte | Compatible | Compatible | Compatible |
+| decimal | short | Compatible | Compatible | Compatible |
+| decimal | integer | Compatible | Compatible | Compatible |
+| decimal | long | Compatible | Compatible | Compatible |
+| decimal | float | Compatible | Compatible | Compatible |
+| decimal | double | Compatible | Compatible | Compatible |
+| decimal | string | Compatible | Compatible | Compatible |
+| decimal | timestamp | Unsupported | Unsupported | Unsupported |
+| string | boolean | Compatible | Compatible | Compatible |
+| string | byte | Compatible | Compatible | Compatible |
+| string | short | Compatible | Compatible | Compatible |
+| string | integer | Compatible | Compatible | Compatible |
+| string | long | Compatible | Compatible | Compatible |
+| string | float | Compatible | Compatible | Compatible |
+| string | double | Compatible | Compatible | Compatible |
+| string | decimal | Incompatible | Incompatible | Incompatible |
+| string | binary | Compatible | Compatible | Compatible |
+| string | date | Compatible | Compatible | Compatible |
+| string | timestamp | Incompatible | Incompatible | Incompatible |
+| binary | string | Compatible | Compatible | Compatible |
+| date | boolean | Unsupported | Unsupported | Unsupported |
+| date | byte | Unsupported | Unsupported | Unsupported |
+| date | short | Unsupported | Unsupported | Unsupported |
+| date | integer | Unsupported | Unsupported | Unsupported |
+| date | long | Unsupported | Unsupported | Unsupported |
+| date | float | Unsupported | Unsupported | Unsupported |
+| date | double | Unsupported | Unsupported | Unsupported |
+| date | decimal | Unsupported | Unsupported | Unsupported |
+| date | string | Compatible | Compatible | Compatible |
+| date | timestamp | Unsupported | Unsupported | Unsupported |
+| timestamp | boolean | Unsupported | Unsupported | Unsupported |
+| timestamp | byte | Unsupported | Unsupported | Unsupported |
+| timestamp | short | Unsupported | Unsupported | Unsupported |
+| timestamp | integer | Unsupported | Unsupported | Unsupported |
+| timestamp | long | Compatible | Compatible | Compatible |
+| timestamp | float | Unsupported | Unsupported | Unsupported |
+| timestamp | double | Unsupported | Unsupported | Unsupported |
+| timestamp | decimal | Unsupported | Unsupported | Unsupported |
+| timestamp | string | Compatible | Compatible | Compatible |
+| timestamp | date | Compatible | Compatible | Compatible |
+<!-- prettier-ignore-end -->
+<!--END:CAST_EVAL_MODE_TABLE-->

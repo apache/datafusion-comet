@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 
 import org.apache.comet.CometConf.COMET_ONHEAP_MEMORY_OVERHEAD
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde}
+import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde, SupportLevel, Unsupported}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -148,9 +148,35 @@ object GenerateDocs {
           }
         }
         w.write("<!-- prettier-ignore-end -->\n".getBytes)
+      } else if (line.trim == "<!--BEGIN:CAST_EVAL_MODE_TABLE-->") {
+        w.write("<!-- prettier-ignore-start -->\n".getBytes)
+        w.write("| From Type | To Type | LEGACY | ANSI | TRY |\n".getBytes)
+        w.write("|-|-|-|-|-|\n".getBytes)
+        for (fromType <- CometCast.supportedTypes) {
+          for (toType <- CometCast.supportedTypes) {
+            if (Cast.canCast(fromType, toType) && fromType != toType) {
+              val fromTypeName = fromType.typeName.replace("(10,2)", "")
+              val toTypeName = toType.typeName.replace("(10,2)", "")
+              val legacy = supportLevelStr(
+                CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY))
+              val ansi = supportLevelStr(
+                CometCast.isSupported(fromType, toType, None, CometEvalMode.ANSI))
+              val tryMode = supportLevelStr(
+                CometCast.isSupported(fromType, toType, None, CometEvalMode.TRY))
+              w.write(s"| $fromTypeName | $toTypeName | $legacy | $ansi | $tryMode |\n".getBytes)
+            }
+          }
+        }
+        w.write("<!-- prettier-ignore-end -->\n".getBytes)
       }
     }
     w.close()
+  }
+
+  private def supportLevelStr(level: SupportLevel): String = level match {
+    case Compatible(_) => "Compatible"
+    case Incompatible(_) => "Incompatible"
+    case Unsupported(_) => "Unsupported"
   }
 
   /** Read file into memory */
