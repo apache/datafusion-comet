@@ -86,7 +86,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
-  test("native shuffle on nested array") {
+  test("native shuffle on nested array (native_datafusion)") {
     Seq("false", "true").foreach { _ =>
       Seq(10, 201).foreach { numPartitions =>
         Seq("1.0", "10.0").foreach { ratio =>
