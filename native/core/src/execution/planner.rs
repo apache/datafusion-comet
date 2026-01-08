@@ -654,6 +654,8 @@ impl PhysicalPlanner {
                     &options.quote,
                     &options.escape,
                     &options.null_value,
+                    &options.timezone,
+                    options.quote_all,
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),

@@ -26,6 +26,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, 
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.DataTypeSupport
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
 object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
@@ -234,13 +235,24 @@ object CometJsonToStructs extends CometExpressionSerde[JsonToStructs] {
 
 object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
 
+  private val incompatibleDataTypes = Seq(DateType, TimestampType, TimestampNTZType, BinaryType)
+
   override def getSupportLevel(expr: StructsToCsv): SupportLevel = {
-    val isSupportedSchema = expr.inputSchema.fields
-      .forall(sf => QueryPlanSerde.supportedDataType(sf.dataType))
-    if (!isSupportedSchema) {
-      return Unsupported(Some(s"Unsupported data type: ${expr.inputSchema}"))
+    val dataTypes = expr.inputSchema.fields.map(_.dataType)
+    val containsComplexType = dataTypes.exists(DataTypeSupport.isComplexType)
+    if (containsComplexType) {
+      return Unsupported(
+        Some(
+          s"The schema ${expr.inputSchema} is not supported because it includes a complex type"))
     }
-    Incompatible()
+    val containsIncompatibleDataTypes = dataTypes.exists(incompatibleDataTypes.contains)
+    if (containsIncompatibleDataTypes) {
+      return Incompatible(
+        Some(
+          s"The schema ${expr.inputSchema} is not supported because " +
+            s"it includes a incompatible data types: $incompatibleDataTypes"))
+    }
+    Compatible()
   }
 
   override def convert(
@@ -282,11 +294,6 @@ object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
         .get("quoteAll")
         .flatMap(quoteAll => Try(quoteAll.toBoolean).toOption)
         .getOrElse(false))
-      .setDateFormat(options.getOrElse("dateFormat", "yyyy-MM-dd"))
-      .setTimestampFormat(options
-        .getOrElse("timestampFormat", "yyyy-MM-dd'T'HH:mm:ss[.SSS][XXX]"))
-      .setTimestampNtzFormat(options
-        .getOrElse("timestampNTZFormat", "yyyy-MM-dd'T'HH:mm:ss[.SSS]"))
       .build()
   }
 }

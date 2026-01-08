@@ -31,7 +31,7 @@ import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOpti
 
 class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
-  test("to_csv") {
+  test("to_csv - default options") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
       val filename = path.toString
@@ -48,10 +48,20 @@ class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper
       withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[StructsToCsv]) -> "true") {
         val df = spark.read
           .parquet(filename)
-          .select(to_csv(struct(col("c0"), col("c1"), col("c2"))))
-        df.explain(true)
-        df.printSchema()
-        checkSparkAnswer(df)
+          .select(
+            to_csv(
+              struct(
+                col("c0"),
+                col("c1"),
+                col("c2"),
+                col("c3"),
+                col("c4"),
+                col("c5"),
+                col("c7"),
+                col("c8"),
+                col("c9"),
+                col("c12"))))
+        checkSparkAnswerAndOperator(df)
       }
     }
   }

@@ -15,11 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{as_boolean_array, as_largestring_array, as_string_array, as_struct_array, Array, ArrayRef, StringBuilder};
+use crate::{spark_cast, EvalMode, SparkCastOptions};
+use arrow::array::{as_string_array, as_struct_array, Array, ArrayRef, StringArray, StringBuilder};
 use arrow::array::{RecordBatch, StructArray};
 use arrow::datatypes::{DataType, Schema};
-use datafusion::common::cast::{as_int16_array, as_int32_array, as_int64_array, as_int8_array};
-use datafusion::common::{exec_err, Result};
+use datafusion::common::Result;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::any::Any;
@@ -35,6 +35,7 @@ pub struct ToCsv {
     quote: String,
     escape: String,
     null_value: String,
+    timezone: String,
     quote_all: bool,
 }
 
@@ -45,6 +46,7 @@ impl Hash for ToCsv {
         self.quote.hash(state);
         self.escape.hash(state);
         self.null_value.hash(state);
+        self.timezone.hash(state);
         self.quote_all.hash(state);
     }
 }
@@ -56,6 +58,7 @@ impl PartialEq for ToCsv {
             && self.quote.eq(&other.quote)
             && self.escape.eq(&other.escape)
             && self.null_value.eq(&other.null_value)
+            && self.timezone.eq(&other.timezone)
             && self.quote_all.eq(&other.quote_all)
     }
 }
@@ -67,7 +70,8 @@ impl ToCsv {
         quote: &str,
         escape: &str,
         null_value: &str,
-        quote_all: bool
+        timezone: &str,
+        quote_all: bool,
     ) -> Self {
         Self {
             expr,
@@ -75,6 +79,7 @@ impl ToCsv {
             quote: quote.to_owned(),
             escape: escape.to_owned(),
             null_value: null_value.to_owned(),
+            timezone: timezone.to_owned(),
             quote_all,
         }
     }
@@ -84,8 +89,8 @@ impl Display for ToCsv {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "to_csv({}, delimiter={}, quote={}, escape={}, null_value={}, quote_all={})",
-            self.expr, self.delimiter, self.quote, self.escape, self.null_value, self.quote_all
+            "to_csv({}, delimiter={}, quote={}, escape={}, null_value={}, quote_all={}, timezone={})",
+            self.expr, self.delimiter, self.quote, self.escape, self.null_value, self.quote_all, self.timezone
         )
     }
 }
@@ -104,13 +109,21 @@ impl PhysicalExpr for ToCsv {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
-        let input_value = self.expr.evaluate(batch)?.into_array(batch.num_rows())?;
+        let input_array = self.expr.evaluate(batch)?.into_array(batch.num_rows())?;
+        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, &self.timezone, false);
+        cast_options.null_string = self.null_value.clone();
+        let struct_array = as_struct_array(&input_array);
 
-        let struct_array = as_struct_array(&input_value);
+        let csv_array = to_csv_inner(
+            struct_array,
+            &cast_options,
+            &self.delimiter,
+            &self.quote,
+            &self.escape,
+            self.quote_all,
+        )?;
 
-        let result = struct_to_csv(struct_array, &self.delimiter, &self.null_value)?;
-
-        Ok(ColumnarValue::Array(result))
+        Ok(ColumnarValue::Array(csv_array))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -127,6 +140,7 @@ impl PhysicalExpr for ToCsv {
             &self.quote,
             &self.escape,
             &self.null_value,
+            &self.timezone,
             self.quote_all,
         )))
     }
@@ -136,7 +150,39 @@ impl PhysicalExpr for ToCsv {
     }
 }
 
-pub fn struct_to_csv(array: &StructArray, delimiter: &str, null_value: &str, quote_all: bool) -> Result<ArrayRef> {
+pub fn to_csv_inner(
+    array: &StructArray,
+    cast_options: &SparkCastOptions,
+    delimiter: &str,
+    quote: &str,
+    escape: &str,
+    quote_all: bool,
+) -> Result<ArrayRef> {
+    let string_arrays: Vec<ArrayRef> = as_struct_array(&array)
+        .columns()
+        .iter()
+        .map(|array| {
+            spark_cast(
+                ColumnarValue::Array(Arc::clone(array)),
+                &DataType::Utf8,
+                cast_options,
+            )?
+            .into_array(array.len())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let string_arrays: Vec<&StringArray> = string_arrays
+        .iter()
+        .map(|array| as_string_array(array))
+        .collect();
+    let is_string: Vec<bool> = array
+        .fields()
+        .iter()
+        .map(|f| match f.data_type() {
+            DataType::Utf8 | DataType::LargeUtf8 => true,
+            _ => false,
+        })
+        .collect();
+
     let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
     let mut csv_string = String::with_capacity(array.len() * 16);
 
@@ -145,14 +191,27 @@ pub fn struct_to_csv(array: &StructArray, delimiter: &str, null_value: &str, quo
             builder.append_null();
         } else {
             csv_string.clear();
-            for (col_idx, column) in array.columns().iter().enumerate() {
+            for (col_idx, column) in string_arrays.iter().enumerate() {
                 if col_idx > 0 {
                     csv_string.push_str(delimiter);
                 }
-                if column.is_null(row_idx) {
-                    csv_string.push_str(null_value);
+                let value = column.value(row_idx);
+                let is_string_field = is_string[col_idx];
+
+                let needs_quoting = quote_all
+                    || (is_string_field && (value.contains(delimiter) || value.contains(quote)));
+
+                let needs_escaping = is_string_field && needs_quoting;
+                if needs_quoting {
+                    csv_string.push_str(quote);
+                }
+                if needs_escaping {
+                    escape_value(value, quote, escape, &mut csv_string);
                 } else {
-                    convert_to_string(column, &mut csv_string, row_idx)?;
+                    csv_string.push_str(value);
+                }
+                if needs_quoting {
+                    csv_string.push_str(quote);
                 }
             }
         }
@@ -162,69 +221,12 @@ pub fn struct_to_csv(array: &StructArray, delimiter: &str, null_value: &str, quo
 }
 
 #[inline]
-fn convert_to_string(array: &ArrayRef, csv_string: &mut String, row_idx: usize) -> Result<()> {
-    match array.data_type() {
-        DataType::Boolean => {
-            let array = as_boolean_array(array);
-            csv_string.push_str(&array.value(row_idx).to_string())
+fn escape_value(value: &str, quote: &str, escape: &str, output: &mut String) {
+    for ch in value.chars() {
+        let ch_str = ch.to_string();
+        if ch_str == quote || ch_str == escape {
+            output.push_str(escape);
         }
-        DataType::Int8 => {
-            let array = as_int8_array(array)?;
-            csv_string.push_str(&array.value(row_idx).to_string())
-        }
-        DataType::Int16 => {
-            let array = as_int16_array(array)?;
-            csv_string.push_str(&array.value(row_idx).to_string())
-        }
-        DataType::Int32 => {
-            let array = as_int32_array(array)?;
-            csv_string.push_str(&array.value(row_idx).to_string())
-        }
-        DataType::Int64 => {
-            let array = as_int64_array(array)?;
-            csv_string.push_str(&array.value(row_idx).to_string())
-        }
-        DataType::Utf8 => {
-            let array = as_string_array(array);
-            csv_string.push_str(&array.value(row_idx).to_string())
-        }
-        DataType::LargeUtf8 => {
-            let array = as_largestring_array(array);
-            csv_string.push_str(&array.value(row_idx).to_string())
-        }
-        _ => return exec_err!("to_csv not implemented for type: {:?}", array.data_type()),
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::csv_funcs::to_csv::struct_to_csv;
-    use arrow::array::{as_string_array, ArrayRef, Int32Array, StringArray, StructArray};
-    use arrow::datatypes::{DataType, Field};
-    use datafusion::common::Result;
-    use std::sync::Arc;
-
-    #[test]
-    fn test_to_csv_basic() -> Result<()> {
-        let struct_array = StructArray::from(vec![
-            (
-                Arc::new(Field::new("a", DataType::Int32, false)),
-                Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
-            ),
-            (
-                Arc::new(Field::new("b", DataType::Utf8, true)),
-                Arc::new(StringArray::from(vec![Some("foo"), None, Some("baz")])) as ArrayRef,
-            ),
-        ]);
-
-        let expected = &StringArray::from(vec!["1,foo", "2,", "3,baz"]);
-
-        let result = struct_to_csv(&Arc::new(struct_array), ",", "")?;
-        let result = as_string_array(&result);
-
-        assert_eq!(result, expected);
-
-        Ok(())
+        output.push(ch);
     }
 }

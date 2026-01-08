@@ -21,7 +21,7 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field};
 use criterion::{criterion_group, criterion_main, Criterion};
-use datafusion_comet_spark_expr::struct_to_csv;
+use datafusion_comet_spark_expr::{to_csv_inner, EvalMode, SparkCastOptions};
 use std::hint::black_box;
 
 fn create_struct_array(array_size: usize) -> StructArray {
@@ -80,12 +80,27 @@ fn create_struct_array(array_size: usize) -> StructArray {
 
 fn criterion_benchmark(c: &mut Criterion) {
     let array_size = 8192;
+    let timezone = "UTC";
     let struct_array = create_struct_array(array_size);
     let default_delimiter = ",";
     let default_null_value = "";
+    let default_quote = "\"";
+    let default_escape = "\\";
+    let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, timezone, false);
+    cast_options.null_string = default_null_value.to_string();
     c.bench_function("to_csv", |b| {
         b.iter(|| {
-            black_box(struct_to_csv(&struct_array, default_delimiter, default_null_value).unwrap())
+            black_box(
+                to_csv_inner(
+                    &struct_array,
+                    &cast_options,
+                    default_delimiter,
+                    default_quote,
+                    default_escape,
+                    false,
+                )
+                .unwrap(),
+            )
         })
     });
 }
