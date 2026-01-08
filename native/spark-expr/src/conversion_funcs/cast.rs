@@ -2011,7 +2011,6 @@ fn spark_cast_nonintegral_numeric_to_integral(
 
 fn parse_string_to_i8_legacy(str: &str) -> SparkResult<Option<i8>> {
     match do_parse_string_to_int_legacy::<i32>(str, i32::MIN)? {
-        None => Ok(None),
         Some(v) if v >= i8::MIN as i32 && v <= i8::MAX as i32 => Ok(Some(v as i8)),
         _ => Ok(None),
     }
@@ -2019,7 +2018,6 @@ fn parse_string_to_i8_legacy(str: &str) -> SparkResult<Option<i8>> {
 
 fn parse_string_to_i8_ansi(str: &str) -> SparkResult<Option<i8>> {
     match do_parse_string_to_int_ansi::<i32>(str, "TINYINT", i32::MIN)? {
-        None => Ok(None),
         Some(v) if v >= i8::MIN as i32 && v <= i8::MAX as i32 => Ok(Some(v as i8)),
         _ => Err(invalid_value(str, "STRING", "TINYINT")),
     }
@@ -2027,7 +2025,6 @@ fn parse_string_to_i8_ansi(str: &str) -> SparkResult<Option<i8>> {
 
 fn parse_string_to_i8_try(str: &str) -> SparkResult<Option<i8>> {
     match do_parse_string_to_int_try::<i32>(str, i32::MIN)? {
-        None => Ok(None),
         Some(v) if v >= i8::MIN as i32 && v <= i8::MAX as i32 => Ok(Some(v as i8)),
         _ => Ok(None),
     }
@@ -2035,7 +2032,6 @@ fn parse_string_to_i8_try(str: &str) -> SparkResult<Option<i8>> {
 
 fn parse_string_to_i16_legacy(str: &str) -> SparkResult<Option<i16>> {
     match do_parse_string_to_int_legacy::<i32>(str, i32::MIN)? {
-        None => Ok(None),
         Some(v) if v >= i16::MIN as i32 && v <= i16::MAX as i32 => Ok(Some(v as i16)),
         _ => Ok(None),
     }
@@ -2043,7 +2039,6 @@ fn parse_string_to_i16_legacy(str: &str) -> SparkResult<Option<i16>> {
 
 fn parse_string_to_i16_ansi(str: &str) -> SparkResult<Option<i16>> {
     match do_parse_string_to_int_ansi::<i32>(str, "SMALLINT", i32::MIN)? {
-        None => Ok(None),
         Some(v) if v >= i16::MIN as i32 && v <= i16::MAX as i32 => Ok(Some(v as i16)),
         _ => Err(invalid_value(str, "STRING", "SMALLINT")),
     }
@@ -2051,7 +2046,6 @@ fn parse_string_to_i16_ansi(str: &str) -> SparkResult<Option<i16>> {
 
 fn parse_string_to_i16_try(str: &str) -> SparkResult<Option<i16>> {
     match do_parse_string_to_int_try::<i32>(str, i32::MIN)? {
-        None => Ok(None),
         Some(v) if v >= i16::MIN as i32 && v <= i16::MAX as i32 => Ok(Some(v as i16)),
         _ => Ok(None),
     }
