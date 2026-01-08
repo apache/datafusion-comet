@@ -245,6 +245,8 @@ message ParquetWriter {
   optional string job_id = 6;
   // Task attempt ID for this specific task
   optional int32 task_attempt_id = 7;
+//  set of partition columns
+  repeated string partition_columns = 8;
 }
 
 enum AggregateMode {

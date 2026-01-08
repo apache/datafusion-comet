@@ -29,6 +29,7 @@ import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.SQLConf.PartitionOverwriteMode
 
 import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -62,7 +63,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
             }
 
             if (cmd.partitionColumns.nonEmpty || cmd.staticPartitions.nonEmpty) {
-              return Unsupported(Some("Partitioned writes are not supported"))
+              return Incompatible(Some("Partitioned writes are not supported"))
             }
 
             if (cmd.query.output.exists(attr => DataTypeSupport.isComplexType(attr.dataType))) {
@@ -167,6 +168,9 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         other
     }
 
+    val isDynamicOverWriteMode = cmd.partitionColumns.nonEmpty &&
+      SQLConf.get.partitionOverwriteMode == PartitionOverwriteMode.DYNAMIC
+
     // Create FileCommitProtocol for atomic writes
     val jobId = java.util.UUID.randomUUID().toString
     val committer =
@@ -178,11 +182,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           committerClass.getConstructor(classOf[String], classOf[String], classOf[Boolean])
         Some(
           constructor
-            .newInstance(
-              jobId,
-              outputPath,
-              java.lang.Boolean.FALSE // dynamicPartitionOverwrite = false for now
-            )
+            .newInstance(jobId, outputPath, isDynamicOverWriteMode)
             .asInstanceOf[org.apache.spark.internal.io.FileCommitProtocol])
       } catch {
         case e: Exception =>
