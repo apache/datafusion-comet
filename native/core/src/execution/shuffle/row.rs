@@ -903,8 +903,15 @@ fn make_batch(arrays: Vec<ArrayRef>, row_count: usize) -> Result<RecordBatch, Ar
 /// Returns (partition_lengths, checksums) where:
 /// - partition_lengths: Vec<i64> of bytes written for each partition
 /// - checksums: Vec<Option<u32>> of checksum for each partition (None if checksums disabled)
+///
+/// # Safety
+/// Callers must ensure that:
+/// - `row_addresses_ptr` is valid for reads of `row_num` elements
+/// - `row_sizes_ptr` is valid for reads of `row_num` elements
+/// - `partition_idxs_ptr` is valid for reads of `row_num` elements
+/// - All pointers are properly aligned and point to initialized data
 #[allow(clippy::too_many_arguments)]
-pub fn process_sorted_row_partition_all(
+pub unsafe fn process_sorted_row_partition_all(
     row_num: usize,
     batch_size: usize,
     row_addresses_ptr: *mut jlong,

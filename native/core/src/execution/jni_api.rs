@@ -798,6 +798,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileAllPar
                     _ => CompressionCodec::Lz4Frame,
                 };
 
+                // SAFETY: The pointers are obtained from JNI arrays which are guaranteed to be
+                // valid for the duration of this function. The row_num parameter ensures we
+                // don't read beyond the array bounds.
                 let (partition_lengths, checksums) = process_sorted_row_partition_all(
                     row_num,
                     batch_size as usize,
