@@ -41,7 +41,6 @@ use iceberg::io::FileIO;
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use datafusion::datasource::schema_adapter::{SchemaAdapterFactory, SchemaMapper};
 use crate::parquet::schema_adapter::SparkSchemaMapperFactory;
 use datafusion_comet_spark_expr::EvalMode;

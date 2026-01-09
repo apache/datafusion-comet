@@ -17,11 +17,17 @@
 
 //! Spark-compatible schema mapping for runtime batch transformation
 
-use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
-use arrow::array::{RecordBatch, RecordBatchOptions};
-use arrow::datatypes::{Schema, SchemaRef};
-use datafusion::physical_plan::ColumnarValue;
+use crate::parquet::parquet_support::SparkParquetOptions;
+use arrow::array::{ArrayRef, RecordBatch};
+use arrow::datatypes::SchemaRef;
+use datafusion::common::tree_node::TreeNode;
+use datafusion::common::tree_node::{Transformed, TransformedResult};
+use datafusion::common::Result as DataFusionResult;
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr_adapter::{replace_columns_with_literals, DefaultPhysicalExprAdapterFactory, PhysicalExprAdapter, PhysicalExprAdapterFactory};
 use datafusion::scalar::ScalarValue;
+use datafusion_comet_spark_expr::{Cast, SparkCastOptions};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -31,141 +37,194 @@ use std::sync::Arc;
 /// implementation that performs runtime batch transformation using Spark-compatible
 /// type conversions.
 #[derive(Clone, Debug)]
-pub struct SparkSchemaMapperFactory {
-    /// Spark cast options
+pub struct SparkPhysicalExprAdapterFactory {
+    /// Spark-specific parquet options for type conversions
     parquet_options: SparkParquetOptions,
-    /// Default values for missing columns
+    /// Default values for columns that may be missing from the physical schema.
+    /// The key is the column index in the logical schema.
     default_values: Option<HashMap<usize, ScalarValue>>,
 }
 
-impl SparkSchemaMapperFactory {
+impl SparkPhysicalExprAdapterFactory {
+    /// Create a new factory with the given options.
     pub fn new(
-        options: SparkParquetOptions,
+        parquet_options: SparkParquetOptions,
         default_values: Option<HashMap<usize, ScalarValue>>,
     ) -> Self {
         Self {
-            parquet_options: options,
+            parquet_options,
             default_values,
         }
     }
+}
 
-    /// Create a schema mapper for transforming batches from file schema to required schema
-    pub fn create_mapper(
+impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
+    fn create(
         &self,
-        required_schema: SchemaRef,
-        file_schema: &Schema,
-    ) -> datafusion::common::Result<SparkSchemaMapper> {
-        let mut projection = Vec::with_capacity(file_schema.fields().len());
-        let mut field_mappings = vec![None; required_schema.fields().len()];
+        logical_file_schema: SchemaRef,
+        physical_file_schema: SchemaRef,
+    ) -> Arc<dyn PhysicalExprAdapter> {
+        let default_factory = DefaultPhysicalExprAdapterFactory;
+        let default_adapter = default_factory.create(
+            Arc::clone(&logical_file_schema),
+            Arc::clone(&physical_file_schema),
+        );
 
-        for (file_idx, file_field) in file_schema.fields.iter().enumerate() {
-            if let Some((table_idx, _table_field)) =
-                required_schema.fields().iter().enumerate().find(|(_, b)| {
-                    if self.parquet_options.case_sensitive {
-                        b.name() == file_field.name()
-                    } else {
-                        b.name().to_lowercase() == file_field.name().to_lowercase()
-                    }
-                })
-            {
-                field_mappings[table_idx] = Some(projection.len());
-                projection.push(file_idx);
-            }
-        }
-
-        Ok(SparkSchemaMapper {
-            required_schema,
-            field_mappings,
+        Arc::new(SparkPhysicalExprAdapter {
+            logical_file_schema,
+            physical_file_schema,
             parquet_options: self.parquet_options.clone(),
             default_values: self.default_values.clone(),
+            default_adapter,
         })
     }
 }
 
-/// Maps record batches from file schema to required schema using Spark-compatible conversions.
-///
-/// This performs runtime batch transformation, applying type conversions and handling
-/// missing columns with default values or nulls.
 #[derive(Debug)]
-pub struct SparkSchemaMapper {
-    /// The required output schema after conversion
-    required_schema: SchemaRef,
-    /// Mapping from field index in required schema to index in file batch
-    field_mappings: Vec<Option<usize>>,
-    /// Spark cast options
+struct SparkPhysicalExprAdapter {
+    /// The logical schema expected by the query
+    logical_file_schema: SchemaRef,
+    /// The physical schema of the actual file being read
+    physical_file_schema: SchemaRef,
+    /// Spark-specific options for type conversions
     parquet_options: SparkParquetOptions,
-    /// Default values for missing columns
+    /// Default values for missing columns (keyed by logical schema index)
     default_values: Option<HashMap<usize, ScalarValue>>,
+    /// The default DataFusion adapter to delegate standard handling to
+    default_adapter: Arc<dyn PhysicalExprAdapter>,
 }
 
-impl SparkSchemaMapper {
-    /// Transform a record batch from file schema to required schema
-    pub fn map_batch(&self, batch: RecordBatch) -> datafusion::common::Result<RecordBatch> {
-        let batch_rows = batch.num_rows();
-        let batch_cols = batch.columns().to_vec();
+impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
+    fn rewrite(&self, expr: Arc<dyn PhysicalExpr>) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        // Step 1: Handle default values for missing columns
+        let expr = self.replace_missing_with_defaults(expr)?;
 
-        let cols = self
-            .required_schema
-            .fields()
-            .iter()
-            .enumerate()
-            .zip(&self.field_mappings)
-            .map(|((field_idx, field), file_idx)| {
-                file_idx.map_or_else(
-                    // Field only exists in required schema, not in file
-                    || {
-                        if let Some(default_values) = &self.default_values {
-                            // We have a map of default values, see if this field is in there.
-                            if let Some(value) = default_values.get(&field_idx)
-                            // Default value exists, construct a column from it.
-                            {
-                                let cv = if field.data_type() == &value.data_type() {
-                                    ColumnarValue::Scalar(value.clone())
-                                } else {
-                                    // Data types don't match - convert using Spark semantics
-                                    spark_parquet_convert(
-                                        ColumnarValue::Scalar(value.clone()),
-                                        field.data_type(),
-                                        &self.parquet_options,
-                                    )?
-                                };
-                                return cv.into_array(batch_rows);
-                            }
-                        }
-                        // No default value - create null column
-                        let cv =
-                            ColumnarValue::Scalar(ScalarValue::try_new_null(field.data_type())?);
-                        cv.into_array(batch_rows)
-                    },
-                    // Field exists in both schemas - convert if needed
-                    |batch_idx| {
-                        spark_parquet_convert(
-                            ColumnarValue::Array(Arc::clone(&batch_cols[batch_idx])),
-                            field.data_type(),
-                            &self.parquet_options,
-                        )?
-                        .into_array(batch_rows)
-                    },
-                )
-            })
-            .collect::<datafusion::common::Result<Vec<_>, _>>()?;
+        // Step 2: Delegate to default adapter for standard handling
+        // This handles: missing columns → nulls, type mismatches → CastColumnExpr
+        let expr = self.default_adapter.rewrite(expr)?;
 
-        let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-        let schema = Arc::<Schema>::clone(&self.required_schema);
-        let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
-        Ok(record_batch)
+        // Step 3: Replace CastColumnExpr with Spark-compatible Cast expressions
+        expr.transform(|e| self.replace_with_spark_cast(e)).data()
     }
+}
+
+impl SparkPhysicalExprAdapter {
+    /// Replace CastColumnExpr (DataFusion's cast) with Spark's Cast expression.
+    fn replace_with_spark_cast(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> DataFusionResult<Transformed<Arc<dyn PhysicalExpr>>> {
+        // Check for CastColumnExpr and replace with spark_expr::Cast
+        // CastColumnExpr is in datafusion_physical_expr::expressions
+        if let Some(cast) = expr
+            .as_any()
+            .downcast_ref::<datafusion::physical_expr::expressions::CastColumnExpr>()
+        {
+            let child = cast.expr().clone();
+            let target_type = cast.target_field().data_type().clone();
+
+            // Create Spark-compatible cast options
+            let mut cast_options = SparkCastOptions::new(
+                self.parquet_options.eval_mode,
+                &self.parquet_options.timezone,
+                self.parquet_options.allow_incompat,
+            );
+            cast_options.allow_cast_unsigned_ints = self.parquet_options.allow_cast_unsigned_ints;
+            cast_options.is_adapting_schema = true;
+
+            let spark_cast = Arc::new(Cast::new(child, target_type, cast_options));
+
+            return Ok(Transformed::yes(spark_cast as Arc<dyn PhysicalExpr>));
+        }
+
+        Ok(Transformed::no(expr))
+    }
+
+    /// Replace references to missing columns with default values.
+    fn replace_missing_with_defaults(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        let Some(defaults) = &self.default_values else {
+            return Ok(expr);
+        };
+
+        if defaults.is_empty() {
+            return Ok(expr);
+        }
+
+        // Convert index-based defaults to name-based for replace_columns_with_literals
+        let name_based: HashMap<&str, &ScalarValue> = defaults
+            .iter()
+            .filter_map(|(idx, val)| {
+                self.logical_file_schema
+                    .fields()
+                    .get(*idx)
+                    .map(|f| (f.name().as_str(), val))
+            })
+            .collect();
+
+        if name_based.is_empty() {
+            return Ok(expr);
+        }
+
+        replace_columns_with_literals(expr, &name_based)
+    }
+}
+
+pub fn adapt_batch_with_expressions(
+    batch: RecordBatch,
+    target_schema: &SchemaRef,
+    parquet_options: &SparkParquetOptions,
+) -> DataFusionResult<RecordBatch> {
+    let file_schema = batch.schema();
+
+    // If schemas match, no adaptation needed
+    if file_schema.as_ref() == target_schema.as_ref() {
+        return Ok(batch);
+    }
+
+    // Create adapter
+    let factory = SparkPhysicalExprAdapterFactory::new(parquet_options.clone(), None);
+    let adapter = factory.create(Arc::clone(target_schema), Arc::clone(&file_schema));
+
+    // Create column projection expressions for target schema
+    let projection_exprs: Vec<Arc<dyn PhysicalExpr>> = target_schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(i, _field)| {
+            let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new_with_schema(
+                target_schema.field(i).name(),
+                target_schema.as_ref(),
+            )?);
+            adapter.rewrite(col_expr)
+        })
+        .collect::<DataFusionResult<Vec<_>>>()?;
+
+    // Evaluate expressions against batch
+    let columns: Vec<ArrayRef> = projection_exprs
+        .iter()
+        .map(|expr| {
+            expr.evaluate(&batch)?
+                .into_array(batch.num_rows())
+                .map_err(|e| e.into())
+        })
+        .collect::<DataFusionResult<Vec<_>>>()?;
+
+    RecordBatch::try_new(Arc::clone(target_schema), columns).map_err(|e| e.into())
 }
 
 #[cfg(test)]
 mod test {
     use crate::parquet::parquet_support::SparkParquetOptions;
-    use crate::parquet::schema_adapter::SparkSchemaMapperFactory;
+    use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
     use arrow::array::UInt32Array;
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use datafusion::common::DataFusionError;
+    use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
     use datafusion_comet_spark_expr::EvalMode;
     use std::sync::Arc;
 
@@ -187,8 +246,8 @@ mod test {
         ]));
 
         let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-        let factory = SparkSchemaMapperFactory::new(spark_options, None);
-        let mapper = factory.create_mapper(Arc::clone(&required_schema), file_schema.as_ref())?;
+        let factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
+        let mapper = factory.create(Arc::clone(&required_schema), file_schema?)?;
 
         let result = mapper.map_batch(batch)?;
 
@@ -210,8 +269,8 @@ mod test {
         let mut spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
         spark_options.allow_cast_unsigned_ints = true;
 
-        let factory = SparkSchemaMapperFactory::new(spark_options, None);
-        let mapper = factory.create_mapper(Arc::clone(&required_schema), file_schema.as_ref())?;
+        let factory = SparkPhysicalExprAdapterFactory::new(spark_options, None);
+        let mapper = factory.create(Arc::clone(&required_schema), Arc::new(*file_schema.as_ref()));
 
         let result = mapper.map_batch(batch)?;
 
