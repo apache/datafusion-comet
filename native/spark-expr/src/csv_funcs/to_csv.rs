@@ -172,7 +172,10 @@ pub fn to_csv_inner(
                 }
                 let needs_quoting = write_options.quote_all
                     || (is_string_field
-                        && (value.contains(&write_options.delimiter) || value.contains(quote)));
+                        && !string_arrays[col_idx].is_null(row_idx)
+                        && (value.contains(&write_options.delimiter)
+                            || value.contains(quote)
+                            || value.is_empty()));
 
                 let needs_escaping = is_string_field && needs_quoting;
                 if needs_quoting {

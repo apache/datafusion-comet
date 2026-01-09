@@ -19,6 +19,7 @@
 
 package org.apache.comet
 
+import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
@@ -66,16 +67,29 @@ class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
-  test("to_csv - string cases processing") {
+  test("to_csv - with configurable formatting options") {
     val table = "t1"
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
       withTable(table) {
         sql(s"create table $table(col string) using parquet")
+        sql(s"insert into $table values('')")
         sql(s"insert into $table values(cast(null as string))")
-        sql(s"insert into $table values('abc')")
+        sql(s"insert into $table values('   abc')")
+        sql(s"insert into $table values('abc   ')")
+        sql(s"insert into $table values('  abc   ')")
         sql(s"""insert into $table values('abc \"abc\"')""")
-        checkSparkAnswerAndOperator(sql(s"select to_csv(struct(col, 1, 'abc')) from $table"))
-        checkSparkAnswerAndOperator(sql(s"select to_csv(null) from $table"))
+        val df = sql(s"select * from $table")
+        checkSparkAnswerAndOperator(df.select(to_csv(struct(col("col"), lit(1)))))
+        checkSparkAnswerAndOperator(
+          df.select(
+            to_csv(
+              struct(col("col"), lit(1)),
+              Map(
+                "delimiter" -> ";",
+                "ignoreLeadingWhiteSpace" -> "false",
+                "ignoreTrailingWhiteSpace" -> "false").asJava)))
+        checkSparkAnswerAndOperator(
+          df.select(to_csv(struct(col("col"), lit(1)), Map("quoteAll" -> "true").asJava)))
       }
     }
   }
