@@ -148,26 +148,12 @@ object GenerateDocs {
           }
         }
         w.write("<!-- prettier-ignore-end -->\n".getBytes)
-      } else if (line.trim == "<!--BEGIN:CAST_EVAL_MODE_TABLE-->") {
-        w.write("<!-- prettier-ignore-start -->\n".getBytes)
-        w.write("| From Type | To Type | LEGACY | ANSI | TRY |\n".getBytes)
-        w.write("|-|-|-|-|-|\n".getBytes)
-        for (fromType <- CometCast.supportedTypes) {
-          for (toType <- CometCast.supportedTypes) {
-            if (Cast.canCast(fromType, toType) && fromType != toType) {
-              val fromTypeName = fromType.typeName.replace("(10,2)", "")
-              val toTypeName = toType.typeName.replace("(10,2)", "")
-              val legacy = supportLevelStr(
-                CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY))
-              val ansi = supportLevelStr(
-                CometCast.isSupported(fromType, toType, None, CometEvalMode.ANSI))
-              val tryMode = supportLevelStr(
-                CometCast.isSupported(fromType, toType, None, CometEvalMode.TRY))
-              w.write(s"| $fromTypeName | $toTypeName | $legacy | $ansi | $tryMode |\n".getBytes)
-            }
-          }
-        }
-        w.write("<!-- prettier-ignore-end -->\n".getBytes)
+      } else if (line.trim == "<!--BEGIN:CAST_LEGACY_TABLE-->") {
+        writeCastTableForMode(w, CometEvalMode.LEGACY)
+      } else if (line.trim == "<!--BEGIN:CAST_ANSI_TABLE-->") {
+        writeCastTableForMode(w, CometEvalMode.ANSI)
+      } else if (line.trim == "<!--BEGIN:CAST_TRY_TABLE-->") {
+        writeCastTableForMode(w, CometEvalMode.TRY)
       }
     }
     w.close()
@@ -177,6 +163,32 @@ object GenerateDocs {
     case Compatible(_) => "Compatible"
     case Incompatible(_) => "Incompatible"
     case Unsupported(_) => "Unsupported"
+  }
+
+  private def writeCastTableForMode(w: BufferedOutputStream, mode: CometEvalMode.Value): Unit = {
+    w.write("<!-- prettier-ignore-start -->\n".getBytes)
+    w.write("| From Type | To Type | Support | Notes |\n".getBytes)
+    w.write("|-|-|-|-|\n".getBytes)
+    val sortedTypes = CometCast.supportedTypes.sortBy(_.typeName)
+    for (fromType <- sortedTypes) {
+      for (toType <- sortedTypes) {
+        if (Cast.canCast(fromType, toType) && fromType != toType) {
+          val fromTypeName = fromType.typeName.replace("(10,2)", "")
+          val toTypeName = toType.typeName.replace("(10,2)", "")
+          val supportLevel = CometCast.isSupported(fromType, toType, None, mode)
+          val (levelStr, notesStr) = supportLevel match {
+            case Compatible(notes) =>
+              ("Compatible", notes.getOrElse("").trim.replace("(10,2)", ""))
+            case Incompatible(notes) =>
+              ("Incompatible", notes.getOrElse("").trim.replace("(10,2)", ""))
+            case Unsupported(notes) =>
+              ("Unsupported", notes.getOrElse("").trim.replace("(10,2)", ""))
+          }
+          w.write(s"| $fromTypeName | $toTypeName | $levelStr | $notesStr |\n".getBytes)
+        }
+      }
+    }
+    w.write("<!-- prettier-ignore-end -->\n".getBytes)
   }
 
   /** Read file into memory */
