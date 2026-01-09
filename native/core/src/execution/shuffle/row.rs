@@ -776,15 +776,26 @@ pub fn process_sorted_row_partition(
         None
     };
 
+    // Create builders once and reuse them across batches.
+    // After finish() is called, builders are reset and can be reused.
+    let mut data_builders: Vec<Box<dyn ArrayBuilder>> = vec![];
+    schema.iter().try_for_each(|dt| {
+        make_builders(dt, batch_size, prefer_dictionary_ratio)
+            .map(|builder| data_builders.push(builder))?;
+        Ok::<(), CometError>(())
+    })?;
+
+    // Open the output file once and reuse it across batches
+    let mut output_data = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&output_path)?;
+
+    // Reusable buffer for serialized batch data
+    let mut frozen: Vec<u8> = Vec::with_capacity(batch_size * 1024);
+
     while current_row < row_num {
         let n = std::cmp::min(batch_size, row_num - current_row);
-
-        let mut data_builders: Vec<Box<dyn ArrayBuilder>> = vec![];
-        schema.iter().try_for_each(|dt| {
-            make_builders(dt, n, prefer_dictionary_ratio)
-                .map(|builder| data_builders.push(builder))?;
-            Ok::<(), CometError>(())
-        })?;
 
         // Appends rows to the array builders.
         // For each column, iterating over rows and appending values to corresponding array
@@ -803,6 +814,7 @@ pub fn process_sorted_row_partition(
         }
 
         // Writes a record batch generated from the array builders to the output file.
+        // Note: finish() resets the builder, making it reusable for the next batch.
         let array_refs: Result<Vec<ArrayRef>, _> = data_builders
             .iter_mut()
             .zip(schema.iter())
@@ -810,9 +822,8 @@ pub fn process_sorted_row_partition(
             .collect();
         let batch = make_batch(array_refs?, n)?;
 
-        let mut frozen: Vec<u8> = vec![];
+        frozen.clear();
         let mut cursor = Cursor::new(&mut frozen);
-        cursor.seek(SeekFrom::End(0))?;
 
         // we do not collect metrics in Native_writeSortedFileNative
         let ipc_time = Time::default();
@@ -822,11 +833,6 @@ pub fn process_sorted_row_partition(
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;
         }
-
-        let mut output_data = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&output_path)?;
 
         output_data.write_all(&frozen)?;
         current_row += n;
