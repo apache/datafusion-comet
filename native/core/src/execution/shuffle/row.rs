@@ -45,7 +45,7 @@ use datafusion::physical_plan::metrics::Time;
 use jni::sys::{jint, jlong};
 use std::{
     fs::OpenOptions,
-    io::{Cursor, Seek, SeekFrom, Write},
+    io::{Cursor, Write},
     str::from_utf8,
     sync::Arc,
 };
