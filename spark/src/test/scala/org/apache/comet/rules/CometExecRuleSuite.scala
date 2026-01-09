@@ -22,6 +22,8 @@ package org.apache.comet.rules
 import scala.util.Random
 
 import org.apache.spark.sql._
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Literal}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, Max, Min, Sum}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
@@ -29,8 +31,10 @@ import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+import org.apache.spark.sql.types.IntegerType
 
 import org.apache.comet.CometConf
+import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -209,6 +213,65 @@ class CometExecRuleSuite extends CometTestBase {
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1)
       }
     }
+  }
+
+  test("QueryPlanSerde.aggSupportsMixedExecution should return true for safe aggregates") {
+    // Test aggregates that support Spark partial / Comet final execution
+    val testAttr = AttributeReference("id", IntegerType, nullable = true)()
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(Min(testAttr)),
+      "Min should support mixed execution")
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(Max(testAttr)),
+      "Max should support mixed execution")
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(Count(testAttr)),
+      "Count should support mixed execution")
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(BitAndAgg(testAttr)),
+      "BitAndAgg should support mixed execution")
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(BitOrAgg(testAttr)),
+      "BitOrAgg should support mixed execution")
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(BitXorAgg(testAttr)),
+      "BitXorAgg should support mixed execution")
+  }
+
+  test("QueryPlanSerde.aggSupportsMixedExecution should return true for bitwise aggregates") {
+    // Test bitwise aggregates that support Spark partial / Comet final execution
+    val testAttr = AttributeReference("id", IntegerType, nullable = true)()
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(BitAndAgg(testAttr)),
+      "BitAndAgg should support mixed execution")
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(BitOrAgg(testAttr)),
+      "BitOrAgg should support mixed execution")
+    assert(
+      QueryPlanSerde.aggSupportsMixedExecution(BitXorAgg(testAttr)),
+      "BitXorAgg should support mixed execution")
+  }
+
+  test("QueryPlanSerde.aggSupportsMixedExecution should return false for unsafe aggregates") {
+    // Test aggregates that don't support Spark partial / Comet final execution
+    val testAttr = AttributeReference("id", IntegerType, nullable = true)()
+    assert(
+      !QueryPlanSerde.aggSupportsMixedExecution(Sum(testAttr)),
+      "Sum should not support mixed execution")
+    assert(
+      !QueryPlanSerde.aggSupportsMixedExecution(Average(testAttr)),
+      "Average should not support mixed execution")
+  }
+
+  test(
+    "QueryPlanSerde.aggSupportsMixedExecution should return false for aggregates with default implementation") {
+    // Test with an aggregate function that's in the map but doesn't override supportsSparkPartialCometFinal
+    val testAttr = AttributeReference("id", IntegerType, nullable = true)()
+    val firstAgg = new org.apache.spark.sql.catalyst.expressions.aggregate.First(testAttr, true)
+    // First is in the map but doesn't override supportsSparkPartialCometFinal, so should return false
+    assert(
+      !QueryPlanSerde.aggSupportsMixedExecution(firstAgg),
+      "First should not support mixed execution (default false)")
   }
 
   test("CometExecRule should apply broadcast exchange transformations") {
