@@ -74,9 +74,8 @@ class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper
         sql(s"insert into $table values(cast(null as string))")
         sql(s"insert into $table values('abc')")
         sql(s"""insert into $table values('abc \"abc\"')""")
-        sql(s"select * from $table").show(false)
-        val df = sql(s"select to_csv(struct(col, 1, 'abc')) from $table")
-        checkSparkAnswerAndOperator(df)
+        checkSparkAnswerAndOperator(sql(s"select to_csv(struct(col, 1, 'abc')) from $table"))
+        checkSparkAnswerAndOperator(sql(s"select to_csv(null) from $table"))
       }
     }
   }
