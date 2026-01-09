@@ -177,10 +177,7 @@ pub fn to_csv_inner(
     let is_string: Vec<bool> = array
         .fields()
         .iter()
-        .map(|f| match f.data_type() {
-            DataType::Utf8 | DataType::LargeUtf8 => true,
-            _ => false,
-        })
+        .map(|f| matches!(f.data_type(), DataType::Utf8 | DataType::LargeUtf8))
         .collect();
 
     let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
@@ -214,8 +211,8 @@ pub fn to_csv_inner(
                     csv_string.push_str(quote);
                 }
             }
+            builder.append_value(&csv_string);
         }
-        builder.append_value(&csv_string);
     }
     Ok(Arc::new(builder.finish()))
 }

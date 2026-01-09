@@ -280,7 +280,7 @@ object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
       .setDelimiter(options.getOrElse("delimiter", ","))
       .setQuote(options.getOrElse("quote", "\""))
       .setEscape(options.getOrElse("escape", "\\"))
-      .setEscape(options.getOrElse("nullValue", ""))
+      .setNullValue(options.getOrElse("nullValue", ""))
       .setTimezone(timeZoneId.getOrElse("UTC"))
       .setIgnoreLeadingWhiteSpace(options
         .get("ignoreLeadingWhiteSpace")
