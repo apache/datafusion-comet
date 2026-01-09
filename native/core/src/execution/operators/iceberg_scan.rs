@@ -42,9 +42,9 @@ use iceberg::io::FileIO;
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::SparkSchemaMapperFactory;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::file_stream::FileStreamMetrics;
+use crate::parquet::schema_adapter::adapt_batch_with_expressions;
 
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
 ///
@@ -298,19 +298,14 @@ impl IcebergFileStream {
                 .map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)))
                 .and_then(move |batch| {
                     let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-                    let mapper_factory = SparkSchemaMapperFactory::new(spark_options, None);
-                    let file_schema = batch.schema();
-
-                    let result = mapper_factory
-                        .create_mapper(Arc::clone(&target_schema), file_schema.as_ref())
-                        .and_then(|mapper| {
-                            mapper.map_batch(batch).map_err(|e| {
-                                DataFusionError::Execution(format!("Batch mapping failed: {}", e))
-                            })
-                        })
-                        .map_err(|e| {
-                            DataFusionError::Execution(format!("Schema mapping failed: {}", e))
-                        });
+                    let result =
+                        adapt_batch_with_expressions(batch, &target_schema, &spark_options)
+                            .map_err(|e| {
+                                DataFusionError::Execution(format!(
+                                    "Batch adaptation failed: {}",
+                                    e
+                                ))
+                            });
                     futures::future::ready(result)
                 });
 
