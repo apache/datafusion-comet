@@ -168,6 +168,7 @@ impl IcebergScanExec {
 
         let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io)
             .with_batch_size(batch_size)
+            .with_data_file_concurrency_limit(context.session_config().target_partitions())
             .with_row_selection_enabled(true)
             .build();
 
