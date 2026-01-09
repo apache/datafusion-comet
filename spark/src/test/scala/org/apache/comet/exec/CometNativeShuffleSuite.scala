@@ -29,7 +29,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.catalyst.plans.physical.RoundRobinPartitioning
-import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 
@@ -374,60 +374,96 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("native shuffle: RoundRobinPartitioning") {
-    withParquetTable((0 until 100).map(i => (i, (i + 1).toLong)), "tbl") {
-      val df = sql("SELECT * FROM tbl")
+    // Disable sortBeforeRepartition to use native shuffle for RoundRobinPartitioning.
+    // When sortBeforeRepartition is enabled (default), Comet falls back to columnar shuffle
+    // to maintain deterministic behavior required by Spark (SPARK-23207).
+    withSQLConf("spark.sql.execution.sortBeforeRepartition" -> "false") {
+      withParquetTable((0 until 100).map(i => (i, (i + 1).toLong)), "tbl") {
+        val df = sql("SELECT * FROM tbl")
 
-      // Test basic round-robin repartitioning
-      val shuffled = df.repartition(10)
+        // Test basic round-robin repartitioning
+        val shuffled = df.repartition(10)
 
-      // Verify the shuffle uses Comet native shuffle with RoundRobinPartitioning
-      val cometShuffles = checkCometExchange(shuffled, 1, native = true)
-      assert(cometShuffles.length == 1)
-      val shuffleExec = cometShuffles.head
-      assert(
-        shuffleExec.outputPartitioning.isInstanceOf[RoundRobinPartitioning],
-        s"Expected RoundRobinPartitioning but got ${shuffleExec.outputPartitioning.getClass}")
-      assert(
-        shuffleExec.shuffleType == CometNativeShuffle,
-        s"Expected CometNativeShuffle but got ${shuffleExec.shuffleType}")
-      assert(
-        shuffleExec.outputPartitioning.numPartitions == 10,
-        s"Expected 10 partitions but got ${shuffleExec.outputPartitioning.numPartitions}")
+        // Verify the shuffle uses Comet native shuffle with RoundRobinPartitioning
+        val cometShuffles = checkCometExchange(shuffled, 1, native = true)
+        assert(cometShuffles.length == 1)
+        val shuffleExec = cometShuffles.head
+        assert(
+          shuffleExec.outputPartitioning.isInstanceOf[RoundRobinPartitioning],
+          s"Expected RoundRobinPartitioning but got ${shuffleExec.outputPartitioning.getClass}")
+        assert(
+          shuffleExec.shuffleType == CometNativeShuffle,
+          s"Expected CometNativeShuffle but got ${shuffleExec.shuffleType}")
+        assert(
+          shuffleExec.outputPartitioning.numPartitions == 10,
+          s"Expected 10 partitions but got ${shuffleExec.outputPartitioning.numPartitions}")
 
-      // Verify results match Spark
-      checkSparkAnswer(shuffled)
+        // Verify results match Spark
+        checkSparkAnswer(shuffled)
 
-      // Verify the data is distributed across partitions
-      val partitionCounts = shuffled.rdd.mapPartitions(iter => Iterator(iter.size)).collect()
-      assert(partitionCounts.sum == 100)
-      // Round-robin should distribute fairly evenly
-      assert(partitionCounts.forall(count => count >= 5 && count <= 15))
+        // Verify the data is distributed across partitions
+        val partitionCounts = shuffled.rdd.mapPartitions(iter => Iterator(iter.size)).collect()
+        assert(partitionCounts.sum == 100)
+        // Round-robin should distribute fairly evenly
+        assert(partitionCounts.forall(count => count >= 5 && count <= 15))
+      }
     }
   }
 
   test("native shuffle: RoundRobinPartitioning with filter") {
-    withParquetTable((0 until 50).map(i => (i, (i + 1).toLong)), "tbl") {
-      val df = sql("SELECT * FROM tbl")
-        .filter($"_1" > 10)
-        .repartition(5)
-        .filter($"_2" < 40)
+    // Disable sortBeforeRepartition to use native shuffle for RoundRobinPartitioning.
+    withSQLConf("spark.sql.execution.sortBeforeRepartition" -> "false") {
+      withParquetTable((0 until 50).map(i => (i, (i + 1).toLong)), "tbl") {
+        val df = sql("SELECT * FROM tbl")
+          .filter($"_1" > 10)
+          .repartition(5)
+          .filter($"_2" < 40)
 
-      // Verify the shuffle uses Comet native shuffle with RoundRobinPartitioning
-      val cometShuffles = checkCometExchange(df, 1, native = true)
-      assert(cometShuffles.length == 1)
-      val shuffleExec = cometShuffles.head
-      assert(
-        shuffleExec.outputPartitioning.isInstanceOf[RoundRobinPartitioning],
-        s"Expected RoundRobinPartitioning but got ${shuffleExec.outputPartitioning.getClass}")
-      assert(
-        shuffleExec.shuffleType == CometNativeShuffle,
-        s"Expected CometNativeShuffle but got ${shuffleExec.shuffleType}")
-      assert(
-        shuffleExec.outputPartitioning.numPartitions == 5,
-        s"Expected 5 partitions but got ${shuffleExec.outputPartitioning.numPartitions}")
+        // Verify the shuffle uses Comet native shuffle with RoundRobinPartitioning
+        val cometShuffles = checkCometExchange(df, 1, native = true)
+        assert(cometShuffles.length == 1)
+        val shuffleExec = cometShuffles.head
+        assert(
+          shuffleExec.outputPartitioning.isInstanceOf[RoundRobinPartitioning],
+          s"Expected RoundRobinPartitioning but got ${shuffleExec.outputPartitioning.getClass}")
+        assert(
+          shuffleExec.shuffleType == CometNativeShuffle,
+          s"Expected CometNativeShuffle but got ${shuffleExec.shuffleType}")
+        assert(
+          shuffleExec.outputPartitioning.numPartitions == 5,
+          s"Expected 5 partitions but got ${shuffleExec.outputPartitioning.numPartitions}")
 
-      // Verify results match Spark and all operators are native
-      checkSparkAnswerAndOperator(df)
+        // Verify results match Spark and all operators are native
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test(
+    "native shuffle: RoundRobinPartitioning falls back to columnar with sortBeforeRepartition") {
+    // When sortBeforeRepartition is enabled (default), RoundRobinPartitioning should
+    // fall back to columnar shuffle to maintain deterministic behavior (SPARK-23207).
+    // We need shuffle mode "auto" to allow fallback from native to columnar.
+    withSQLConf(
+      "spark.sql.execution.sortBeforeRepartition" -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "auto") {
+      withParquetTable((0 until 100).map(i => (i, (i + 1).toLong)), "tbl") {
+        val df = sql("SELECT * FROM tbl").repartition(10)
+
+        // Verify the shuffle uses Comet columnar shuffle (not native) with RoundRobinPartitioning
+        val cometShuffles = checkCometExchange(df, 1, native = false)
+        assert(cometShuffles.length == 1)
+        val shuffleExec = cometShuffles.head
+        assert(
+          shuffleExec.outputPartitioning.isInstanceOf[RoundRobinPartitioning],
+          s"Expected RoundRobinPartitioning but got ${shuffleExec.outputPartitioning.getClass}")
+        assert(
+          shuffleExec.shuffleType == CometColumnarShuffle,
+          s"Expected CometColumnarShuffle but got ${shuffleExec.shuffleType}")
+
+        // Verify results match Spark
+        checkSparkAnswer(df)
+      }
     }
   }
 

@@ -384,10 +384,19 @@ object CometShuffleExchangeExec
           }
         }
         supported
-      case RoundRobinPartitioning(_) =>
-        // RoundRobinPartitioning has no partition key expressions, so no additional
-        // validation is needed beyond the input data types which were already checked.
-        true
+      case RoundRobinPartitioning(numPartitions) =>
+        // [SPARK-23207] When sortBeforeRepartition is enabled (default), Spark sorts data
+        // before round-robin partitioning to ensure deterministic results. Since native
+        // shuffle doesn't support this sorting step, we fall back to columnar shuffle
+        // which handles this correctly.
+        if (numPartitions > 1 && SQLConf.get.sortBeforeRepartition) {
+          withInfo(
+            s,
+            "RoundRobinPartitioning with sortBeforeRepartition requires columnar shuffle")
+          false
+        } else {
+          true
+        }
       case _ =>
         withInfo(
           s,
