@@ -195,358 +195,102 @@ Any cast not listed in the previous tables is currently unsupported. We are work
 
 ### Cast Support by Eval Mode
 
-The following tables show cast support levels for each evaluation mode (LEGACY, TRY, ANSI).
+The following tables show cast support levels for each evaluation mode.
+
+**Legend:** C = Compatible, I = Incompatible, U = Unsupported, - = Same type, N = Spark does not support the cast
 
 #### LEGACY Mode
 
 <!--BEGIN:CAST_LEGACY_TABLE-->
 <!-- prettier-ignore-start -->
-| From Type | To Type | Support | Notes |
-|-|-|-|-|
-| binary | string | Compatible |  |
-| boolean | byte | Compatible |  |
-| boolean | decimal | Unsupported | Cast from BooleanType to DecimalType is not supported |
-| boolean | double | Compatible |  |
-| boolean | float | Compatible |  |
-| boolean | integer | Compatible |  |
-| boolean | long | Compatible |  |
-| boolean | short | Compatible |  |
-| boolean | string | Compatible |  |
-| boolean | timestamp | Unsupported | Cast from BooleanType to TimestampType is not supported |
-| byte | binary | Unsupported | Cast from ByteType to BinaryType is not supported |
-| byte | boolean | Compatible |  |
-| byte | decimal | Compatible |  |
-| byte | double | Compatible |  |
-| byte | float | Compatible |  |
-| byte | integer | Compatible |  |
-| byte | long | Compatible |  |
-| byte | short | Compatible |  |
-| byte | string | Compatible |  |
-| byte | timestamp | Unsupported | Cast from ByteType to TimestampType is not supported |
-| date | boolean | Unsupported | Cast from DateType to BooleanType is not supported |
-| date | byte | Unsupported | Cast from DateType to ByteType is not supported |
-| date | decimal | Unsupported | Cast from DateType to DecimalType is not supported |
-| date | double | Unsupported | Cast from DateType to DoubleType is not supported |
-| date | float | Unsupported | Cast from DateType to FloatType is not supported |
-| date | integer | Unsupported | Cast from DateType to IntegerType is not supported |
-| date | long | Unsupported | Cast from DateType to LongType is not supported |
-| date | short | Unsupported | Cast from DateType to ShortType is not supported |
-| date | string | Compatible |  |
-| date | timestamp | Unsupported | Cast from DateType to TimestampType is not supported |
-| decimal | boolean | Compatible |  |
-| decimal | byte | Compatible |  |
-| decimal | double | Compatible |  |
-| decimal | float | Compatible |  |
-| decimal | integer | Compatible |  |
-| decimal | long | Compatible |  |
-| decimal | short | Compatible |  |
-| decimal | string | Compatible | There can be formatting differences in some case due to Spark using scientific notation where Comet does not |
-| decimal | timestamp | Unsupported | Cast from DecimalType to TimestampType is not supported |
-| double | boolean | Compatible |  |
-| double | byte | Compatible |  |
-| double | decimal | Incompatible | There can be rounding differences |
-| double | float | Compatible |  |
-| double | integer | Compatible |  |
-| double | long | Compatible |  |
-| double | short | Compatible |  |
-| double | string | Compatible | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
-| double | timestamp | Unsupported | Cast from DoubleType to TimestampType is not supported |
-| float | boolean | Compatible |  |
-| float | byte | Compatible |  |
-| float | decimal | Incompatible | There can be rounding differences |
-| float | double | Compatible |  |
-| float | integer | Compatible |  |
-| float | long | Compatible |  |
-| float | short | Compatible |  |
-| float | string | Compatible | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
-| float | timestamp | Unsupported | Cast from FloatType to TimestampType is not supported |
-| integer | binary | Unsupported | Cast from IntegerType to BinaryType is not supported |
-| integer | boolean | Compatible |  |
-| integer | byte | Compatible |  |
-| integer | decimal | Compatible |  |
-| integer | double | Compatible |  |
-| integer | float | Compatible |  |
-| integer | long | Compatible |  |
-| integer | short | Compatible |  |
-| integer | string | Compatible |  |
-| integer | timestamp | Unsupported | Cast from IntegerType to TimestampType is not supported |
-| long | binary | Unsupported | Cast from LongType to BinaryType is not supported |
-| long | boolean | Compatible |  |
-| long | byte | Compatible |  |
-| long | decimal | Compatible |  |
-| long | double | Compatible |  |
-| long | float | Compatible |  |
-| long | integer | Compatible |  |
-| long | short | Compatible |  |
-| long | string | Compatible |  |
-| long | timestamp | Unsupported | Cast from LongType to TimestampType is not supported |
-| short | binary | Unsupported | Cast from ShortType to BinaryType is not supported |
-| short | boolean | Compatible |  |
-| short | byte | Compatible |  |
-| short | decimal | Compatible |  |
-| short | double | Compatible |  |
-| short | float | Compatible |  |
-| short | integer | Compatible |  |
-| short | long | Compatible |  |
-| short | string | Compatible |  |
-| short | timestamp | Unsupported | Cast from ShortType to TimestampType is not supported |
-| string | binary | Compatible |  |
-| string | boolean | Compatible |  |
-| string | byte | Compatible |  |
-| string | date | Compatible | Only supports years between 262143 BC and 262142 AD |
-| string | decimal | Incompatible | Does not support fullwidth unicode digits (e.g \\uFF10)
-or strings containing null bytes (e.g \\u0000) |
-| string | double | Compatible |  |
-| string | float | Compatible |  |
-| string | integer | Compatible |  |
-| string | long | Compatible |  |
-| string | short | Compatible |  |
-| string | timestamp | Incompatible | Not all valid formats are supported |
-| timestamp | boolean | Unsupported | Cast from TimestampType to BooleanType is not supported |
-| timestamp | byte | Unsupported | Cast from TimestampType to ByteType is not supported |
-| timestamp | date | Compatible |  |
-| timestamp | decimal | Unsupported | Cast from TimestampType to DecimalType is not supported |
-| timestamp | double | Unsupported | Cast from TimestampType to DoubleType is not supported |
-| timestamp | float | Unsupported | Cast from TimestampType to FloatType is not supported |
-| timestamp | integer | Unsupported | Cast from TimestampType to IntegerType is not supported |
-| timestamp | long | Compatible |  |
-| timestamp | short | Unsupported | Cast from TimestampType to ShortType is not supported |
-| timestamp | string | Compatible |  |
+| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
+| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
+| byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
+| date | N/A | U | U | - | U | U | U | U | U | U | C | U |
+| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
+| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U |
+| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U |
+| integer | U | C | C | N/A | C | C | C | - | C | C | C | U |
+| long | U | C | C | N/A | C | C | C | C | - | C | C | U |
+| short | U | C | C | N/A | C | C | C | C | C | - | C | U |
+| string | C | C | C | C | I | C | C | C | C | C | - | I |
+| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
 <!-- prettier-ignore-end -->
+
+**Notes:**
+- **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
+- **double -> decimal**: There can be rounding differences
+- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **float -> decimal**: There can be rounding differences
+- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **string -> date**: Only supports years between 262143 BC and 262142 AD
+- **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
+or strings containing null bytes (e.g \\u0000)
+- **string -> timestamp**: Not all valid formats are supported
 <!--END:CAST_LEGACY_TABLE-->
 
 #### TRY Mode
 
 <!--BEGIN:CAST_TRY_TABLE-->
 <!-- prettier-ignore-start -->
-| From Type | To Type | Support | Notes |
-|-|-|-|-|
-| binary | string | Compatible |  |
-| boolean | byte | Compatible |  |
-| boolean | decimal | Unsupported | Cast from BooleanType to DecimalType is not supported |
-| boolean | double | Compatible |  |
-| boolean | float | Compatible |  |
-| boolean | integer | Compatible |  |
-| boolean | long | Compatible |  |
-| boolean | short | Compatible |  |
-| boolean | string | Compatible |  |
-| boolean | timestamp | Unsupported | Cast from BooleanType to TimestampType is not supported |
-| byte | binary | Unsupported | Cast from ByteType to BinaryType is not supported |
-| byte | boolean | Compatible |  |
-| byte | decimal | Compatible |  |
-| byte | double | Compatible |  |
-| byte | float | Compatible |  |
-| byte | integer | Compatible |  |
-| byte | long | Compatible |  |
-| byte | short | Compatible |  |
-| byte | string | Compatible |  |
-| byte | timestamp | Unsupported | Cast from ByteType to TimestampType is not supported |
-| date | boolean | Unsupported | Cast from DateType to BooleanType is not supported |
-| date | byte | Unsupported | Cast from DateType to ByteType is not supported |
-| date | decimal | Unsupported | Cast from DateType to DecimalType is not supported |
-| date | double | Unsupported | Cast from DateType to DoubleType is not supported |
-| date | float | Unsupported | Cast from DateType to FloatType is not supported |
-| date | integer | Unsupported | Cast from DateType to IntegerType is not supported |
-| date | long | Unsupported | Cast from DateType to LongType is not supported |
-| date | short | Unsupported | Cast from DateType to ShortType is not supported |
-| date | string | Compatible |  |
-| date | timestamp | Unsupported | Cast from DateType to TimestampType is not supported |
-| decimal | boolean | Compatible |  |
-| decimal | byte | Compatible |  |
-| decimal | double | Compatible |  |
-| decimal | float | Compatible |  |
-| decimal | integer | Compatible |  |
-| decimal | long | Compatible |  |
-| decimal | short | Compatible |  |
-| decimal | string | Compatible | There can be formatting differences in some case due to Spark using scientific notation where Comet does not |
-| decimal | timestamp | Unsupported | Cast from DecimalType to TimestampType is not supported |
-| double | boolean | Compatible |  |
-| double | byte | Compatible |  |
-| double | decimal | Incompatible | There can be rounding differences |
-| double | float | Compatible |  |
-| double | integer | Compatible |  |
-| double | long | Compatible |  |
-| double | short | Compatible |  |
-| double | string | Compatible | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
-| double | timestamp | Unsupported | Cast from DoubleType to TimestampType is not supported |
-| float | boolean | Compatible |  |
-| float | byte | Compatible |  |
-| float | decimal | Incompatible | There can be rounding differences |
-| float | double | Compatible |  |
-| float | integer | Compatible |  |
-| float | long | Compatible |  |
-| float | short | Compatible |  |
-| float | string | Compatible | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
-| float | timestamp | Unsupported | Cast from FloatType to TimestampType is not supported |
-| integer | binary | Unsupported | Cast from IntegerType to BinaryType is not supported |
-| integer | boolean | Compatible |  |
-| integer | byte | Compatible |  |
-| integer | decimal | Compatible |  |
-| integer | double | Compatible |  |
-| integer | float | Compatible |  |
-| integer | long | Compatible |  |
-| integer | short | Compatible |  |
-| integer | string | Compatible |  |
-| integer | timestamp | Unsupported | Cast from IntegerType to TimestampType is not supported |
-| long | binary | Unsupported | Cast from LongType to BinaryType is not supported |
-| long | boolean | Compatible |  |
-| long | byte | Compatible |  |
-| long | decimal | Compatible |  |
-| long | double | Compatible |  |
-| long | float | Compatible |  |
-| long | integer | Compatible |  |
-| long | short | Compatible |  |
-| long | string | Compatible |  |
-| long | timestamp | Unsupported | Cast from LongType to TimestampType is not supported |
-| short | binary | Unsupported | Cast from ShortType to BinaryType is not supported |
-| short | boolean | Compatible |  |
-| short | byte | Compatible |  |
-| short | decimal | Compatible |  |
-| short | double | Compatible |  |
-| short | float | Compatible |  |
-| short | integer | Compatible |  |
-| short | long | Compatible |  |
-| short | string | Compatible |  |
-| short | timestamp | Unsupported | Cast from ShortType to TimestampType is not supported |
-| string | binary | Compatible |  |
-| string | boolean | Compatible |  |
-| string | byte | Compatible |  |
-| string | date | Compatible | Only supports years between 262143 BC and 262142 AD |
-| string | decimal | Incompatible | Does not support fullwidth unicode digits (e.g \\uFF10)
-or strings containing null bytes (e.g \\u0000) |
-| string | double | Compatible |  |
-| string | float | Compatible |  |
-| string | integer | Compatible |  |
-| string | long | Compatible |  |
-| string | short | Compatible |  |
-| string | timestamp | Incompatible | Not all valid formats are supported |
-| timestamp | boolean | Unsupported | Cast from TimestampType to BooleanType is not supported |
-| timestamp | byte | Unsupported | Cast from TimestampType to ByteType is not supported |
-| timestamp | date | Compatible |  |
-| timestamp | decimal | Unsupported | Cast from TimestampType to DecimalType is not supported |
-| timestamp | double | Unsupported | Cast from TimestampType to DoubleType is not supported |
-| timestamp | float | Unsupported | Cast from TimestampType to FloatType is not supported |
-| timestamp | integer | Unsupported | Cast from TimestampType to IntegerType is not supported |
-| timestamp | long | Compatible |  |
-| timestamp | short | Unsupported | Cast from TimestampType to ShortType is not supported |
-| timestamp | string | Compatible |  |
+| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
+| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
+| byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
+| date | N/A | U | U | - | U | U | U | U | U | U | C | U |
+| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
+| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U |
+| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U |
+| integer | U | C | C | N/A | C | C | C | - | C | C | C | U |
+| long | U | C | C | N/A | C | C | C | C | - | C | C | U |
+| short | U | C | C | N/A | C | C | C | C | C | - | C | U |
+| string | C | C | C | C | I | C | C | C | C | C | - | I |
+| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
 <!-- prettier-ignore-end -->
+
+**Notes:**
+- **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
+- **double -> decimal**: There can be rounding differences
+- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **float -> decimal**: There can be rounding differences
+- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **string -> date**: Only supports years between 262143 BC and 262142 AD
+- **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
+or strings containing null bytes (e.g \\u0000)
+- **string -> timestamp**: Not all valid formats are supported
 <!--END:CAST_TRY_TABLE-->
 
 #### ANSI Mode
 
 <!--BEGIN:CAST_ANSI_TABLE-->
 <!-- prettier-ignore-start -->
-| From Type | To Type | Support | Notes |
-|-|-|-|-|
-| binary | string | Compatible |  |
-| boolean | byte | Compatible |  |
-| boolean | decimal | Unsupported | Cast from BooleanType to DecimalType is not supported |
-| boolean | double | Compatible |  |
-| boolean | float | Compatible |  |
-| boolean | integer | Compatible |  |
-| boolean | long | Compatible |  |
-| boolean | short | Compatible |  |
-| boolean | string | Compatible |  |
-| boolean | timestamp | Unsupported | Cast from BooleanType to TimestampType is not supported |
-| byte | binary | Unsupported | Cast from ByteType to BinaryType is not supported |
-| byte | boolean | Compatible |  |
-| byte | decimal | Compatible |  |
-| byte | double | Compatible |  |
-| byte | float | Compatible |  |
-| byte | integer | Compatible |  |
-| byte | long | Compatible |  |
-| byte | short | Compatible |  |
-| byte | string | Compatible |  |
-| byte | timestamp | Unsupported | Cast from ByteType to TimestampType is not supported |
-| date | boolean | Unsupported | Cast from DateType to BooleanType is not supported |
-| date | byte | Unsupported | Cast from DateType to ByteType is not supported |
-| date | decimal | Unsupported | Cast from DateType to DecimalType is not supported |
-| date | double | Unsupported | Cast from DateType to DoubleType is not supported |
-| date | float | Unsupported | Cast from DateType to FloatType is not supported |
-| date | integer | Unsupported | Cast from DateType to IntegerType is not supported |
-| date | long | Unsupported | Cast from DateType to LongType is not supported |
-| date | short | Unsupported | Cast from DateType to ShortType is not supported |
-| date | string | Compatible |  |
-| date | timestamp | Unsupported | Cast from DateType to TimestampType is not supported |
-| decimal | boolean | Compatible |  |
-| decimal | byte | Compatible |  |
-| decimal | double | Compatible |  |
-| decimal | float | Compatible |  |
-| decimal | integer | Compatible |  |
-| decimal | long | Compatible |  |
-| decimal | short | Compatible |  |
-| decimal | string | Compatible | There can be formatting differences in some case due to Spark using scientific notation where Comet does not |
-| decimal | timestamp | Unsupported | Cast from DecimalType to TimestampType is not supported |
-| double | boolean | Compatible |  |
-| double | byte | Compatible |  |
-| double | decimal | Incompatible | There can be rounding differences |
-| double | float | Compatible |  |
-| double | integer | Compatible |  |
-| double | long | Compatible |  |
-| double | short | Compatible |  |
-| double | string | Compatible | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
-| double | timestamp | Unsupported | Cast from DoubleType to TimestampType is not supported |
-| float | boolean | Compatible |  |
-| float | byte | Compatible |  |
-| float | decimal | Incompatible | There can be rounding differences |
-| float | double | Compatible |  |
-| float | integer | Compatible |  |
-| float | long | Compatible |  |
-| float | short | Compatible |  |
-| float | string | Compatible | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
-| float | timestamp | Unsupported | Cast from FloatType to TimestampType is not supported |
-| integer | binary | Unsupported | Cast from IntegerType to BinaryType is not supported |
-| integer | boolean | Compatible |  |
-| integer | byte | Compatible |  |
-| integer | decimal | Compatible |  |
-| integer | double | Compatible |  |
-| integer | float | Compatible |  |
-| integer | long | Compatible |  |
-| integer | short | Compatible |  |
-| integer | string | Compatible |  |
-| integer | timestamp | Unsupported | Cast from IntegerType to TimestampType is not supported |
-| long | binary | Unsupported | Cast from LongType to BinaryType is not supported |
-| long | boolean | Compatible |  |
-| long | byte | Compatible |  |
-| long | decimal | Compatible |  |
-| long | double | Compatible |  |
-| long | float | Compatible |  |
-| long | integer | Compatible |  |
-| long | short | Compatible |  |
-| long | string | Compatible |  |
-| long | timestamp | Unsupported | Cast from LongType to TimestampType is not supported |
-| short | binary | Unsupported | Cast from ShortType to BinaryType is not supported |
-| short | boolean | Compatible |  |
-| short | byte | Compatible |  |
-| short | decimal | Compatible |  |
-| short | double | Compatible |  |
-| short | float | Compatible |  |
-| short | integer | Compatible |  |
-| short | long | Compatible |  |
-| short | string | Compatible |  |
-| short | timestamp | Unsupported | Cast from ShortType to TimestampType is not supported |
-| string | binary | Compatible |  |
-| string | boolean | Compatible |  |
-| string | byte | Compatible |  |
-| string | date | Compatible | Only supports years between 262143 BC and 262142 AD |
-| string | decimal | Incompatible | Does not support fullwidth unicode digits (e.g \\uFF10)
-or strings containing null bytes (e.g \\u0000) |
-| string | double | Compatible |  |
-| string | float | Compatible |  |
-| string | integer | Compatible |  |
-| string | long | Compatible |  |
-| string | short | Compatible |  |
-| string | timestamp | Incompatible | ANSI mode not supported |
-| timestamp | boolean | Unsupported | Cast from TimestampType to BooleanType is not supported |
-| timestamp | byte | Unsupported | Cast from TimestampType to ByteType is not supported |
-| timestamp | date | Compatible |  |
-| timestamp | decimal | Unsupported | Cast from TimestampType to DecimalType is not supported |
-| timestamp | double | Unsupported | Cast from TimestampType to DoubleType is not supported |
-| timestamp | float | Unsupported | Cast from TimestampType to FloatType is not supported |
-| timestamp | integer | Unsupported | Cast from TimestampType to IntegerType is not supported |
-| timestamp | long | Compatible |  |
-| timestamp | short | Unsupported | Cast from TimestampType to ShortType is not supported |
-| timestamp | string | Compatible |  |
+| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
+| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
+| byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
+| date | N/A | U | U | - | U | U | U | U | U | U | C | U |
+| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
+| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U |
+| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U |
+| integer | U | C | C | N/A | C | C | C | - | C | C | C | U |
+| long | U | C | C | N/A | C | C | C | C | - | C | C | U |
+| short | U | C | C | N/A | C | C | C | C | C | - | C | U |
+| string | C | C | C | C | I | C | C | C | C | C | - | I |
+| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
 <!-- prettier-ignore-end -->
+
+**Notes:**
+- **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
+- **double -> decimal**: There can be rounding differences
+- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **float -> decimal**: There can be rounding differences
+- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **string -> date**: Only supports years between 262143 BC and 262142 AD
+- **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
+or strings containing null bytes (e.g \\u0000)
+- **string -> timestamp**: ANSI mode not supported
 <!--END:CAST_ANSI_TABLE-->
