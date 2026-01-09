@@ -228,4 +228,32 @@ class CometParquetWriterSuite extends CometTestBase {
       }
     }
   }
+
+  test("parquet write with mode overwrite") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+
+      withTempPath { inputDir =>
+        val inputPath = createTestData(inputDir)
+
+        withSQLConf(
+          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
+          CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true") {
+
+          val df = spark.read.parquet(inputPath)
+
+          // First write
+          df.repartition(2).write.parquet(outputPath)
+          //          verifyWrittenFile(outputPath)
+          // Second write (with overwrite mode and a different record count to make sure we are not reading the same data)
+          df.limit(500).repartition(2).write.mode("overwrite").parquet(outputPath)
+          //          // Verify the data was written
+          val resultDf = spark.read.parquet(outputPath)
+          assert(resultDf.count() == 500, "Expected 1000 rows after overwrite")
+        }
+      }
+    }
+  }
 }
