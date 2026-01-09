@@ -71,10 +71,12 @@ class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
       withTable(table) {
         sql(s"create table $table(col string) using parquet")
-        sql(s"insert into $table values(null)")
+        sql(s"insert into $table values(cast(null as string))")
         sql(s"insert into $table values('abc')")
         sql(s"""insert into $table values('abc \"abc\"')""")
-        sql(s"select to_csv(struct(col)) from $table").show(false)
+        sql(s"select * from $table").show(false)
+        val df = sql(s"select to_csv(struct(col, 1, 'abc')) from $table")
+        checkSparkAnswerAndOperator(df)
       }
     }
   }

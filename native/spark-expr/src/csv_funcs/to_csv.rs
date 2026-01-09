@@ -227,3 +227,50 @@ fn escape_value(value: &str, quote: &str, escape: &str, output: &mut String) {
         output.push(ch);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{to_csv_inner, EvalMode, SparkCastOptions};
+    use arrow::array::{as_string_array, ArrayRef, Int32Array, StringArray, StructArray};
+    use arrow::datatypes::{DataType, Field};
+    use datafusion::common::Result;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_to_csv_basic() -> Result<()> {
+        let timezone = "UTC";
+        let default_delimiter = ",";
+        let default_null_value = "";
+        let default_quote = "\"";
+        let default_escape = "\\";
+        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, timezone, false);
+        cast_options.null_string = default_null_value.to_string();
+
+        let struct_array = StructArray::from(vec![
+            (
+                Arc::new(Field::new("a", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("b", DataType::Utf8, true)),
+                Arc::new(StringArray::from(vec![Some("foo"), None, Some("baz")])) as ArrayRef,
+            ),
+        ]);
+
+        let expected = &StringArray::from(vec!["1,foo", "2,", "3,baz"]);
+
+        let result = to_csv_inner(
+            &struct_array,
+            &cast_options,
+            default_delimiter,
+            default_quote,
+            default_escape,
+            false,
+        )?;
+        let result = as_string_array(&result);
+
+        assert_eq!(result, expected);
+
+        Ok(())
+    }
+}
