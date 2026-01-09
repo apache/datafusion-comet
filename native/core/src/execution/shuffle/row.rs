@@ -973,8 +973,7 @@ pub fn process_sorted_row_partition_all(
             if checksum_enabled {
                 partition_checksums[partition_id] = initial_checksums
                     .as_ref()
-                    .map(|c| c.get(partition_id).copied())
-                    .flatten();
+                    .and_then(|c| c.get(partition_id).copied());
             }
             continue;
         }
