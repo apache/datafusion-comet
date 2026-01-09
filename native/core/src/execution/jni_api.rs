@@ -774,28 +774,21 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileAllPar
                 let num_partitions = num_partitions as usize;
 
                 // Get initial checksums if enabled
-                let initial_checksums: Option<Vec<u32>> = if checksum_enabled
-                    && !initial_checksums.is_null()
-                {
-                    let checksums =
-                        env.get_array_elements(&initial_checksums, ReleaseMode::NoCopyBack)?;
-                    let checksums_slice =
-                        std::slice::from_raw_parts(checksums.as_ptr(), num_partitions);
-                    Some(
-                        checksums_slice
-                            .iter()
-                            .map(|&c| {
-                                if c == i64::MIN {
-                                    0u32
-                                } else {
-                                    c as u32
-                                }
-                            })
-                            .collect(),
-                    )
-                } else {
-                    None
-                };
+                let initial_checksums: Option<Vec<u32>> =
+                    if checksum_enabled && !initial_checksums.is_null() {
+                        let checksums =
+                            env.get_array_elements(&initial_checksums, ReleaseMode::NoCopyBack)?;
+                        let checksums_slice =
+                            std::slice::from_raw_parts(checksums.as_ptr(), num_partitions);
+                        Some(
+                            checksums_slice
+                                .iter()
+                                .map(|&c| if c == i64::MIN { 0u32 } else { c as u32 })
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    };
 
                 let compression_codec: String = env.get_string(&compression_codec).unwrap().into();
                 let compression_codec = match compression_codec.as_str() {

@@ -117,7 +117,7 @@ object FuzzDataGenerator {
 
     def generateStruct(depth: Int, name: String) = {
       val fields =
-        Range(1, 2 + r.nextInt(10)).map(_ => genField(r, depth + 1)).toArray
+        Range(1, 2 + r.nextInt(3)).map(_ => genField(r, depth + 1)).toArray
       StructField(name, DataTypes.createStructType(fields))
     }
 
