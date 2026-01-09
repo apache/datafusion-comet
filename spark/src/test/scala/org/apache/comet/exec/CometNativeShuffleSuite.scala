@@ -28,7 +28,8 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.catalyst.plans.physical.RoundRobinPartitioning
+import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 
@@ -378,12 +379,28 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
 
       // Test basic round-robin repartitioning
       val shuffled = df.repartition(10)
-      checkShuffleAnswer(shuffled, 1)
+
+      // Verify the shuffle uses Comet native shuffle with RoundRobinPartitioning
+      val cometShuffles = checkCometExchange(shuffled, 1, native = true)
+      assert(cometShuffles.length == 1)
+      val shuffleExec = cometShuffles.head
+      assert(
+        shuffleExec.outputPartitioning.isInstanceOf[RoundRobinPartitioning],
+        s"Expected RoundRobinPartitioning but got ${shuffleExec.outputPartitioning.getClass}")
+      assert(
+        shuffleExec.shuffleType == CometNativeShuffle,
+        s"Expected CometNativeShuffle but got ${shuffleExec.shuffleType}")
+      assert(
+        shuffleExec.outputPartitioning.numPartitions == 10,
+        s"Expected 10 partitions but got ${shuffleExec.outputPartitioning.numPartitions}")
+
+      // Verify results match Spark
+      checkSparkAnswer(shuffled)
 
       // Verify the data is distributed across partitions
       val partitionCounts = shuffled.rdd.mapPartitions(iter => Iterator(iter.size)).collect()
       assert(partitionCounts.sum == 100)
-      // Round-robin should distribute fairly evenly (10 rows per partition for 100 rows / 10 partitions)
+      // Round-robin should distribute fairly evenly
       assert(partitionCounts.forall(count => count >= 5 && count <= 15))
     }
   }
@@ -395,7 +412,22 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         .repartition(5)
         .filter($"_2" < 40)
 
-      checkShuffleAnswer(df, 1, checkNativeOperators = true)
+      // Verify the shuffle uses Comet native shuffle with RoundRobinPartitioning
+      val cometShuffles = checkCometExchange(df, 1, native = true)
+      assert(cometShuffles.length == 1)
+      val shuffleExec = cometShuffles.head
+      assert(
+        shuffleExec.outputPartitioning.isInstanceOf[RoundRobinPartitioning],
+        s"Expected RoundRobinPartitioning but got ${shuffleExec.outputPartitioning.getClass}")
+      assert(
+        shuffleExec.shuffleType == CometNativeShuffle,
+        s"Expected CometNativeShuffle but got ${shuffleExec.shuffleType}")
+      assert(
+        shuffleExec.outputPartitioning.numPartitions == 5,
+        s"Expected 5 partitions but got ${shuffleExec.outputPartitioning.numPartitions}")
+
+      // Verify results match Spark and all operators are native
+      checkSparkAnswerAndOperator(df)
     }
   }
 
