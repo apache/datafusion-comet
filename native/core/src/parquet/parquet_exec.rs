@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::collections::HashMap;
 use crate::execution::operators::ExecutionError;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::SparkParquetOptions;
@@ -32,6 +33,9 @@ use datafusion::prelude::SessionContext;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::TableSchema;
 use std::sync::Arc;
+use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
+use datafusion::scalar::ScalarValue;
+use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 
 /// Initializes a DataSourceExec plan with a ParquetSource. This may be used by either the
 /// `native_datafusion` scan or the `native_iceberg_compat` scan.
@@ -61,12 +65,13 @@ pub(crate) fn init_datasource_exec(
     file_groups: Vec<Vec<PartitionedFile>>,
     projection_vector: Option<Vec<usize>>,
     data_filters: Option<Vec<Arc<dyn PhysicalExpr>>>,
+    default_values: Option<HashMap<usize, ScalarValue>>,
     session_timezone: &str,
     case_sensitive: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    let (table_parquet_options, _) = get_options(
+    let (table_parquet_options, spark_parquet_options) = get_options(
         session_timezone,
         case_sensitive,
         &object_store_url,
@@ -118,7 +123,11 @@ pub(crate) fn init_datasource_exec(
         );
     }
 
-    let file_source = Arc::new(parquet_source) as Arc<dyn FileSource>;
+    let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
+        SparkPhysicalExprAdapterFactory::new(spark_parquet_options, default_values),
+    );
+
+    let file_source: Arc<dyn FileSource> = Arc::new(parquet_source);
 
     let file_groups = file_groups
         .iter()
@@ -133,7 +142,7 @@ pub(crate) fn init_datasource_exec(
             file_scan_config_builder.with_projection_indices(Some(projection_vector))?;
     }
 
-    let file_scan_config = file_scan_config_builder.build();
+    let file_scan_config = file_scan_config_builder.with_expr_adapter(Some(expr_adapter_factory)).build();
 
     Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))
 }
