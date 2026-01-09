@@ -338,6 +338,8 @@ struct MultiPartitionShuffleRepartitioner {
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
+    /// Current position for round-robin partitioning (persists across batches)
+    round_robin_position: usize,
 }
 
 #[derive(Default)]
@@ -401,6 +403,12 @@ impl MultiPartitionShuffleRepartitioner {
             .with_can_spill(true)
             .register(&runtime.memory_pool);
 
+        // Extract starting position for round-robin partitioning
+        let round_robin_position = match &partitioning {
+            CometPartitioning::RoundRobin(_, starting_position) => *starting_position,
+            _ => 0,
+        };
+
         Ok(Self {
             output_data_file,
             output_index_file,
@@ -416,6 +424,7 @@ impl MultiPartitionShuffleRepartitioner {
             reservation,
             tracing_enabled,
             write_buffer_size,
+            round_robin_position,
         })
     }
 
@@ -597,6 +606,48 @@ impl MultiPartitionShuffleRepartitioner {
                 )
                 .await?;
                 self.scratch = scratch;
+            }
+            CometPartitioning::RoundRobin(num_output_partitions, _) => {
+                let num_output_partitions = *num_output_partitions;
+                let mut scratch = std::mem::take(&mut self.scratch);
+                let num_rows = input.num_rows();
+
+                let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
+                    let mut timer = self.metrics.repart_time.timer();
+
+                    // Generate partition ids for every row using round-robin assignment.
+                    let partition_ids = &mut scratch.partition_ids[..num_rows];
+                    let current_position = self.round_robin_position;
+                    for idx in 0..num_rows {
+                        partition_ids[idx] =
+                            ((current_position + idx) % num_output_partitions) as u32;
+                    }
+
+                    // We now have partition ids for every input row, map that to partition starts
+                    // and partition indices to eventually write these rows to partition buffers.
+                    map_partition_ids_to_starts_and_indices(
+                        &mut scratch,
+                        num_output_partitions,
+                        num_rows,
+                    );
+
+                    timer.stop();
+                    Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
+                        &scratch.partition_starts,
+                        &scratch.partition_row_indices,
+                    ))
+                }?;
+
+                self.buffer_partitioned_batch_may_spill(
+                    input,
+                    partition_row_indices,
+                    partition_starts,
+                )
+                .await?;
+                self.scratch = scratch;
+
+                // Update position for next batch
+                self.round_robin_position += num_rows;
             }
             other => {
                 // this should be unreachable as long as the validation logic

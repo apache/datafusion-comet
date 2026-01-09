@@ -384,6 +384,10 @@ object CometShuffleExchangeExec
           }
         }
         supported
+      case RoundRobinPartitioning(_) =>
+        // RoundRobinPartitioning has no partition key expressions, so no additional
+        // validation is needed beyond the input data types which were already checked.
+        true
       case _ =>
         withInfo(
           s,

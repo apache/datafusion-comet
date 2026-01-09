@@ -372,6 +372,33 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
+  test("native shuffle: RoundRobinPartitioning") {
+    withParquetTable((0 until 100).map(i => (i, (i + 1).toLong)), "tbl") {
+      val df = sql("SELECT * FROM tbl")
+
+      // Test basic round-robin repartitioning
+      val shuffled = df.repartition(10)
+      checkShuffleAnswer(shuffled, 1)
+
+      // Verify the data is distributed across partitions
+      val partitionCounts = shuffled.rdd.mapPartitions(iter => Iterator(iter.size)).collect()
+      assert(partitionCounts.sum == 100)
+      // Round-robin should distribute fairly evenly (10 rows per partition for 100 rows / 10 partitions)
+      assert(partitionCounts.forall(count => count >= 5 && count <= 15))
+    }
+  }
+
+  test("native shuffle: RoundRobinPartitioning with filter") {
+    withParquetTable((0 until 50).map(i => (i, (i + 1).toLong)), "tbl") {
+      val df = sql("SELECT * FROM tbl")
+        .filter($"_1" > 10)
+        .repartition(5)
+        .filter($"_2" < 40)
+
+      checkShuffleAnswer(shuffled = df, expectedNum = 1, checkNativeOperators = true)
+    }
+  }
+
   /**
    * Checks that `df` produces the same answer as Spark does, and has the `expectedNum` Comet
    * exchange operators. When `checkNativeOperators` is true, this also checks that all operators
