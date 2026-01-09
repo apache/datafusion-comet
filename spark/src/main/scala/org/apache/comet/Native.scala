@@ -68,6 +68,7 @@ class Native extends NativeBase {
       memoryLimit: Long,
       memoryLimitPerTask: Long,
       taskAttemptId: Long,
+      taskCPUs: Long,
       keyUnwrapper: CometFileKeyUnwrapper): Long
   // scalastyle:on
 
