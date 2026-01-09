@@ -174,6 +174,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     memory_limit: jlong,
     memory_limit_per_task: jlong,
     task_attempt_id: jlong,
+    task_cpus: jlong,
     key_unwrapper_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
@@ -241,6 +242,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 memory_pool,
                 local_dirs_vec,
                 max_temp_directory_size,
+                task_cpus as usize,
             )?;
 
             let plan_creation_time = start.elapsed();
@@ -294,6 +296,7 @@ fn prepare_datafusion_session_context(
     memory_pool: Arc<dyn MemoryPool>,
     local_dirs: Vec<String>,
     max_temp_directory_size: u64,
+    task_cpus: usize,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
     let disk_manager = DiskManagerBuilder::default()
@@ -306,6 +309,10 @@ fn prepare_datafusion_session_context(
     // can be configured in Comet Spark JVM using Spark --conf parameters
     // e.g: spark-shell --conf spark.datafusion.sql_parser.parse_float_as_decimal=true
     let session_config = SessionConfig::new()
+        .with_target_partitions(task_cpus)
+        // This DataFusion context is within the scope of an executing Spark Task. We want to set
+        // its internal parallelism to the number of CPUs allocated to Spark Tasks. This can be
+        // modified by changing spark.task.cpus in the Spark config.
         .with_batch_size(batch_size)
         // DataFusion partial aggregates can emit duplicate rows so we disable the
         // skip partial aggregation feature because this is not compatible with Spark's
