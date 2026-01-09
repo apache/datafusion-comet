@@ -220,6 +220,7 @@ The following tables show cast support levels for each evaluation mode.
 <!-- prettier-ignore-end -->
 
 **Notes:**
+
 - **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
 - **double -> decimal**: There can be rounding differences
 - **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
@@ -227,7 +228,7 @@ The following tables show cast support levels for each evaluation mode.
 - **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 - **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
-or strings containing null bytes (e.g \\u0000)
+  or strings containing null bytes (e.g \\u0000)
 - **string -> timestamp**: Not all valid formats are supported
 <!--END:CAST_LEGACY_TABLE-->
 
@@ -252,6 +253,7 @@ or strings containing null bytes (e.g \\u0000)
 <!-- prettier-ignore-end -->
 
 **Notes:**
+
 - **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
 - **double -> decimal**: There can be rounding differences
 - **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
@@ -259,7 +261,7 @@ or strings containing null bytes (e.g \\u0000)
 - **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 - **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
-or strings containing null bytes (e.g \\u0000)
+  or strings containing null bytes (e.g \\u0000)
 - **string -> timestamp**: Not all valid formats are supported
 <!--END:CAST_TRY_TABLE-->
 
@@ -284,6 +286,7 @@ or strings containing null bytes (e.g \\u0000)
 <!-- prettier-ignore-end -->
 
 **Notes:**
+
 - **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
 - **double -> decimal**: There can be rounding differences
 - **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
@@ -291,6 +294,6 @@ or strings containing null bytes (e.g \\u0000)
 - **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 - **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
-or strings containing null bytes (e.g \\u0000)
+  or strings containing null bytes (e.g \\u0000)
 - **string -> timestamp**: ANSI mode not supported
 <!--END:CAST_ANSI_TABLE-->
