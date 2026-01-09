@@ -15,6 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod csv_write_options;
 mod to_csv;
 
+pub use csv_write_options::CsvWriteOptions;
 pub use to_csv::{to_csv_inner, ToCsv};
