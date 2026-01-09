@@ -395,7 +395,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         .repartition(5)
         .filter($"_2" < 40)
 
-      checkShuffleAnswer(shuffled = df, expectedNum = 1, checkNativeOperators = true)
+      checkShuffleAnswer(df, 1, checkNativeOperators = true)
     }
   }
 

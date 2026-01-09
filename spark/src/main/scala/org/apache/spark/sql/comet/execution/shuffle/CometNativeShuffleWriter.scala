@@ -32,10 +32,10 @@ import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsR
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
-import org.apache.spark.util.random.XORShiftRandom
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.util.random.XORShiftRandom
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.{OperatorOuterClass, PartitioningOuterClass, QueryPlanSerde}
@@ -294,7 +294,8 @@ class CometNativeShuffleWriter[K, V](
           // behavior. The partition ID is used as seed to ensure consistent assignment across
           // task retries.
           val startingPosition =
-            new XORShiftRandom(context.partitionId()).nextInt(roundRobinPartitioning.numPartitions)
+            new XORShiftRandom(context.partitionId())
+              .nextInt(roundRobinPartitioning.numPartitions)
           partitioning.setStartingPosition(startingPosition)
 
           val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
