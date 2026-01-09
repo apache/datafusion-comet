@@ -49,7 +49,7 @@ import org.apache.spark.util.random.XORShiftRandom
 import com.google.common.base.Objects
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometConf.{COMET_EXEC_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
+import org.apache.comet.CometConf.{COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED, COMET_EXEC_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleManagerEnabled, withInfo}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometSink
@@ -403,23 +403,39 @@ object CometShuffleExchangeExec
      *
      * Comet columnar shuffle used native code to convert Spark unsafe rows to Arrow batches, see
      * shuffle/row.rs
+     *
+     * Returns None if supported, or Some(reason) if not supported.
      */
-    def supportedSerializableDataType(dt: DataType): Boolean = dt match {
+    def supportedSerializableDataType(dt: DataType): Option[String] = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DecimalType | _: DateType =>
-        true
+        None
       case StructType(fields) =>
-        fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
-        // Java Arrow stream reader cannot work on duplicate field name
-        fields.map(f => f.name).distinct.length == fields.length &&
-        fields.nonEmpty
+        if (!COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.get(s.conf)) {
+          Some(s"${COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.key} is not enabled")
+        } else if (fields.isEmpty) {
+          Some("struct type with no fields is not supported")
+        } else if (fields.map(f => f.name).distinct.length != fields.length) {
+          // Java Arrow stream reader cannot work on duplicate field name
+          Some("struct type with duplicate field names is not supported")
+        } else {
+          fields.flatMap(f => supportedSerializableDataType(f.dataType)).headOption
+        }
       case ArrayType(elementType, _) =>
-        supportedSerializableDataType(elementType)
+        if (!COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.get(s.conf)) {
+          Some(s"${COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.key} is not enabled")
+        } else {
+          supportedSerializableDataType(elementType)
+        }
       case MapType(keyType, valueType, _) =>
-        supportedSerializableDataType(keyType) && supportedSerializableDataType(valueType)
+        if (!COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.get(s.conf)) {
+          Some(s"${COMET_COLUMNAR_SHUFFLE_COMPLEX_TYPES_ENABLED.key} is not enabled")
+        } else {
+          supportedSerializableDataType(keyType).orElse(supportedSerializableDataType(valueType))
+        }
       case _ =>
-        false
+        Some(s"unsupported data type: $dt")
     }
 
     if (!isCometShuffleEnabledWithInfo(s)) {
@@ -444,9 +460,13 @@ object CometShuffleExchangeExec
     val inputs = s.child.output
 
     for (input <- inputs) {
-      if (!supportedSerializableDataType(input.dataType)) {
-        withInfo(s, s"unsupported shuffle data type ${input.dataType} for input $input")
-        return false
+      supportedSerializableDataType(input.dataType) match {
+        case Some(reason) =>
+          withInfo(
+            s,
+            s"unsupported data type ${input.dataType} for column ${input.name}: $reason")
+          return false
+        case None => // supported
       }
     }
 
