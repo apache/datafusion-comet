@@ -384,6 +384,19 @@ object CometShuffleExchangeExec
           }
         }
         supported
+      case RoundRobinPartitioning(numPartitions) =>
+        // [SPARK-23207] When sortBeforeRepartition is enabled (default), Spark sorts data
+        // before round-robin partitioning to ensure deterministic results. Since native
+        // shuffle doesn't support this sorting step, we fall back to columnar shuffle
+        // which handles this correctly.
+        if (numPartitions > 1 && SQLConf.get.sortBeforeRepartition) {
+          withInfo(
+            s,
+            "RoundRobinPartitioning with sortBeforeRepartition requires columnar shuffle")
+          false
+        } else {
+          true
+        }
       case _ =>
         withInfo(
           s,

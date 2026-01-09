@@ -31,7 +31,15 @@ message Partitioning {
     HashPartition hash_partition = 1;
     SinglePartition single_partition = 2;
     RangePartition range_partition = 3;
+    RoundRobinPartition round_robin_partition = 4;
   }
+}
+
+message RoundRobinPartition {
+  int32 num_partitions = 1;
+  // Starting position offset for deterministic round-robin assignment.
+  // Computed from partition ID using XORShiftRandom for consistency with Spark.
+  int32 starting_position = 2;
 }
 
 message HashPartition {
