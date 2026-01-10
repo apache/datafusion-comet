@@ -193,10 +193,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         }
       }
 
-      // Add runtime filter bounds if available
-      // These are pushed down from join operators to enable I/O reduction
-      addRuntimeFilterBounds(scan, nativeScanBuilder)
-
       Some(builder.setNativeScan(nativeScanBuilder).build())
 
     } else {
@@ -255,71 +251,5 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
   override def createExec(nativeOp: Operator, op: CometScanExec): CometNativeExec = {
     CometNativeScanExec(nativeOp, op.wrapped, op.session)
-  }
-
-  /**
-   * Add runtime filter bounds to the native scan for row-group pruning. Runtime filters are
-   * extracted from data filters that contain range predicates (GreaterThanOrEqual,
-   * LessThanOrEqual) or IN predicates.
-   */
-  private def addRuntimeFilterBounds(
-      scan: CometScanExec,
-      nativeScanBuilder: OperatorOuterClass.NativeScan.Builder): Unit = {
-    import org.apache.spark.sql.catalyst.expressions._
-
-    // Extract runtime filter bounds from data filters
-    scan.supportedDataFilters.foreach {
-      case GreaterThanOrEqual(attr: AttributeReference, Literal(value, dataType)) =>
-        val boundBuilder = OperatorOuterClass.RuntimeFilterBound.newBuilder()
-        boundBuilder.setColumnName(attr.name)
-        boundBuilder.setColumnIndex(scan.output.indexWhere(_.name == attr.name))
-        boundBuilder.setFilterType("minmax")
-        exprToProto(Literal(value, dataType), scan.output).foreach { minProto =>
-          boundBuilder.setMinValue(minProto.getLiteral)
-        }
-        nativeScanBuilder.addRuntimeFilterBounds(boundBuilder.build())
-
-      case LessThanOrEqual(attr: AttributeReference, Literal(value, dataType)) =>
-        val boundBuilder = OperatorOuterClass.RuntimeFilterBound.newBuilder()
-        boundBuilder.setColumnName(attr.name)
-        boundBuilder.setColumnIndex(scan.output.indexWhere(_.name == attr.name))
-        boundBuilder.setFilterType("minmax")
-        exprToProto(Literal(value, dataType), scan.output).foreach { maxProto =>
-          boundBuilder.setMaxValue(maxProto.getLiteral)
-        }
-        nativeScanBuilder.addRuntimeFilterBounds(boundBuilder.build())
-
-      case And(
-            GreaterThanOrEqual(attr1: AttributeReference, Literal(minVal, minType)),
-            LessThanOrEqual(attr2: AttributeReference, Literal(maxVal, maxType)))
-          if attr1.name == attr2.name =>
-        // Combined range filter: column >= min AND column <= max
-        val boundBuilder = OperatorOuterClass.RuntimeFilterBound.newBuilder()
-        boundBuilder.setColumnName(attr1.name)
-        boundBuilder.setColumnIndex(scan.output.indexWhere(_.name == attr1.name))
-        boundBuilder.setFilterType("minmax")
-        exprToProto(Literal(minVal, minType), scan.output).foreach { minProto =>
-          boundBuilder.setMinValue(minProto.getLiteral)
-        }
-        exprToProto(Literal(maxVal, maxType), scan.output).foreach { maxProto =>
-          boundBuilder.setMaxValue(maxProto.getLiteral)
-        }
-        nativeScanBuilder.addRuntimeFilterBounds(boundBuilder.build())
-
-      case InSet(attr: AttributeReference, values) if values.size <= 10 =>
-        // Small IN filter - pass individual values
-        val boundBuilder = OperatorOuterClass.RuntimeFilterBound.newBuilder()
-        boundBuilder.setColumnName(attr.name)
-        boundBuilder.setColumnIndex(scan.output.indexWhere(_.name == attr.name))
-        boundBuilder.setFilterType("in")
-        values.foreach { value =>
-          exprToProto(Literal(value, attr.dataType), scan.output).foreach { valProto =>
-            boundBuilder.addInValues(valProto.getLiteral)
-          }
-        }
-        nativeScanBuilder.addRuntimeFilterBounds(boundBuilder.build())
-
-      case _ => // Other filters are handled by data_filters
-    }
   }
 }
