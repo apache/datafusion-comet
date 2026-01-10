@@ -601,6 +601,8 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
       partitionSchema: StructType,
       hadoopConf: Configuration): String = {
 
+    val cometExecEnabled = COMET_EXEC_ENABLED.get()
+
     val fallbackReasons = new ListBuffer[String]()
 
     // native_iceberg_compat only supports local filesystem and S3
@@ -621,7 +623,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
     val partitionSchemaSupported =
       typeChecker.isSchemaSupported(partitionSchema, fallbackReasons)
 
-    val cometExecEnabled = COMET_EXEC_ENABLED.get()
     if (!cometExecEnabled) {
       fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT requires ${COMET_EXEC_ENABLED.key}=true"
     }
