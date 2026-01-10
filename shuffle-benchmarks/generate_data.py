@@ -2,9 +2,9 @@
 """
 Generate test data for shuffle size comparison benchmark.
 
-This script generates a parquet dataset with a realistic schema (50 columns
-including nested structs and arrays) for benchmarking shuffle operations
-across Spark, Comet JVM, and Comet Native shuffle modes.
+This script generates a parquet dataset with a realistic schema (100 columns
+including deeply nested structs, arrays, and maps) for benchmarking shuffle
+operations across Spark, Comet JVM, and Comet Native shuffle modes.
 """
 
 import argparse

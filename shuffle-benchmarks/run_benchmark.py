@@ -13,7 +13,7 @@ import json
 from pyspark.sql import SparkSession
 
 
-def run_benchmark(spark: SparkSession, data_path: str) -> int:
+def run_benchmark(spark: SparkSession, data_path: str, mode: str) -> int:
     """Run the benchmark query and return duration in ms."""
 
     spark.catalog.clearCache()
@@ -22,21 +22,16 @@ def run_benchmark(spark: SparkSession, data_path: str) -> int:
     row_count = df.count()
     print(f"Number of rows: {row_count:,}")
 
-    # Register as temp views to enable proper aliasing
-    df.createOrReplaceTempView("test_data")
-
     start_time = time.time()
 
-    # Join on different columns to force shuffle on both sides
-    # left shuffles by category_id, right shuffles by region_id
-    result = spark.sql("""
-        SELECT COUNT(*) as cnt
-        FROM test_data a
-        JOIN test_data b ON a.category_id = b.region_id
-    """)
+    # Repartition by a different key to force full shuffle of all columns
+    # This shuffles all 50 columns including nested structs, arrays, maps
+    repartitioned = df.repartition(200, "group_key")
 
-    result_count = result.collect()[0]["cnt"]
-    print(f"Join result rows: {result_count:,}")
+    # Write to parquet to force materialization
+    output_path = f"/tmp/shuffle-benchmark-output-{mode}"
+    repartitioned.write.mode("overwrite").parquet(output_path)
+    print(f"Wrote repartitioned data to: {output_path}")
 
     duration_ms = int((time.time() - start_time) * 1000)
     return duration_ms
@@ -78,7 +73,7 @@ def main():
     print(f"Spark UI: {spark.sparkContext.uiWebUrl}")
 
     try:
-        duration_ms = run_benchmark(spark, args.data)
+        duration_ms = run_benchmark(spark, args.data, args.mode)
         print(f"\nDuration: {duration_ms:,} ms")
         print("\nCheck Spark UI for shuffle sizes")
 
