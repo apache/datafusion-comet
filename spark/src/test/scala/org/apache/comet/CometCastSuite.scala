@@ -280,7 +280,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
-  ignore("cast ShortType to BinaryType") {
+  test("cast ShortType to BinaryType") {
     castTest(
       generateShorts(),
       DataTypes.BinaryType,

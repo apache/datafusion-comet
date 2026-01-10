@@ -20,13 +20,13 @@ use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
 use arrow::array::{
-    BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray,
+    BinaryBuilder, BooleanBuilder, Decimal128Builder, DictionaryArray, GenericByteArray, ListArray,
     PrimitiveBuilder, StringArray, StructArray, TimestampMicrosecondBuilder,
 };
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{
-    i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, GenericBinaryType,
-    Schema,
+    i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type,
+    GenericBinaryType, Schema,
 };
 use arrow::{
     array::{
@@ -311,7 +311,7 @@ fn can_cast_from_byte(to_type: &DataType, _: &SparkCastOptions) -> bool {
     use DataType::*;
     matches!(
         to_type,
-        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _)
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _) | Binary
     )
 }
 
@@ -319,14 +319,14 @@ fn can_cast_from_short(to_type: &DataType, _: &SparkCastOptions) -> bool {
     use DataType::*;
     matches!(
         to_type,
-        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _)
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _) | Binary
     )
 }
 
 fn can_cast_from_int(to_type: &DataType, options: &SparkCastOptions) -> bool {
     use DataType::*;
     match to_type {
-        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8 => true,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8 | Binary => true,
         Decimal128(_, _) => {
             // incompatible: no overflow check
             options.allow_incompat
@@ -338,7 +338,7 @@ fn can_cast_from_int(to_type: &DataType, options: &SparkCastOptions) -> bool {
 fn can_cast_from_long(to_type: &DataType, options: &SparkCastOptions) -> bool {
     use DataType::*;
     match to_type {
-        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 => true,
+        Boolean | Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Binary => true,
         Decimal128(_, _) => {
             // incompatible: no overflow check
             options.allow_incompat
@@ -498,6 +498,29 @@ macro_rules! cast_float_to_string {
             }
 
         cast::<$offset_type>($from, $eval_mode)
+    }};
+}
+
+// eval mode is not needed since all ints can be implemented in binary format
+macro_rules! cast_whole_num_to_binary {
+    ($array:expr, $primitive_type:ty, $byte_size:expr) => {{
+        let input_arr = $array
+            .as_any()
+            .downcast_ref::<$primitive_type>()
+            .ok_or_else(|| SparkError::Internal("Expected numeric array".to_string()))?;
+
+        let len = input_arr.len();
+        let mut builder = BinaryBuilder::with_capacity(len, len * $byte_size);
+
+        for i in 0..input_arr.len() {
+            if input_arr.is_null(i) {
+                builder.append_null();
+            } else {
+                builder.append_value(input_arr.value(i).to_be_bytes());
+            }
+        }
+
+        Ok(Arc::new(builder.finish()) as ArrayRef)
     }};
 }
 
@@ -1101,6 +1124,10 @@ fn cast_array(
         }
         (Binary, Utf8) => Ok(cast_binary_to_string::<i32>(&array, cast_options)?),
         (Date32, Timestamp(_, tz)) => Ok(cast_date_to_timestamp(&array, cast_options, tz)?),
+        (Int8, Binary) => cast_whole_num_to_binary!(&array, Int8Array, 1),
+        (Int16, Binary) => cast_whole_num_to_binary!(&array, Int16Array, 2),
+        (Int32, Binary) => cast_whole_num_to_binary!(&array, Int32Array, 4),
+        (Int64, Binary) => cast_whole_num_to_binary!(&array, Int64Array, 8),
         _ if cast_options.is_adapting_schema
             || is_datafusion_spark_compatible(from_type, to_type) =>
         {

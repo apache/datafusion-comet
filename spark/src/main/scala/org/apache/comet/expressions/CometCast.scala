@@ -21,7 +21,7 @@ package org.apache.comet.expressions
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, DataTypes, DecimalType, NullType, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -126,6 +126,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         isSupported(dt.elementType, DataTypes.StringType, timeZoneId, evalMode)
       case (dt: ArrayType, dt1: ArrayType) =>
         isSupported(dt.elementType, dt1.elementType, timeZoneId, evalMode)
+      case (from: DataType, _: BinaryType) => canCastToBinary(from)
       case (dt: DataType, _) if dt.typeName == "timestamp_ntz" =>
         // https://github.com/apache/datafusion-comet/issues/378
         toType match {
@@ -349,6 +350,12 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
     case DataTypes.TimestampType =>
       Compatible()
     case _ => Unsupported(Some(s"Cast from DateType to $toType is not supported"))
+  }
+
+  private def canCastToBinary(fromType: DataType): SupportLevel = fromType match {
+    case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType =>
+      Compatible()
+    case _ => Unsupported(Some(s"Cast from $fromType to BinaryType is not supported"))
   }
 
   private def unsupported(fromType: DataType, toType: DataType): Unsupported = {
