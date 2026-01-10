@@ -101,8 +101,14 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
           case 2 =>
             c.newInstance(conf, null).asInstanceOf[IndexShuffleBlockResolver]
           case 3 =>
-            c.newInstance(conf, null, Collections.emptyMap())
-              .asInstanceOf[IndexShuffleBlockResolver]
+            val parameterTypes = c.getParameters.map(_.getType)
+            if (parameterTypes(2) == classOf[java.util.Map[Int, OpenHashSet[Long]]]) {
+              c.newInstance(conf, null, Collections.emptyMap())
+                .asInstanceOf[IndexShuffleBlockResolver]
+            } else {
+              c.newInstance(conf, null, new ConcurrentHashMap[Int, OpenHashSet[Long]]())
+                .asInstanceOf[IndexShuffleBlockResolver]
+            }
         }
       }
       .head
