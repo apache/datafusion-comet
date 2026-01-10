@@ -57,7 +57,7 @@ class ShuffleSizeComparisonSuite extends CometTestBase with AdaptiveSparkPlanHel
   }
 
   test("compare shuffle sizes - simple integer groupBy") {
-    val numRows = 100000
+    val numRows = 10000000
 
     println("\n" + "=" * 80)
     println("Shuffle Size Comparison: Simple Integer GroupBy")
