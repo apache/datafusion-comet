@@ -31,11 +31,11 @@ spark-submit \
 
 ### Data Generation Options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--output`, `-o` | (required) | Output path for parquet data |
-| `--rows`, `-r` | 10000000 | Number of rows |
-| `--partitions`, `-p` | 200 | Number of output partitions |
+| Option               | Default    | Description                  |
+| -------------------- | ---------- | ---------------------------- |
+| `--output`, `-o`     | (required) | Output path for parquet data |
+| `--rows`, `-r`       | 10000000   | Number of rows               |
+| `--partitions`, `-p` | 200        | Number of output partitions  |
 
 ## Step 2: Run Benchmark
 
