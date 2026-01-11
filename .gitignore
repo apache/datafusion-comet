@@ -18,3 +18,4 @@ apache-rat-*.jar
 venv
 dev/release/comet-rm/workdir
 spark/benchmarks
+/comet-event-trace.json
