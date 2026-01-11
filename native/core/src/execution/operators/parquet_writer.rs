@@ -194,6 +194,9 @@ pub struct ParquetWriterExec {
     job_id: Option<String>,
     /// Task attempt ID for this specific task
     task_attempt_id: Option<i32>,
+    /// Complete staging file path from FileCommitProtocol.newTaskTempFile()
+    /// When set, writes directly to this path for proper 2PC support
+    staging_file_path: Option<String>,
     /// Compression codec
     compression: CompressionCodec,
     /// Partition ID (from Spark TaskContext)
@@ -215,6 +218,7 @@ impl ParquetWriterExec {
         work_dir: String,
         job_id: Option<String>,
         task_attempt_id: Option<i32>,
+        staging_file_path: Option<String>,
         compression: CompressionCodec,
         partition_id: i32,
         column_names: Vec<String>,
@@ -235,6 +239,7 @@ impl ParquetWriterExec {
             work_dir,
             job_id,
             task_attempt_id,
+            staging_file_path,
             compression,
             partition_id,
             column_names,
@@ -432,6 +437,7 @@ impl ExecutionPlan for ParquetWriterExec {
                 self.work_dir.clone(),
                 self.job_id.clone(),
                 self.task_attempt_id,
+                self.staging_file_path.clone(),
                 self.compression.clone(),
                 self.partition_id,
                 self.column_names.clone(),
@@ -456,7 +462,9 @@ impl ExecutionPlan for ParquetWriterExec {
 
         let input = self.input.execute(partition, context)?;
         let input_schema = self.input.schema();
+        let output_path = self.output_path.clone();
         let work_dir = self.work_dir.clone();
+        let staging_file_path = self.staging_file_path.clone();
         let task_attempt_id = self.task_attempt_id;
         let compression = self.compression_to_parquet()?;
         let column_names = self.column_names.clone();
@@ -472,15 +480,25 @@ impl ExecutionPlan for ParquetWriterExec {
             .collect();
         let output_schema = Arc::new(arrow::datatypes::Schema::new(fields));
 
-        // Generate part file name for this partition
-        // If using FileCommitProtocol (work_dir is set), include task_attempt_id in the filename
-        let part_file = if let Some(attempt_id) = task_attempt_id {
+        // Determine output file path:
+        // 1. If staging_file_path is set (proper 2PC), use it directly
+        // 2. If work_dir is set, use work_dir-based path construction
+        // 3. Otherwise use output_path directly
+        let base_dir = if !work_dir.is_empty() {
+            work_dir
+        } else {
+            output_path
+        };
+
+        let part_file = if let Some(ref staging_path) = staging_file_path {
+            staging_path.clone()
+        } else if let Some(attempt_id) = task_attempt_id {
             format!(
                 "{}/part-{:05}-{:05}.parquet",
-                work_dir, self.partition_id, attempt_id
+                base_dir, self.partition_id, attempt_id
             )
         } else {
-            format!("{}/part-{:05}.parquet", work_dir, self.partition_id)
+            format!("{}/part-{:05}.parquet", base_dir, self.partition_id)
         };
 
         // Configure writer properties
@@ -799,6 +817,7 @@ mod tests {
             work_dir,
             None,      // job_id
             Some(123), // task_attempt_id
+            None,      // staging_file_path
             CompressionCodec::None,
             0, // partition_id
             column_names,
