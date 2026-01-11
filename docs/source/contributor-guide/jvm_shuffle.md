@@ -20,7 +20,8 @@ under the License.
 # JVM Shuffle
 
 This document describes Comet's JVM-based columnar shuffle implementation (`CometColumnarShuffle`), which
-writes shuffle data in Arrow IPC format using JVM code with native encoding.
+writes shuffle data in Arrow IPC format using JVM code with native encoding. For the fully native
+alternative, see [Native Shuffle](native_shuffle.md).
 
 ## Overview
 

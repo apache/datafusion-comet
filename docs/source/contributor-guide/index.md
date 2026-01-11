@@ -26,6 +26,7 @@ under the License.
 Getting Started <contributing>
 Comet Plugin Overview <plugin_overview>
 JVM Shuffle <jvm_shuffle>
+Native Shuffle <native_shuffle>
 Arrow FFI <ffi>
 Parquet Scans <parquet_scans>
 Development Guide <development>
