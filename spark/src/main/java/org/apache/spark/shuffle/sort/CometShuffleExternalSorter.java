@@ -130,6 +130,9 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
   private final double preferDictionaryRatio;
   private final boolean tracingEnabled;
 
+  /** Total number of IPC batches written across all spills */
+  private long totalBatchCount = 0;
+
   public CometShuffleExternalSorter(
       CometShuffleMemoryAllocatorTrait allocator,
       BlockManager blockManager,
@@ -177,6 +180,11 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
 
   public long[] getChecksums() {
     return partitionChecksums;
+  }
+
+  /** Returns the total number of IPC batches written across all spills */
+  public long getTotalBatchCount() {
+    return totalBatchCount;
   }
 
   /** Sort and spill the current records in response to memory pressure. */
@@ -564,6 +572,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
                     compressionLevel,
                     tracingEnabled);
             spillInfo.partitionLengths[currentPartition] = spillResult[0];
+            totalBatchCount += spillResult[1];
 
             // Store the checksum for the current partition.
             partitionChecksums[currentPartition] = getChecksum();
@@ -593,6 +602,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
                 compressionLevel,
                 tracingEnabled);
         spillInfo.partitionLengths[currentPartition] = spillResult[0];
+        totalBatchCount += spillResult[1];
 
         synchronized (spills) {
           spills.add(spillInfo);

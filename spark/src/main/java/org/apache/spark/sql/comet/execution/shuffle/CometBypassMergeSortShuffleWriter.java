@@ -255,22 +255,10 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       }
 
       // Update IPC batches metric
-      System.out.println(
-          "[DEBUG] CometBypassMergeSortShuffleWriter: totalBatches="
-              + totalBatches
-              + ", customMetrics="
-              + (customMetrics != null ? "present" : "null"));
       if (customMetrics != null) {
         scala.Option<SQLMetric> ipcBatchesMetric = customMetrics.get("ipc_batches");
-        System.out.println(
-            "[DEBUG] CometBypassMergeSortShuffleWriter: ipc_batches metric defined="
-                + ipcBatchesMetric.isDefined());
         if (ipcBatchesMetric.isDefined()) {
           ipcBatchesMetric.get().add(totalBatches);
-          System.out.println(
-              "[DEBUG] CometBypassMergeSortShuffleWriter: added "
-                  + totalBatches
-                  + " to ipc_batches metric");
         }
       }
 

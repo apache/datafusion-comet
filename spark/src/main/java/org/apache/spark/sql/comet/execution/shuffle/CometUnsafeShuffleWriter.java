@@ -133,7 +133,6 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   private boolean tracingEnabled;
 
   /** Custom Comet shuffle metrics (includes ipc_batches) */
-  @SuppressWarnings("unused") // Reserved for future use
   private final scala.collection.immutable.Map<String, SQLMetric> customMetrics;
 
   /**
@@ -285,6 +284,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     serBuffer = null;
     serOutputStream = null;
     final SpillInfo[] spills = sorter.closeAndGetSpills();
+    final long totalBatchCount = sorter.getTotalBatchCount();
     try {
       partitionLengths = mergeSpills(spills);
     } finally {
@@ -295,6 +295,15 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         }
       }
     }
+
+    // Update IPC batches metric
+    if (customMetrics != null) {
+      scala.Option<SQLMetric> ipcBatchesMetric = customMetrics.get("ipc_batches");
+      if (ipcBatchesMetric.isDefined()) {
+        ipcBatchesMetric.get().add(totalBatchCount);
+      }
+    }
+
     mapStatus = MapStatus$.MODULE$.apply(blockManager.shuffleServerId(), partitionLengths, mapId);
   }
 
