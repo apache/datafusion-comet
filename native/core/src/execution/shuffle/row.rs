@@ -836,7 +836,11 @@ pub fn process_sorted_row_partition(
         batch_count += 1;
     }
 
-    Ok((written as i64, current_checksum.map(|c| c.finalize()), batch_count))
+    Ok((
+        written as i64,
+        current_checksum.map(|c| c.finalize()),
+        batch_count,
+    ))
 }
 
 fn builder_to_array(
