@@ -792,7 +792,7 @@ pub fn process_sorted_row_partition(
         .open(&output_path)?;
 
     // Reusable buffer for serialized batch data
-    let mut frozen: Vec<u8> = Vec::with_capacity(batch_size * 1024);
+    let mut frozen: Vec<u8> = Vec::new();
 
     while current_row < row_num {
         let n = std::cmp::min(batch_size, row_num - current_row);
