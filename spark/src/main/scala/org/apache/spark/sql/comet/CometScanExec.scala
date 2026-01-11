@@ -45,6 +45,7 @@ import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.collection._
 
 import org.apache.comet.{CometConf, MetricsSupport}
+import org.apache.comet.delta.CometDeltaNativeScanMetadata
 import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetPartitionReaderFactory}
 
 /**
@@ -583,7 +584,33 @@ object CometScanExec {
   def isFileFormatSupported(fileFormat: FileFormat): Boolean = {
     // Only support Spark's built-in Parquet scans, not others such as Delta which use a subclass
     // of ParquetFileFormat.
-    fileFormat.getClass().equals(classOf[ParquetFileFormat])
+    fileFormat.getClass().equals(classOf[ParquetFileFormat]) || isSupportedDeltaScan(fileFormat)
+  }
+
+  val unsupportedDeltaReaderFeatures: Set[String] = Set("columnMapping", "deletionVectors")
+
+  def isSupportedDeltaScan(fileFormat: FileFormat): Boolean = {
+    if (fileFormat.getClass().getName() != "org.apache.spark.sql.delta.DeltaParquetFileFormat") {
+      return false
+    }
+
+    // Delta scans without certain features enabled are simply normal Parquet scans that can
+    // take advantage of the native scan, so check to see if it is compatible
+    val deltaMetadata = CometDeltaNativeScanMetadata.extract(fileFormat) match {
+      case Some(m) => m
+      case None => return false
+    }
+
+    // Version 1 has no special features
+    // Version 2 introduced column mapping, which is not supported
+    // Version 3 changes to use the readerFeatures list instead, so we check for incompatible
+    // features
+    deltaMetadata.minReaderVersion match {
+      case 1 => true
+      case 2 => false
+      case 3 =>
+        deltaMetadata.readerFeatures.intersect(unsupportedDeltaReaderFeatures).isEmpty
+    }
   }
 
 }

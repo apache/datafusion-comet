@@ -1793,7 +1793,6 @@ dependencies = [
  "datafusion-spark",
  "futures",
  "hdfs-sys",
- "hdrs",
  "hex",
  "iceberg",
  "itertools 0.14.0",
