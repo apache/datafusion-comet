@@ -747,6 +747,7 @@ fn make_builders(
 }
 
 /// Processes a sorted row partition and writes the result to the given output path.
+/// Returns a tuple of (bytes_written, checksum, batch_count).
 #[allow(clippy::too_many_arguments)]
 pub fn process_sorted_row_partition(
     row_num: usize,
@@ -764,11 +765,13 @@ pub fn process_sorted_row_partition(
     // inside the loop within the method across batches.
     initial_checksum: Option<u32>,
     codec: &CompressionCodec,
-) -> Result<(i64, Option<u32>), CometError> {
+) -> Result<(i64, Option<u32>, i64), CometError> {
     // The current row number we are reading
     let mut current_row = 0;
     // Total number of bytes written
     let mut written = 0;
+    // Number of IPC batches written
+    let mut batch_count: i64 = 0;
     // The current checksum value. This is updated incrementally in the following loop.
     let mut current_checksum = if checksum_enabled {
         Some(Checksum::try_new(checksum_algo, initial_checksum)?)
@@ -830,9 +833,10 @@ pub fn process_sorted_row_partition(
 
         output_data.write_all(&frozen)?;
         current_row += n;
+        batch_count += 1;
     }
 
-    Ok((written as i64, current_checksum.map(|c| c.finalize())))
+    Ok((written as i64, current_checksum.map(|c| c.finalize()), batch_count))
 }
 
 fn builder_to_array(

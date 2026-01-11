@@ -54,6 +54,7 @@ import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator;
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
 import org.apache.spark.shuffle.sort.CometShuffleExternalSorter;
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
+import org.apache.spark.sql.execution.metric.SQLMetric;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.storage.BlockManager;
 import org.apache.spark.storage.FileSegment;
@@ -120,6 +121,9 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
 
   private boolean tracingEnabled;
 
+  /** Custom Comet shuffle metrics (includes ipc_batches) */
+  private final scala.collection.immutable.Map<String, SQLMetric> customMetrics;
+
   CometBypassMergeSortShuffleWriter(
       BlockManager blockManager,
       TaskMemoryManager memoryManager,
@@ -128,7 +132,8 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       long mapId,
       SparkConf conf,
       ShuffleWriteMetricsReporter writeMetrics,
-      ShuffleExecutorComponents shuffleExecutorComponents) {
+      ShuffleExecutorComponents shuffleExecutorComponents,
+      scala.collection.immutable.Map<String, SQLMetric> customMetrics) {
     // Use getSizeAsKb (not bytes) to maintain backwards compatibility if no units are provided
     this.fileBufferSize = (int) (long) conf.get(package$.MODULE$.SHUFFLE_FILE_BUFFER_SIZE()) * 1024;
     this.transferToEnabled = conf.getBoolean("spark.file.transferTo", true);
@@ -146,6 +151,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
     this.shuffleExecutorComponents = shuffleExecutorComponents;
     this.schema = ((CometShuffleDependency<?, ?, ?>) dep).schema().get();
     this.partitionChecksums = createPartitionChecksums(numPartitions, conf);
+    this.customMetrics = customMetrics;
 
     this.isAsync = (boolean) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED().get();
     this.asyncThreadNum = (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_THREAD_NUM().get();
@@ -238,12 +244,22 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
       }
 
       long spillRecords = 0;
+      long totalBatches = 0;
 
       for (int i = 0; i < numPartitions; i++) {
         CometDiskBlockWriter writer = partitionWriters[i];
         partitionWriterSegments[i] = writer.close();
 
         spillRecords += writer.getOutputRecords();
+        totalBatches += writer.getOutputBatches();
+      }
+
+      // Update IPC batches metric
+      if (customMetrics != null) {
+        scala.Option<SQLMetric> ipcBatchesMetric = customMetrics.get("ipc_batches");
+        if (ipcBatchesMetric.isDefined()) {
+          ipcBatchesMetric.get().add(totalBatches);
+        }
       }
 
       if (tracingEnabled) {

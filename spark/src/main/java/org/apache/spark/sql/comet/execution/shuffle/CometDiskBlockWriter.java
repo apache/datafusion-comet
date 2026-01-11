@@ -124,6 +124,8 @@ public final class CometDiskBlockWriter {
 
   private long outputRecords = 0;
 
+  private long outputBatches = 0;
+
   private long insertRecords = 0;
 
   CometDiskBlockWriter(
@@ -213,8 +215,9 @@ public final class CometDiskBlockWriter {
                 @Override
                 public void run() {
                   try {
-                    long written = spillingWriter.doSpilling(false);
-                    totalWritten += written;
+                    long[] result = spillingWriter.doSpilling(false);
+                    totalWritten += result[0];
+                    outputBatches += result[1];
                   } catch (IOException e) {
                     throw new RuntimeException(e);
                   } finally {
@@ -230,7 +233,9 @@ public final class CometDiskBlockWriter {
       // This spill could be triggered by other thread (i.e., other `CometDiskBlockWriter`),
       // so we need to synchronize it.
       synchronized (CometDiskBlockWriter.this) {
-        totalWritten += activeWriter.doSpilling(false);
+        long[] result = activeWriter.doSpilling(false);
+        totalWritten += result[0];
+        outputBatches += result[1];
         activeWriter.freeMemory();
       }
     }
@@ -240,6 +245,10 @@ public final class CometDiskBlockWriter {
 
   public long getOutputRecords() {
     return outputRecords;
+  }
+
+  public long getOutputBatches() {
+    return outputBatches;
   }
 
   /** Serializes input row and inserts into current allocated page. */
@@ -301,7 +310,9 @@ public final class CometDiskBlockWriter {
       }
     }
 
-    totalWritten += activeWriter.doSpilling(true);
+    long[] result = activeWriter.doSpilling(true);
+    totalWritten += result[0];
+    outputBatches += result[1];
 
     if (outputRecords != insertRecords) {
       throw new RuntimeException(
@@ -378,8 +389,12 @@ public final class CometDiskBlockWriter {
       return rowPartition.getNumRows();
     }
 
-    /** Spills the current in-memory records of this `ArrowIPCWriter` to disk. */
-    long doSpilling(boolean isLast) throws IOException {
+    /**
+     * Spills the current in-memory records of this `ArrowIPCWriter` to disk.
+     *
+     * @return long array with [bytesWritten, ipcBatchCount]
+     */
+    long[] doSpilling(boolean isLast) throws IOException {
       final ShuffleWriteMetricsReporter writeMetricsToUse;
 
       if (isLast) {
@@ -392,12 +407,12 @@ public final class CometDiskBlockWriter {
         writeMetricsToUse = new ShuffleWriteMetrics();
       }
 
-      final long written;
+      final long[] result;
 
       // All threads are writing to the same file, so we need to synchronize it.
       synchronized (file) {
         outputRecords += rowPartition.getNumRows();
-        written =
+        result =
             doSpilling(
                 dataTypes,
                 file,
@@ -421,7 +436,7 @@ public final class CometDiskBlockWriter {
         }
       }
 
-      return written;
+      return result;
     }
 
     /**

@@ -804,7 +804,8 @@ object CometShuffleExchangeExec
         shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(writeMetrics),
         shuffleType = CometColumnarShuffle,
         schema = Some(fromAttributes(outputAttributes)),
-        decodeTime = writeMetrics("decode_time"))
+        decodeTime = writeMetrics("decode_time"),
+        shuffleWriteMetrics = writeMetrics)
 
     dependency
   }

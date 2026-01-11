@@ -165,8 +165,12 @@ public abstract class SpillWriter {
     allocatedPages.add(currentPage);
   }
 
-  /** The core logic of spilling buffered rows into disk. */
-  protected long doSpilling(
+  /**
+   * The core logic of spilling buffered rows into disk.
+   *
+   * @return long array with [bytesWritten, ipcBatchCount]
+   */
+  protected long[] doSpilling(
       byte[][] dataTypes,
       File file,
       RowPartition rowPartition,
@@ -200,6 +204,7 @@ public abstract class SpillWriter {
 
     long written = results[0];
     checksum = results[1];
+    long batchCount = results[2];
 
     rowPartition.reset();
 
@@ -211,7 +216,7 @@ public abstract class SpillWriter {
       writeMetricsToUse.incBytesWritten(written);
     }
 
-    return written;
+    return new long[] {written, batchCount};
   }
 
   /** Frees allocated memory pages of this writer */

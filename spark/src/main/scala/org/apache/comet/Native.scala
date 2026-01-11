@@ -133,7 +133,7 @@ class Native extends NativeBase {
    * @param compressionLevel
    *   the compression level
    * @return
-   *   [the number of bytes written to disk, the checksum]
+   *   [the number of bytes written to disk, the checksum, the number of IPC batches written]
    */
   // scalastyle:off
   @native def writeSortedFileNative(

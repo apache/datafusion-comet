@@ -701,7 +701,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                     _ => CompressionCodec::Lz4Frame,
                 };
 
-                let (written_bytes, checksum) = process_sorted_row_partition(
+                let (written_bytes, checksum, batch_count) = process_sorted_row_partition(
                     row_num,
                     batch_size as usize,
                     row_addresses_ptr,
@@ -723,8 +723,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                     i64::MIN
                 };
 
-                let long_array = env.new_long_array(2)?;
-                env.set_long_array_region(&long_array, 0, &[written_bytes, checksum])?;
+                let long_array = env.new_long_array(3)?;
+                env.set_long_array_region(&long_array, 0, &[written_bytes, checksum, batch_count])?;
 
                 Ok(long_array.into_raw())
             },

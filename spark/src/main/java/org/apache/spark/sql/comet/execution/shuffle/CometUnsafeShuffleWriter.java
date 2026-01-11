@@ -67,6 +67,7 @@ import org.apache.spark.shuffle.sort.CometShuffleExternalSorter;
 import org.apache.spark.shuffle.sort.SortShuffleManager;
 import org.apache.spark.shuffle.sort.UnsafeShuffleWriter;
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
+import org.apache.spark.sql.execution.metric.SQLMetric;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.storage.BlockManager;
 import org.apache.spark.storage.TimeTrackingOutputStream;
@@ -131,6 +132,10 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   private CometShuffleMemoryAllocatorTrait allocator;
   private boolean tracingEnabled;
 
+  /** Custom Comet shuffle metrics (includes ipc_batches) */
+  @SuppressWarnings("unused") // Reserved for future use
+  private final scala.collection.immutable.Map<String, SQLMetric> customMetrics;
+
   /**
    * Are we in the process of stopping? Because map tasks can call stop() with success = true and
    * then call stop() with success = false if they get an exception, we want to make sure we don't
@@ -146,7 +151,8 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       TaskContext taskContext,
       SparkConf sparkConf,
       ShuffleWriteMetricsReporter writeMetrics,
-      ShuffleExecutorComponents shuffleExecutorComponents) {
+      ShuffleExecutorComponents shuffleExecutorComponents,
+      scala.collection.immutable.Map<String, SQLMetric> customMetrics) {
     final int numPartitions = handle.dependency().partitioner().numPartitions();
     if (numPartitions > SortShuffleManager.MAX_SHUFFLE_OUTPUT_PARTITIONS_FOR_SERIALIZED_MODE()) {
       throw new IllegalArgumentException(
@@ -172,6 +178,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     this.inputBufferSizeInBytes =
         (int) (long) sparkConf.get(package$.MODULE$.SHUFFLE_FILE_BUFFER_SIZE()) * 1024;
     this.tracingEnabled = (boolean) CometConf.COMET_TRACING_ENABLED().get();
+    this.customMetrics = customMetrics;
     open();
   }
 

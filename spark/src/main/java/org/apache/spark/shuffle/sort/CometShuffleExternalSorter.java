@@ -553,7 +553,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
               setChecksumAlgo(checksumAlgorithm);
             }
 
-            long written =
+            long[] spillResult =
                 doSpilling(
                     dataTypes,
                     spillInfo.file,
@@ -563,7 +563,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
                     compressionCodec,
                     compressionLevel,
                     tracingEnabled);
-            spillInfo.partitionLengths[currentPartition] = written;
+            spillInfo.partitionLengths[currentPartition] = spillResult[0];
 
             // Store the checksum for the current partition.
             partitionChecksums[currentPartition] = getChecksum();
@@ -582,7 +582,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
       }
 
       if (currentPartition != -1) {
-        long written =
+        long[] spillResult =
             doSpilling(
                 dataTypes,
                 spillInfo.file,
@@ -592,7 +592,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
                 compressionCodec,
                 compressionLevel,
                 tracingEnabled);
-        spillInfo.partitionLengths[currentPartition] = written;
+        spillInfo.partitionLengths[currentPartition] = spillResult[0];
 
         synchronized (spills) {
           spills.add(spillInfo);
