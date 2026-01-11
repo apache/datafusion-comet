@@ -29,9 +29,10 @@ Comet provides two shuffle implementations:
 
 - **CometNativeShuffle** (`CometExchange`): Fully native shuffle using Rust. Takes columnar input directly
   from Comet native operators and performs partitioning in native code.
-- **CometColumnarShuffle** (`CometColumnarExchange`): JVM-based shuffle that takes row-based input,
+- **CometColumnarShuffle** (`CometColumnarExchange`): JVM-based shuffle that operates on rows internally,
   buffers `UnsafeRow`s in memory pages, and uses native code (via JNI) to encode them to Arrow IPC format.
-  Uses Spark's partitioner for partition assignment.
+  Uses Spark's partitioner for partition assignment. Can accept either row-based or columnar input
+  (columnar input is converted to rows via `ColumnarToRowExec`).
 
 The JVM shuffle is selected via `CometShuffleDependency.shuffleType`.
 
