@@ -846,6 +846,8 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 
   test("sort-based columnar shuffle metrics") {
+    // Using 201 partitions triggers the sort-based shuffle writer (CometUnsafeShuffleWriter)
+    // which is used when numPartitions > spark.shuffle.sort.bypassMergeThreshold (default 200)
     withParquetTable((0 until 5).map(i => (i, (i + 1).toLong)), "tbl") {
       val df = sql("SELECT * FROM tbl").sortWithinPartitions($"_1".desc)
       val shuffled = df.repartition(201, $"_1")
@@ -867,6 +869,27 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
       assert(metrics.contains("shuffleWriteTime"))
       assert(metrics("shuffleWriteTime").value > 0)
+    }
+  }
+
+  test("hash-based columnar shuffle should track ipc_batches metric") {
+    // Using 10 partitions triggers the bypass merge sort shuffle writer (hash-based)
+    // which is used when numPartitions <= spark.shuffle.sort.bypassMergeThreshold (default 200)
+    withParquetTable((0 until 100).map(i => (i, (i + 1).toLong)), "tbl") {
+      val df = sql("SELECT * FROM tbl")
+      val shuffled = df.repartition(10, $"_1")
+
+      // Materialize the shuffled data
+      shuffled.collect()
+      val metrics = find(shuffled.queryExecution.executedPlan) {
+        case _: CometShuffleExchangeExec => true
+        case _ => false
+      }.map(_.metrics).get
+
+      assert(metrics.contains("ipc_batches"), "ipc_batches metric should be present")
+      assert(
+        metrics("ipc_batches").value > 0,
+        s"ipc_batches should be > 0 but was ${metrics("ipc_batches").value}")
     }
   }
 

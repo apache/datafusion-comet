@@ -313,6 +313,12 @@ public final class CometDiskBlockWriter {
     long[] result = activeWriter.doSpilling(true);
     totalWritten += result[0];
     outputBatches += result[1];
+    System.out.println(
+        "[DEBUG] CometDiskBlockWriter.close: final outputBatches="
+            + outputBatches
+            + " (this spill added "
+            + result[1]
+            + " batches)");
 
     if (outputRecords != insertRecords) {
       throw new RuntimeException(

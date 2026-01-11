@@ -205,6 +205,11 @@ public abstract class SpillWriter {
     long written = results[0];
     checksum = results[1];
     long batchCount = results[2];
+    System.out.println(
+        "[DEBUG] SpillWriter.doSpilling: native returned batchCount="
+            + batchCount
+            + ", written="
+            + written);
 
     rowPartition.reset();
 
