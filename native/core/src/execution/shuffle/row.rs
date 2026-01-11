@@ -814,7 +814,7 @@ pub fn process_sorted_row_partition(
         }
 
         // Writes a record batch generated from the array builders to the output file.
-        // Note: finish() resets the builder, making it reusable for the next batch.
+        // Note: builder_to_array calls finish() which resets the builder, making it reusable for the next batch.
         let array_refs: Result<Vec<ArrayRef>, _> = data_builders
             .iter_mut()
             .zip(schema.iter())
