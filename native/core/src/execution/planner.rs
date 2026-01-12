@@ -4033,7 +4033,12 @@ mod tests {
             .await?;
 
         // Write a parquet file into temp folder
-        session_ctx.write_parquet(plan, test_path, None).await?;
+        session_ctx
+            .write_parquet(Arc::clone(&plan), test_path, None)
+            .await?;
+
+        // Get the file schema from the plan that wrote the data
+        let file_schema = plan.schema();
 
         // Register all parquet with temp data as file groups
         let mut file_groups: Vec<FileGroup> = vec![];
@@ -4053,13 +4058,14 @@ mod tests {
         let source = Arc::new(ParquetSource::default());
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
-        let file_scan_config =
-            FileScanConfigBuilder::new(object_store_url, read_schema.clone().into(), source)
-                .with_file_groups(file_groups)
-                .build();
+        // Use file_schema for FileScanConfigBuilder to avoid schema validation errors
+        let file_scan_config = FileScanConfigBuilder::new(object_store_url, file_schema, source)
+            .with_file_groups(file_groups)
+            .build();
 
         // Run native read
         let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
+        // ParquetSchemaAdapterExec will handle the schema transformation from file_schema to read_schema
         let adapter_exec: Arc<dyn ExecutionPlan> = Arc::new(ParquetSchemaAdapterExec::new(
             scan,
             read_schema.into(),
