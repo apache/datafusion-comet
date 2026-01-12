@@ -19,9 +19,6 @@
 
 package org.apache.comet
 
-import org.scalactic.source.Position
-import org.scalatest.Tag
-
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
@@ -162,7 +159,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (null),
             (array(null)),
             (array(1, null, 3))""")
-      checkSparkAnswer("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
     }
   }
 
@@ -177,7 +174,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (null),
             (array(null)),
             (array('a', null, 'b'))""")
-      checkSparkAnswer("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
     }
   }
 
@@ -189,7 +186,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (array(-1.0, 0.0, 1.0)),
             (array()),
             (null)""")
-      checkSparkAnswer("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
     }
   }
 
@@ -201,7 +198,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (array(array(), array(1))),
             (array()),
             (null)""")
-      checkSparkAnswer("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
     }
   }
 
@@ -214,7 +211,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (named_struct('a', null, 'b', 'test')),
             (named_struct('a', 42, 'b', null)),
             (null)""")
-      checkSparkAnswer("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
     }
   }
 
@@ -226,7 +223,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (named_struct('a', 2, 'b', named_struct('x', '', 'y', 0.0))),
             (named_struct('a', 3, 'b', null)),
             (null)""")
-      checkSparkAnswer("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
     }
   }
 
@@ -238,7 +235,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (named_struct('a', 2, 'b', array())),
             (named_struct('a', 3, 'b', null)),
             (null)""")
-      checkSparkAnswer("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
     }
   }
 
@@ -250,7 +247,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (array(named_struct('a', 3, 'b', ''))),
             (array()),
             (null)""")
-      checkSparkAnswer("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
     }
   }
 
@@ -264,7 +261,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
               (map('x', -1)),
               (map()),
               (null)""")
-        checkSparkAnswer("SELECT c, hash(c) FROM t")
+        checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
       }
     }
   }
@@ -279,7 +276,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
               (map('x', array())),
               (map()),
               (null)""")
-        checkSparkAnswer("SELECT c, hash(c) FROM t")
+        checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
       }
     }
   }
@@ -305,7 +302,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (2, array(), ''),
             (null, null, null),
             (3, array(-1, 0, 1), 'test')""")
-      checkSparkAnswer("SELECT hash(a, b, c), hash(b), hash(a, c) FROM t")
+      checkSparkAnswerAndOperator("SELECT hash(a, b, c), hash(b), hash(a, c) FROM t")
     }
   }
 
@@ -317,7 +314,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (2, named_struct('x', 20, 'y', '')),
             (null, null),
             (3, named_struct('x', null, 'y', 'test'))""")
-      checkSparkAnswer("SELECT hash(a, b), hash(b, a), hash(b) FROM t")
+      checkSparkAnswerAndOperator("SELECT hash(a, b), hash(b, a), hash(b) FROM t")
     }
   }
 
@@ -325,7 +322,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     withTable("t") {
       sql("CREATE TABLE t(s STRING, a ARRAY<INT>) USING parquet")
       sql("INSERT INTO t VALUES ('', array()), ('a', array(1))")
-      checkSparkAnswer("SELECT hash(s), hash(a), hash(s, a) FROM t")
+      checkSparkAnswerAndOperator("SELECT hash(s), hash(a), hash(s, a) FROM t")
     }
   }
 
@@ -333,7 +330,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     withTable("t") {
       sql("CREATE TABLE t(a INT, b STRING, c ARRAY<INT>) USING parquet")
       sql("INSERT INTO t VALUES (null, null, null)")
-      checkSparkAnswer("SELECT hash(a), hash(b), hash(c), hash(a, b, c) FROM t")
+      checkSparkAnswerAndOperator("SELECT hash(a), hash(b), hash(c), hash(a, b, c) FROM t")
     }
   }
 
@@ -353,7 +350,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       // Create an array with 1000 elements
       val largeArray = (1 to 1000).mkString("array(", ", ", ")")
       sql(s"INSERT INTO t VALUES ($largeArray)")
-      checkSparkAnswer("SELECT hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT hash(c) FROM t")
     }
   }
 
@@ -370,7 +367,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (named_struct('a', 1, 'b', named_struct('x', 'hello', 'y',
               array(named_struct('p', 10, 'q', 'foo'), named_struct('p', 20, 'q', 'bar'))))),
             (null)""")
-      checkSparkAnswer("SELECT c, hash(c) FROM t")
+      checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
     }
   }
 
@@ -397,7 +394,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
                 (array('a', 'b')),
                 (array('c')),
                 (null)""")
-          checkSparkAnswer("SELECT c, hash(c) FROM t")
+          checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
         }
       }
     }
