@@ -107,7 +107,6 @@ case class CometNativeWriteExec(nativeOp: Operator, child: SparkPlan, outputPath
     // Execute native write operation
     childRDD.mapPartitionsInternal { iter =>
       val partitionId = org.apache.spark.TaskContext.getPartitionId()
-      val taskAttemptId = org.apache.spark.TaskContext.get().taskAttemptId()
 
       val nativeMetrics = CometMetricNode.fromCometPlan(this)
       // Register before CometExecIterator so completion listeners run after iterator close
