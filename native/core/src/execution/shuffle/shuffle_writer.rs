@@ -1572,7 +1572,7 @@ mod test {
             let data_file = format!("/tmp/rr_data_{}.out", run);
             let index_file = format!("/tmp/rr_index_{}.out", run);
 
-            let partitions = &[batches.clone()];
+            let partitions = std::slice::from_ref(&batches);
             let exec = ShuffleWriterExec::try_new(
                 Arc::new(DataSourceExec::new(Arc::new(
                     MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
