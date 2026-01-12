@@ -49,7 +49,6 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    columnar output. Row-based Spark operators require JVM shuffle.
 
 3. **Supported partitioning type**: Native shuffle supports:
-
    - `HashPartitioning`
    - `RangePartitioning`
    - `SinglePartition`
