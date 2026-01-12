@@ -18,7 +18,6 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
 use datafusion::config::TableParquetOptions;
 use datafusion::datasource::listing::PartitionedFile;
@@ -104,9 +103,7 @@ pub(crate) fn init_datasource_exec(
         );
     }
 
-    let file_source = parquet_source.with_schema_adapter_factory(Arc::new(
-        SparkSchemaAdapterFactory::new(spark_parquet_options, default_values),
-    ))?;
+    let file_source = Arc::new(parquet_source);
 
     let file_groups = file_groups
         .iter()

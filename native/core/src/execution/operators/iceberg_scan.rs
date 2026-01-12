@@ -42,7 +42,7 @@ use iceberg::io::FileIO;
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
+use crate::parquet::schema_adapter::{ParquetSchemaAdapterExec, ParquetSchemaAdapterStream, SparkSchemaAdapterFactory};
 use datafusion::datasource::schema_adapter::SchemaAdapterFactory;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::file_stream::FileStreamMetrics;
@@ -292,6 +292,11 @@ impl IcebergFileStream {
             })?;
 
             let target_schema = Arc::clone(&schema);
+            let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+
+
+
+            ParquetSchemaAdapterStream::new(stream, target_schema, &*target_schema, spark_options, None);
 
             // Schema adaptation handles differences in Arrow field names and metadata
             // between the file schema and expected output schema
