@@ -133,27 +133,31 @@ fn split_array(
     // Build the result ListArray
     let mut offsets: Vec<i32> = Vec::with_capacity(string_array.len() + 1);
     let mut values: Vec<String> = Vec::new();
+    let mut null_buffer_builder = arrow::array::BooleanBufferBuilder::new(string_array.len());
     offsets.push(0);
 
     for i in 0..string_array.len() {
         if string_array.is_null(i) {
-            // NULL input produces empty array element (maintain position)
+            // NULL input produces NULL in result (Spark behavior)
             offsets.push(offsets[i]);
+            null_buffer_builder.append(false); // false = NULL
         } else {
             let string_val = string_array.value(i);
             let parts = split_with_regex(string_val, &regex, limit);
             values.extend(parts);
             offsets.push(values.len() as i32);
+            null_buffer_builder.append(true); // true = valid
         }
     }
 
     let values_array = Arc::new(GenericStringArray::<i32>::from(values)) as ArrayRef;
-    let field = Arc::new(Field::new("item", DataType::Utf8, false));
+    let field = Arc::new(Field::new("item", DataType::Utf8, true));
+    let nulls = arrow::buffer::NullBuffer::new(null_buffer_builder.finish());
     let list_array = ListArray::new(
         field,
         arrow::buffer::OffsetBuffer::new(offsets.into()),
         values_array,
-        None, // No nulls at list level
+        Some(nulls),
     );
 
     Ok(ColumnarValue::Array(Arc::new(list_array)))
@@ -166,26 +170,31 @@ fn split_large_string_array(
 ) -> DataFusionResult<ColumnarValue> {
     let mut offsets: Vec<i32> = Vec::with_capacity(string_array.len() + 1);
     let mut values: Vec<String> = Vec::new();
+    let mut null_buffer_builder = arrow::array::BooleanBufferBuilder::new(string_array.len());
     offsets.push(0);
 
     for i in 0..string_array.len() {
         if string_array.is_null(i) {
+            // NULL input produces NULL in result (Spark behavior)
             offsets.push(offsets[i]);
+            null_buffer_builder.append(false); // false = NULL
         } else {
             let string_val = string_array.value(i);
             let parts = split_with_regex(string_val, regex, limit);
             values.extend(parts);
             offsets.push(values.len() as i32);
+            null_buffer_builder.append(true); // true = valid
         }
     }
 
     let values_array = Arc::new(GenericStringArray::<i32>::from(values)) as ArrayRef;
-    let field = Arc::new(Field::new("item", DataType::Utf8, false));
+    let field = Arc::new(Field::new("item", DataType::Utf8, true));
+    let nulls = arrow::buffer::NullBuffer::new(null_buffer_builder.finish());
     let list_array = ListArray::new(
         field,
         arrow::buffer::OffsetBuffer::new(offsets.into()),
         values_array,
-        None,
+        Some(nulls),
     );
 
     Ok(ColumnarValue::Array(Arc::new(list_array)))
@@ -308,5 +317,42 @@ mod tests {
     fn test_split_limit_negative() {
         let parts = split_string("a,b,c,,", ",", -1).unwrap();
         assert_eq!(parts, vec!["a", "b", "c", "", ""]);
+    }
+
+    #[test]
+    fn test_split_with_nulls() {
+        // Test that NULL inputs produce NULL outputs (not empty arrays)
+        let string_array = Arc::new(StringArray::from(vec![
+            Some("a,b,c"),
+            None,
+            Some("x,y"),
+            None,
+        ])) as ArrayRef;
+        let pattern = ColumnarValue::Scalar(ScalarValue::Utf8(Some(",".to_string())));
+        let args = vec![ColumnarValue::Array(string_array), pattern];
+
+        let result = spark_split(&args).unwrap();
+        match result {
+            ColumnarValue::Array(arr) => {
+                let list_array = arr.as_any().downcast_ref::<ListArray>().unwrap();
+                assert_eq!(list_array.len(), 4);
+                // First row: valid ["a", "b", "c"]
+                assert!(!list_array.is_null(0));
+                // Second row: NULL
+                assert!(list_array.is_null(1));
+                // Third row: valid ["x", "y"]
+                assert!(!list_array.is_null(2));
+                // Fourth row: NULL
+                assert!(list_array.is_null(3));
+            }
+            _ => panic!("Expected Array result"),
+        }
+    }
+
+    #[test]
+    fn test_split_empty_string() {
+        // Test that empty string input produces array with single empty string
+        let parts = split_string("", ",", -1).unwrap();
+        assert_eq!(parts, vec![""]);
     }
 }
