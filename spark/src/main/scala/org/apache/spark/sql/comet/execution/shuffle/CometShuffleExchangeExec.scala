@@ -260,14 +260,24 @@ object CometShuffleExchangeExec
      * Determine which data types are supported as partition columns in native shuffle.
      *
      * For HashPartitioning this defines the key that determines how data should be collocated for
-     * operations like `groupByKey`, `reduceByKey`, or `join`. Native code does not support
-     * hashing complex types, see hash_funcs/utils.rs
+     * operations like `groupByKey`, `reduceByKey`, or `join`. Native code supports hashing both
+     * primitive and complex types.
      */
     def supportedHashPartitioningDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType =>
+          _: TimestampNTZType | _: DateType =>
         true
+      case dt: DecimalType =>
+        // High precision decimals (> 18) fall back to Spark because Spark converts them
+        // to Java BigDecimal before hashing, which has different behavior than native hashing
+        dt.precision <= 18
+      case StructType(fields) =>
+        fields.nonEmpty && fields.forall(f => supportedHashPartitioningDataType(f.dataType))
+      case ArrayType(elementType, _) =>
+        supportedHashPartitioningDataType(elementType)
+      case MapType(keyType, valueType, _) =>
+        supportedHashPartitioningDataType(keyType) && supportedHashPartitioningDataType(valueType)
       case _ =>
         false
     }
