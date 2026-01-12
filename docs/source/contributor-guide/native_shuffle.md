@@ -49,6 +49,7 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    columnar output. Row-based Spark operators require JVM shuffle.
 
 3. **Supported partitioning type**: Native shuffle supports:
+
    - `HashPartitioning`
    - `RangePartitioning`
    - `SinglePartition`
@@ -113,10 +114,10 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 
 ### Rust Side
 
-| File                    | Location                             | Description                                                                          |
-| ----------------------- | ------------------------------------ | ------------------------------------------------------------------------------------ |
-| `shuffle_writer.rs`     | `native/core/src/execution/shuffle/` | `ShuffleWriterExec` plan and partitioners. Main shuffle logic.                       |
-| `codec.rs`              | `native/core/src/execution/shuffle/` | `ShuffleBlockWriter` for Arrow IPC encoding with compression. Also handles decoding. |
+| File                    | Location                             | Description                                                                            |
+| ----------------------- | ------------------------------------ | -------------------------------------------------------------------------------------- |
+| `shuffle_writer.rs`     | `native/core/src/execution/shuffle/` | `ShuffleWriterExec` plan and partitioners. Main shuffle logic.                         |
+| `codec.rs`              | `native/core/src/execution/shuffle/` | `ShuffleBlockWriter` for Arrow IPC encoding with compression. Also handles decoding.   |
 | `comet_partitioning.rs` | `native/core/src/execution/shuffle/` | `CometPartitioning` enum defining partition schemes (Hash, Range, Single, RoundRobin). |
 
 ## Data Flow
@@ -124,12 +125,14 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 ### Write Path
 
 1. **Plan construction**: `CometNativeShuffleWriter` builds a protobuf operator plan containing:
+
    - A scan operator reading from the input iterator
    - A `ShuffleWriter` operator with partitioning config and compression codec
 
 2. **Native execution**: `CometExec.getCometIterator()` executes the plan in Rust.
 
 3. **Partitioning**: `ShuffleWriterExec` receives batches and routes to the appropriate partitioner:
+
    - `MultiPartitionShuffleRepartitioner`: For hash/range/round-robin partitioning
    - `SinglePartitionShufflePartitioner`: For single partition (simpler path)
 
@@ -137,11 +140,13 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    exceeds the threshold, partitions spill to temporary files.
 
 5. **Encoding**: `ShuffleBlockWriter` encodes each partition's data as compressed Arrow IPC:
+
    - Writes compression type header
    - Writes field count header
    - Writes compressed IPC stream
 
 6. **Output files**: Two files are produced:
+
    - **Data file**: Concatenated partition data
    - **Index file**: Array of 8-byte little-endian offsets marking partition boundaries
 
@@ -153,6 +158,7 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 1. `CometBlockStoreShuffleReader` fetches shuffle blocks via `ShuffleBlockFetcherIterator`.
 
 2. For each block, `NativeBatchDecoderIterator`:
+
    - Reads the 8-byte compressed length header
    - Reads the 8-byte field count header
    - Reads the compressed IPC data
