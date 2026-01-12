@@ -23,7 +23,6 @@ import java.util.Locale
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
