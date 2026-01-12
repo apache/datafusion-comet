@@ -123,6 +123,7 @@ jobs:
             value: |
               org.apache.comet.CometExpressionSuite
               org.apache.comet.CometExpressionCoverageSuite
+              org.apache.comet.CometHashExpressionSuite
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
               org.apache.comet.CometCastSuite

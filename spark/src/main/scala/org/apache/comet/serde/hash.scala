@@ -112,7 +112,7 @@ private object HashUtils {
           // Java BigDecimal before hashing
           withInfo(expr, s"Unsupported datatype: $dt (precision > 18)")
           return false
-        case dt if !supportedDataType(dt) =>
+        case dt if !supportedDataType(dt, allowComplex = true) =>
           withInfo(expr, s"Unsupported datatype $dt")
           return false
         case _ =>
