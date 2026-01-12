@@ -311,10 +311,11 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
-  test("parquet write with spark.range() - issue #2944 without spark-to-arrow") {
-    // This test reproduces https://github.com/apache/datafusion-comet/issues/2944
-    // Without CometSparkToColumnarExec enabled, the native writer should handle
-    // Spark columnar batches by converting them to Arrow format internally.
+  test("parquet write with spark.range() - issue #2944") {
+    // This test verifies the fix for https://github.com/apache/datafusion-comet/issues/2944
+    // CometDataWritingCommand.createExec() wraps non-Comet child operators with
+    // CometSparkToColumnarExec to convert Spark columnar batches to Arrow format.
+    // This ensures the native writer always receives Arrow-format data.
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
 
@@ -322,11 +323,10 @@ class CometParquetWriterSuite extends CometTestBase {
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
         CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        // Explicitly disable spark-to-arrow conversion to reproduce the issue
-        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false") {
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
-        // spark.range() uses RangeExec which produces OnHeapColumnVector (not Arrow)
+        // spark.range() uses RangeExec which produces OnHeapColumnVector (not Arrow).
+        // CometSparkToColumnarExec is automatically inserted to convert to Arrow format.
         // Without the fix, this would fail with:
         // "Comet execution only takes Arrow Arrays, but got OnHeapColumnVector"
         spark.range(1000).write.mode("overwrite").parquet(outputPath)
