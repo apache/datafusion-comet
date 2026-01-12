@@ -22,192 +22,104 @@ use arrow::array::{RecordBatch, RecordBatchOptions};
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::common::ColumnStatistics;
 use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
-use datafusion::physical_plan::ColumnarValue;
+use datafusion::physical_plan::{
+    ColumnarValue, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+};
 use datafusion::scalar::ScalarValue;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// An implementation of DataFusion's `SchemaAdapterFactory` that uses a Spark-compatible
-/// `cast` implementation.
-#[derive(Clone, Debug)]
-pub struct SparkSchemaAdapterFactory {
-    /// Spark cast options
-    parquet_options: SparkParquetOptions,
-    default_values: Option<HashMap<usize, ScalarValue>>,
-}
 
-impl SparkSchemaAdapterFactory {
-    pub fn new(
-        options: SparkParquetOptions,
-        default_values: Option<HashMap<usize, ScalarValue>>,
-    ) -> Self {
-        Self {
-            parquet_options: options,
-            default_values,
-        }
-    }
-}
-
-impl SchemaAdapterFactory for SparkSchemaAdapterFactory {
-    /// Create a new factory for mapping batches from a file schema to a table
-    /// schema.
-    ///
-    /// This is a convenience for [`DefaultSchemaAdapterFactory::create`] with
-    /// the same schema for both the projected table schema and the table
-    /// schema.
-    fn create(
-        &self,
-        required_schema: SchemaRef,
-        _table_schema: SchemaRef,
-    ) -> Box<dyn SchemaAdapter> {
-        Box::new(SparkSchemaAdapter {
-            required_schema,
-            parquet_options: self.parquet_options.clone(),
-            default_values: self.default_values.clone(),
-        })
-    }
-}
-
-/// This SchemaAdapter requires both the table schema and the projected table
-/// schema. See  [`SchemaMapping`] for more details
-#[derive(Clone, Debug)]
-pub struct SparkSchemaAdapter {
-    /// The schema for the table, projected to include only the fields being output (projected) by the
-    /// associated ParquetExec
+/// A stream wrapper that applies schema adaptation to batches from an underlying stream.
+///
+/// This stream wraps another `RecordBatchStream` and applies Spark-compatible schema
+/// transformation to each batch, including type casting and handling missing columns.
+pub struct ParquetSchemaAdapterStream {
+    /// The underlying stream producing batches
+    inner: datafusion::execution::SendableRecordBatchStream,
+    /// The target schema after adaptation
     required_schema: SchemaRef,
-    /// Spark cast options
-    parquet_options: SparkParquetOptions,
-    default_values: Option<HashMap<usize, ScalarValue>>,
-}
-
-impl SchemaAdapter for SparkSchemaAdapter {
-    /// Map a column index in the table schema to a column index in a particular
-    /// file schema
-    ///
-    /// Panics if index is not in range for the table schema
-    fn map_column_index(&self, index: usize, file_schema: &Schema) -> Option<usize> {
-        let field = self.required_schema.field(index);
-        Some(
-            file_schema
-                .fields
-                .iter()
-                .enumerate()
-                .find(|(_, b)| {
-                    if self.parquet_options.case_sensitive {
-                        b.name() == field.name()
-                    } else {
-                        b.name().to_lowercase() == field.name().to_lowercase()
-                    }
-                })?
-                .0,
-        )
-    }
-
-    /// Creates a `SchemaMapping` for casting or mapping the columns from the
-    /// file schema to the table schema.
-    ///
-    /// If the provided `file_schema` contains columns of a different type to
-    /// the expected `table_schema`, the method will attempt to cast the array
-    /// data from the file schema to the table schema where possible.
-    ///
-    /// Returns a [`SchemaMapping`] that can be applied to the output batch
-    /// along with an ordered list of columns to project from the file
-    fn map_schema(
-        &self,
-        file_schema: &Schema,
-    ) -> datafusion::common::Result<(Arc<dyn SchemaMapper>, Vec<usize>)> {
-        let mut projection = Vec::with_capacity(file_schema.fields().len());
-        let mut field_mappings = vec![None; self.required_schema.fields().len()];
-
-        for (file_idx, file_field) in file_schema.fields.iter().enumerate() {
-            if let Some((table_idx, _table_field)) = self
-                .required_schema
-                .fields()
-                .iter()
-                .enumerate()
-                .find(|(_, b)| {
-                    if self.parquet_options.case_sensitive {
-                        b.name() == file_field.name()
-                    } else {
-                        b.name().to_lowercase() == file_field.name().to_lowercase()
-                    }
-                })
-            {
-                field_mappings[table_idx] = Some(projection.len());
-                projection.push(file_idx);
-            }
-        }
-
-        Ok((
-            Arc::new(SchemaMapping {
-                required_schema: Arc::<Schema>::clone(&self.required_schema),
-                field_mappings,
-                parquet_options: self.parquet_options.clone(),
-                default_values: self.default_values.clone(),
-            }),
-            projection,
-        ))
-    }
-}
-
-// TODO SchemaMapping is mostly copied from DataFusion but calls spark_cast
-// instead of arrow cast - can we reduce the amount of code copied here and make
-// the DataFusion version more extensible?
-
-/// The SchemaMapping struct holds a mapping from the file schema to the table
-/// schema and any necessary type conversions.
-///
-/// Note, because `map_batch` and `map_partial_batch` functions have different
-/// needs, this struct holds two schemas:
-///
-/// 1. The projected **table** schema
-/// 2. The full table schema
-///
-/// [`map_batch`] is used by the ParquetOpener to produce a RecordBatch which
-/// has the projected schema, since that's the schema which is supposed to come
-/// out of the execution of this query. Thus `map_batch` uses
-/// `projected_table_schema` as it can only operate on the projected fields.
-///
-/// [`map_batch`]: Self::map_batch
-#[derive(Debug)]
-pub struct SchemaMapping {
-    /// The schema of the table. This is the expected schema after conversion
-    /// and it should match the schema of the query result.
-    required_schema: SchemaRef,
-    /// Mapping from field index in `projected_table_schema` to index in
-    /// projected file_schema.
-    ///
-    /// They are Options instead of just plain `usize`s because the table could
-    /// have fields that don't exist in the file.
+    /// Mapping from field index in `required_schema` to index in source schema
     field_mappings: Vec<Option<usize>>,
     /// Spark cast options
     parquet_options: SparkParquetOptions,
+    /// Default values for missing columns (keyed by required schema index)
     default_values: Option<HashMap<usize, ScalarValue>>,
 }
 
-impl SchemaMapper for SchemaMapping {
-    /// Adapts a `RecordBatch` to match the `projected_table_schema` using the stored mapping and
-    /// conversions. The produced RecordBatch has a schema that contains only the projected
-    /// columns, so if one needs a RecordBatch with a schema that references columns which are not
-    /// in the projected, it would be better to use `map_partial_batch`
+impl ParquetSchemaAdapterStream {
+    /// Create a new schema adapter stream by mapping from source schema to required schema
+    ///
+    /// # Arguments
+    /// * `inner` - The underlying stream to wrap
+    /// * `required_schema` - The target schema after adaptation
+    /// * `source_schema` - The schema of batches from the inner stream
+    /// * `parquet_options` - Spark-specific parquet options for casting
+    /// * `default_values` - Optional default values for missing columns
+    pub fn new(
+        inner: datafusion::execution::SendableRecordBatchStream,
+        required_schema: SchemaRef,
+        source_schema: &Schema,
+        parquet_options: SparkParquetOptions,
+        default_values: Option<HashMap<usize, ScalarValue>>,
+    ) -> Self {
+        let field_mappings = Self::map_schema(&required_schema, source_schema, &parquet_options);
+
+        Self {
+            inner,
+            required_schema,
+            field_mappings,
+            parquet_options,
+            default_values,
+        }
+    }
+
+    /// Map schema to create field mappings from source to required schema
+    ///
+    /// Returns a vector where each index corresponds to a field in the required schema,
+    /// and the value is the index of that field in the source schema (or None if missing)
+    fn map_schema(
+        required_schema: &Schema,
+        source_schema: &Schema,
+        parquet_options: &SparkParquetOptions,
+    ) -> Vec<Option<usize>> {
+        let mut field_mappings = vec![None; required_schema.fields().len()];
+
+        for (required_idx, required_field) in required_schema.fields().iter().enumerate() {
+            // Find matching field in source schema
+            let source_idx = source_schema
+                .fields
+                .iter()
+                .enumerate()
+                .find(|(_, source_field)| {
+                    if parquet_options.case_sensitive {
+                        source_field.name() == required_field.name()
+                    } else {
+                        source_field.name().to_lowercase() == required_field.name().to_lowercase()
+                    }
+                })
+                .map(|(idx, _)| idx);
+
+            field_mappings[required_idx] = source_idx;
+        }
+
+        field_mappings
+    }
+
+    /// Map a batch from the source schema to the required schema
     fn map_batch(&self, batch: RecordBatch) -> datafusion::common::Result<RecordBatch> {
         let batch_rows = batch.num_rows();
         let batch_cols = batch.columns().to_vec();
 
         let cols = self
             .required_schema
-            // go through each field in the projected schema
             .fields()
             .iter()
             .enumerate()
-            // and zip it with the index that maps fields from the projected table schema to the
-            // projected file schema in `batch`
             .zip(&self.field_mappings)
-            // and for each one...
             .map(|((field_idx, field), file_idx)| {
                 file_idx.map_or_else(
-                    // If this field only exists in the table, and not in the file, then we need to
-                    // populate a default value for it.
+                    // Field only exists in required schema, not in source
                     || {
                         if let Some(default_values) = &self.default_values {
                             // We have a map of default values, see if this field is in there.
@@ -217,9 +129,6 @@ impl SchemaMapper for SchemaMapping {
                                 let cv = if field.data_type() == &value.data_type() {
                                     ColumnarValue::Scalar(value.clone())
                                 } else {
-                                    // Data types don't match. This can happen when default values
-                                    // are stored by Spark in a format different than the column's
-                                    // type (e.g., INT32 when the column is DATE32)
                                     spark_parquet_convert(
                                         ColumnarValue::Scalar(value.clone()),
                                         field.data_type(),
@@ -229,14 +138,12 @@ impl SchemaMapper for SchemaMapping {
                                 return cv.into_array(batch_rows);
                             }
                         }
-                        // Construct an entire column of nulls. We use the Scalar representation
-                        // for better performance.
+                        // No default value - create null column
                         let cv =
                             ColumnarValue::Scalar(ScalarValue::try_new_null(field.data_type())?);
                         cv.into_array(batch_rows)
                     },
-                    // However, if it does exist in both, then try to cast it to the correct output
-                    // type
+                    // Field exists in both schemas - cast if needed
                     |batch_idx| {
                         spark_parquet_convert(
                             ColumnarValue::Array(Arc::clone(&batch_cols[batch_idx])),
@@ -249,26 +156,180 @@ impl SchemaMapper for SchemaMapping {
             })
             .collect::<datafusion::common::Result<Vec<_>, _>>()?;
 
-        // Necessary to handle empty batches
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-
         let schema = Arc::<Schema>::clone(&self.required_schema);
-        let record_batch = RecordBatch::try_new_with_options(schema, cols, &options)?;
-        Ok(record_batch)
+        RecordBatch::try_new_with_options(schema, cols, &options).map_err(|e| e.into())
+    }
+}
+
+impl futures::Stream for ParquetSchemaAdapterStream {
+    type Item = datafusion::common::Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use futures::StreamExt;
+
+        match futures::ready!(self.inner.poll_next_unpin(cx)) {
+            Some(Ok(batch)) => {
+                // Apply schema mapping to the batch
+                let adapted_batch = self.map_batch(batch);
+                std::task::Poll::Ready(Some(adapted_batch))
+            }
+            Some(Err(e)) => std::task::Poll::Ready(Some(Err(e))),
+            None => std::task::Poll::Ready(None),
+        }
     }
 
-    fn map_column_statistics(
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl datafusion::execution::RecordBatchStream for ParquetSchemaAdapterStream {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.required_schema)
+    }
+}
+
+/// An execution plan that wraps another execution plan and applies schema adaptation
+/// to transform batches from the source schema to a required schema.
+///
+/// This is useful when you need to apply Spark-compatible type conversions and handle
+/// missing columns at the execution plan level.
+#[derive(Debug)]
+pub struct ParquetSchemaAdapterExec {
+    /// The underlying execution plan
+    input: Arc<dyn ExecutionPlan>,
+    /// The target schema after adaptation
+    required_schema: SchemaRef,
+    /// Spark cast options
+    parquet_options: SparkParquetOptions,
+    /// Default values for missing columns (keyed by required schema index)
+    default_values: Option<HashMap<usize, ScalarValue>>,
+    /// Cached plan properties
+    properties: PlanProperties,
+}
+
+impl ParquetSchemaAdapterExec {
+    /// Create a new schema adapter execution plan
+    ///
+    /// # Arguments
+    /// * `input` - The underlying execution plan to wrap
+    /// * `required_schema` - The target schema after adaptation
+    /// * `parquet_options` - Spark-specific parquet options for casting
+    /// * `default_values` - Optional default values for missing columns
+    pub fn new(
+        input: Arc<dyn ExecutionPlan>,
+        required_schema: SchemaRef,
+        parquet_options: SparkParquetOptions,
+        default_values: Option<HashMap<usize, ScalarValue>>,
+    ) -> Self {
+        use datafusion::physical_plan::execution_plan::{EmissionType, Boundedness};
+        use datafusion::physical_expr::EquivalenceProperties;
+
+        // Create properties with the required schema
+        let eq_properties = EquivalenceProperties::new(Arc::clone(&required_schema));
+        let properties = PlanProperties::new(
+            eq_properties,
+            input.properties().output_partitioning().clone(),
+            EmissionType::Final,
+            Boundedness::Bounded,
+        );
+
+        Self {
+            input,
+            required_schema,
+            parquet_options,
+            default_values,
+            properties,
+        }
+    }
+
+    /// Get the underlying input plan
+    pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.input
+    }
+}
+
+impl DisplayAs for ParquetSchemaAdapterExec {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(
+                    f,
+                    "ParquetSchemaAdapterExec: required_schema={:?}",
+                    self.required_schema
+                )
+            }
+            DisplayFormatType::TreeRender => {
+                write!(f, "ParquetSchemaAdapterExec")
+            }
+        }
+    }
+}
+
+impl ExecutionPlan for ParquetSchemaAdapterExec {
+    fn name(&self) -> &str {
+        "ParquetSchemaAdapterExec"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn properties(&self) -> &PlanProperties {
+        &self.properties
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return Err(datafusion::common::DataFusionError::Internal(
+                "ParquetSchemaAdapterExec requires exactly one child".to_string(),
+            ));
+        }
+
+        Ok(Arc::new(ParquetSchemaAdapterExec::new(
+            Arc::clone(&children[0]),
+            Arc::clone(&self.required_schema),
+            self.parquet_options.clone(),
+            self.default_values.clone(),
+        )))
+    }
+
+    fn execute(
         &self,
-        _file_col_statistics: &[ColumnStatistics],
-    ) -> datafusion::common::Result<Vec<ColumnStatistics>> {
-        Ok(vec![])
+        partition: usize,
+        context: Arc<datafusion::execution::TaskContext>,
+    ) -> datafusion::common::Result<datafusion::execution::SendableRecordBatchStream> {
+        // Execute the input plan to get its stream
+        let input_stream = self.input.execute(partition, context)?;
+        let source_schema = input_stream.schema();
+
+        // Wrap the input stream with schema adaptation
+        let adapter_stream = ParquetSchemaAdapterStream::new(
+            input_stream,
+            Arc::clone(&self.required_schema),
+            &source_schema,
+            self.parquet_options.clone(),
+            self.default_values.clone(),
+        );
+
+        Ok(Box::pin(adapter_stream))
     }
 }
 
 #[cfg(test)]
 mod test {
     use crate::parquet::parquet_support::SparkParquetOptions;
-    use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
     use arrow::array::UInt32Array;
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::SchemaRef;
@@ -289,6 +350,7 @@ mod test {
     use parquet::arrow::ArrowWriter;
     use std::fs::File;
     use std::sync::Arc;
+    use crate::parquet::schema_adapter::ParquetSchemaAdapterExec;
 
     #[tokio::test]
     async fn parquet_roundtrip_int_as_string() -> Result<(), DataFusionError> {
@@ -345,21 +407,227 @@ mod test {
         spark_parquet_options.allow_cast_unsigned_ints = true;
 
         let parquet_source =
-            ParquetSource::new(TableParquetOptions::new()).with_schema_adapter_factory(
-                Arc::new(SparkSchemaAdapterFactory::new(spark_parquet_options, None)),
-            )?;
+            Arc::new(ParquetSource::new(TableParquetOptions::new()));
 
         let files = FileGroup::new(vec![PartitionedFile::from_path(filename.to_string())?]);
         let file_scan_config =
-            FileScanConfigBuilder::new(object_store_url, required_schema, parquet_source)
+            FileScanConfigBuilder::new(object_store_url, Arc::clone(&required_schema), parquet_source)
                 .with_file_groups(vec![files])
                 .build();
 
         let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
 
-        let mut stream = parquet_exec
+        let adapter_exec: Arc<dyn ExecutionPlan> = Arc::new(ParquetSchemaAdapterExec::new(
+            Arc::new(parquet_exec),
+            required_schema,
+            spark_parquet_options,
+            None,
+        ));
+
+        let mut stream = adapter_exec
             .execute(0, Arc::new(TaskContext::default()))
             .unwrap();
         stream.next().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_schema_adapter_stream() -> Result<(), DataFusionError> {
+        use datafusion::execution::RecordBatchStream;
+        use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+
+        // Create source data with Int32
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Int32, false),
+        ]));
+
+        let ids = Arc::new(Int32Array::from(vec![1, 2, 3]));
+        let values = Arc::new(Int32Array::from(vec![10, 20, 30]));
+        let batch = RecordBatch::try_new(Arc::clone(&source_schema), vec![ids, values])?;
+
+        // Create target schema with String for id
+        let target_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("value", DataType::Int32, false),
+        ]));
+
+        // Create Spark options
+        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+
+        // Create a simple stream that yields one batch
+        let source_stream = RecordBatchStreamAdapter::new(
+            Arc::clone(&source_schema),
+            futures::stream::once(async move { Ok(batch) }),
+        );
+
+        // Wrap with schema adapter stream - it will compute field mappings internally
+        let mut adapter_stream = super::ParquetSchemaAdapterStream::new(
+            Box::pin(source_stream),
+            Arc::clone(&target_schema),
+            &source_schema,
+            spark_options,
+            None,
+        );
+
+        // Verify the schema
+        assert_eq!(adapter_stream.schema(), target_schema);
+
+        // Read and verify the adapted batch
+        let adapted_batch = adapter_stream.next().await.unwrap()?;
+        assert_eq!(adapted_batch.num_rows(), 3);
+        assert_eq!(adapted_batch.schema(), target_schema);
+
+        // Verify id column was cast to String
+        let id_col = adapted_batch.column(0);
+        assert_eq!(id_col.data_type(), &DataType::Utf8);
+        let id_array = id_col.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(id_array.value(0), "1");
+        assert_eq!(id_array.value(1), "2");
+        assert_eq!(id_array.value(2), "3");
+
+        // Verify value column remained Int32
+        let value_col = adapted_batch.column(1);
+        assert_eq!(value_col.data_type(), &DataType::Int32);
+        let value_array = value_col.as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(value_array.value(0), 10);
+        assert_eq!(value_array.value(1), 20);
+        assert_eq!(value_array.value(2), 30);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_schema_adapter_exec() -> Result<(), DataFusionError> {
+        use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+        use datafusion::physical_plan::{DisplayAs, DisplayFormatType};
+
+        // Create source data with Int32
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Int32, false),
+        ]));
+
+        let ids = Arc::new(Int32Array::from(vec![1, 2, 3]));
+        let values = Arc::new(Int32Array::from(vec![10, 20, 30]));
+        let batch = RecordBatch::try_new(Arc::clone(&source_schema), vec![ids, values])?;
+
+        // Create target schema with String for id
+        let target_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("value", DataType::Int32, false),
+        ]));
+
+        // Create a simple mock execution plan that returns our batch
+        #[derive(Debug)]
+        struct MockExec {
+            schema: SchemaRef,
+            batch: RecordBatch,
+            properties: datafusion::physical_plan::PlanProperties,
+        }
+
+        impl MockExec {
+            fn new(schema: SchemaRef, batch: RecordBatch) -> Self {
+                use datafusion::physical_plan::Partitioning;
+                use datafusion::physical_plan::execution_plan::{EmissionType, Boundedness};
+                use datafusion::physical_expr::EquivalenceProperties;
+
+                let eq_properties = EquivalenceProperties::new(Arc::clone(&schema));
+                let properties = datafusion::physical_plan::PlanProperties::new(
+                    eq_properties,
+                    Partitioning::UnknownPartitioning(1),
+                    EmissionType::Final,
+                    Boundedness::Bounded,
+                );
+
+                Self {
+                    schema,
+                    batch,
+                    properties,
+                }
+            }
+        }
+
+        impl DisplayAs for MockExec {
+            fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "MockExec")
+            }
+        }
+
+        impl ExecutionPlan for MockExec {
+            fn name(&self) -> &str {
+                "MockExec"
+            }
+
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+
+            fn properties(&self) -> &datafusion::physical_plan::PlanProperties {
+                &self.properties
+            }
+
+            fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+                vec![]
+            }
+
+            fn with_new_children(
+                self: Arc<Self>,
+                _children: Vec<Arc<dyn ExecutionPlan>>,
+            ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+                Ok(self)
+            }
+
+            fn execute(
+                &self,
+                _partition: usize,
+                _context: Arc<datafusion::execution::TaskContext>,
+            ) -> datafusion::common::Result<datafusion::execution::SendableRecordBatchStream> {
+                let batch = self.batch.clone();
+                let schema = Arc::clone(&self.schema);
+                Ok(Box::pin(RecordBatchStreamAdapter::new(
+                    schema,
+                    futures::stream::once(async move { Ok(batch) }),
+                )))
+            }
+        }
+
+        let mock_exec = Arc::new(MockExec::new(Arc::clone(&source_schema), batch));
+
+        // Wrap with schema adapter exec
+        let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+        let adapter_exec = super::ParquetSchemaAdapterExec::new(
+            mock_exec,
+            Arc::clone(&target_schema),
+            spark_options,
+            None,
+        );
+
+        // Verify the schema
+        assert_eq!(adapter_exec.schema(), target_schema);
+
+        // Execute and verify the adapted batch
+        let mut stream = adapter_exec.execute(0, Arc::new(TaskContext::default()))?;
+        let adapted_batch = stream.next().await.unwrap()?;
+
+        assert_eq!(adapted_batch.num_rows(), 3);
+        assert_eq!(adapted_batch.schema(), target_schema);
+
+        // Verify id column was cast to String
+        let id_col = adapted_batch.column(0);
+        assert_eq!(id_col.data_type(), &DataType::Utf8);
+        let id_array = id_col.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(id_array.value(0), "1");
+        assert_eq!(id_array.value(1), "2");
+        assert_eq!(id_array.value(2), "3");
+
+        // Verify value column remained Int32
+        let value_col = adapted_batch.column(1);
+        assert_eq!(value_col.data_type(), &DataType::Int32);
+        let value_array = value_col.as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(value_array.value(0), 10);
+        assert_eq!(value_array.value(1), 20);
+        assert_eq!(value_array.value(2), 30);
+
+        Ok(())
     }
 }
