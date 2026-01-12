@@ -393,9 +393,9 @@ object CometShuffleExchangeExec
   }
 
   /**
-   * Check if JVM-based columnar shuffle (CometColumnarExchange) can be used for this shuffle.
-   * JVM shuffle is used when the child plan is not a Comet native operator, or when native
-   * shuffle doesn't support the required partitioning type (e.g., RoundRobinPartitioning).
+   * Check if JVM-based columnar shuffle (CometColumnarExchange) can be used for this shuffle. JVM
+   * shuffle is used when the child plan is not a Comet native operator, or when native shuffle
+   * doesn't support the required partitioning type (e.g., RoundRobinPartitioning).
    */
   def columnarShuffleSupported(s: ShuffleExchangeExec): Boolean = {
 
