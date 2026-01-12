@@ -384,6 +384,9 @@ object CometShuffleExchangeExec
           }
         }
         supported
+      case RoundRobinPartitioning(_) =>
+        // RoundRobin partitioning is now supported. Data types already verified to be serializable.
+        true
       case _ =>
         withInfo(
           s,

@@ -2356,6 +2356,9 @@ impl PhysicalPlanner {
                 ))
             }
             PartitioningStruct::SinglePartition(_) => Ok(CometPartitioning::SinglePartition),
+            PartitioningStruct::RoundRobinPartition(rr_partition) => Ok(
+                CometPartitioning::RoundRobin(rr_partition.num_partitions as usize),
+            ),
         }
     }
 

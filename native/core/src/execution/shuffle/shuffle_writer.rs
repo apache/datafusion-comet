@@ -354,6 +354,9 @@ struct ScratchSpace {
     /// partition_starts[K + 1] are the start and end indices of partition K in partition_row_indices.
     /// The length of this array is 1 + the number of partitions.
     partition_starts: Vec<u32>,
+    /// (hash, row_index) pairs used for round robin partitioning. After sorting by hash,
+    /// rows are assigned to partitions in round-robin fashion for deterministic ordering.
+    hash_index_pairs: Vec<(u32, u32)>,
 }
 
 impl MultiPartitionShuffleRepartitioner {
@@ -382,13 +385,20 @@ impl MultiPartitionShuffleRepartitioner {
         // The initial values are not used.
         let scratch = ScratchSpace {
             hashes_buf: match partitioning {
-                // Only allocate the hashes_buf if hash partitioning.
-                CometPartitioning::Hash(_, _) => vec![0; batch_size],
+                // Allocate hashes_buf for hash and round robin partitioning.
+                CometPartitioning::Hash(_, _) | CometPartitioning::RoundRobin(_) => {
+                    vec![0; batch_size]
+                }
                 _ => vec![],
             },
             partition_ids: vec![0; batch_size],
             partition_row_indices: vec![0; batch_size],
             partition_starts: vec![0; num_output_partitions + 1],
+            hash_index_pairs: match partitioning {
+                // Allocate hash_index_pairs for round robin partitioning.
+                CometPartitioning::RoundRobin(_) => vec![(0, 0); batch_size],
+                _ => vec![],
+            },
         };
 
         let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
@@ -577,6 +587,64 @@ impl MultiPartitionShuffleRepartitioner {
 
                     // We now have partition ids for every input row, map that to partition starts
                     // and partition indices to eventually right these rows to partition buffers.
+                    map_partition_ids_to_starts_and_indices(
+                        &mut scratch,
+                        *num_output_partitions,
+                        num_rows,
+                    );
+
+                    timer.stop();
+                    Ok::<(&Vec<u32>, &Vec<u32>), DataFusionError>((
+                        &scratch.partition_starts,
+                        &scratch.partition_row_indices,
+                    ))
+                }?;
+
+                self.buffer_partitioned_batch_may_spill(
+                    input,
+                    partition_row_indices,
+                    partition_starts,
+                )
+                .await?;
+                self.scratch = scratch;
+            }
+            CometPartitioning::RoundRobin(num_output_partitions) => {
+                let mut scratch = std::mem::take(&mut self.scratch);
+                let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
+                    let mut timer = self.metrics.repart_time.timer();
+
+                    let num_rows = input.num_rows();
+
+                    // Collect ALL input columns for hashing
+                    let all_columns: Vec<ArrayRef> = (0..input.num_columns())
+                        .map(|i| Arc::clone(input.column(i)))
+                        .collect();
+
+                    // Use identical seed as Spark hash partitioning.
+                    let hashes_buf = &mut scratch.hashes_buf[..num_rows];
+                    hashes_buf.fill(42_u32);
+
+                    // Compute hash for all columns
+                    create_murmur3_hashes(&all_columns, hashes_buf)?;
+
+                    // Create (hash, row_index) pairs for sorting
+                    let hash_index_pairs = &mut scratch.hash_index_pairs[..num_rows];
+                    for (idx, &hash) in hashes_buf.iter().enumerate() {
+                        hash_index_pairs[idx] = (hash, idx as u32);
+                    }
+
+                    // Sort by hash value for deterministic ordering
+                    hash_index_pairs.sort_unstable_by_key(|(hash, _)| *hash);
+
+                    // Assign partition IDs in round-robin fashion to sorted rows
+                    let partition_ids = &mut scratch.partition_ids[..num_rows];
+                    for (sorted_idx, &(_hash, row_idx)) in hash_index_pairs.iter().enumerate() {
+                        partition_ids[row_idx as usize] =
+                            (sorted_idx % *num_output_partitions) as u32;
+                    }
+
+                    // We now have partition ids for every input row, map that to partition starts
+                    // and partition indices to eventually write these rows to partition buffers.
                     map_partition_ids_to_starts_and_indices(
                         &mut scratch,
                         *num_output_partitions,
@@ -1431,6 +1499,7 @@ mod test {
                 Arc::new(row_converter),
                 owned_rows,
             ),
+            CometPartitioning::RoundRobin(num_partitions),
         ] {
             let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
 
@@ -1482,5 +1551,96 @@ mod test {
         // expected partition from Spark with n=200
         let expected = vec![69, 5, 193, 171, 115];
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_round_robin_deterministic() {
+        // Test that round robin partitioning produces identical results when run multiple times
+        use std::fs;
+        use std::io::Read;
+
+        let batch_size = 1000;
+        let num_batches = 10;
+        let num_partitions = 8;
+
+        let batch = create_batch(batch_size);
+        let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
+
+        // Run shuffle twice and compare results
+        for run in 0..2 {
+            let data_file = format!("/tmp/rr_data_{}.out", run);
+            let index_file = format!("/tmp/rr_index_{}.out", run);
+
+            let partitions = &[batches.clone()];
+            let exec = ShuffleWriterExec::try_new(
+                Arc::new(DataSourceExec::new(Arc::new(
+                    MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
+                ))),
+                CometPartitioning::RoundRobin(num_partitions),
+                CompressionCodec::Zstd(1),
+                data_file.clone(),
+                index_file.clone(),
+                false,
+                1024 * 1024,
+            )
+            .unwrap();
+
+            let config = SessionConfig::new();
+            let runtime_env = Arc::new(
+                RuntimeEnvBuilder::new()
+                    .with_memory_limit(10 * 1024 * 1024, 1.0)
+                    .build()
+                    .unwrap(),
+            );
+            let session_ctx = Arc::new(SessionContext::new_with_config_rt(config, runtime_env));
+            let task_ctx = Arc::new(TaskContext::from(session_ctx.as_ref()));
+
+            // Execute the shuffle
+            futures::executor::block_on(async {
+                let mut stream = exec.execute(0, Arc::clone(&task_ctx)).unwrap();
+                while stream.next().await.is_some() {}
+            });
+
+            if run == 1 {
+                // Compare data files
+                let mut data0 = Vec::new();
+                fs::File::open("/tmp/rr_data_0.out")
+                    .unwrap()
+                    .read_to_end(&mut data0)
+                    .unwrap();
+                let mut data1 = Vec::new();
+                fs::File::open("/tmp/rr_data_1.out")
+                    .unwrap()
+                    .read_to_end(&mut data1)
+                    .unwrap();
+                assert_eq!(
+                    data0, data1,
+                    "Round robin shuffle data should be identical across runs"
+                );
+
+                // Compare index files
+                let mut index0 = Vec::new();
+                fs::File::open("/tmp/rr_index_0.out")
+                    .unwrap()
+                    .read_to_end(&mut index0)
+                    .unwrap();
+                let mut index1 = Vec::new();
+                fs::File::open("/tmp/rr_index_1.out")
+                    .unwrap()
+                    .read_to_end(&mut index1)
+                    .unwrap();
+                assert_eq!(
+                    index0, index1,
+                    "Round robin shuffle index should be identical across runs"
+                );
+            }
+        }
+
+        // Clean up
+        let _ = fs::remove_file("/tmp/rr_data_0.out");
+        let _ = fs::remove_file("/tmp/rr_index_0.out");
+        let _ = fs::remove_file("/tmp/rr_data_1.out");
+        let _ = fs::remove_file("/tmp/rr_index_1.out");
     }
 }

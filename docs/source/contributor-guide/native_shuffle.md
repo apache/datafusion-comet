@@ -52,8 +52,7 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    - `HashPartitioning`
    - `RangePartitioning`
    - `SinglePartition`
-
-   `RoundRobinPartitioning` requires JVM shuffle.
+   - `RoundRobinPartitioning`
 
 4. **Supported partition key types**: For `HashPartitioning` and `RangePartitioning`, partition
    keys must be primitive types. Complex types (struct, array, map) as partition keys require
@@ -118,7 +117,7 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 | ----------------------- | ------------------------------------ | ------------------------------------------------------------------------------------ |
 | `shuffle_writer.rs`     | `native/core/src/execution/shuffle/` | `ShuffleWriterExec` plan and partitioners. Main shuffle logic.                       |
 | `codec.rs`              | `native/core/src/execution/shuffle/` | `ShuffleBlockWriter` for Arrow IPC encoding with compression. Also handles decoding. |
-| `comet_partitioning.rs` | `native/core/src/execution/shuffle/` | `CometPartitioning` enum defining partition schemes (Hash, Range, Single).           |
+| `comet_partitioning.rs` | `native/core/src/execution/shuffle/` | `CometPartitioning` enum defining partition schemes (Hash, Range, Single, RoundRobin). |
 
 ## Data Flow
 
@@ -131,7 +130,7 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 2. **Native execution**: `CometExec.getCometIterator()` executes the plan in Rust.
 
 3. **Partitioning**: `ShuffleWriterExec` receives batches and routes to the appropriate partitioner:
-   - `MultiPartitionShuffleRepartitioner`: For hash/range partitioning
+   - `MultiPartitionShuffleRepartitioner`: For hash/range/round-robin partitioning
    - `SinglePartitionShufflePartitioner`: For single partition (simpler path)
 
 4. **Buffering and spilling**: The partitioner buffers rows per partition. When memory pressure
@@ -187,6 +186,18 @@ For range partitioning:
 The simplest case: all rows go to partition 0. Uses `SinglePartitionShufflePartitioner` which
 simply concatenates batches to reach the configured batch size.
 
+### Round Robin Partitioning
+
+Round robin partitioning distributes rows evenly across partitions in a deterministic way:
+
+1. Computes a Murmur3 hash of **all columns** in each row (using seed 42)
+2. Sorts rows by their hash values to ensure deterministic ordering
+3. Assigns rows to partitions sequentially: `partition_id = sorted_index % num_partitions`
+
+This approach ensures that repeated execution of the same query produces identical results,
+which is critical for fault tolerance and retry logic. Unlike Spark's round robin implementation
+which uses random seeding, Comet's hash-based approach guarantees determinism across retries.
+
 ## Memory Management
 
 Native shuffle uses DataFusion's memory management with spilling support:
@@ -235,8 +246,8 @@ independently compressed, allowing parallel decompression during reads.
 | ------------------- | -------------------------------------- | --------------------------------- |
 | Input format        | Columnar (direct from Comet operators) | Row-based (via ColumnarToRowExec) |
 | Partitioning logic  | Rust implementation                    | Spark's partitioner               |
-| Supported schemes   | Hash, Range, Single                    | Hash, Range, Single, RoundRobin   |
-| Partition key types | Primitives only                        | Any type                          |
+| Supported schemes   | Hash, Range, Single, RoundRobin        | Hash, Range, Single, RoundRobin   |
+| Partition key types | Primitives only (Hash, Range)          | Any type                          |
 | Performance         | Higher (no format conversion)          | Lower (columnar→row→columnar)     |
 | Writer variants     | Single path                            | Bypass (hash) and sort-based      |
 

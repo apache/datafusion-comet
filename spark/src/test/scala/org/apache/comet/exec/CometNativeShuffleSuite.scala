@@ -388,4 +388,52 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       checkSparkAnswer(df)
     }
   }
+
+  test("native shuffle: round robin partitioning") {
+    withParquetTable((0 until 100).map(i => (i, (i + 1).toLong, s"str$i")), "tbl") {
+      val df = sql("SELECT * FROM tbl")
+
+      // Test basic round robin repartitioning
+      val shuffled = df.repartition(10)
+      checkShuffleAnswer(shuffled, 1, checkNativeOperators = true)
+
+      // Verify it uses native shuffle with round robin partitioning
+      val cometShuffleExecs = checkCometExchange(shuffled, 1, true)
+      assert(
+        cometShuffleExecs(0).outputPartitioning.getClass.getName
+          .contains("RoundRobinPartitioning"),
+        "Expected RoundRobinPartitioning to be used")
+
+      // Verify row count is preserved
+      assert(shuffled.count() == 100)
+    }
+  }
+
+  test("native shuffle: round robin deterministic behavior") {
+    // Test that round robin produces consistent results across multiple executions
+    withParquetTable((0 until 1000).map(i => (i, (i + 1).toLong, s"str$i")), "tbl") {
+      val df = sql("SELECT * FROM tbl")
+
+      // Execute shuffle twice and compare results
+      val result1 = df.repartition(8).collect().toSeq
+      val result2 = df.repartition(8).collect().toSeq
+
+      // Results should be identical (deterministic ordering)
+      assert(result1 == result2, "Round robin shuffle should produce deterministic results")
+    }
+  }
+
+  test("native shuffle: round robin with filter") {
+    withParquetTable((0 until 100).map(i => (i, (i + 1).toLong)), "tbl") {
+      val df = sql("SELECT * FROM tbl")
+      val shuffled = df
+        .filter($"_1" < 50)
+        .repartition(10)
+
+      checkShuffleAnswer(shuffled, 1, checkNativeOperators = true)
+
+      // Verify correct number of rows after filter
+      assert(shuffled.count() == 50)
+    }
+  }
 }
