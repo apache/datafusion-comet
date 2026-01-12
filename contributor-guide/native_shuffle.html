@@ -1,0 +1,866 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Native Shuffle &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=cd442bcd" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/native_shuffle';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Comet Parquet Scan Implementations" href="parquet_scans.html" />
+    <link rel="prev" title="JVM Shuffle" href="jvm_shuffle.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../about/index.html">Comet Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../user-guide/index.html">User Guide</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Contributor Guide</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="contributing.html">Getting Started</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
+<li class="toctree-l2"><a class="reference internal" href="plugin_overview.html#plugin-components">Plugin Components</a></li>
+<li class="toctree-l2"><a class="reference internal" href="ffi.html">Arrow FFI</a></li>
+<li class="toctree-l2"><a class="reference internal" href="jvm_shuffle.html">JVM Shuffle</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Native Shuffle</a></li>
+<li class="toctree-l2"><a class="reference internal" href="parquet_scans.html">Parquet Scans</a></li>
+<li class="toctree-l2"><a class="reference internal" href="development.html">Development Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_operator.html">Adding a New Operator</a></li>
+<li class="toctree-l2"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l2"><a class="reference internal" href="tracing.html">Tracing</a></li>
+<li class="toctree-l2"><a class="reference internal" href="profiling_native_code.html">Profiling Native Code</a></li>
+<li class="toctree-l2"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l2"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../asf/index.html">ASF Links</a></li>
+</ul>
+
+  </div>
+</nav>
+</div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Native Shuffle</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<section id="native-shuffle">
+<h1>Native Shuffle<a class="headerlink" href="#native-shuffle" title="Link to this heading">#</a></h1>
+<p>This document describes Comet’s native shuffle implementation (<code class="docutils literal notranslate"><span class="pre">CometNativeShuffle</span></code>), which performs
+shuffle operations entirely in Rust code for maximum performance. For the JVM-based alternative,
+see <a class="reference internal" href="jvm_shuffle.html"><span class="std std-doc">JVM Shuffle</span></a>.</p>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<p>Native shuffle takes columnar input directly from Comet native operators and performs partitioning,
+encoding, and writing in native Rust code. This avoids the columnar-to-row-to-columnar conversion
+overhead that JVM shuffle incurs.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Comet Native (columnar) → Native Shuffle → Arrow IPC → columnar
+</pre></div>
+</div>
+<p>Compare this to JVM shuffle’s data path:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Comet Native (columnar) → ColumnarToRowExec → rows → JVM Shuffle → Arrow IPC → columnar
+</pre></div>
+</div>
+</section>
+<section id="when-native-shuffle-is-used">
+<h2>When Native Shuffle is Used<a class="headerlink" href="#when-native-shuffle-is-used" title="Link to this heading">#</a></h2>
+<p>Native shuffle (<code class="docutils literal notranslate"><span class="pre">CometExchange</span></code>) is selected when all of the following conditions are met:</p>
+<ol class="arabic">
+<li><p><strong>Shuffle mode allows native</strong>: <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> is <code class="docutils literal notranslate"><span class="pre">native</span></code> or <code class="docutils literal notranslate"><span class="pre">auto</span></code>.</p></li>
+<li><p><strong>Child plan is a Comet native operator</strong>: The child must be a <code class="docutils literal notranslate"><span class="pre">CometPlan</span></code> that produces
+columnar output. Row-based Spark operators require JVM shuffle.</p></li>
+<li><p><strong>Supported partitioning type</strong>: Native shuffle supports:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SinglePartition</span></code></p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code> requires JVM shuffle.</p>
+</li>
+<li><p><strong>Supported partition key types</strong>: For <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> and <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, partition
+keys must be primitive types. Complex types (struct, array, map) as partition keys require
+JVM shuffle. Note that complex types are fully supported as data columns in native shuffle.</p></li>
+</ol>
+</section>
+<section id="architecture">
+<h2>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">#</a></h2>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>┌─────────────────────────────────────────────────────────────────────────────┐
+│                           CometShuffleManager                                │
+│  - Routes to CometNativeShuffleWriter for CometNativeShuffleHandle           │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         CometNativeShuffleWriter                             │
+│  - Constructs protobuf operator plan                                         │
+│  - Invokes native execution via CometExec.getCometIterator()                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼ (JNI)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         ShuffleWriterExec (Rust)                             │
+│  - DataFusion ExecutionPlan                                                  │
+│  - Orchestrates partitioning and writing                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+                    │                                     │
+                    ▼                                     ▼
+┌───────────────────────────────────┐   ┌───────────────────────────────────┐
+│ MultiPartitionShuffleRepartitioner │   │ SinglePartitionShufflePartitioner │
+│ (hash/range partitioning)          │   │ (single partition case)           │
+└───────────────────────────────────┘   └───────────────────────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────┐
+│ ShuffleBlockWriter                 │
+│ (Arrow IPC + compression)          │
+└───────────────────────────────────┘
+                    │
+                    ▼
+         ┌─────────────────┐
+         │  Data + Index   │
+         │     Files       │
+         └─────────────────┘
+</pre></div>
+</div>
+</section>
+<section id="key-classes">
+<h2>Key Classes<a class="headerlink" href="#key-classes" title="Link to this heading">#</a></h2>
+<section id="scala-side">
+<h3>Scala Side<a class="headerlink" href="#scala-side" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Class</p></th>
+<th class="head"><p>Location</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometShuffleExchangeExec</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">.../shuffle/CometShuffleExchangeExec.scala</span></code></p></td>
+<td><p>Physical plan node. Validates types and partitioning, creates <code class="docutils literal notranslate"><span class="pre">CometShuffleDependency</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometNativeShuffleWriter</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">.../shuffle/CometNativeShuffleWriter.scala</span></code></p></td>
+<td><p>Implements <code class="docutils literal notranslate"><span class="pre">ShuffleWriter</span></code>. Builds protobuf plan and invokes native execution.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometShuffleDependency</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">.../shuffle/CometShuffleDependency.scala</span></code></p></td>
+<td><p>Extends <code class="docutils literal notranslate"><span class="pre">ShuffleDependency</span></code>. Holds shuffle type, schema, and range partition bounds.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometBlockStoreShuffleReader</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">.../shuffle/CometBlockStoreShuffleReader.scala</span></code></p></td>
+<td><p>Reads shuffle blocks via <code class="docutils literal notranslate"><span class="pre">ShuffleBlockFetcherIterator</span></code>. Decodes Arrow IPC to <code class="docutils literal notranslate"><span class="pre">ColumnarBatch</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">NativeBatchDecoderIterator</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">.../shuffle/NativeBatchDecoderIterator.scala</span></code></p></td>
+<td><p>Reads compressed Arrow IPC from input stream. Calls native decode via JNI.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="rust-side">
+<h3>Rust Side<a class="headerlink" href="#rust-side" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>File</p></th>
+<th class="head"><p>Location</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">shuffle_writer.rs</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">native/core/src/execution/shuffle/</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code> plan and partitioners. Main shuffle logic.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">codec.rs</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">native/core/src/execution/shuffle/</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ShuffleBlockWriter</span></code> for Arrow IPC encoding with compression. Also handles decoding.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">comet_partitioning.rs</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">native/core/src/execution/shuffle/</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">CometPartitioning</span></code> enum defining partition schemes (Hash, Range, Single).</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+<section id="data-flow">
+<h2>Data Flow<a class="headerlink" href="#data-flow" title="Link to this heading">#</a></h2>
+<section id="write-path">
+<h3>Write Path<a class="headerlink" href="#write-path" title="Link to this heading">#</a></h3>
+<ol class="arabic simple">
+<li><p><strong>Plan construction</strong>: <code class="docutils literal notranslate"><span class="pre">CometNativeShuffleWriter</span></code> builds a protobuf operator plan containing:</p>
+<ul class="simple">
+<li><p>A scan operator reading from the input iterator</p></li>
+<li><p>A <code class="docutils literal notranslate"><span class="pre">ShuffleWriter</span></code> operator with partitioning config and compression codec</p></li>
+</ul>
+</li>
+<li><p><strong>Native execution</strong>: <code class="docutils literal notranslate"><span class="pre">CometExec.getCometIterator()</span></code> executes the plan in Rust.</p></li>
+<li><p><strong>Partitioning</strong>: <code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code> receives batches and routes to the appropriate partitioner:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">MultiPartitionShuffleRepartitioner</span></code>: For hash/range partitioning</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SinglePartitionShufflePartitioner</span></code>: For single partition (simpler path)</p></li>
+</ul>
+</li>
+<li><p><strong>Buffering and spilling</strong>: The partitioner buffers rows per partition. When memory pressure
+exceeds the threshold, partitions spill to temporary files.</p></li>
+<li><p><strong>Encoding</strong>: <code class="docutils literal notranslate"><span class="pre">ShuffleBlockWriter</span></code> encodes each partition’s data as compressed Arrow IPC:</p>
+<ul class="simple">
+<li><p>Writes compression type header</p></li>
+<li><p>Writes field count header</p></li>
+<li><p>Writes compressed IPC stream</p></li>
+</ul>
+</li>
+<li><p><strong>Output files</strong>: Two files are produced:</p>
+<ul class="simple">
+<li><p><strong>Data file</strong>: Concatenated partition data</p></li>
+<li><p><strong>Index file</strong>: Array of 8-byte little-endian offsets marking partition boundaries</p></li>
+</ul>
+</li>
+<li><p><strong>Commit</strong>: Back in JVM, <code class="docutils literal notranslate"><span class="pre">CometNativeShuffleWriter</span></code> reads the index file to get partition
+lengths and commits via Spark’s <code class="docutils literal notranslate"><span class="pre">IndexShuffleBlockResolver</span></code>.</p></li>
+</ol>
+</section>
+<section id="read-path">
+<h3>Read Path<a class="headerlink" href="#read-path" title="Link to this heading">#</a></h3>
+<ol class="arabic simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">CometBlockStoreShuffleReader</span></code> fetches shuffle blocks via <code class="docutils literal notranslate"><span class="pre">ShuffleBlockFetcherIterator</span></code>.</p></li>
+<li><p>For each block, <code class="docutils literal notranslate"><span class="pre">NativeBatchDecoderIterator</span></code>:</p>
+<ul class="simple">
+<li><p>Reads the 8-byte compressed length header</p></li>
+<li><p>Reads the 8-byte field count header</p></li>
+<li><p>Reads the compressed IPC data</p></li>
+<li><p>Calls <code class="docutils literal notranslate"><span class="pre">Native.decodeShuffleBlock()</span></code> via JNI</p></li>
+</ul>
+</li>
+<li><p>Native code decompresses and deserializes the Arrow IPC stream.</p></li>
+<li><p>Arrow FFI transfers the <code class="docutils literal notranslate"><span class="pre">RecordBatch</span></code> to JVM as a <code class="docutils literal notranslate"><span class="pre">ColumnarBatch</span></code>.</p></li>
+</ol>
+</section>
+</section>
+<section id="partitioning">
+<h2>Partitioning<a class="headerlink" href="#partitioning" title="Link to this heading">#</a></h2>
+<section id="hash-partitioning">
+<h3>Hash Partitioning<a class="headerlink" href="#hash-partitioning" title="Link to this heading">#</a></h3>
+<p>Native shuffle implements Spark-compatible hash partitioning:</p>
+<ul class="simple">
+<li><p>Uses Murmur3 hash function with seed 42 (matching Spark)</p></li>
+<li><p>Computes hash of partition key columns</p></li>
+<li><p>Applies modulo by partition count: <code class="docutils literal notranslate"><span class="pre">partition_id</span> <span class="pre">=</span> <span class="pre">hash</span> <span class="pre">%</span> <span class="pre">num_partitions</span></code></p></li>
+</ul>
+</section>
+<section id="range-partitioning">
+<h3>Range Partitioning<a class="headerlink" href="#range-partitioning" title="Link to this heading">#</a></h3>
+<p>For range partitioning:</p>
+<ol class="arabic simple">
+<li><p>Spark’s <code class="docutils literal notranslate"><span class="pre">RangePartitioner</span></code> samples data and computes partition boundaries on the driver.</p></li>
+<li><p>Boundaries are serialized to the native plan.</p></li>
+<li><p>Native code converts sort key columns to comparable row format.</p></li>
+<li><p>Binary search (<code class="docutils literal notranslate"><span class="pre">partition_point</span></code>) determines which partition each row belongs to.</p></li>
+</ol>
+</section>
+<section id="single-partition">
+<h3>Single Partition<a class="headerlink" href="#single-partition" title="Link to this heading">#</a></h3>
+<p>The simplest case: all rows go to partition 0. Uses <code class="docutils literal notranslate"><span class="pre">SinglePartitionShufflePartitioner</span></code> which
+simply concatenates batches to reach the configured batch size.</p>
+</section>
+</section>
+<section id="memory-management">
+<h2>Memory Management<a class="headerlink" href="#memory-management" title="Link to this heading">#</a></h2>
+<p>Native shuffle uses DataFusion’s memory management with spilling support:</p>
+<ul class="simple">
+<li><p><strong>Memory pool</strong>: Tracks memory usage across the shuffle operation.</p></li>
+<li><p><strong>Spill threshold</strong>: When buffered data exceeds the threshold, partitions spill to disk.</p></li>
+<li><p><strong>Per-partition spilling</strong>: Each partition has its own spill file. Multiple spills for a
+partition are concatenated when writing the final output.</p></li>
+<li><p><strong>Scratch space</strong>: Reusable buffers for partition ID computation to reduce allocations.</p></li>
+</ul>
+<p>The <code class="docutils literal notranslate"><span class="pre">MultiPartitionShuffleRepartitioner</span></code> manages:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">PartitionBuffer</span></code>: In-memory buffer for each partition</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SpillFile</span></code>: Temporary file for spilled data</p></li>
+<li><p>Memory tracking via <code class="docutils literal notranslate"><span class="pre">MemoryConsumer</span></code> trait</p></li>
+</ul>
+</section>
+<section id="compression">
+<h2>Compression<a class="headerlink" href="#compression" title="Link to this heading">#</a></h2>
+<p>Native shuffle supports multiple compression codecs configured via
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.compression.codec</span></code>:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Codec</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">zstd</span></code></p></td>
+<td><p>Zstandard compression. Best ratio, configurable level.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">lz4</span></code></p></td>
+<td><p>LZ4 compression. Fast with good ratio.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">snappy</span></code></p></td>
+<td><p>Snappy compression. Fastest, lower ratio.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">none</span></code></p></td>
+<td><p>No compression.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The compression codec is applied uniformly to all partitions. Each partition’s data is
+independently compressed, allowing parallel decompression during reads.</p>
+</section>
+<section id="configuration">
+<h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Enable Comet shuffle</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">auto</span></code></p></td>
+<td><p>Shuffle mode: <code class="docutils literal notranslate"><span class="pre">native</span></code>, <code class="docutils literal notranslate"><span class="pre">jvm</span></code>, or <code class="docutils literal notranslate"><span class="pre">auto</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.compression.codec</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">zstd</span></code></p></td>
+<td><p>Compression codec</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.compression.zstd.level</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+<td><p>Zstd compression level</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.write.buffer.size</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1MB</span></code></p></td>
+<td><p>Write buffer size</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.batch.size</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">8192</span></code></p></td>
+<td><p>Target rows per batch</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="comparison-with-jvm-shuffle">
+<h2>Comparison with JVM Shuffle<a class="headerlink" href="#comparison-with-jvm-shuffle" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Aspect</p></th>
+<th class="head"><p>Native Shuffle</p></th>
+<th class="head"><p>JVM Shuffle</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Input format</p></td>
+<td><p>Columnar (direct from Comet operators)</p></td>
+<td><p>Row-based (via ColumnarToRowExec)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Partitioning logic</p></td>
+<td><p>Rust implementation</p></td>
+<td><p>Spark’s partitioner</p></td>
+</tr>
+<tr class="row-even"><td><p>Supported schemes</p></td>
+<td><p>Hash, Range, Single</p></td>
+<td><p>Hash, Range, Single, RoundRobin</p></td>
+</tr>
+<tr class="row-odd"><td><p>Partition key types</p></td>
+<td><p>Primitives only</p></td>
+<td><p>Any type</p></td>
+</tr>
+<tr class="row-even"><td><p>Performance</p></td>
+<td><p>Higher (no format conversion)</p></td>
+<td><p>Lower (columnar→row→columnar)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Writer variants</p></td>
+<td><p>Single path</p></td>
+<td><p>Bypass (hash) and sort-based</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>See <a class="reference internal" href="jvm_shuffle.html"><span class="std std-doc">JVM Shuffle</span></a> for details on the JVM-based implementation.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="jvm_shuffle.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">JVM Shuffle</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="parquet_scans.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Comet Parquet Scan Implementations</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
