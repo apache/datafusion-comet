@@ -19,6 +19,9 @@
 
 package org.apache.comet
 
+import org.scalactic.source.Position
+import org.scalatest.Tag
+
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
@@ -29,6 +32,15 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  * results to Spark's implementation for all supported data types.
  */
 class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+
+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
+      pos: Position): Unit = {
+    super.test(testName, testTags: _*) {
+      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
+        testFun
+      }
+    }
+  }
 
   test("hash - boolean") {
     withTable("t") {
