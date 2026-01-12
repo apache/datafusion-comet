@@ -1049,8 +1049,8 @@ impl PhysicalPlanner {
                                 .as_any()
                                 .downcast_ref::<DataFusionLiteral>()
                                 .ok_or_else(|| {
-                                GeneralError("Expected literal of default value.".to_string())
-                            })?;
+                                    GeneralError("Expected literal of default value.".to_string())
+                                })?;
                             Ok(df_literal.value().clone())
                         })
                         .collect();
@@ -1093,18 +1093,11 @@ impl PhysicalPlanner {
                 let files =
                     self.get_partitioned_files(&scan.file_partitions[self.partition as usize])?;
                 let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
-                let partition_fields: Vec<Field> = partition_schema
-                    .fields()
-                    .iter()
-                    .map(|field| {
-                        Field::new(field.name(), field.data_type().clone(), field.is_nullable())
-                    })
-                    .collect_vec();
+
                 let scan = init_datasource_exec(
                     required_schema,
                     Some(data_schema),
                     Some(partition_schema),
-                    Some(partition_fields),
                     object_store_url,
                     file_groups,
                     Some(projection_vector),
@@ -3385,6 +3378,7 @@ mod tests {
     use arrow::array::{Array, DictionaryArray, Int32Array, ListArray, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema};
     use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::config::TableParquetOptions;
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::object_store::ObjectStoreUrl;
     use datafusion::datasource::physical_plan::{
@@ -3401,8 +3395,6 @@ mod tests {
 
     use crate::execution::operators::ExecutionError;
     use crate::execution::planner::literal_to_array_ref;
-    use crate::parquet::parquet_support::SparkParquetOptions;
-    use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::spark_expression::ListLiteral;
     use datafusion_comet_proto::{
@@ -3412,7 +3404,6 @@ mod tests {
         spark_operator,
         spark_operator::{operator::OpStruct, Operator},
     };
-    use datafusion_comet_spark_expr::EvalMode;
 
     #[test]
     fn test_unpack_dictionary_primitive() {
@@ -4004,18 +3995,15 @@ mod tests {
             }
         }
 
-        let source = ParquetSource::default().with_schema_adapter_factory(Arc::new(
-            SparkSchemaAdapterFactory::new(
-                SparkParquetOptions::new(EvalMode::Ansi, "", false),
-                None,
-            ),
-        ))?;
+        let source = Arc::new(
+            ParquetSource::new(Arc::new(read_schema.clone()))
+                .with_table_parquet_options(TableParquetOptions::new()),
+        ) as Arc<dyn FileSource>;
 
         let object_store_url = ObjectStoreUrl::local_filesystem();
-        let file_scan_config =
-            FileScanConfigBuilder::new(object_store_url, read_schema.into(), source)
-                .with_file_groups(file_groups)
-                .build();
+        let file_scan_config = FileScanConfigBuilder::new(object_store_url, source)
+            .with_file_groups(file_groups)
+            .build();
 
         // Run native read
         let scan = Arc::new(DataSourceExec::new(Arc::new(file_scan_config.clone())));
