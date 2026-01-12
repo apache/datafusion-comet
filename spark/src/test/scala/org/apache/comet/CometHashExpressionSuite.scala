@@ -33,15 +33,6 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  */
 class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
-  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
-      pos: Position): Unit = {
-    super.test(testName, testTags: _*) {
-      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
-        testFun
-      }
-    }
-  }
-
   test("hash - boolean") {
     withTable("t") {
       sql("CREATE TABLE t(c BOOLEAN) USING parquet")
