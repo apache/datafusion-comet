@@ -266,10 +266,26 @@ object CometShuffleExchangeExec
     def supportedHashPartitioningDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType =>
+          _: TimestampNTZType | _: DateType =>
         true
+      case d: DecimalType =>
+        // Decimals with precision > 18 require Java BigDecimal conversion before hashing
+        d.precision <= 18
       case _ =>
         false
+    }
+
+    /**
+     * Check if a data type contains a decimal with precision > 18. Such decimals require
+     * conversion to Java BigDecimal before hashing, which is not supported in native shuffle.
+     */
+    def containsHighPrecisionDecimal(dt: DataType): Boolean = dt match {
+      case d: DecimalType => d.precision > 18
+      case StructType(fields) => fields.exists(f => containsHighPrecisionDecimal(f.dataType))
+      case ArrayType(elementType, _) => containsHighPrecisionDecimal(elementType)
+      case MapType(keyType, valueType, _) =>
+        containsHighPrecisionDecimal(keyType) || containsHighPrecisionDecimal(valueType)
+      case _ => false
     }
 
     /**
@@ -385,8 +401,19 @@ object CometShuffleExchangeExec
         }
         supported
       case RoundRobinPartitioning(_) =>
-        // RoundRobin partitioning is now supported. Data types already verified to be serializable.
-        true
+        // RoundRobin partitioning hashes all columns. Check that no column contains
+        // high-precision decimals, which require conversion to Java BigDecimal before hashing.
+        var supported = true
+        for (input <- inputs) {
+          if (containsHighPrecisionDecimal(input.dataType)) {
+            withInfo(
+              s,
+              s"unsupported round robin partitioning data type for native shuffle: " +
+                s"${input.dataType} (decimal precision > 18)")
+            supported = false
+          }
+        }
+        supported
       case _ =>
         withInfo(
           s,
