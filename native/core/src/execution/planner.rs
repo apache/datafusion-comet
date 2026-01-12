@@ -95,7 +95,7 @@ use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
-
+use crate::parquet::schema_adapter::ParquetSchemaAdapterExec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
     Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray,
@@ -136,7 +136,6 @@ use object_store::path::Path;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 use url::Url;
-use crate::parquet::schema_adapter::ParquetSchemaAdapterExec;
 
 // For clippy error on type_complexity.
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
@@ -1051,7 +1050,6 @@ impl PhysicalPlanner {
                     file_groups,
                     Some(projection_vector),
                     Some(data_filters?),
-                    default_values.clone(),
                     scan.session_timezone.as_str(),
                     scan.case_sensitive,
                     self.session_ctx(),
@@ -3437,9 +3435,7 @@ mod tests {
     use datafusion::catalog::memory::DataSourceExec;
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::object_store::ObjectStoreUrl;
-    use datafusion::datasource::physical_plan::{
-        FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
-    };
+    use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
     use datafusion::error::DataFusionError;
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::physical_plan::ExecutionPlan;
@@ -3452,6 +3448,7 @@ mod tests {
     use crate::execution::operators::ExecutionError;
     use crate::execution::planner::literal_to_array_ref;
     use crate::parquet::parquet_support::SparkParquetOptions;
+    use crate::parquet::schema_adapter::ParquetSchemaAdapterExec;
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::spark_expression::ListLiteral;
     use datafusion_comet_proto::{
@@ -3462,7 +3459,6 @@ mod tests {
         spark_operator::{operator::OpStruct, Operator},
     };
     use datafusion_comet_spark_expr::EvalMode;
-    use crate::parquet::schema_adapter::ParquetSchemaAdapterExec;
 
     #[test]
     fn test_unpack_dictionary_primitive() {
@@ -4071,7 +4067,10 @@ mod tests {
             None,
         ));
 
-        let result: Vec<_> = adapter_exec.execute(0, session_ctx.task_ctx())?.collect().await;
+        let result: Vec<_> = adapter_exec
+            .execute(0, session_ctx.task_ctx())?
+            .collect()
+            .await;
         Ok(result.first().unwrap().as_ref().unwrap().clone())
     }
 

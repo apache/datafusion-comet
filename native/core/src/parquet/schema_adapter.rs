@@ -20,15 +20,12 @@
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::{RecordBatch, RecordBatchOptions};
 use arrow::datatypes::{Schema, SchemaRef};
-use datafusion::common::ColumnStatistics;
-use datafusion::datasource::schema_adapter::{SchemaAdapter, SchemaAdapterFactory, SchemaMapper};
 use datafusion::physical_plan::{
     ColumnarValue, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
 };
 use datafusion::scalar::ScalarValue;
 use std::collections::HashMap;
 use std::sync::Arc;
-
 
 /// A stream wrapper that applies schema adaptation to batches from an underlying stream.
 ///
@@ -226,8 +223,8 @@ impl ParquetSchemaAdapterExec {
         parquet_options: SparkParquetOptions,
         default_values: Option<HashMap<usize, ScalarValue>>,
     ) -> Self {
-        use datafusion::physical_plan::execution_plan::{EmissionType, Boundedness};
         use datafusion::physical_expr::EquivalenceProperties;
+        use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 
         // Create properties with the required schema
         let eq_properties = EquivalenceProperties::new(Arc::clone(&required_schema));
@@ -330,6 +327,7 @@ impl ExecutionPlan for ParquetSchemaAdapterExec {
 #[cfg(test)]
 mod test {
     use crate::parquet::parquet_support::SparkParquetOptions;
+    use crate::parquet::schema_adapter::ParquetSchemaAdapterExec;
     use arrow::array::UInt32Array;
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::SchemaRef;
@@ -338,7 +336,6 @@ mod test {
     use datafusion::common::config::TableParquetOptions;
     use datafusion::common::DataFusionError;
     use datafusion::datasource::listing::PartitionedFile;
-    use datafusion::datasource::physical_plan::FileSource;
     use datafusion::datasource::physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource};
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::object_store::ObjectStoreUrl;
@@ -350,7 +347,6 @@ mod test {
     use parquet::arrow::ArrowWriter;
     use std::fs::File;
     use std::sync::Arc;
-    use crate::parquet::schema_adapter::ParquetSchemaAdapterExec;
 
     #[tokio::test]
     async fn parquet_roundtrip_int_as_string() -> Result<(), DataFusionError> {
@@ -406,14 +402,16 @@ mod test {
         let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
         spark_parquet_options.allow_cast_unsigned_ints = true;
 
-        let parquet_source =
-            Arc::new(ParquetSource::new(TableParquetOptions::new()));
+        let parquet_source = Arc::new(ParquetSource::new(TableParquetOptions::new()));
 
         let files = FileGroup::new(vec![PartitionedFile::from_path(filename.to_string())?]);
-        let file_scan_config =
-            FileScanConfigBuilder::new(object_store_url, Arc::clone(&required_schema), parquet_source)
-                .with_file_groups(vec![files])
-                .build();
+        let file_scan_config = FileScanConfigBuilder::new(
+            object_store_url,
+            Arc::clone(&required_schema),
+            parquet_source,
+        )
+        .with_file_groups(vec![files])
+        .build();
 
         let parquet_exec = DataSourceExec::new(Arc::new(file_scan_config));
 
@@ -527,9 +525,9 @@ mod test {
 
         impl MockExec {
             fn new(schema: SchemaRef, batch: RecordBatch) -> Self {
-                use datafusion::physical_plan::Partitioning;
-                use datafusion::physical_plan::execution_plan::{EmissionType, Boundedness};
                 use datafusion::physical_expr::EquivalenceProperties;
+                use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+                use datafusion::physical_plan::Partitioning;
 
                 let eq_properties = EquivalenceProperties::new(Arc::clone(&schema));
                 let properties = datafusion::physical_plan::PlanProperties::new(
@@ -548,7 +546,11 @@ mod test {
         }
 
         impl DisplayAs for MockExec {
-            fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            fn fmt_as(
+                &self,
+                _t: DisplayFormatType,
+                f: &mut std::fmt::Formatter,
+            ) -> std::fmt::Result {
                 write!(f, "MockExec")
             }
         }
@@ -581,7 +583,8 @@ mod test {
                 &self,
                 _partition: usize,
                 _context: Arc<datafusion::execution::TaskContext>,
-            ) -> datafusion::common::Result<datafusion::execution::SendableRecordBatchStream> {
+            ) -> datafusion::common::Result<datafusion::execution::SendableRecordBatchStream>
+            {
                 let batch = self.batch.clone();
                 let schema = Arc::clone(&self.schema);
                 Ok(Box::pin(RecordBatchStreamAdapter::new(
