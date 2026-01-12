@@ -228,4 +228,113 @@ class CometParquetWriterSuite extends CometTestBase {
       }
     }
   }
+
+  test("parquet write with spark.range() as data source - with spark-to-arrow conversion") {
+    // Test that spark.range() works when CometSparkToColumnarExec is enabled to convert
+    // Spark's OnHeapColumnVector to Arrow format
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+        CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key -> "Range") {
+
+        // Use a listener to capture the execution plan during write
+        var capturedPlan: Option[org.apache.spark.sql.execution.QueryExecution] = None
+
+        val listener = new org.apache.spark.sql.util.QueryExecutionListener {
+          override def onSuccess(
+              funcName: String,
+              qe: org.apache.spark.sql.execution.QueryExecution,
+              durationNs: Long): Unit = {
+            if (funcName == "save" || funcName.contains("command")) {
+              capturedPlan = Some(qe)
+            }
+          }
+
+          override def onFailure(
+              funcName: String,
+              qe: org.apache.spark.sql.execution.QueryExecution,
+              exception: Exception): Unit = {}
+        }
+
+        spark.listenerManager.register(listener)
+
+        try {
+          // spark.range() uses RangeExec which produces OnHeapColumnVector
+          // CometSparkToColumnarExec converts these to Arrow format
+          spark.range(1000).write.mode("overwrite").parquet(outputPath)
+
+          // Wait for listener
+          val maxWaitTimeMs = 15000
+          val checkIntervalMs = 100
+          var iterations = 0
+
+          while (capturedPlan.isEmpty && iterations < maxWaitTimeMs / checkIntervalMs) {
+            Thread.sleep(checkIntervalMs)
+            iterations += 1
+          }
+
+          // Verify that CometNativeWriteExec was used
+          capturedPlan.foreach { qe =>
+            val executedPlan = stripAQEPlan(qe.executedPlan)
+
+            var nativeWriteCount = 0
+            executedPlan.foreach {
+              case _: CometNativeWriteExec =>
+                nativeWriteCount += 1
+              case d: DataWritingCommandExec =>
+                d.child.foreach {
+                  case _: CometNativeWriteExec =>
+                    nativeWriteCount += 1
+                  case _ =>
+                }
+              case _ =>
+            }
+
+            assert(
+              nativeWriteCount == 1,
+              s"Expected exactly one CometNativeWriteExec in the plan, but found $nativeWriteCount:\n${executedPlan.treeString}")
+          }
+
+          // Verify the data was written correctly
+          val resultDf = spark.read.parquet(outputPath)
+          assert(resultDf.count() == 1000, "Expected 1000 rows to be written")
+        } finally {
+          spark.listenerManager.unregister(listener)
+        }
+      }
+    }
+  }
+
+  test("parquet write with spark.range() - issue #2944 without spark-to-arrow") {
+    // This test reproduces https://github.com/apache/datafusion-comet/issues/2944
+    // Without CometSparkToColumnarExec enabled, the native writer should handle
+    // Spark columnar batches by converting them to Arrow format internally.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        // Explicitly disable spark-to-arrow conversion to reproduce the issue
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false") {
+
+        // spark.range() uses RangeExec which produces OnHeapColumnVector (not Arrow)
+        // Without the fix, this would fail with:
+        // "Comet execution only takes Arrow Arrays, but got OnHeapColumnVector"
+        spark.range(1000).write.mode("overwrite").parquet(outputPath)
+
+        // Verify the data was written correctly
+        val resultDf = spark.read.parquet(outputPath)
+        assert(resultDf.count() == 1000, "Expected 1000 rows to be written")
+      }
+    }
+  }
 }

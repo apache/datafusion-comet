@@ -26,16 +26,19 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
+import org.apache.spark.TaskContext
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.Utils
 
-import org.apache.comet.CometExecIterator
+import org.apache.comet.{CometConf, CometExecIterator}
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.vector.CometVector
 
 /**
  * Comet physical operator for native Parquet write operations with FileCommitProtocol support.
@@ -138,16 +141,21 @@ case class CometNativeWriteExec(
   }
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    // Check if the child produces Arrow/Comet batches or Spark batches
+    val childIsComet = child.isInstanceOf[CometPlan]
+
     // Get the input data from the child operator
     val childRDD = if (child.supportsColumnar) {
       child.executeColumnar()
     } else {
-      // If child doesn't support columnar, convert to columnar
-      child.execute().mapPartitionsInternal { _ =>
-        // TODO this could delegate to CometRowToColumnar, but maybe Comet
-        // does not need to support this case?
-        throw new UnsupportedOperationException(
-          "Row-based child operators not yet supported for native write")
+      // If child doesn't support columnar, convert rows to Arrow columnar batches
+      val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
+      val timeZoneId = conf.sessionLocalTimeZone
+      val schema = child.schema
+      child.execute().mapPartitionsInternal { rowIter =>
+        val context = TaskContext.get()
+        CometArrowConverters
+          .rowToArrowBatchIter(rowIter, schema, maxRecordsPerBatch, timeZoneId, context)
       }
     }
 
@@ -158,6 +166,10 @@ case class CometNativeWriteExec(
     val capturedJobTrackerID = jobTrackerID
     val capturedNativeOp = nativeOp
     val capturedAccumulator = taskCommitMessagesAccum // Capture accumulator for use in tasks
+    val capturedChildIsComet = childIsComet
+    val capturedSchema = child.schema
+    val capturedMaxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
+    val capturedTimeZoneId = conf.sessionLocalTimeZone
 
     // Execute native write operation with task-level commit protocol
     childRDD.mapPartitionsInternal { iter =>
@@ -201,9 +213,28 @@ case class CometNativeWriteExec(
       outputStream.close()
       val planBytes = outputStream.toByteArray
 
+      // Convert Spark columnar batches to Arrow format if child is not a Comet operator.
+      // Comet native execution expects Arrow arrays, but Spark operators like RangeExec
+      // produce OnHeapColumnVector which must be converted.
+      val arrowIter = if (capturedChildIsComet) {
+        // Child is already producing Arrow/Comet batches
+        iter
+      } else {
+        // Convert Spark columnar batches to Arrow format
+        val context = TaskContext.get()
+        iter.flatMap { sparkBatch =>
+          CometArrowConverters.columnarBatchToArrowBatchIter(
+            sparkBatch,
+            capturedSchema,
+            capturedMaxRecordsPerBatch,
+            capturedTimeZoneId,
+            context)
+        }
+      }
+
       val execIterator = new CometExecIterator(
         CometExec.newIterId,
-        Seq(iter),
+        Seq(arrowIter),
         numOutputCols,
         planBytes,
         nativeMetrics,
