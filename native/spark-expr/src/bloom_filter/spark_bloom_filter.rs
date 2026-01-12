@@ -24,6 +24,7 @@ use crate::bloom_filter::spark_bit_array::SparkBitArray;
 use crate::hash_funcs::murmur3::spark_compatible_murmur3_hash;
 
 const SPARK_BLOOM_FILTER_VERSION_1: i32 = 1;
+const SPARK_BLOOM_FILTER_VERSION_2: i32 = 2;
 
 /// A Bloom filter implementation that simulates the behavior of Spark's BloomFilter.
 /// It's not a complete implementation of Spark's BloomFilter, but just add the minimum
@@ -60,9 +61,9 @@ impl From<&[u8]> for SparkBloomFilter {
         let mut offset = 0;
         let version = read_num_be_bytes!(i32, 4, buf[offset..]);
         offset += 4;
-        assert_eq!(
-            version, SPARK_BLOOM_FILTER_VERSION_1,
-            "Unsupported BloomFilter version: {version}, expecting version: {SPARK_BLOOM_FILTER_VERSION_1}"
+        assert!(
+            version == SPARK_BLOOM_FILTER_VERSION_1 || version == SPARK_BLOOM_FILTER_VERSION_2,
+            "Unsupported BloomFilter version: {version}, expecting version: {SPARK_BLOOM_FILTER_VERSION_1} or {SPARK_BLOOM_FILTER_VERSION_2}"
         );
         let num_hash_functions = read_num_be_bytes!(i32, 4, buf[offset..]);
         offset += 4;
