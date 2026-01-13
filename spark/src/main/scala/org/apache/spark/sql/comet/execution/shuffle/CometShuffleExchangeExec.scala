@@ -268,10 +268,6 @@ object CometShuffleExchangeExec
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DateType =>
         true
-      case dt: DecimalType =>
-        // High precision decimals (> 18) fall back to Spark because Spark converts them
-        // to Java BigDecimal before hashing, which has different behavior than native hashing
-        dt.precision <= 18
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f => supportedHashPartitioningDataType(f.dataType))
       case ArrayType(elementType, _) =>
