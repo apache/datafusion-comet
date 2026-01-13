@@ -132,6 +132,10 @@ object CometSparkSessionExtensions extends Logging {
     org.apache.spark.SPARK_VERSION >= "4.0"
   }
 
+  def isSpark41Plus: Boolean = {
+    org.apache.spark.SPARK_VERSION >= "4.1"
+  }
+
   /**
    * Whether we should override Spark memory configuration for Comet. This only returns true when
    * Comet native execution is enabled and/or Comet shuffle is enabled and Comet doesn't use
