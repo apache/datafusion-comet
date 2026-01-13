@@ -179,7 +179,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     df.createOrReplaceTempView("t1")
     val columns = df.schema.fields.filter(f => isComplexType(f.dataType)).map(_.name)
     for (col <- columns) {
-      // DISTRIBUTE BY is equivalent to df.repartition($col) and uses
+      // DISTRIBUTE BY is equivalent to df.repartition($col)
       val sql = s"SELECT $col FROM t1 DISTRIBUTE BY $col"
       val df = spark.sql(sql)
       df.collect()
@@ -191,13 +191,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
           // native_comet does not support reading complex types
           0
         case _ =>
-          CometConf.COMET_SHUFFLE_MODE.get() match {
-            case "jvm" =>
-              1
-            case "native" =>
-              // native shuffle does not support complex types as partitioning keys
-              0
-          }
+          1
       }
       assert(cometShuffleExchanges.length == expectedNumCometShuffles)
     }
