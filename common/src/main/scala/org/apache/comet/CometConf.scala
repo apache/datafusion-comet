@@ -363,13 +363,14 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_SHUFFLE)
       .doc(
         "Whether to enable round robin partitioning for Comet native shuffle. " +
-          "This is disabled by default because Comet's round-robin shuffle is not compatible " +
-          "with Spark's round-robin shuffle. Spark sorts rows by their binary UnsafeRow " +
-          "representation before assigning partitions to ensure deterministic output, but " +
-          "Comet uses Arrow format which has a different binary layout. When enabled, Comet " +
-          "will use a simple position-based round-robin distribution that produces different " +
-          "partition assignments than Spark. This is functionally correct (rows are evenly " +
-          "distributed) but may cause test failures when comparing results with Spark.")
+          "This is disabled by default because Comet's round-robin produces different " +
+          "partition assignments than Spark. Spark sorts rows by their binary UnsafeRow " +
+          "representation before assigning partitions, but Comet uses Arrow format which " +
+          "has a different binary layout. Instead, Comet implements round-robin as hash " +
+          "partitioning on all columns, which achieves the same goals: even distribution, " +
+          "deterministic output (for fault tolerance), and no semantic grouping. " +
+          "This is functionally correct but may cause test failures when comparing " +
+          "results with Spark.")
       .booleanConf
       .createWithDefault(false)
 
