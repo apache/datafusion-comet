@@ -514,382 +514,642 @@ should not be used in production. The feature will be enabled in a future releas
 <h2>Cast<a class="headerlink" href="#cast" title="Link to this heading">#</a></h2>
 <p>Cast operations in Comet fall into three levels of support:</p>
 <ul class="simple">
-<li><p><strong>Compatible</strong>: The results match Apache Spark</p></li>
-<li><p><strong>Incompatible</strong>: The results may match Apache Spark for some inputs, but there are known issues where some inputs
+<li><p><strong>C (Compatible)</strong>: The results match Apache Spark</p></li>
+<li><p><strong>I (Incompatible)</strong>: The results may match Apache Spark for some inputs, but there are known issues where some inputs
 will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Cast.allowIncompatible=true</span></code> will allow all incompatible casts to run natively in Comet, but this is not
 recommended for production use.</p></li>
-<li><p><strong>Unsupported</strong>: Comet does not provide a native version of this cast expression and the query stage will fall back to
+<li><p><strong>U (Unsupported)</strong>: Comet does not provide a native version of this cast expression and the query stage will fall back to
 Spark.</p></li>
+<li><p><strong>N/A</strong>: Spark does not support this cast.</p></li>
 </ul>
-<section id="compatible-casts">
-<h3>Compatible Casts<a class="headerlink" href="#compatible-casts" title="Link to this heading">#</a></h3>
-<p>The following cast operations are generally compatible with Spark except for the differences noted here.</p>
+<section id="legacy-mode">
+<h3>Legacy Mode<a class="headerlink" href="#legacy-mode" title="Link to this heading">#</a></h3>
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
-<!--BEGIN:COMPAT_CAST_TABLE-->
+<!--BEGIN:CAST_LEGACY_TABLE-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
-<tr class="row-odd"><th class="head"><p>From Type</p></th>
-<th class="head"><p>To Type</p></th>
-<th class="head"><p>Notes</p></th>
+<tr class="row-odd"><th class="head"><p></p></th>
+<th class="head"><p>binary</p></th>
+<th class="head"><p>boolean</p></th>
+<th class="head"><p>byte</p></th>
+<th class="head"><p>date</p></th>
+<th class="head"><p>decimal</p></th>
+<th class="head"><p>double</p></th>
+<th class="head"><p>float</p></th>
+<th class="head"><p>integer</p></th>
+<th class="head"><p>long</p></th>
+<th class="head"><p>short</p></th>
+<th class="head"><p>string</p></th>
+<th class="head"><p>timestamp</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>boolean</p></td>
-<td><p>byte</p></td>
-<td><p></p></td>
+<tr class="row-even"><td><p>binary</p></td>
+<td><p>-</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
 </tr>
 <tr class="row-odd"><td><p>boolean</p></td>
-<td><p>short</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>boolean</p></td>
-<td><p>integer</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>boolean</p></td>
-<td><p>long</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>boolean</p></td>
-<td><p>float</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>boolean</p></td>
-<td><p>double</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>boolean</p></td>
-<td><p>string</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>byte</p></td>
-<td><p>boolean</p></td>
-<td><p></p></td>
+<td><p>N/A</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
 </tr>
 <tr class="row-even"><td><p>byte</p></td>
-<td><p>short</p></td>
-<td><p></p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
 </tr>
-<tr class="row-odd"><td><p>byte</p></td>
-<td><p>integer</p></td>
-<td><p></p></td>
+<tr class="row-odd"><td><p>date</p></td>
+<td><p>N/A</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>-</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
 </tr>
-<tr class="row-even"><td><p>byte</p></td>
-<td><p>long</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>byte</p></td>
-<td><p>float</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>byte</p></td>
-<td><p>double</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>byte</p></td>
-<td><p>decimal</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>byte</p></td>
-<td><p>string</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>short</p></td>
-<td><p>boolean</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>short</p></td>
-<td><p>byte</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>short</p></td>
-<td><p>integer</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>short</p></td>
-<td><p>long</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>short</p></td>
-<td><p>float</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>short</p></td>
-<td><p>double</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>short</p></td>
-<td><p>decimal</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>short</p></td>
-<td><p>string</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>integer</p></td>
-<td><p>boolean</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>integer</p></td>
-<td><p>byte</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>integer</p></td>
-<td><p>short</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>integer</p></td>
-<td><p>long</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>integer</p></td>
-<td><p>float</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>integer</p></td>
-<td><p>double</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>integer</p></td>
-<td><p>decimal</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>integer</p></td>
-<td><p>string</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>long</p></td>
-<td><p>boolean</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>long</p></td>
-<td><p>byte</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>long</p></td>
-<td><p>short</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>long</p></td>
-<td><p>integer</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>long</p></td>
-<td><p>float</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>long</p></td>
-<td><p>double</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>long</p></td>
-<td><p>decimal</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>long</p></td>
-<td><p>string</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>float</p></td>
-<td><p>boolean</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>float</p></td>
-<td><p>byte</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>float</p></td>
-<td><p>short</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>float</p></td>
-<td><p>integer</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>float</p></td>
-<td><p>long</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>float</p></td>
-<td><p>double</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>float</p></td>
-<td><p>string</p></td>
-<td><p>There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></td>
-</tr>
-<tr class="row-even"><td><p>double</p></td>
-<td><p>boolean</p></td>
-<td><p></p></td>
+<tr class="row-even"><td><p>decimal</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
 </tr>
 <tr class="row-odd"><td><p>double</p></td>
-<td><p>byte</p></td>
-<td><p></p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>I</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
 </tr>
-<tr class="row-even"><td><p>double</p></td>
-<td><p>short</p></td>
-<td><p></p></td>
+<tr class="row-even"><td><p>float</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>I</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
 </tr>
-<tr class="row-odd"><td><p>double</p></td>
-<td><p>integer</p></td>
-<td><p></p></td>
+<tr class="row-odd"><td><p>integer</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
 </tr>
-<tr class="row-even"><td><p>double</p></td>
-<td><p>long</p></td>
-<td><p></p></td>
+<tr class="row-even"><td><p>long</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
 </tr>
-<tr class="row-odd"><td><p>double</p></td>
-<td><p>float</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>double</p></td>
-<td><p>string</p></td>
-<td><p>There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></td>
-</tr>
-<tr class="row-odd"><td><p>decimal</p></td>
-<td><p>boolean</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>decimal</p></td>
-<td><p>byte</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>decimal</p></td>
-<td><p>short</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>decimal</p></td>
-<td><p>integer</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>decimal</p></td>
-<td><p>long</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>decimal</p></td>
-<td><p>float</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>decimal</p></td>
-<td><p>double</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>decimal</p></td>
-<td><p>decimal</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>decimal</p></td>
-<td><p>string</p></td>
-<td><p>There can be formatting differences in some case due to Spark using scientific notation where Comet does not</p></td>
-</tr>
-<tr class="row-even"><td><p>string</p></td>
-<td><p>boolean</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>string</p></td>
-<td><p>byte</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>string</p></td>
-<td><p>short</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>string</p></td>
-<td><p>integer</p></td>
-<td><p></p></td>
+<tr class="row-odd"><td><p>short</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
 </tr>
 <tr class="row-even"><td><p>string</p></td>
-<td><p>long</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>string</p></td>
-<td><p>float</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>string</p></td>
-<td><p>double</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>string</p></td>
-<td><p>binary</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>string</p></td>
-<td><p>date</p></td>
-<td><p>Only supports years between 262143 BC and 262142 AD</p></td>
-</tr>
-<tr class="row-odd"><td><p>binary</p></td>
-<td><p>string</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>date</p></td>
-<td><p>string</p></td>
-<td><p></p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>I</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>I</p></td>
 </tr>
 <tr class="row-odd"><td><p>timestamp</p></td>
-<td><p>long</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>timestamp</p></td>
-<td><p>string</p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p>timestamp</p></td>
-<td><p>date</p></td>
-<td><p></p></td>
+<td><p>N/A</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
 </tr>
 </tbody>
 </table>
 </div>
 <!-- prettier-ignore-end -->
-<!--END:COMPAT_CAST_TABLE-->
+<p><strong>Notes:</strong></p>
+<ul class="simple">
+<li><p><strong>decimal -&gt; string</strong>: There can be formatting differences in some case due to Spark using scientific notation where Comet does not</p></li>
+<li><p><strong>double -&gt; decimal</strong>: There can be rounding differences</p></li>
+<li><p><strong>double -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
+<li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
+<li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
+<li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
+<li><p><strong>string -&gt; decimal</strong>: Does not support fullwidth unicode digits (e.g \uFF10)
+or strings containing null bytes (e.g \u0000)</p></li>
+<li><p><strong>string -&gt; timestamp</strong>: Not all valid formats are supported</p></li>
+</ul>
+<!--END:CAST_LEGACY_TABLE-->
 </section>
-<section id="incompatible-casts">
-<h3>Incompatible Casts<a class="headerlink" href="#incompatible-casts" title="Link to this heading">#</a></h3>
-<p>The following cast operations are not compatible with Spark for all inputs and are disabled by default.</p>
+<section id="try-mode">
+<h3>Try Mode<a class="headerlink" href="#try-mode" title="Link to this heading">#</a></h3>
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
-<!--BEGIN:INCOMPAT_CAST_TABLE-->
+<!--BEGIN:CAST_TRY_TABLE-->
 <!-- prettier-ignore-start -->
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
-<tr class="row-odd"><th class="head"><p>From Type</p></th>
-<th class="head"><p>To Type</p></th>
-<th class="head"><p>Notes</p></th>
+<tr class="row-odd"><th class="head"><p></p></th>
+<th class="head"><p>binary</p></th>
+<th class="head"><p>boolean</p></th>
+<th class="head"><p>byte</p></th>
+<th class="head"><p>date</p></th>
+<th class="head"><p>decimal</p></th>
+<th class="head"><p>double</p></th>
+<th class="head"><p>float</p></th>
+<th class="head"><p>integer</p></th>
+<th class="head"><p>long</p></th>
+<th class="head"><p>short</p></th>
+<th class="head"><p>string</p></th>
+<th class="head"><p>timestamp</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>float</p></td>
-<td><p>decimal</p></td>
-<td><p>There can be rounding differences</p></td>
+<tr class="row-even"><td><p>binary</p></td>
+<td><p>-</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+</tr>
+<tr class="row-odd"><td><p>boolean</p></td>
+<td><p>N/A</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-even"><td><p>byte</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-odd"><td><p>date</p></td>
+<td><p>N/A</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>-</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-even"><td><p>decimal</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
 </tr>
 <tr class="row-odd"><td><p>double</p></td>
-<td><p>decimal</p></td>
-<td><p>There can be rounding differences</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>I</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-even"><td><p>float</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>I</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-odd"><td><p>integer</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-even"><td><p>long</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-odd"><td><p>short</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
 </tr>
 <tr class="row-even"><td><p>string</p></td>
-<td><p>decimal</p></td>
-<td><p>Does not support fullwidth unicode digits (e.g \uFF10)</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>I</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>I</p></td>
 </tr>
-<tr class="row-odd"><td><p>or strings containing null bytes (e.g \u0000)</p></td>
-<td><p></p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p>string</p></td>
-<td><p>timestamp</p></td>
-<td><p>Not all valid formats are supported</p></td>
+<tr class="row-odd"><td><p>timestamp</p></td>
+<td><p>N/A</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
 </tr>
 </tbody>
 </table>
 </div>
 <!-- prettier-ignore-end -->
-<!--END:INCOMPAT_CAST_TABLE-->
+<p><strong>Notes:</strong></p>
+<ul class="simple">
+<li><p><strong>decimal -&gt; string</strong>: There can be formatting differences in some case due to Spark using scientific notation where Comet does not</p></li>
+<li><p><strong>double -&gt; decimal</strong>: There can be rounding differences</p></li>
+<li><p><strong>double -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
+<li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
+<li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
+<li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
+<li><p><strong>string -&gt; decimal</strong>: Does not support fullwidth unicode digits (e.g \uFF10)
+or strings containing null bytes (e.g \u0000)</p></li>
+<li><p><strong>string -&gt; timestamp</strong>: Not all valid formats are supported</p></li>
+</ul>
+<!--END:CAST_TRY_TABLE-->
 </section>
-<section id="unsupported-casts">
-<h3>Unsupported Casts<a class="headerlink" href="#unsupported-casts" title="Link to this heading">#</a></h3>
-<p>Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/286">tracking issue</a> for more details.</p>
+<section id="id1">
+<h3>ANSI Mode<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+<!--BEGIN:CAST_ANSI_TABLE-->
+<!-- prettier-ignore-start -->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p></p></th>
+<th class="head"><p>binary</p></th>
+<th class="head"><p>boolean</p></th>
+<th class="head"><p>byte</p></th>
+<th class="head"><p>date</p></th>
+<th class="head"><p>decimal</p></th>
+<th class="head"><p>double</p></th>
+<th class="head"><p>float</p></th>
+<th class="head"><p>integer</p></th>
+<th class="head"><p>long</p></th>
+<th class="head"><p>short</p></th>
+<th class="head"><p>string</p></th>
+<th class="head"><p>timestamp</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>binary</p></td>
+<td><p>-</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+</tr>
+<tr class="row-odd"><td><p>boolean</p></td>
+<td><p>N/A</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-even"><td><p>byte</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-odd"><td><p>date</p></td>
+<td><p>N/A</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>-</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-even"><td><p>decimal</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-odd"><td><p>double</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>I</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-even"><td><p>float</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>I</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-odd"><td><p>integer</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-even"><td><p>long</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-odd"><td><p>short</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>N/A</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+</tr>
+<tr class="row-even"><td><p>string</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>I</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+<td><p>I</p></td>
+</tr>
+<tr class="row-odd"><td><p>timestamp</p></td>
+<td><p>N/A</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>U</p></td>
+<td><p>C</p></td>
+<td><p>-</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- prettier-ignore-end -->
+<p><strong>Notes:</strong></p>
+<ul class="simple">
+<li><p><strong>decimal -&gt; string</strong>: There can be formatting differences in some case due to Spark using scientific notation where Comet does not</p></li>
+<li><p><strong>double -&gt; decimal</strong>: There can be rounding differences</p></li>
+<li><p><strong>double -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
+<li><p><strong>float -&gt; decimal</strong>: There can be rounding differences</p></li>
+<li><p><strong>float -&gt; string</strong>: There can be differences in precision. For example, the input “1.4E-45” will produce 1.0E-45 instead of 1.4E-45</p></li>
+<li><p><strong>string -&gt; date</strong>: Only supports years between 262143 BC and 262142 AD</p></li>
+<li><p><strong>string -&gt; decimal</strong>: Does not support fullwidth unicode digits (e.g \uFF10)
+or strings containing null bytes (e.g \u0000)</p></li>
+<li><p><strong>string -&gt; timestamp</strong>: ANSI mode not supported</p></li>
+</ul>
+<!--END:CAST_ANSI_TABLE-->
+<p>See the <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/286">tracking issue</a> for more details.</p>
 </section>
 </section>
 </section>
