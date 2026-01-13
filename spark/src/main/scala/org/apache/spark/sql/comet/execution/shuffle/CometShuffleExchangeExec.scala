@@ -266,7 +266,7 @@ object CometShuffleExchangeExec
     def supportedHashPartitioningDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DateType =>
+          _: TimestampNTZType | _: DecimalType | _: DateType =>
         true
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f => supportedHashPartitioningDataType(f.dataType))
