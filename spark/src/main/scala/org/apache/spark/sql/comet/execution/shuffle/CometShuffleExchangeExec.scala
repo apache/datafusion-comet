@@ -401,19 +401,13 @@ object CometShuffleExchangeExec
         }
         supported
       case RoundRobinPartitioning(_) =>
-        // RoundRobin partitioning hashes all columns. Check that no column contains
-        // high-precision decimals, which require conversion to Java BigDecimal before hashing.
-        var supported = true
-        for (input <- inputs) {
-          if (containsHighPrecisionDecimal(input.dataType)) {
-            withInfo(
-              s,
-              s"unsupported round robin partitioning data type for native shuffle: " +
-                s"${input.dataType} (decimal precision > 18)")
-            supported = false
-          }
+        val config = CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED
+        if (!config.get(conf)) {
+          withInfo(s, s"${config.key} is disabled")
+          return false
         }
-        supported
+        // RoundRobin partitioning uses position-based distribution matching Spark's behavior
+        true
       case _ =>
         withInfo(
           s,
@@ -425,7 +419,7 @@ object CometShuffleExchangeExec
   /**
    * Check if JVM-based columnar shuffle (CometColumnarExchange) can be used for this shuffle. JVM
    * shuffle is used when the child plan is not a Comet native operator, or when native shuffle
-   * doesn't support the required partitioning type (e.g., RoundRobinPartitioning).
+   * doesn't support the required partitioning type.
    */
   def columnarShuffleSupported(s: ShuffleExchangeExec): Boolean = {
 

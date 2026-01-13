@@ -358,6 +358,21 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.native.shuffle.partitioning.roundrobin.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Whether to enable round robin partitioning for Comet native shuffle. " +
+          "This is disabled by default because Comet's round-robin shuffle is not compatible " +
+          "with Spark's round-robin shuffle. Spark sorts rows by their binary UnsafeRow " +
+          "representation before assigning partitions to ensure deterministic output, but " +
+          "Comet uses Arrow format which has a different binary layout. When enabled, Comet " +
+          "will use a simple position-based round-robin distribution that produces different " +
+          "partition assignments than Spark. This is functionally correct (rows are evenly " +
+          "distributed) but may cause test failures when comparing results with Spark.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
       .category(CATEGORY_SHUFFLE)

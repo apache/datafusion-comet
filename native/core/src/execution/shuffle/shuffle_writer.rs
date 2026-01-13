@@ -354,9 +354,6 @@ struct ScratchSpace {
     /// partition_starts[K + 1] are the start and end indices of partition K in partition_row_indices.
     /// The length of this array is 1 + the number of partitions.
     partition_starts: Vec<u32>,
-    /// (hash, row_index) pairs used for round robin partitioning. After sorting by hash,
-    /// rows are assigned to partitions in round-robin fashion for deterministic ordering.
-    hash_index_pairs: Vec<(u32, u32)>,
 }
 
 impl MultiPartitionShuffleRepartitioner {
@@ -386,6 +383,7 @@ impl MultiPartitionShuffleRepartitioner {
         let scratch = ScratchSpace {
             hashes_buf: match partitioning {
                 // Allocate hashes_buf for hash and round robin partitioning.
+                // Round robin hashes all columns to achieve even, deterministic distribution.
                 CometPartitioning::Hash(_, _) | CometPartitioning::RoundRobin(_) => {
                     vec![0; batch_size]
                 }
@@ -394,11 +392,6 @@ impl MultiPartitionShuffleRepartitioner {
             partition_ids: vec![0; batch_size],
             partition_row_indices: vec![0; batch_size],
             partition_starts: vec![0; num_output_partitions + 1],
-            hash_index_pairs: match partitioning {
-                // Allocate hash_index_pairs for round robin partitioning.
-                CometPartitioning::RoundRobin(_) => vec![(0, 0); batch_size],
-                _ => vec![],
-            },
         };
 
         let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
@@ -609,6 +602,13 @@ impl MultiPartitionShuffleRepartitioner {
                 self.scratch = scratch;
             }
             CometPartitioning::RoundRobin(num_output_partitions) => {
+                // Comet implements "round robin" as hash partitioning on ALL columns.
+                // This achieves the same goal as Spark's round robin (even distribution
+                // without semantic grouping) while being deterministic for fault tolerance.
+                //
+                // Note: This produces different partition assignments than Spark's round robin,
+                // which sorts by UnsafeRow binary representation before assigning partitions.
+                // However, both approaches provide even distribution and determinism.
                 let mut scratch = std::mem::take(&mut self.scratch);
                 let (partition_starts, partition_row_indices): (&Vec<u32>, &Vec<u32>) = {
                     let mut timer = self.metrics.repart_time.timer();
@@ -627,21 +627,14 @@ impl MultiPartitionShuffleRepartitioner {
                     // Compute hash for all columns
                     create_murmur3_hashes(&all_columns, hashes_buf)?;
 
-                    // Create (hash, row_index) pairs for sorting
-                    let hash_index_pairs = &mut scratch.hash_index_pairs[..num_rows];
-                    for (idx, &hash) in hashes_buf.iter().enumerate() {
-                        hash_index_pairs[idx] = (hash, idx as u32);
-                    }
-
-                    // Sort by hash value for deterministic ordering
-                    hash_index_pairs.sort_unstable_by_key(|(hash, _)| *hash);
-
-                    // Assign partition IDs in round-robin fashion to sorted rows
+                    // Assign partition IDs based on hash (same as hash partitioning)
                     let partition_ids = &mut scratch.partition_ids[..num_rows];
-                    for (sorted_idx, &(_hash, row_idx)) in hash_index_pairs.iter().enumerate() {
-                        partition_ids[row_idx as usize] =
-                            (sorted_idx % *num_output_partitions) as u32;
-                    }
+                    hashes_buf
+                        .iter()
+                        .enumerate()
+                        .for_each(|(idx, hash)| {
+                            partition_ids[idx] = pmod(*hash, *num_output_partitions) as u32;
+                        });
 
                     // We now have partition ids for every input row, map that to partition starts
                     // and partition indices to eventually write these rows to partition buffers.
