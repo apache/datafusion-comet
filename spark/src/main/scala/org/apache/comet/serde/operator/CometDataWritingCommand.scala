@@ -63,7 +63,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
             }
 
             if (cmd.partitionColumns.nonEmpty || cmd.staticPartitions.nonEmpty) {
-              return Incompatible(Some("Partitioned writes are not supported"))
+              return Incompatible(Some("Partitioned writes are highly experimental"))
             }
 
             if (cmd.query.output.exists(attr => DataTypeSupport.isComplexType(attr.dataType))) {
@@ -132,6 +132,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         .setOutputPath(outputPath)
         .setCompression(codec)
         .addAllColumnNames(cmd.query.output.map(_.name).asJava)
+        .addAllPartitionColumns(cmd.partitionColumns.map(_.name).asJava)
         // Note: work_dir, job_id, and task_attempt_id will be set at execution time
         // in CometNativeWriteExec, as they depend on the Spark task context
         .build()
