@@ -171,6 +171,7 @@ python run_benchmark.py --data /path/to/data --mode spark --benchmark my-benchma
 ```
 
 The base `Benchmark` class provides:
+
 - Automatic timing via `_time_operation()`
 - Standard output formatting via `execute_timed()`
 - Access to SparkSession, data path, and mode
