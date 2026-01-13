@@ -78,6 +78,9 @@ def main():
 
     spark = SparkSession.builder \
         .appName(f"ShuffleBenchmark-{args.mode.upper()}") \
+        .config("spark.comet.explain.format", "verbose") \
+        .config("spark.comet.explainFallback.enabled", "true") \
+        .config("spark.comet.logFallbackReasons.enabled", "true") \
         .getOrCreate()
 
     print("\n" + "=" * 80)
