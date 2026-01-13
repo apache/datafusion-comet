@@ -68,7 +68,9 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
           makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
-          var allTypes: Seq[Int] = (1 to 20)
+          // Exclude _17 which is DECIMAL(38, 37) - high precision decimals are not supported
+          // as partitioning keys in native shuffle
+          var allTypes: Seq[Int] = (1 to 20).filterNot(_ == 17)
           allTypes.map(i => s"_$i").foreach { c =>
             withSQLConf(
               CometConf.COMET_EXEC_ENABLED.key -> execEnabled.toString,
