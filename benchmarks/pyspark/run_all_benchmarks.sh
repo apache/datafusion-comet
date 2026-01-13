@@ -44,44 +44,44 @@ echo "Event log dir:   $EVENT_LOG_DIR"
 echo "========================================"
 
 # Run Spark baseline (no Comet)
-#echo ""
-#echo ">>> Running SPARK shuffle benchmark..."
-#$SPARK_HOME/bin/spark-submit \
-#  --master "$SPARK_MASTER" \
-#  --executor-memory "$EXECUTOR_MEMORY" \
-#  --conf spark.eventLog.enabled=true \
-#  --conf spark.eventLog.dir="$EVENT_LOG_DIR" \
-#  --conf spark.comet.enabled=false \
-#  --conf spark.comet.exec.shuffle.enabled=false \
-#  "$SCRIPT_DIR/run_benchmark.py" \
-#  --data "$DATA_PATH" \
-#  --mode spark
-#
-## Run Comet JVM shuffle
-#echo ""
-#echo ">>> Running COMET JVM shuffle benchmark..."
-#$SPARK_HOME/bin/spark-submit \
-#  --master "$SPARK_MASTER" \
-#  --executor-memory "$EXECUTOR_MEMORY" \
-#  --jars "$COMET_JAR" \
-#  --driver-class-path "$COMET_JAR" \
-#  --conf spark.executor.extraClassPath="$COMET_JAR" \
-#  --conf spark.eventLog.enabled=true \
-#  --conf spark.eventLog.dir="$EVENT_LOG_DIR" \
-#  --conf spark.memory.offHeap.enabled=true \
-#  --conf spark.memory.offHeap.size=16g \
-#  --conf spark.comet.enabled=true \
-#  --conf spark.comet.exec.enabled=true \
-#  --conf spark.comet.exec.shuffle.enabled=true \
-#  --conf spark.comet.shuffle.mode=jvm \
-#  --conf spark.comet.exec.shuffle.mode=jvm \
-#  --conf spark.comet.exec.replaceSortMergeJoin=true \
-#  --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-#  --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
-#  --conf spark.comet.cast.allowIncompatible=true \
-#  "$SCRIPT_DIR/run_benchmark.py" \
-#  --data "$DATA_PATH" \
-#  --mode jvm
+echo ""
+echo ">>> Running SPARK shuffle benchmark..."
+$SPARK_HOME/bin/spark-submit \
+  --master "$SPARK_MASTER" \
+  --executor-memory "$EXECUTOR_MEMORY" \
+  --conf spark.eventLog.enabled=true \
+  --conf spark.eventLog.dir="$EVENT_LOG_DIR" \
+  --conf spark.comet.enabled=false \
+  --conf spark.comet.exec.shuffle.enabled=false \
+  "$SCRIPT_DIR/run_benchmark.py" \
+  --data "$DATA_PATH" \
+  --mode spark
+
+# Run Comet JVM shuffle
+echo ""
+echo ">>> Running COMET JVM shuffle benchmark..."
+$SPARK_HOME/bin/spark-submit \
+  --master "$SPARK_MASTER" \
+  --executor-memory "$EXECUTOR_MEMORY" \
+  --jars "$COMET_JAR" \
+  --driver-class-path "$COMET_JAR" \
+  --conf spark.executor.extraClassPath="$COMET_JAR" \
+  --conf spark.eventLog.enabled=true \
+  --conf spark.eventLog.dir="$EVENT_LOG_DIR" \
+  --conf spark.memory.offHeap.enabled=true \
+  --conf spark.memory.offHeap.size=16g \
+  --conf spark.comet.enabled=true \
+  --conf spark.comet.exec.enabled=true \
+  --conf spark.comet.exec.shuffle.enabled=true \
+  --conf spark.comet.shuffle.mode=jvm \
+  --conf spark.comet.exec.shuffle.mode=jvm \
+  --conf spark.comet.exec.replaceSortMergeJoin=true \
+  --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
+  --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
+  --conf spark.comet.cast.allowIncompatible=true \
+  "$SCRIPT_DIR/run_benchmark.py" \
+  --data "$DATA_PATH" \
+  --mode jvm
 
 # Run Comet Native shuffle
 echo ""
