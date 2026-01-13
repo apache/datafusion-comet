@@ -99,17 +99,16 @@ they will be identical to Spark. Unsorted results may have different row orderin
 
 Cast operations in Comet fall into three levels of support:
 
-- **Compatible**: The results match Apache Spark
-- **Incompatible**: The results may match Apache Spark for some inputs, but there are known issues where some inputs
+- **C (Compatible)**: The results match Apache Spark
+- **I (Incompatible)**: The results may match Apache Spark for some inputs, but there are known issues where some inputs
   will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
   `spark.comet.expression.Cast.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
   recommended for production use.
-- **Unsupported**: Comet does not provide a native version of this cast expression and the query stage will fall back to
+- **U (Unsupported)**: Comet does not provide a native version of this cast expression and the query stage will fall back to
   Spark.
+- **N/A**: Spark does not support this cast.
 
-### Compatible Casts
-
-The following cast operations are generally compatible with Spark except for the differences noted here.
+### Legacy Mode
 
 <<<<<<< HEAD
 
@@ -130,21 +129,113 @@ The following cast operations are generally compatible with Spark except for the
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 
-<!--BEGIN:COMPAT_CAST_TABLE-->
-<!--END:COMPAT_CAST_TABLE-->
+<!--BEGIN:CAST_LEGACY_TABLE-->
+<!-- prettier-ignore-start -->
+| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
+| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
+| byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
+| date | N/A | U | U | - | U | U | U | U | U | U | C | U |
+| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
+| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U |
+| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U |
+| integer | U | C | C | N/A | C | C | C | - | C | C | C | U |
+| long | U | C | C | N/A | C | C | C | C | - | C | C | U |
+| short | U | C | C | N/A | C | C | C | C | C | - | C | U |
+| string | C | C | C | C | I | C | C | C | C | C | - | I |
+| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
+<!-- prettier-ignore-end -->
 
-### Incompatible Casts
+**Notes:**
 
-The following cast operations are not compatible with Spark for all inputs and are disabled by default.
+- **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
+- **double -> decimal**: There can be rounding differences
+- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **float -> decimal**: There can be rounding differences
+- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **string -> date**: Only supports years between 262143 BC and 262142 AD
+- **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
+  or strings containing null bytes (e.g \\u0000)
+- **string -> timestamp**: Not all valid formats are supported
+<!--END:CAST_LEGACY_TABLE-->
+
+### Try Mode
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 
-<!--BEGIN:INCOMPAT_CAST_TABLE-->
-<!--END:INCOMPAT_CAST_TABLE-->
+<!--BEGIN:CAST_TRY_TABLE-->
+<!-- prettier-ignore-start -->
+| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
+| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
+| byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
+| date | N/A | U | U | - | U | U | U | U | U | U | C | U |
+| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
+| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U |
+| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U |
+| integer | U | C | C | N/A | C | C | C | - | C | C | C | U |
+| long | U | C | C | N/A | C | C | C | C | - | C | C | U |
+| short | U | C | C | N/A | C | C | C | C | C | - | C | U |
+| string | C | C | C | C | I | C | C | C | C | C | - | I |
+| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
+<!-- prettier-ignore-end -->
 
-### Unsupported Casts
+**Notes:**
 
+<<<<<<< HEAD
 Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the
 [tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.
 
-> > > > > > > 6f8e1c629 (int_to_binary)
+> > > > > > > # 6f8e1c629 (int_to_binary)
+
+- **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
+- **double -> decimal**: There can be rounding differences
+- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **float -> decimal**: There can be rounding differences
+- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **string -> date**: Only supports years between 262143 BC and 262142 AD
+- **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
+  or strings containing null bytes (e.g \\u0000)
+- **string -> timestamp**: Not all valid formats are supported
+<!--END:CAST_TRY_TABLE-->
+
+### ANSI Mode
+
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
+
+<!--BEGIN:CAST_ANSI_TABLE-->
+<!-- prettier-ignore-start -->
+| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
+| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
+| byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
+| date | N/A | U | U | - | U | U | U | U | U | U | C | U |
+| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
+| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U |
+| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U |
+| integer | U | C | C | N/A | C | C | C | - | C | C | C | U |
+| long | U | C | C | N/A | C | C | C | C | - | C | C | U |
+| short | U | C | C | N/A | C | C | C | C | C | - | C | U |
+| string | C | C | C | C | I | C | C | C | C | C | - | I |
+| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
+<!-- prettier-ignore-end -->
+
+**Notes:**
+
+- **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
+- **double -> decimal**: There can be rounding differences
+- **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **float -> decimal**: There can be rounding differences
+- **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
+- **string -> date**: Only supports years between 262143 BC and 262142 AD
+- **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
+  or strings containing null bytes (e.g \\u0000)
+- **string -> timestamp**: ANSI mode not supported
+<!--END:CAST_ANSI_TABLE-->
+
+See the [tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.
+
+> > > > > > > acee9701f (int_to_binary)
