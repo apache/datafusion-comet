@@ -206,11 +206,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       hasIncompatibleType = usingParquetExecWithIncompatTypes)
   }
 
-  ignore("cast ByteType to BinaryType") {
+  test("cast ByteType to BinaryType") {
+    //    Spark does not support ANSI or Try mode
     castTest(
       generateBytes(),
       DataTypes.BinaryType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes, testAnsi = false, testTry = false)
   }
 
   ignore("cast ByteType to TimestampType") {
@@ -281,10 +282,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ShortType to BinaryType") {
+//    Spark does not support ANSI or Try mode
     castTest(
       generateShorts(),
       DataTypes.BinaryType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes, testAnsi = false, testTry = false)
   }
 
   ignore("cast ShortType to TimestampType") {
@@ -345,8 +347,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateInts(), DataTypes.StringType)
   }
 
-  ignore("cast IntegerType to BinaryType") {
-    castTest(generateInts(), DataTypes.BinaryType)
+  test("cast IntegerType to BinaryType") {
+    //    Spark does not support ANSI or Try mode
+    castTest(generateInts(), DataTypes.BinaryType, testAnsi = false, testTry = false)
   }
 
   ignore("cast IntegerType to TimestampType") {
@@ -391,8 +394,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateLongs(), DataTypes.StringType)
   }
 
-  ignore("cast LongType to BinaryType") {
-    castTest(generateLongs(), DataTypes.BinaryType)
+  test("cast LongType to BinaryType") {
+    //    Spark does not support ANSI or Try mode
+    castTest(generateLongs(), DataTypes.BinaryType , testAnsi = false, testTry = false)
   }
 
   ignore("cast LongType to TimestampType") {
@@ -1416,28 +1420,30 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       input: DataFrame,
       toType: DataType,
       hasIncompatibleType: Boolean = false,
-      testAnsi: Boolean = true): Unit = {
+      testAnsi: Boolean = true,
+      testTry: Boolean = true): Unit = {
 
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
-      data.createOrReplaceTempView("t")
 
       withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
         // cast() should return null for invalid inputs when ansi mode is disabled
-        val df = spark.sql(s"select a, cast(a as ${toType.sql}) from t order by a")
+        val df = data.select(col("a"), col("a").cast(toType)).orderBy(col("a"))
         if (hasIncompatibleType) {
           checkSparkAnswer(df)
         } else {
           checkSparkAnswerAndOperator(df)
         }
 
-        // try_cast() should always return null for invalid inputs
-        val df2 =
-          spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-        if (hasIncompatibleType) {
-          checkSparkAnswer(df2)
-        } else {
-          checkSparkAnswerAndOperator(df2)
+        if (testTry){
+          // try_cast() should always return null for invalid inputs
+          val df2 =
+            data.select(col("a"), col("a").try_cast(toType)).orderBy(col("a"))
+          if (hasIncompatibleType) {
+            checkSparkAnswer(df2)
+          } else {
+            checkSparkAnswerAndOperator(df2)
+          }
         }
       }
 
@@ -1495,14 +1501,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
 
           // try_cast() should always return null for invalid inputs
-          val df2 =
-            spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
-          if (hasIncompatibleType) {
-            checkSparkAnswer(df2)
-          } else {
-            checkSparkAnswerAndOperator(df2)
+          if (testTry){
+            val df2 =
+              data.select(col("a"), col("a").cast(toType)).orderBy(col("a"))
+            if (hasIncompatibleType) {
+              checkSparkAnswer(df2)
+            } else {
+              checkSparkAnswerAndOperator(df2)
+            }
           }
-
         }
       }
     }

@@ -66,6 +66,7 @@ use std::{
     num::Wrapping,
     sync::Arc,
 };
+use crate::EvalMode::Legacy;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -1124,10 +1125,10 @@ fn cast_array(
         }
         (Binary, Utf8) => Ok(cast_binary_to_string::<i32>(&array, cast_options)?),
         (Date32, Timestamp(_, tz)) => Ok(cast_date_to_timestamp(&array, cast_options, tz)?),
-        (Int8, Binary) => cast_whole_num_to_binary!(&array, Int8Array, 1),
-        (Int16, Binary) => cast_whole_num_to_binary!(&array, Int16Array, 2),
-        (Int32, Binary) => cast_whole_num_to_binary!(&array, Int32Array, 4),
-        (Int64, Binary) => cast_whole_num_to_binary!(&array, Int64Array, 8),
+        (Int8, Binary) if (eval_mode == Legacy) => cast_whole_num_to_binary!(&array, Int8Array, 1),
+        (Int16, Binary) if (eval_mode == Legacy)  => cast_whole_num_to_binary!(&array, Int16Array, 2),
+        (Int32, Binary) if (eval_mode == Legacy) => cast_whole_num_to_binary!(&array, Int32Array, 4),
+        (Int64, Binary) if (eval_mode == Legacy) => cast_whole_num_to_binary!(&array, Int64Array, 8),
         _ if cast_options.is_adapting_schema
             || is_datafusion_spark_compatible(from_type, to_type) =>
         {
