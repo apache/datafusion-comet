@@ -110,46 +110,7 @@ object GenerateDocs {
     val w = new BufferedOutputStream(new FileOutputStream(filename))
     for (line <- lines) {
       w.write(s"${line.stripTrailing()}\n".getBytes)
-      if (line.trim == "<!--BEGIN:COMPAT_CAST_TABLE-->") {
-        w.write("<!-- prettier-ignore-start -->\n".getBytes)
-        w.write("| From Type | To Type | Notes |\n".getBytes)
-        w.write("|-|-|-|\n".getBytes)
-        for (fromType <- CometCast.supportedTypes) {
-          for (toType <- CometCast.supportedTypes) {
-            if (Cast.canCast(fromType, toType) && (fromType != toType || fromType.typeName
-                .contains("decimal"))) {
-              val fromTypeName = fromType.typeName.replace("(10,2)", "")
-              val toTypeName = toType.typeName.replace("(10,2)", "")
-              CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) match {
-                case Compatible(notes) =>
-                  val notesStr = notes.getOrElse("").trim
-                  w.write(s"| $fromTypeName | $toTypeName | $notesStr |\n".getBytes)
-                case _ =>
-              }
-            }
-          }
-        }
-        w.write("<!-- prettier-ignore-end -->\n".getBytes)
-      } else if (line.trim == "<!--BEGIN:INCOMPAT_CAST_TABLE-->") {
-        w.write("<!-- prettier-ignore-start -->\n".getBytes)
-        w.write("| From Type | To Type | Notes |\n".getBytes)
-        w.write("|-|-|-|\n".getBytes)
-        for (fromType <- CometCast.supportedTypes) {
-          for (toType <- CometCast.supportedTypes) {
-            if (Cast.canCast(fromType, toType) && fromType != toType) {
-              val fromTypeName = fromType.typeName.replace("(10,2)", "")
-              val toTypeName = toType.typeName.replace("(10,2)", "")
-              CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) match {
-                case Incompatible(notes) =>
-                  val notesStr = notes.getOrElse("").trim
-                  w.write(s"| $fromTypeName | $toTypeName  | $notesStr |\n".getBytes)
-                case _ =>
-              }
-            }
-          }
-        }
-        w.write("<!-- prettier-ignore-end -->\n".getBytes)
-      } else if (line.trim == "<!--BEGIN:CAST_LEGACY_TABLE-->") {
+      if (line.trim == "<!--BEGIN:CAST_LEGACY_TABLE-->") {
         writeCastMatrixForMode(w, CometEvalMode.LEGACY)
       } else if (line.trim == "<!--BEGIN:CAST_TRY_TABLE-->") {
         writeCastMatrixForMode(w, CometEvalMode.TRY)

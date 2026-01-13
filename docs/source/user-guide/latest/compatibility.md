@@ -73,133 +73,18 @@ should not be used in production. The feature will be enabled in a future releas
 
 Cast operations in Comet fall into three levels of support:
 
-- **Compatible**: The results match Apache Spark
-- **Incompatible**: The results may match Apache Spark for some inputs, but there are known issues where some inputs
+- **C (Compatible)**: The results match Apache Spark
+- **I (Incompatible)**: The results may match Apache Spark for some inputs, but there are known issues where some inputs
   will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
   `spark.comet.expression.Cast.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
   recommended for production use.
-- **Unsupported**: Comet does not provide a native version of this cast expression and the query stage will fall back to
+- **U (Unsupported)**: Comet does not provide a native version of this cast expression and the query stage will fall back to
   Spark.
+- **N/A**: Spark does not support this cast.
 
-### Compatible Casts
-
-The following cast operations are generally compatible with Spark except for the differences noted here.
-
-<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
-
-<!--BEGIN:COMPAT_CAST_TABLE-->
-<!-- prettier-ignore-start -->
-| From Type | To Type | Notes |
-|-|-|-|
-| boolean | byte |  |
-| boolean | short |  |
-| boolean | integer |  |
-| boolean | long |  |
-| boolean | float |  |
-| boolean | double |  |
-| boolean | string |  |
-| byte | boolean |  |
-| byte | short |  |
-| byte | integer |  |
-| byte | long |  |
-| byte | float |  |
-| byte | double |  |
-| byte | decimal |  |
-| byte | string |  |
-| short | boolean |  |
-| short | byte |  |
-| short | integer |  |
-| short | long |  |
-| short | float |  |
-| short | double |  |
-| short | decimal |  |
-| short | string |  |
-| integer | boolean |  |
-| integer | byte |  |
-| integer | short |  |
-| integer | long |  |
-| integer | float |  |
-| integer | double |  |
-| integer | decimal |  |
-| integer | string |  |
-| long | boolean |  |
-| long | byte |  |
-| long | short |  |
-| long | integer |  |
-| long | float |  |
-| long | double |  |
-| long | decimal |  |
-| long | string |  |
-| float | boolean |  |
-| float | byte |  |
-| float | short |  |
-| float | integer |  |
-| float | long |  |
-| float | double |  |
-| float | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
-| double | boolean |  |
-| double | byte |  |
-| double | short |  |
-| double | integer |  |
-| double | long |  |
-| double | float |  |
-| double | string | There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45 |
-| decimal | boolean |  |
-| decimal | byte |  |
-| decimal | short |  |
-| decimal | integer |  |
-| decimal | long |  |
-| decimal | float |  |
-| decimal | double |  |
-| decimal | decimal |  |
-| decimal | string | There can be formatting differences in some case due to Spark using scientific notation where Comet does not |
-| string | boolean |  |
-| string | byte |  |
-| string | short |  |
-| string | integer |  |
-| string | long |  |
-| string | float |  |
-| string | double |  |
-| string | binary |  |
-| string | date | Only supports years between 262143 BC and 262142 AD |
-| binary | string |  |
-| date | string |  |
-| timestamp | long |  |
-| timestamp | string |  |
-| timestamp | date |  |
-<!-- prettier-ignore-end -->
-<!--END:COMPAT_CAST_TABLE-->
-
-### Incompatible Casts
-
-The following cast operations are not compatible with Spark for all inputs and are disabled by default.
+### Legacy Mode
 
 <!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
-
-<!--BEGIN:INCOMPAT_CAST_TABLE-->
-<!-- prettier-ignore-start -->
-| From Type | To Type | Notes |
-|-|-|-|
-| float | decimal  | There can be rounding differences |
-| double | decimal  | There can be rounding differences |
-| string | decimal  | Does not support fullwidth unicode digits (e.g \\uFF10)
-or strings containing null bytes (e.g \\u0000) |
-| string | timestamp  | Not all valid formats are supported |
-<!-- prettier-ignore-end -->
-<!--END:INCOMPAT_CAST_TABLE-->
-
-### Unsupported Casts
-
-Any cast not listed in the previous tables is currently unsupported. We are working on adding more. See the
-[tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.
-
-### Cast Support by Eval Mode
-
-The following tables show cast support levels for each evaluation mode.
-
-**Legend:** C = Compatible, I = Incompatible, U = Unsupported, - = Same type, N = Spark does not support the cast
-
-#### LEGACY Mode
 
 <!--BEGIN:CAST_LEGACY_TABLE-->
 <!-- prettier-ignore-start -->
@@ -232,7 +117,9 @@ The following tables show cast support levels for each evaluation mode.
 - **string -> timestamp**: Not all valid formats are supported
 <!--END:CAST_LEGACY_TABLE-->
 
-#### TRY Mode
+### Try Mode
+
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 
 <!--BEGIN:CAST_TRY_TABLE-->
 <!-- prettier-ignore-start -->
@@ -265,7 +152,9 @@ The following tables show cast support levels for each evaluation mode.
 - **string -> timestamp**: Not all valid formats are supported
 <!--END:CAST_TRY_TABLE-->
 
-#### ANSI Mode
+### ANSI Mode
+
+<!-- WARNING! DO NOT MANUALLY MODIFY CONTENT BETWEEN THE BEGIN AND END TAGS -->
 
 <!--BEGIN:CAST_ANSI_TABLE-->
 <!-- prettier-ignore-start -->
@@ -297,3 +186,5 @@ The following tables show cast support levels for each evaluation mode.
   or strings containing null bytes (e.g \\u0000)
 - **string -> timestamp**: ANSI mode not supported
 <!--END:CAST_ANSI_TABLE-->
+
+See the [tracking issue](https://github.com/apache/datafusion-comet/issues/286) for more details.
