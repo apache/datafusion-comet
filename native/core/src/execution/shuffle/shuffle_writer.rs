@@ -629,12 +629,9 @@ impl MultiPartitionShuffleRepartitioner {
 
                     // Assign partition IDs based on hash (same as hash partitioning)
                     let partition_ids = &mut scratch.partition_ids[..num_rows];
-                    hashes_buf
-                        .iter()
-                        .enumerate()
-                        .for_each(|(idx, hash)| {
-                            partition_ids[idx] = pmod(*hash, *num_output_partitions) as u32;
-                        });
+                    hashes_buf.iter().enumerate().for_each(|(idx, hash)| {
+                        partition_ids[idx] = pmod(*hash, *num_output_partitions) as u32;
+                    });
 
                     // We now have partition ids for every input row, map that to partition starts
                     // and partition indices to eventually write these rows to partition buffers.
