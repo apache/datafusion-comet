@@ -26,7 +26,7 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.{SparkConf, TaskContext}
 import org.apache.spark.executor.ShuffleWriteMetrics
-import org.apache.spark.memory.{MemoryMode, TaskMemoryManager, TestMemoryManager}
+import org.apache.spark.memory.{TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.Platform
@@ -73,11 +73,10 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
   private def createSpillSorter(
       spillCallback: SpillSorter.SpillCallback = () => {},
       spills: java.util.LinkedList[org.apache.spark.sql.comet.execution.shuffle.SpillInfo] =
-        new java.util.LinkedList[org.apache.spark.sql.comet.execution.shuffle.SpillInfo]())
-      : SpillSorter = {
+        new java.util.LinkedList[org.apache.spark.sql.comet.execution.shuffle.SpillInfo](),
+      partitionChecksums: Array[Long] = new Array[Long](10)): SpillSorter = {
     val allocator = CometShuffleMemoryAllocator.getInstance(conf, taskMemoryManager, PAGE_SIZE)
     val schema = createTestSchema()
-    val partitionChecksums = new Array[Long](10)
     val writeMetrics = new ShuffleWriteMetrics()
     val taskContext = TaskContext.empty()
 
@@ -259,4 +258,5 @@ class SpillSorterSuite extends AnyFunSuite with BeforeAndAfterEach {
       sorter.freeArray()
     }
   }
+
 }

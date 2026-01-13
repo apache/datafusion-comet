@@ -183,11 +183,14 @@ public class SpillSorter extends SpillWriter {
    * records.
    */
   public void reset() {
-    // We allocate pointer array outside the sorter.
-    // So we can get array address which can be used by native code.
-    inMemSorter.reset();
-    sorterArray = allocator.allocateArray(initialSize);
-    inMemSorter.expandPointerArray(sorterArray);
+    synchronized (this) {
+      // We allocate pointer array outside the sorter.
+      // So we can get array address which can be used by native code.
+      inMemSorter.reset();
+      sorterArray = allocator.allocateArray(initialSize);
+      inMemSorter.expandPointerArray(sorterArray);
+      freed = false;
+    }
   }
 
   void setSpillInfo(SpillInfo spillInfo) {
@@ -270,6 +273,12 @@ public class SpillSorter extends SpillWriter {
     }
 
     if (currentPartition != -1) {
+      if (partitionChecksums.length > 0) {
+        // If checksum is enabled, we need to update the checksum for the last partition.
+        setChecksum(partitionChecksums[currentPartition]);
+        setChecksumAlgo(checksumAlgorithm);
+      }
+
       long written =
           doSpilling(
               dataTypes,
@@ -281,6 +290,11 @@ public class SpillSorter extends SpillWriter {
               compressionLevel,
               tracingEnabled);
       spillInfo.partitionLengths[currentPartition] = written;
+
+      // Store the checksum for the last partition.
+      if (partitionChecksums.length > 0) {
+        partitionChecksums[currentPartition] = getChecksum();
+      }
 
       synchronized (spills) {
         spills.add(spillInfo);
