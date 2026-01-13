@@ -268,9 +268,12 @@ object CometShuffleExchangeExec
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DateType =>
         true
-      case d: DecimalType =>
+      case _: DecimalType =>
+        // TODO enforce this check
+        // https://github.com/apache/datafusion-comet/issues/3079
         // Decimals with precision > 18 require Java BigDecimal conversion before hashing
-        d.precision <= 18
+        // d.precision <= 18
+        true
       case _ =>
         false
     }
