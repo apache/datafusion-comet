@@ -374,6 +374,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS: ConfigEntry[Int] =
+    conf("spark.comet.native.shuffle.partitioning.roundrobin.maxHashColumns")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "The maximum number of columns to hash for round robin partitioning. " +
+          "When set to 0 (the default), all columns are hashed. " +
+          "When set to a positive value, only the first N columns are used for hashing, " +
+          "which can improve performance for wide tables while still providing " +
+          "reasonable distribution.")
+      .intConf
+      .createWithDefault(0)
+
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
       .category(CATEGORY_SHUFFLE)

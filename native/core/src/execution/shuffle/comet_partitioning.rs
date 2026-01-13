@@ -32,9 +32,9 @@ pub enum CometPartitioning {
     /// LexOrdering to bin each value in the RecordBatch to a partition.
     RangePartitioning(LexOrdering, usize, Arc<RowConverter>, Vec<OwnedRow>),
     /// Round robin partitioning. Distributes rows across partitions by sorting them by hash
-    /// (computed from all columns) and then assigning partitions sequentially. Args are the
-    /// number of partitions.
-    RoundRobin(usize),
+    /// (computed from columns) and then assigning partitions sequentially. Args are:
+    /// 1) number of partitions, 2) max columns to hash (0 means no limit).
+    RoundRobin(usize, usize),
 }
 
 impl CometPartitioning {
@@ -42,7 +42,7 @@ impl CometPartitioning {
         use CometPartitioning::*;
         match self {
             SinglePartition => 1,
-            Hash(_, n) | RangePartitioning(_, n, _, _) | RoundRobin(n) => *n,
+            Hash(_, n) | RangePartitioning(_, n, _, _) | RoundRobin(n, _) => *n,
         }
     }
 }

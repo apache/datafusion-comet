@@ -384,7 +384,7 @@ impl MultiPartitionShuffleRepartitioner {
             hashes_buf: match partitioning {
                 // Allocate hashes_buf for hash and round robin partitioning.
                 // Round robin hashes all columns to achieve even, deterministic distribution.
-                CometPartitioning::Hash(_, _) | CometPartitioning::RoundRobin(_) => {
+                CometPartitioning::Hash(_, _) | CometPartitioning::RoundRobin(_, _) => {
                     vec![0; batch_size]
                 }
                 _ => vec![],
@@ -601,8 +601,8 @@ impl MultiPartitionShuffleRepartitioner {
                 .await?;
                 self.scratch = scratch;
             }
-            CometPartitioning::RoundRobin(num_output_partitions) => {
-                // Comet implements "round robin" as hash partitioning on ALL columns.
+            CometPartitioning::RoundRobin(num_output_partitions, max_hash_columns) => {
+                // Comet implements "round robin" as hash partitioning on columns.
                 // This achieves the same goal as Spark's round robin (even distribution
                 // without semantic grouping) while being deterministic for fault tolerance.
                 //
@@ -615,8 +615,14 @@ impl MultiPartitionShuffleRepartitioner {
 
                     let num_rows = input.num_rows();
 
-                    // Collect ALL input columns for hashing
-                    let all_columns: Vec<ArrayRef> = (0..input.num_columns())
+                    // Collect columns for hashing, respecting max_hash_columns limit
+                    // max_hash_columns of 0 means no limit (hash all columns)
+                    let num_columns_to_hash = if *max_hash_columns == 0 {
+                        input.num_columns()
+                    } else {
+                        (*max_hash_columns).min(input.num_columns())
+                    };
+                    let columns_to_hash: Vec<ArrayRef> = (0..num_columns_to_hash)
                         .map(|i| Arc::clone(input.column(i)))
                         .collect();
 
@@ -624,8 +630,8 @@ impl MultiPartitionShuffleRepartitioner {
                     let hashes_buf = &mut scratch.hashes_buf[..num_rows];
                     hashes_buf.fill(42_u32);
 
-                    // Compute hash for all columns
-                    create_murmur3_hashes(&all_columns, hashes_buf)?;
+                    // Compute hash for selected columns
+                    create_murmur3_hashes(&columns_to_hash, hashes_buf)?;
 
                     // Assign partition IDs based on hash (same as hash partitioning)
                     let partition_ids = &mut scratch.partition_ids[..num_rows];
@@ -1489,7 +1495,7 @@ mod test {
                 Arc::new(row_converter),
                 owned_rows,
             ),
-            CometPartitioning::RoundRobin(num_partitions),
+            CometPartitioning::RoundRobin(num_partitions, 0),
         ] {
             let batches = (0..num_batches).map(|_| batch.clone()).collect::<Vec<_>>();
 
@@ -1567,7 +1573,7 @@ mod test {
                 Arc::new(DataSourceExec::new(Arc::new(
                     MemorySourceConfig::try_new(partitions, batch.schema(), None).unwrap(),
                 ))),
-                CometPartitioning::RoundRobin(num_partitions),
+                CometPartitioning::RoundRobin(num_partitions, 0),
                 CompressionCodec::Zstd(1),
                 data_file.clone(),
                 index_file.clone(),

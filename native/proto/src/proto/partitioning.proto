@@ -55,4 +55,6 @@ message RangePartition {
 
 message RoundRobinPartition {
   int32 num_partitions = 1;
+  // Maximum number of columns to hash. 0 means no limit (hash all columns).
+  int32 max_hash_columns = 2;
 }
