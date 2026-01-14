@@ -17,6 +17,12 @@
 
 //! Parquet writer operator for writing RecordBatches to Parquet files
 
+use arrow::array::{ArrayRef, AsArray};
+use arrow::compute::{
+    cast, lexsort_to_indices, partition, take, Partitions, SortColumn, SortOptions,
+};
+use opendal::{services::Hdfs, Operator};
+use std::collections::HashMap;
 use std::{
     any::Any,
     fmt,
@@ -25,10 +31,6 @@ use std::{
     io::Cursor,
     sync::Arc,
 };
-use std::collections::HashMap;
-use arrow::array::{ArrayRef, AsArray};
-use arrow::compute::cast;
-use opendal::{services::Hdfs, Operator};
 use url::Url;
 
 use arrow::datatypes::{DataType, Int16Type, Int32Type, Int64Type, Int8Type, Schema, SchemaRef};
@@ -72,8 +74,10 @@ enum ParquetWriter {
 }
 
 fn needs_escaping(c: char) -> bool {
-    matches!(c, '"' | '#' | '%' | '\'' | '*' | '/' | ':' | '=' | '?' | '\\' | '\x7F')
-        || c.is_control()
+    matches!(
+        c,
+        '"' | '#' | '%' | '\'' | '*' | '/' | ':' | '=' | '?' | '\\' | '\x7F'
+    ) || c.is_control()
 }
 
 fn escape_partition_value(value: &str) -> String {
@@ -93,25 +97,24 @@ fn build_partition_path(
     row: usize,
     partition_columns: &[String],
     partition_indices: &[usize],
-) -> Result<String> {
+) -> String {
     let mut path = String::new();
     for (name, &idx) in partition_columns.iter().zip(partition_indices.iter()) {
-        let value = get_partition_value(batch.column(idx), row)?;
+        let value = get_partition_value(batch.column(idx), row);
         if !path.is_empty() {
             path.push('/');
         }
         path.push_str(name);
         path.push('=');
-        path.push_str(&escape_partition_value(&value));
+        path.push_str(&escape_partition_value(&value.unwrap()));
     }
-    Ok(path)
+    path
 }
 
 fn get_partition_value(array: &ArrayRef, row: usize) -> Result<String> {
     if array.is_null(row) {
         return Ok("__HIVE_DEFAULT_PARTITION__".to_string());
-    }
-    else{
+    } else {
         // relying on arrow's cast op to get string representation
         let string_array = cast(array, &DataType::Utf8)?;
         Ok(string_array.as_string::<i32>().value(row).to_string())
@@ -292,31 +295,8 @@ impl ParquetWriterExec {
             column_names,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
-            partition_columns
+            partition_columns,
         })
-    }
-
-    fn get_partition_value(array: &ArrayRef, row: usize) -> Result<String> {
-        use arrow::array::*;
-        use arrow::datatypes::DataType;
-
-        if array.is_null(row) {
-            return Ok("__HIVE_DEFAULT_PARTITION__".to_string());
-        }
-
-        let value = match array.data_type() {
-            DataType::Utf8 => array.as_string::<i32>().value(row).to_string(),
-            DataType::Int64 => array.as_primitive::<Int64Type>().value(row).to_string(),
-            DataType::Int32 => array.as_primitive::<Int32Type>().value(row).to_string(),
-            DataType::Int16 => array.as_primitive::<Int16Type>().value(row).to_string(),
-            DataType::Int8 => array.as_primitive::<Int8Type>().value(row).to_string(),
-            DataType::Boolean => array.as_boolean().value(row).to_string(),
-            DataType::Utf8 => array.value(row).to_string(),
-            dt => return Err(DataFusionError::Execution(
-                format!("Unsupported partition column type: {:?}", dt)
-            )),
-        };
-        Ok(value)
     }
 
     fn compression_to_parquet(&self) -> Result<Compression> {
@@ -511,7 +491,7 @@ impl ExecutionPlan for ParquetWriterExec {
                 self.compression.clone(),
                 self.partition_id,
                 self.column_names.clone(),
-                self.partition_columns.clone()
+                self.partition_columns.clone(),
             )?)),
             _ => Err(DataFusionError::Internal(
                 "ParquetWriterExec requires exactly one child".to_string(),
@@ -521,22 +501,27 @@ impl ExecutionPlan for ParquetWriterExec {
 
     fn execute(
         &self,
-        partition: usize,
+        partition_size: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         use datafusion::physical_plan::metrics::MetricBuilder;
 
         // Create metrics for tracking write statistics
-        let files_written = MetricBuilder::new(&self.metrics).counter("files_written", partition);
-        let bytes_written = MetricBuilder::new(&self.metrics).counter("bytes_written", partition);
-        let rows_written = MetricBuilder::new(&self.metrics).counter("rows_written", partition);
+        let files_written =
+            MetricBuilder::new(&self.metrics).counter("files_written", partition_size);
+        let bytes_written =
+            MetricBuilder::new(&self.metrics).counter("bytes_written", partition_size);
+        let rows_written =
+            MetricBuilder::new(&self.metrics).counter("rows_written", partition_size);
 
-        let input = self.input.execute(partition, context)?;
+        let input = self.input.execute(partition_size, context)?;
         let input_schema = self.input.schema();
         let work_dir = self.work_dir.clone();
         let task_attempt_id = self.task_attempt_id;
         let compression = self.compression_to_parquet()?;
         let column_names = self.column_names.clone();
+        let partition_cols = self.partition_columns.clone();
+        let partition_id = self.partition_id;
 
         assert_eq!(input_schema.fields().len(), column_names.len());
 
@@ -549,22 +534,6 @@ impl ExecutionPlan for ParquetWriterExec {
             .collect();
         let output_schema = Arc::new(arrow::datatypes::Schema::new(fields));
 
-        for partition_name in &self.partition_columns {
-            let index = input_schema.index_of(partition_name)?;
-            let data_type = input_schema.field(index).data_type().clone();
-        }
-
-        // Generate part file name for this partition
-        // If using FileCommitProtocol (work_dir is set), include task_attempt_id in the filename
-        let part_file = if let Some(attempt_id) = task_attempt_id {
-            format!(
-                "{}/part-{:05}-{:05}.parquet",
-                work_dir, self.partition_id, attempt_id
-            )
-        } else {
-            format!("{}/part-{:05}.parquet", work_dir, self.partition_id)
-        };
-
         // Configure writer properties
         let props = WriterProperties::builder()
             .set_compression(compression)
@@ -574,33 +543,112 @@ impl ExecutionPlan for ParquetWriterExec {
         let schema_for_write = Arc::clone(&output_schema);
 
         if !self.partition_columns.is_empty() {
+            // get partition col idx
+            let partition_indices: Vec<usize> = self
+                .partition_columns
+                .iter()
+                .map(|name| schema_for_write.index_of(name).unwrap())
+                .collect();
+
+            // get all other col idx
+            let non_partition_indices: Vec<usize> = (0..schema_for_write.fields().len())
+                .filter(|i| !partition_indices.contains(i))
+                .collect();
+
+            let props = props.clone();
+
             let write_task = async move {
                 let mut stream = input;
                 let mut total_rows = 0i64;
                 let mut writers: HashMap<String, ParquetWriter> = HashMap::new();
-                let mut partition_files: Vec<String> = Vec::new();
 
                 while let Some(batch_result) = stream.try_next().await.transpose() {
                     let batch = batch_result?;
+
                     total_rows += batch.num_rows() as i64;
 
-                    // Step 1: Rename columns
                     let renamed_batch = RecordBatch::try_new(
                         Arc::clone(&schema_for_write),
-                        batch.columns().to_vec()    
+                        batch.columns().to_vec(),
                     )?;
 
-                    // Step 2: Sort by partition columns
-                    // ... (next step)
+                    // sort batch by the partition columns and split them later to write into separate files
+                    let sort_columns: Vec<SortColumn> = partition_indices
+                        .iter()
+                        .map(|&idx| SortColumn {
+                            values: Arc::clone(renamed_batch.column(idx)),
+                            options: Some(SortOptions::default()),
+                        })
+                        .collect();
 
-                    // Step 3: Get partition ranges
-                    // ... (next step)
+                    // TODO : benchmark against row comparator
+                    let sorted_indices = lexsort_to_indices(&sort_columns, None)?;
+                    let sorted_batch = RecordBatch::try_new(
+                        Arc::clone(&schema_for_write),
+                        renamed_batch
+                            .columns()
+                            .iter()
+                            .map(|col| take(col.as_ref(), &sorted_indices, None).unwrap())
+                            .collect(),
+                    )?;
 
-                    // Step 4: Write each partition slice
-                    // ... (next step)
+                    let partition_columns: Vec<ArrayRef> = partition_indices
+                        .iter()
+                        .map(|&idx| Arc::clone(sorted_batch.column(idx)))
+                        .collect();
+
+                    let partition_ranges: Partitions = partition(&partition_columns)?;
+
+                    for partition_batch in partition_ranges.ranges() {
+                        let record_batch: RecordBatch = sorted_batch
+                            .slice(
+                                partition_batch.start,
+                                partition_batch.end - partition_batch.start,
+                            )
+                            .project(&non_partition_indices)
+                            .expect("cannot project partition columns");
+                        let partition_path: String = build_partition_path(
+                            &record_batch,
+                            0,
+                            &partition_cols,
+                            &partition_indices,
+                        );
+                        eprintln!("Partition path: {:?}", partition_path);
+
+                        let full_path_part_file = if let Some(attempt_id) = task_attempt_id {
+                            format!(
+                                "{}/{}/part-{:05}-{:05}.parquet",
+                                work_dir, partition_path, partition_id, attempt_id
+                            )
+                        } else {
+                            format!(
+                                "{}/{}/part-{:05}.parquet",
+                                work_dir, partition_path, partition_id
+                            )
+                        };
+                        eprintln!("full path: {:?}", full_path_part_file);
+
+                        if !writers.contains_key(&partition_path) {
+                            let writer = Self::create_arrow_writer(
+                                &full_path_part_file,
+                                Arc::clone(&output_schema),
+                                props.clone(),
+                            )?;
+                            writers.insert(partition_path.clone(), writer);
+                        }
+
+                        // write data now
+                        writers
+                            .get_mut(&partition_path)
+                            .unwrap()
+                            .write(&record_batch)
+                            .await
+                            .map_err(|e| {
+                                DataFusionError::Execution(format!("Failed to write batch: {}", e))
+                            })?;
+                    }
                 }
 
-                // Step 5: Close all writers
                 for (_, writer) in writers {
                     writer.close().await?;
                 }
@@ -612,9 +660,19 @@ impl ExecutionPlan for ParquetWriterExec {
                 self.schema(),
                 futures::stream::once(write_task).try_flatten(),
             )))
-
         } else {
-            let mut writer = Self::create_arrow_writer(&part_file, Arc::clone(&output_schema), props)?;
+            // Generate part file name for this partition
+            // If using FileCommitProtocol (work_dir is set), include task_attempt_id in the filename
+            let part_file = if let Some(attempt_id) = task_attempt_id {
+                format!(
+                    "{}/part-{:05}-{:05}.parquet",
+                    work_dir, self.partition_id, attempt_id
+                )
+            } else {
+                format!("{}/part-{:05}.parquet", work_dir, self.partition_id)
+            };
+            let mut writer =
+                Self::create_arrow_writer(&part_file, Arc::clone(&output_schema), props)?;
 
             // Write batches
             let write_task = async move {
@@ -629,13 +687,16 @@ impl ExecutionPlan for ParquetWriterExec {
 
                     // Rename columns in the batch to match output schema
                     let renamed_batch = if !column_names.is_empty() {
-                        RecordBatch::try_new(Arc::clone(&schema_for_write), batch.columns().to_vec())
-                            .map_err(|e| {
-                                DataFusionError::Execution(format!(
-                                    "Failed to rename batch columns: {}",
-                                    e
-                                ))
-                            })?
+                        RecordBatch::try_new(
+                            Arc::clone(&schema_for_write),
+                            batch.columns().to_vec(),
+                        )
+                        .map_err(|e| {
+                            DataFusionError::Execution(format!(
+                                "Failed to rename batch columns: {}",
+                                e
+                            ))
+                        })?
                     } else {
                         batch
                     };
@@ -927,7 +988,7 @@ mod tests {
             CompressionCodec::None,
             0, // partition_id
             column_names,
-            partition_columns
+            partition_columns,
         )?;
 
         // Create a session context and execute the plan

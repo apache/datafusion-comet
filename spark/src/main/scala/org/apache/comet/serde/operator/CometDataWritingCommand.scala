@@ -183,7 +183,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           committerClass.getConstructor(classOf[String], classOf[String], classOf[Boolean])
         Some(
           constructor
-            .newInstance(jobId, outputPath, isDynamicOverWriteMode)
+            .newInstance(jobId, outputPath, isDynamicOverWriteMode: java.lang.Boolean)
             .asInstanceOf[org.apache.spark.internal.io.FileCommitProtocol])
       } catch {
         case e: Exception =>
