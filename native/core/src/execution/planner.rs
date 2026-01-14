@@ -956,12 +956,15 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|offset| *offset as usize)
                     .collect();
+                dbg!(&data_schema);
+                dbg!(&required_schema);
+                dbg!(&partition_schema);
 
                 // Check if this partition has any files (bucketed scan with bucket pruning may have empty partitions)
                 let partition_files = &scan.file_partitions[self.partition as usize];
 
                 if partition_files.partitioned_file.is_empty() {
-                    let empty_exec = Arc::new(EmptyExec::new(required_schema));
+                    let empty_exec = Arc::new(EmptyExec::new(data_schema));
                     return Ok((
                         vec![],
                         Arc::new(SparkPlan::new(spark_plan.plan_id, empty_exec, vec![])),
@@ -972,7 +975,7 @@ impl PhysicalPlanner {
                 let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = scan
                     .data_filters
                     .iter()
-                    .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
+                    .map(|expr| self.create_expr(expr, Arc::clone(&data_schema)))
                     .collect();
 
                 let default_values: Option<HashMap<usize, ScalarValue>> = if !scan
@@ -1042,7 +1045,7 @@ impl PhysicalPlanner {
                     })
                     .collect_vec();
                 let scan_exec = init_datasource_exec(
-                    Arc::clone(&required_schema),
+                    Arc::clone(&data_schema),
                     Some(data_schema),
                     Some(partition_schema),
                     Some(partition_fields),

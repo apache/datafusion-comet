@@ -761,8 +761,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             false
         };
 
+        dbg!(&data_schema);
+        dbg!(&required_schema);
+
         let scan = init_datasource_exec(
-            required_schema,
+            data_schema.clone(),
             Some(data_schema),
             None,
             None,
@@ -775,6 +778,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             session_ctx,
             encryption_enabled,
         )?;
+
+        dbg!("1");
+
 
         let partition_index: usize = 0;
         let batch_stream = Some(scan.execute(partition_index, session_ctx.task_ctx())?);
