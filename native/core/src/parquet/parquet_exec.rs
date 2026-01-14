@@ -15,10 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::HashMap;
 use crate::execution::operators::ExecutionError;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
 use datafusion::config::TableParquetOptions;
 use datafusion::datasource::listing::PartitionedFile;
@@ -29,13 +29,13 @@ use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::physical_expr::expressions::BinaryExpr;
 use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
 use datafusion::prelude::SessionContext;
+use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::TableSchema;
+use std::collections::HashMap;
 use std::sync::Arc;
-use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
-use datafusion::scalar::ScalarValue;
-use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 
 /// Initializes a DataSourceExec plan with a ParquetSource. This may be used by either the
 /// `native_datafusion` scan or the `native_iceberg_compat` scan.
@@ -138,11 +138,12 @@ pub(crate) fn init_datasource_exec(
         FileScanConfigBuilder::new(object_store_url, file_source).with_file_groups(file_groups);
 
     if let Some(projection_vector) = projection_vector {
-        file_scan_config_builder =
-            file_scan_config_builder.with_projection_indices(Some(projection_vector))?;
+        file_scan_config_builder = file_scan_config_builder
+            .with_projection_indices(Some(projection_vector))?
+            .with_expr_adapter(Some(expr_adapter_factory));
     }
 
-    let file_scan_config = file_scan_config_builder.with_expr_adapter(Some(expr_adapter_factory)).build();
+    let file_scan_config = file_scan_config_builder.build();
 
     Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))
 }
