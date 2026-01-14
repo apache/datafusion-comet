@@ -134,15 +134,15 @@ Cast operations in Comet fall into three levels of support:
 | | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
-| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
-| byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
+| boolean | N/A | - | C | N/A | C | C | C | C | C | C | C | U |
+| byte | C | C | - | N/A | C | C | C | C | C | C | C | U |
 | date | N/A | U | U | - | U | U | U | U | U | U | C | U |
 | decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
 | double | N/A | C | C | N/A | I | - | C | C | C | C | C | U |
 | float | N/A | C | C | N/A | I | C | - | C | C | C | C | U |
-| integer | U | C | C | N/A | C | C | C | - | C | C | C | U |
-| long | U | C | C | N/A | C | C | C | C | - | C | C | U |
-| short | U | C | C | N/A | C | C | C | C | C | - | C | U |
+| integer | C | C | C | N/A | C | C | C | - | C | C | C | U |
+| long | C | C | C | N/A | C | C | C | C | - | C | C | U |
+| short | C | C | C | N/A | C | C | C | C | C | - | C | U |
 | string | C | C | C | C | I | C | C | C | C | C | - | I |
 | timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
 <!-- prettier-ignore-end -->
@@ -169,7 +169,7 @@ Cast operations in Comet fall into three levels of support:
 | | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
-| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
+| boolean | N/A | - | C | N/A | C | C | C | C | C | C | C | U |
 | byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
 | date | N/A | U | U | - | U | U | U | U | U | U | C | U |
 | decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
@@ -210,7 +210,7 @@ Any cast not listed in the previous tables is currently unsupported. We are work
 | | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
-| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
+| boolean | N/A | - | C | N/A | C | C | C | C | C | C | C | U |
 | byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
 | date | N/A | U | U | - | U | U | U | U | U | U | C | U |
 | decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
