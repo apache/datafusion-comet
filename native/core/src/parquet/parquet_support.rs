@@ -406,7 +406,7 @@ fn create_hdfs_object_store(
     Ok((Box::new(store), path))
 }
 
-#[cfg(all(feature = "hdfs-opendal", not(feature = "hdfs")))]
+#[cfg(feature = "hdfs-opendal")]
 fn get_name_node_uri(url: &Url) -> Result<String, object_store::Error> {
     use std::fmt::Write;
     if let Some(host) = url.host() {
