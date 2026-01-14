@@ -287,6 +287,220 @@ macro_rules! hash_list_primitive {
 /// Spark hashes arrays by recursively hashing each element, where each
 /// element's hash is computed using the previous element's hash as the seed.
 /// This creates a chain: hash(elem_n, hash(elem_n-1, ... hash(elem_0, seed)...))
+/// Dispatches hash operations for List/LargeList/FixedSizeList arrays with primitive element types.
+/// This macro eliminates duplication by handling the type-to-array mapping for all supported primitives.
+#[macro_export]
+macro_rules! hash_list_with_primitive_elements {
+    // Variant for List/LargeList with offsets
+    (offsets: $list_array_type:ident, $list_array:ident, $values:ident, $offsets:ident, $field:expr, $hashes_buffer:ident, $hash_method:ident, $recursive_hash_method:ident, $fallback_offset_type:ty, $col:ident) => {
+        match $field.data_type() {
+            DataType::Int8 => {
+                let elem_array = $values.as_any().downcast_ref::<Int8Array>().unwrap();
+                $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i8| (v as i32).to_le_bytes());
+            }
+            DataType::Int16 => {
+                let elem_array = $values.as_any().downcast_ref::<Int16Array>().unwrap();
+                $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i16| (v as i32).to_le_bytes());
+            }
+            DataType::Int32 => {
+                let elem_array = $values.as_any().downcast_ref::<Int32Array>().unwrap();
+                $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i32| v.to_le_bytes());
+            }
+            DataType::Int64 => {
+                let elem_array = $values.as_any().downcast_ref::<Int64Array>().unwrap();
+                $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
+            }
+            DataType::Float32 => {
+                let elem_array = $values.as_any().downcast_ref::<Float32Array>().unwrap();
+                $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method,
+                    |v: f32| if v == 0.0 && v.is_sign_negative() { (0_i32).to_le_bytes() } else { v.to_le_bytes() });
+            }
+            DataType::Float64 => {
+                let elem_array = $values.as_any().downcast_ref::<Float64Array>().unwrap();
+                $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method,
+                    |v: f64| if v == 0.0 && v.is_sign_negative() { (0_i64).to_le_bytes() } else { v.to_le_bytes() });
+            }
+            DataType::Boolean => {
+                let elem_array = $values.as_any().downcast_ref::<BooleanArray>().unwrap();
+                $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method, |v: bool| (i32::from(v)).to_le_bytes());
+            }
+            DataType::Utf8 => {
+                let elem_array = $values.as_any().downcast_ref::<StringArray>().unwrap();
+                if $list_array.null_count() == 0 && elem_array.null_count() == 0 {
+                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
+                        let start = $offsets[row_idx] as usize;
+                        let end = $offsets[row_idx + 1] as usize;
+                        for elem_idx in start..end {
+                            *hash = $hash_method(elem_array.value(elem_idx), *hash);
+                        }
+                    }
+                } else {
+                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
+                        if !$list_array.is_null(row_idx) {
+                            let start = $offsets[row_idx] as usize;
+                            let end = $offsets[row_idx + 1] as usize;
+                            for elem_idx in start..end {
+                                if !elem_array.is_null(elem_idx) {
+                                    *hash = $hash_method(elem_array.value(elem_idx), *hash);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            DataType::Binary => {
+                let elem_array = $values.as_any().downcast_ref::<BinaryArray>().unwrap();
+                if $list_array.null_count() == 0 && elem_array.null_count() == 0 {
+                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
+                        let start = $offsets[row_idx] as usize;
+                        let end = $offsets[row_idx + 1] as usize;
+                        for elem_idx in start..end {
+                            *hash = $hash_method(elem_array.value(elem_idx), *hash);
+                        }
+                    }
+                } else {
+                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
+                        if !$list_array.is_null(row_idx) {
+                            let start = $offsets[row_idx] as usize;
+                            let end = $offsets[row_idx + 1] as usize;
+                            for elem_idx in start..end {
+                                if !elem_array.is_null(elem_idx) {
+                                    *hash = $hash_method(elem_array.value(elem_idx), *hash);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            DataType::Date32 => {
+                let elem_array = $values.as_any().downcast_ref::<Date32Array>().unwrap();
+                $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i32| v.to_le_bytes());
+            }
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                let elem_array = $values.as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap();
+                $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
+            }
+            _ => {
+                // Fall back to recursive approach for complex element types
+                $crate::hash_list_array!($list_array_type, $fallback_offset_type, $col, $hashes_buffer, $recursive_hash_method);
+            }
+        }
+    };
+    // Variant for FixedSizeList with fixed size
+    (fixed_size: $list_array:ident, $values:ident, $list_size:ident, $field:expr, $hashes_buffer:ident, $hash_method:ident, $recursive_hash_method:ident) => {
+        match $field.data_type() {
+            DataType::Int8 => {
+                let elem_array = $values.as_any().downcast_ref::<Int8Array>().unwrap();
+                $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i8| (v as i32).to_le_bytes());
+            }
+            DataType::Int16 => {
+                let elem_array = $values.as_any().downcast_ref::<Int16Array>().unwrap();
+                $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i16| (v as i32).to_le_bytes());
+            }
+            DataType::Int32 => {
+                let elem_array = $values.as_any().downcast_ref::<Int32Array>().unwrap();
+                $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i32| v.to_le_bytes());
+            }
+            DataType::Int64 => {
+                let elem_array = $values.as_any().downcast_ref::<Int64Array>().unwrap();
+                $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
+            }
+            DataType::Float32 => {
+                let elem_array = $values.as_any().downcast_ref::<Float32Array>().unwrap();
+                $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method,
+                    |v: f32| if v == 0.0 && v.is_sign_negative() { (0_i32).to_le_bytes() } else { v.to_le_bytes() });
+            }
+            DataType::Float64 => {
+                let elem_array = $values.as_any().downcast_ref::<Float64Array>().unwrap();
+                $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method,
+                    |v: f64| if v == 0.0 && v.is_sign_negative() { (0_i64).to_le_bytes() } else { v.to_le_bytes() });
+            }
+            DataType::Boolean => {
+                let elem_array = $values.as_any().downcast_ref::<BooleanArray>().unwrap();
+                $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method, |v: bool| (i32::from(v)).to_le_bytes());
+            }
+            DataType::Utf8 => {
+                let elem_array = $values.as_any().downcast_ref::<StringArray>().unwrap();
+                if $list_array.null_count() == 0 && elem_array.null_count() == 0 {
+                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
+                        let start = row_idx * $list_size;
+                        for elem_idx in 0..$list_size {
+                            *hash = $hash_method(elem_array.value(start + elem_idx), *hash);
+                        }
+                    }
+                } else {
+                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
+                        if !$list_array.is_null(row_idx) {
+                            let start = row_idx * $list_size;
+                            for elem_idx in 0..$list_size {
+                                if !elem_array.is_null(start + elem_idx) {
+                                    *hash = $hash_method(elem_array.value(start + elem_idx), *hash);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            DataType::Binary => {
+                let elem_array = $values.as_any().downcast_ref::<BinaryArray>().unwrap();
+                if $list_array.null_count() == 0 && elem_array.null_count() == 0 {
+                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
+                        let start = row_idx * $list_size;
+                        for elem_idx in 0..$list_size {
+                            *hash = $hash_method(elem_array.value(start + elem_idx), *hash);
+                        }
+                    }
+                } else {
+                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
+                        if !$list_array.is_null(row_idx) {
+                            let start = row_idx * $list_size;
+                            for elem_idx in 0..$list_size {
+                                if !elem_array.is_null(start + elem_idx) {
+                                    *hash = $hash_method(elem_array.value(start + elem_idx), *hash);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            DataType::Date32 => {
+                let elem_array = $values.as_any().downcast_ref::<Date32Array>().unwrap();
+                $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i32| v.to_le_bytes());
+            }
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                let elem_array = $values.as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap();
+                $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
+            }
+            _ => {
+                // Fall back to recursive approach for complex element types
+                if $list_array.null_count() == 0 {
+                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
+                        let start = row_idx * $list_size;
+                        for elem_idx in 0..$list_size {
+                            let elem_array = $values.slice(start + elem_idx, 1);
+                            let mut single_hash = [*hash];
+                            $recursive_hash_method(&[elem_array], &mut single_hash)?;
+                            *hash = single_hash[0];
+                        }
+                    }
+                } else {
+                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
+                        if !$list_array.is_null(row_idx) {
+                            let start = row_idx * $list_size;
+                            for elem_idx in 0..$list_size {
+                                let elem_array = $values.slice(start + elem_idx, 1);
+                                let mut single_hash = [*hash];
+                                $recursive_hash_method(&[elem_array], &mut single_hash)?;
+                                *hash = single_hash[0];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+}
+
 #[macro_export]
 macro_rules! hash_list_array {
     ($array_type:ident, $offset_type:ty, $column: ident, $hashes: ident, $recursive_hash_method: ident) => {
@@ -563,246 +777,21 @@ macro_rules! create_hashes_internal {
                     let values = list_array.values();
                     let offsets = list_array.offsets();
 
-                    // Specialize for primitive element types to avoid slicing overhead
-                    match field.data_type() {
-                        DataType::Int8 => {
-                            let elem_array = values.as_any().downcast_ref::<Int8Array>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method, |v: i8| (v as i32).to_le_bytes());
-                        }
-                        DataType::Int16 => {
-                            let elem_array = values.as_any().downcast_ref::<Int16Array>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method, |v: i16| (v as i32).to_le_bytes());
-                        }
-                        DataType::Int32 => {
-                            let elem_array = values.as_any().downcast_ref::<Int32Array>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method, |v: i32| v.to_le_bytes());
-                        }
-                        DataType::Int64 => {
-                            let elem_array = values.as_any().downcast_ref::<Int64Array>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
-                        }
-                        DataType::Float32 => {
-                            let elem_array = values.as_any().downcast_ref::<Float32Array>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method,
-                                |v: f32| if v == 0.0 && v.is_sign_negative() { (0_i32).to_le_bytes() } else { v.to_le_bytes() });
-                        }
-                        DataType::Float64 => {
-                            let elem_array = values.as_any().downcast_ref::<Float64Array>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method,
-                                |v: f64| if v == 0.0 && v.is_sign_negative() { (0_i64).to_le_bytes() } else { v.to_le_bytes() });
-                        }
-                        DataType::Boolean => {
-                            let elem_array = values.as_any().downcast_ref::<BooleanArray>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method, |v: bool| (i32::from(v)).to_le_bytes());
-                        }
-                        DataType::Utf8 => {
-                            let elem_array = values.as_any().downcast_ref::<StringArray>().unwrap();
-                            if list_array.null_count() == 0 && elem_array.null_count() == 0 {
-                                for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                    let start = offsets[row_idx] as usize;
-                                    let end = offsets[row_idx + 1] as usize;
-                                    for elem_idx in start..end {
-                                        *hash = $hash_method(elem_array.value(elem_idx), *hash);
-                                    }
-                                }
-                            } else {
-                                for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                    if !list_array.is_null(row_idx) {
-                                        let start = offsets[row_idx] as usize;
-                                        let end = offsets[row_idx + 1] as usize;
-                                        for elem_idx in start..end {
-                                            if !elem_array.is_null(elem_idx) {
-                                                *hash = $hash_method(elem_array.value(elem_idx), *hash);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        DataType::Binary => {
-                            let elem_array = values.as_any().downcast_ref::<BinaryArray>().unwrap();
-                            if list_array.null_count() == 0 && elem_array.null_count() == 0 {
-                                for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                    let start = offsets[row_idx] as usize;
-                                    let end = offsets[row_idx + 1] as usize;
-                                    for elem_idx in start..end {
-                                        *hash = $hash_method(elem_array.value(elem_idx), *hash);
-                                    }
-                                }
-                            } else {
-                                for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                    if !list_array.is_null(row_idx) {
-                                        let start = offsets[row_idx] as usize;
-                                        let end = offsets[row_idx + 1] as usize;
-                                        for elem_idx in start..end {
-                                            if !elem_array.is_null(elem_idx) {
-                                                *hash = $hash_method(elem_array.value(elem_idx), *hash);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        DataType::Date32 => {
-                            let elem_array = values.as_any().downcast_ref::<Date32Array>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method, |v: i32| v.to_le_bytes());
-                        }
-                        DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                            let elem_array = values.as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
-                        }
-                        _ => {
-                            // Fall back to recursive approach for complex element types
-                            $crate::hash_list_array!(ListArray, i32, col, $hashes_buffer, $recursive_hash_method);
-                        }
-                    }
+                    $crate::hash_list_with_primitive_elements!(offsets: ListArray, list_array, values, offsets, field, $hashes_buffer, $hash_method, $recursive_hash_method, i32, col);
                 }
                 DataType::LargeList(field) => {
                     let list_array = col.as_any().downcast_ref::<LargeListArray>().unwrap();
                     let values = list_array.values();
                     let offsets = list_array.offsets();
 
-                    // Specialize for primitive element types to avoid slicing overhead
-                    match field.data_type() {
-                        DataType::Int8 => {
-                            let elem_array = values.as_any().downcast_ref::<Int8Array>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method, |v: i8| (v as i32).to_le_bytes());
-                        }
-                        DataType::Int16 => {
-                            let elem_array = values.as_any().downcast_ref::<Int16Array>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method, |v: i16| (v as i32).to_le_bytes());
-                        }
-                        DataType::Int32 => {
-                            let elem_array = values.as_any().downcast_ref::<Int32Array>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method, |v: i32| v.to_le_bytes());
-                        }
-                        DataType::Int64 => {
-                            let elem_array = values.as_any().downcast_ref::<Int64Array>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
-                        }
-                        DataType::Float32 => {
-                            let elem_array = values.as_any().downcast_ref::<Float32Array>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method,
-                                |v: f32| if v == 0.0 && v.is_sign_negative() { (0_i32).to_le_bytes() } else { v.to_le_bytes() });
-                        }
-                        DataType::Float64 => {
-                            let elem_array = values.as_any().downcast_ref::<Float64Array>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method,
-                                |v: f64| if v == 0.0 && v.is_sign_negative() { (0_i64).to_le_bytes() } else { v.to_le_bytes() });
-                        }
-                        DataType::Boolean => {
-                            let elem_array = values.as_any().downcast_ref::<BooleanArray>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method, |v: bool| (i32::from(v)).to_le_bytes());
-                        }
-                        DataType::Utf8 => {
-                            let elem_array = values.as_any().downcast_ref::<StringArray>().unwrap();
-                            if list_array.null_count() == 0 && elem_array.null_count() == 0 {
-                                for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                    let start = offsets[row_idx] as usize;
-                                    let end = offsets[row_idx + 1] as usize;
-                                    for elem_idx in start..end {
-                                        *hash = $hash_method(elem_array.value(elem_idx), *hash);
-                                    }
-                                }
-                            } else {
-                                for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                    if !list_array.is_null(row_idx) {
-                                        let start = offsets[row_idx] as usize;
-                                        let end = offsets[row_idx + 1] as usize;
-                                        for elem_idx in start..end {
-                                            if !elem_array.is_null(elem_idx) {
-                                                *hash = $hash_method(elem_array.value(elem_idx), *hash);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        DataType::Binary => {
-                            let elem_array = values.as_any().downcast_ref::<BinaryArray>().unwrap();
-                            if list_array.null_count() == 0 && elem_array.null_count() == 0 {
-                                for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                    let start = offsets[row_idx] as usize;
-                                    let end = offsets[row_idx + 1] as usize;
-                                    for elem_idx in start..end {
-                                        *hash = $hash_method(elem_array.value(elem_idx), *hash);
-                                    }
-                                }
-                            } else {
-                                for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                    if !list_array.is_null(row_idx) {
-                                        let start = offsets[row_idx] as usize;
-                                        let end = offsets[row_idx + 1] as usize;
-                                        for elem_idx in start..end {
-                                            if !elem_array.is_null(elem_idx) {
-                                                *hash = $hash_method(elem_array.value(elem_idx), *hash);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        DataType::Date32 => {
-                            let elem_array = values.as_any().downcast_ref::<Date32Array>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method, |v: i32| v.to_le_bytes());
-                        }
-                        DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                            let elem_array = values.as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap();
-                            $crate::hash_list_primitive!(offsets: offsets, list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
-                        }
-                        _ => {
-                            // Fall back to recursive approach for complex element types
-                            $crate::hash_list_array!(LargeListArray, i64, col, $hashes_buffer, $recursive_hash_method);
-                        }
-                    }
+                    $crate::hash_list_with_primitive_elements!(offsets: LargeListArray, list_array, values, offsets, field, $hashes_buffer, $hash_method, $recursive_hash_method, i64, col);
                 }
                 DataType::FixedSizeList(field, size) => {
                     let list_array = col.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
                     let values = list_array.values();
                     let list_size = *size as usize;
 
-                    // Specialize for primitive element types
-                    match field.data_type() {
-                        DataType::Int32 => {
-                            let elem_array = values.as_any().downcast_ref::<Int32Array>().unwrap();
-                            $crate::hash_list_primitive!(fixed_size: list_size, list_array, elem_array, $hashes_buffer, $hash_method, |v: i32| v.to_le_bytes());
-                        }
-                        DataType::Int64 => {
-                            let elem_array = values.as_any().downcast_ref::<Int64Array>().unwrap();
-                            $crate::hash_list_primitive!(fixed_size: list_size, list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
-                        }
-                        DataType::Float64 => {
-                            let elem_array = values.as_any().downcast_ref::<Float64Array>().unwrap();
-                            $crate::hash_list_primitive!(fixed_size: list_size, list_array, elem_array, $hashes_buffer, $hash_method,
-                                |v: f64| if v == 0.0 && v.is_sign_negative() { (0_i64).to_le_bytes() } else { v.to_le_bytes() });
-                        }
-                        _ => {
-                            // Fall back to recursive approach for complex element types
-                            if list_array.null_count() == 0 {
-                                for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                    let start = row_idx * list_size;
-                                    for elem_idx in 0..list_size {
-                                        let elem_array = values.slice(start + elem_idx, 1);
-                                        let mut single_hash = [*hash];
-                                        $recursive_hash_method(&[elem_array], &mut single_hash)?;
-                                        *hash = single_hash[0];
-                                    }
-                                }
-                            } else {
-                                for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                                    if !list_array.is_null(row_idx) {
-                                        let start = row_idx * list_size;
-                                        for elem_idx in 0..list_size {
-                                            let elem_array = values.slice(start + elem_idx, 1);
-                                            let mut single_hash = [*hash];
-                                            $recursive_hash_method(&[elem_array], &mut single_hash)?;
-                                            *hash = single_hash[0];
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    $crate::hash_list_with_primitive_elements!(fixed_size: list_array, values, list_size, field, $hashes_buffer, $hash_method, $recursive_hash_method);
                 }
                 DataType::Struct(_) => {
                     let struct_array = col.as_any().downcast_ref::<StructArray>().unwrap();
