@@ -63,7 +63,9 @@ import org.apache.spark.shuffle.api.SingleSpillShuffleMapOutputWriter;
 import org.apache.spark.shuffle.api.WritableByteChannelWrapper;
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator;
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
+import org.apache.spark.shuffle.sort.CometShuffleExternalAsyncSorter;
 import org.apache.spark.shuffle.sort.CometShuffleExternalSorter;
+import org.apache.spark.shuffle.sort.CometShuffleExternalSyncSorter;
 import org.apache.spark.shuffle.sort.SortShuffleManager;
 import org.apache.spark.shuffle.sort.UnsafeShuffleWriter;
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
@@ -244,17 +246,35 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
             sparkConf,
             memoryManager,
             Math.min(
-                CometShuffleExternalSorter.MAXIMUM_PAGE_SIZE_BYTES, memoryManager.pageSizeBytes()));
-    sorter =
-        new CometShuffleExternalSorter(
-            allocator,
-            blockManager,
-            taskContext,
-            initialSortBufferSize,
-            partitioner.numPartitions(),
-            sparkConf,
-            writeMetrics,
-            schema);
+                CometShuffleExternalSyncSorter.MAXIMUM_PAGE_SIZE_BYTES,
+                memoryManager.pageSizeBytes()));
+
+    // Choose sorter implementation based on async config
+    boolean isAsync = (boolean) CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED().get();
+    if (isAsync) {
+      sorter =
+          new CometShuffleExternalAsyncSorter(
+              allocator,
+              blockManager,
+              taskContext,
+              initialSortBufferSize,
+              partitioner.numPartitions(),
+              sparkConf,
+              writeMetrics,
+              schema);
+    } else {
+      sorter =
+          new CometShuffleExternalSyncSorter(
+              allocator,
+              blockManager,
+              taskContext,
+              initialSortBufferSize,
+              partitioner.numPartitions(),
+              sparkConf,
+              writeMetrics,
+              schema);
+    }
+
     serBuffer = new ExposedByteArrayOutputStream(DEFAULT_INITIAL_SER_BUFFER_SIZE);
     serOutputStream = serializer.serializeStream(serBuffer);
   }

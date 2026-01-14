@@ -52,7 +52,7 @@ import org.apache.spark.shuffle.api.WritableByteChannelWrapper;
 import org.apache.spark.shuffle.comet.CometShuffleChecksumSupport;
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocator;
 import org.apache.spark.shuffle.comet.CometShuffleMemoryAllocatorTrait;
-import org.apache.spark.shuffle.sort.CometShuffleExternalSorter;
+import org.apache.spark.shuffle.sort.CometShuffleExternalSyncSorter;
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.storage.BlockManager;
@@ -186,7 +186,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
               conf,
               memoryManager,
               Math.min(
-                  CometShuffleExternalSorter.MAXIMUM_PAGE_SIZE_BYTES,
+                  CometShuffleExternalSyncSorter.MAXIMUM_PAGE_SIZE_BYTES,
                   memoryManager.pageSizeBytes()));
 
       // Allocate the disk writers, and open the files that we'll be writing to
