@@ -15,10 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod date_from_unix_date;
 mod date_trunc;
 mod extract_date_part;
 mod timestamp_trunc;
 
+pub use date_from_unix_date::SparkDateFromUnixDate;
 pub use date_trunc::SparkDateTrunc;
 pub use extract_date_part::SparkHour;
 pub use extract_date_part::SparkMinute;
