@@ -122,4 +122,38 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         StructField("fmt", DataTypes.StringType, true)))
     FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
   }
+
+  test("datediff") {
+    val r = new Random(42)
+    val schema = StructType(
+      Seq(
+        StructField("c0", DataTypes.DateType, true),
+        StructField("c1", DataTypes.DateType, true)))
+    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
+    df.createOrReplaceTempView("tbl")
+
+    // Basic test with random dates
+    checkSparkAnswerAndOperator("SELECT c0, c1, datediff(c0, c1) FROM tbl ORDER BY c0, c1")
+
+    // Disable constant folding to ensure literal expressions are executed by Comet
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      // Test positive difference (end date > start date)
+      checkSparkAnswerAndOperator("SELECT datediff(DATE('2009-07-31'), DATE('2009-07-30'))")
+
+      // Test negative difference (end date < start date)
+      checkSparkAnswerAndOperator("SELECT datediff(DATE('2009-07-30'), DATE('2009-07-31'))")
+
+      // Test same dates (should be 0)
+      checkSparkAnswerAndOperator("SELECT datediff(DATE('2009-07-30'), DATE('2009-07-30'))")
+
+      // Test larger date differences
+      checkSparkAnswerAndOperator("SELECT datediff(DATE('2024-01-01'), DATE('2020-01-01'))")
+
+      // Test null handling
+      checkSparkAnswerAndOperator("SELECT datediff(NULL, DATE('2009-07-30'))")
+      checkSparkAnswerAndOperator("SELECT datediff(DATE('2009-07-30'), NULL)")
+    }
+  }
 }
