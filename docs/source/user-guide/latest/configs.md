@@ -264,6 +264,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.IsNaN.enabled` | Enable Comet acceleration for `IsNaN` | true |
 | `spark.comet.expression.IsNotNull.enabled` | Enable Comet acceleration for `IsNotNull` | true |
 | `spark.comet.expression.IsNull.enabled` | Enable Comet acceleration for `IsNull` | true |
+| `spark.comet.expression.JsonToStructs.enabled` | Enable Comet acceleration for `JsonToStructs` | true |
 | `spark.comet.expression.KnownFloatingPointNormalized.enabled` | Enable Comet acceleration for `KnownFloatingPointNormalized` | true |
 | `spark.comet.expression.Length.enabled` | Enable Comet acceleration for `Length` | true |
 | `spark.comet.expression.LessThan.enabled` | Enable Comet acceleration for `LessThan` | true |
@@ -306,6 +307,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Signum.enabled` | Enable Comet acceleration for `Signum` | true |
 | `spark.comet.expression.Sin.enabled` | Enable Comet acceleration for `Sin` | true |
 | `spark.comet.expression.Sinh.enabled` | Enable Comet acceleration for `Sinh` | true |
+| `spark.comet.expression.Size.enabled` | Enable Comet acceleration for `Size` | true |
 | `spark.comet.expression.SortOrder.enabled` | Enable Comet acceleration for `SortOrder` | true |
 | `spark.comet.expression.SparkPartitionID.enabled` | Enable Comet acceleration for `SparkPartitionID` | true |
 | `spark.comet.expression.Sqrt.enabled` | Enable Comet acceleration for `Sqrt` | true |

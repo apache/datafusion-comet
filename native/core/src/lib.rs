@@ -39,7 +39,11 @@ use log4rs::{
 };
 use once_cell::sync::OnceCell;
 
-#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[cfg(all(
+    not(target_env = "msvc"),
+    feature = "jemalloc",
+    not(feature = "mimalloc")
+))]
 use tikv_jemallocator::Jemalloc;
 
 #[cfg(all(
@@ -58,7 +62,11 @@ pub mod execution;
 mod jvm_bridge;
 pub mod parquet;
 
-#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[cfg(all(
+    not(target_env = "msvc"),
+    feature = "jemalloc",
+    not(feature = "mimalloc")
+))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
