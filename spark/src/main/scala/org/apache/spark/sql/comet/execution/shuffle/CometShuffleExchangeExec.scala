@@ -93,9 +93,9 @@ case class CometShuffleExchangeExec(
     // CometNativeShuffle assumes that the input plan is Comet plan.
     child.executeColumnar()
   } else if (shuffleType == CometColumnarShuffle) {
-    // CometColumnarShuffle assumes that the input plan is row-based plan from Spark.
-    // One exception is that the input plan is CometScanExec which manually converts
-    // ColumnarBatch to InternalRow in its doExecute().
+    // CometColumnarShuffle uses Spark's row-based execute() API. For Spark row-based plans,
+    // rows flow directly. For Comet native plans, their doExecute() wraps with ColumnarToRowExec
+    // to convert columnar batches to rows.
     child.execute()
   } else {
     throw new UnsupportedOperationException(
@@ -393,8 +393,9 @@ object CometShuffleExchangeExec
   }
 
   /**
-   * Check if the datatypes of shuffle input are supported. This is used for Columnar shuffle
-   * which supports struct/array.
+   * Check if JVM-based columnar shuffle (CometColumnarExchange) can be used for this shuffle. JVM
+   * shuffle is used when the child plan is not a Comet native operator, or when native shuffle
+   * doesn't support the required partitioning type (e.g., RoundRobinPartitioning).
    */
   def columnarShuffleSupported(s: ShuffleExchangeExec): Boolean = {
 

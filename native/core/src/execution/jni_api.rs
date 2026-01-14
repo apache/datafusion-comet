@@ -564,16 +564,23 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                             }
                             return Ok(-1);
                         }
-                        // A poll pending means there are more than one blocking operators,
-                        // we don't need go back-forth between JVM/Native. Just keeping polling.
+                        // A poll pending means the stream is not ready yet.
                         Poll::Pending => {
-                            // TODO: Investigate if JNI calls are safe without block_in_place.
-                            // block_in_place prevents Tokio from migrating this task to another thread,
-                            // which is necessary because JNI env is thread-local. If we can guarantee
-                            // thread safety another way, we could remove this wrapper for better perf.
-                            tokio::task::block_in_place(|| {
-                                pull_input_batches(exec_context)
-                            })?;
+                            if exec_context.scans.is_empty() {
+                                // Pure async I/O (e.g., IcebergScanExec, DataSourceExec)
+                                // Yield to let the executor drive I/O instead of busy-polling
+                                tokio::task::yield_now().await;
+                            } else {
+                                // Has ScanExec operators
+                                // Busy-poll to pull batches from JVM
+                                // TODO: Investigate if JNI calls are safe without block_in_place.
+                                // block_in_place prevents Tokio from migrating this task to another thread,
+                                // which is necessary because JNI env is thread-local. If we can guarantee
+                                // thread safety another way, we could remove this wrapper for better perf.
+                                tokio::task::block_in_place(|| {
+                                    pull_input_batches(exec_context)
+                                })?;
+                            }
 
                             // Output not ready yet
                             continue;
