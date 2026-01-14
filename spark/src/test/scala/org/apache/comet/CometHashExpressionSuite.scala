@@ -19,11 +19,15 @@
 
 package org.apache.comet
 
+import scala.util.Random
+
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
  * Test suite for Spark murmur3 hash function compatibility between Spark and Comet.
@@ -160,6 +164,35 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   // ==================== Complex Types ====================
   // Note: The SQL hash() expression for complex types falls back to Spark execution.
   // These tests verify correctness of the hash values (used by native shuffle partitioning).
+
+  test("hash - array of decimal (precision > 18) falls back to Spark") {
+    withTable("t") {
+      sql("CREATE TABLE t(c ARRAY<DECIMAL(20, 2)>) USING parquet")
+      sql("INSERT INTO t VALUES (array(1.23, 2.34)), (null)")
+      // Should fall back to Spark due to nested high-precision decimal
+      checkSparkAnswerAndFallbackReason("SELECT c, hash(c) FROM t", "precision > 18")
+    }
+  }
+
+  test("hash - struct with decimal (precision > 18) falls back to Spark") {
+    withTable("t") {
+      sql("CREATE TABLE t(c STRUCT<a: INT, b: DECIMAL(20, 2)>) USING parquet")
+      sql("INSERT INTO t VALUES (named_struct('a', 1, 'b', 1.23)), (null)")
+      // Should fall back to Spark due to nested high-precision decimal
+      checkSparkAnswerAndFallbackReason("SELECT c, hash(c) FROM t", "precision > 18")
+    }
+  }
+
+  test("hash - map with decimal (precision > 18) value falls back to Spark") {
+    withSQLConf("spark.sql.legacy.allowHashOnMapType" -> "true") {
+      withTable("t") {
+        sql("CREATE TABLE t(c MAP<STRING, DECIMAL(20, 2)>) USING parquet")
+        sql("INSERT INTO t VALUES (map('a', 1.23)), (null)")
+        // Should fall back to Spark due to nested high-precision decimal
+        checkSparkAnswerAndFallbackReason("SELECT c, hash(c) FROM t", "precision > 18")
+      }
+    }
+  }
 
   test("hash - array of integers") {
     withTable("t") {
@@ -408,6 +441,26 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
                 (null)""")
           checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
         }
+      }
+    }
+  }
+
+  test("hash - fuzz test") {
+    val r = new Random(42)
+    val options = SchemaGenOptions(generateStruct = true)
+    val schema = FuzzDataGenerator.generateNestedSchema(r, 50, 1, 2, options)
+    withTempPath { filename =>
+      ParquetGenerator.makeParquetFile(
+        r,
+        spark,
+        filename.toString,
+        schema,
+        1000,
+        DataGenOptions())
+      spark.read.parquet(filename.toString).createOrReplaceTempView("t1")
+      for (col <- schema.fields) {
+        val name = col.name
+        checkSparkAnswer(s"select $name, hash($name) from t1 order by $name")
       }
     }
   }
