@@ -279,7 +279,10 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
         if (isInferSchemaEnabled) {
           fallbackReasons += "Comet doesn't support inferSchema=true option"
         }
-        val delimiter = scan.options.get("delimiter")
+        val delimiter =
+          Option(scan.options.get("delimiter"))
+            .orElse(Option(scan.options.get("sep")))
+            .getOrElse(",")
         val isSingleCharacterDelimiter = delimiter.length == 1
         if (!isSingleCharacterDelimiter) {
           fallbackReasons +=

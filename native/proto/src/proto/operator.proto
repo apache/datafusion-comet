@@ -112,11 +112,12 @@ message NativeScan {
 }
 
 message CsvScan {
-  repeated SparkStructField required_schema = 1;
+  repeated SparkStructField data_schema = 1;
   repeated SparkStructField partition_schema = 2;
-  repeated SparkFilePartition file_partitions = 3;
-  map<string, string> object_store_options = 4;
-  CsvOptions csv_options = 5;
+  repeated int32 projection_vector = 3;
+  repeated SparkFilePartition file_partitions = 4;
+  map<string, string> object_store_options = 5;
+  CsvOptions csv_options = 6;
 }
 
 message CsvOptions {

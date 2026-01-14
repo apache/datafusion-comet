@@ -33,7 +33,8 @@ pub fn init_csv_datasource_exec(
     object_store_url: ObjectStoreUrl,
     file_groups: Vec<Vec<PartitionedFile>>,
     data_schema: SchemaRef,
-    partition_schema: Option<SchemaRef>,
+    partition_schema: SchemaRef,
+    projection_vector: Vec<usize>,
     csv_options: &CsvOptions,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     let csv_source = build_csv_source(csv_options.clone());
@@ -44,21 +45,16 @@ pub fn init_csv_datasource_exec(
         .collect();
 
     let partition_fields = partition_schema
-        .map(|schema| {
-            schema
-                .fields()
-                .iter()
-                .map(|field| {
-                    Field::new(field.name(), field.data_type().clone(), field.is_nullable())
-                })
-                .collect_vec()
-        })
-        .unwrap_or(vec![]);
+        .fields()
+        .iter()
+        .map(|field| Field::new(field.name(), field.data_type().clone(), field.is_nullable()))
+        .collect_vec();
 
     let file_scan_config: FileScanConfig =
         FileScanConfigBuilder::new(object_store_url, data_schema, csv_source)
             .with_file_groups(file_groups)
             .with_table_partition_cols(partition_fields)
+            .with_projection_indices(Some(projection_vector))
             .build();
 
     Ok(Arc::new(DataSourceExec::new(Arc::new(file_scan_config))))

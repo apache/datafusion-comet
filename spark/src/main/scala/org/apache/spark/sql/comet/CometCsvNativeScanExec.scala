@@ -94,7 +94,13 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
     }
     val filePartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
     val csvOptionsProto = csvOptions2Proto(options)
-    val schemaProto = schema2Proto(csvScan.readDataSchema.fields)
+    val dataSchemaProto = schema2Proto(csvScan.dataSchema.fields)
+    val readSchemaFieldNames = csvScan.readDataSchema.fieldNames
+    val projectionVector = csvScan.dataSchema.fields.zipWithIndex
+      .filter { case (field, _) =>
+        readSchemaFieldNames.contains(field.name)
+      }
+      .map(_._2.asInstanceOf[Integer])
     val partitionSchemaProto = schema2Proto(csvScan.readPartitionSchema.fields)
     val partitionsProto = filePartitions.map(partition2Proto(_, csvScan.readPartitionSchema))
 
@@ -110,7 +116,8 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
     csvScanBuilder.putAllObjectStoreOptions(objectStoreOptions.asJava)
     csvScanBuilder.setCsvOptions(csvOptionsProto)
     csvScanBuilder.addAllFilePartitions(partitionsProto.asJava)
-    csvScanBuilder.addAllRequiredSchema(schemaProto.toIterable.asJava)
+    csvScanBuilder.addAllDataSchema(dataSchemaProto.toIterable.asJava)
+    csvScanBuilder.addAllProjectionVector(projectionVector.toIterable.asJava)
     csvScanBuilder.addAllPartitionSchema(partitionSchemaProto.toIterable.asJava)
     Some(builder.setCsvScan(csvScanBuilder).build())
   }
