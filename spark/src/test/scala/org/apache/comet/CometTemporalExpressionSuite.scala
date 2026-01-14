@@ -122,4 +122,47 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         StructField("fmt", DataTypes.StringType, true)))
     FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
   }
+
+  test("next_day") {
+    import org.apache.spark.sql.Row
+
+    // Create test data with dates
+    val r = new Random(42)
+    val testData = (1 to 1000).map { _ =>
+      // Generate dates in a reasonable range
+      val daysFromEpoch = r.nextInt(20000) - 5000 // ~1956 to ~2024
+      // Convert days from epoch to java.sql.Date
+      val millis = daysFromEpoch.toLong * 24 * 60 * 60 * 1000
+      Row(new java.sql.Date(millis))
+    }
+    val schema = StructType(Seq(StructField("c0", DataTypes.DateType, false)))
+    val df = spark.createDataFrame(spark.sparkContext.parallelize(testData), schema)
+    df.createOrReplaceTempView("tbl")
+
+    // Test with various day names
+    val dayNames =
+      Seq("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+    for (day <- dayNames) {
+      checkSparkAnswerAndOperator(s"SELECT c0, next_day(c0, '$day') FROM tbl ORDER BY c0")
+    }
+
+    // Test with abbreviated day names
+    val abbreviations = Seq("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+    for (day <- abbreviations) {
+      checkSparkAnswerAndOperator(s"SELECT c0, next_day(c0, '$day') FROM tbl ORDER BY c0")
+    }
+
+    // Disable constant folding to ensure literal expressions are executed by Comet
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      // Test with literal date
+      checkSparkAnswerAndOperator("SELECT next_day(DATE('2023-01-01'), 'Monday')")
+      checkSparkAnswerAndOperator("SELECT next_day(DATE('2023-01-01'), 'Sunday')")
+
+      // Test null handling
+      checkSparkAnswerAndOperator("SELECT next_day(NULL, 'Monday')")
+      checkSparkAnswerAndOperator("SELECT next_day(DATE('2023-01-01'), NULL)")
+    }
+  }
 }
