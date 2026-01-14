@@ -1049,8 +1049,8 @@ impl PhysicalPlanner {
                                 .as_any()
                                 .downcast_ref::<DataFusionLiteral>()
                                 .ok_or_else(|| {
-                                    GeneralError("Expected literal of default value.".to_string())
-                                })?;
+                                GeneralError("Expected literal of default value.".to_string())
+                            })?;
                             Ok(df_literal.value().clone())
                         })
                         .collect();

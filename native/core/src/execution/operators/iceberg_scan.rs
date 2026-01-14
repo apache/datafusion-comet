@@ -42,9 +42,9 @@ use iceberg::io::FileIO;
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
+use crate::parquet::schema_adapter::adapt_batch_with_expressions;
 use datafusion_comet_spark_expr::EvalMode;
 use datafusion_datasource::file_stream::FileStreamMetrics;
-use crate::parquet::schema_adapter::adapt_batch_with_expressions;
 
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
 ///
