@@ -23,7 +23,6 @@ import java.io.File;
 import java.io.IOException;
 import java.util.LinkedList;
 import java.util.concurrent.*;
-import javax.annotation.Nullable;
 
 import scala.Tuple2;
 
@@ -32,7 +31,6 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.spark.SparkConf;
 import org.apache.spark.TaskContext;
-import org.apache.spark.executor.ShuffleWriteMetrics;
 import org.apache.spark.memory.SparkOutOfMemoryError;
 import org.apache.spark.shuffle.ShuffleWriteMetricsReporter;
 import org.apache.spark.shuffle.comet.CometShuffleChecksumSupport;
@@ -41,17 +39,14 @@ import org.apache.spark.shuffle.comet.TooLargePageException;
 import org.apache.spark.sql.comet.execution.shuffle.CometUnsafeShuffleWriter;
 import org.apache.spark.sql.comet.execution.shuffle.ShuffleThreadPool;
 import org.apache.spark.sql.comet.execution.shuffle.SpillInfo;
-import org.apache.spark.sql.comet.execution.shuffle.SpillWriter;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.storage.BlockManager;
 import org.apache.spark.storage.TempShuffleBlockId;
-import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.UnsafeAlignedOffset;
 import org.apache.spark.unsafe.array.LongArray;
 import org.apache.spark.util.Utils;
 
 import org.apache.comet.CometConf$;
-import org.apache.comet.Native;
 
 /**
  * An external sorter that is specialized for sort-based shuffle.
@@ -169,10 +164,28 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
       this.threadPool = null;
     }
 
-    this.activeSpillSorter = new SpillSorter();
-
     this.preferDictionaryRatio =
         (double) CometConf$.MODULE$.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO().get();
+
+    this.activeSpillSorter = createSpillSorter();
+  }
+
+  /** Creates a new SpillSorter with all required dependencies. */
+  private SpillSorter createSpillSorter() {
+    return new SpillSorter(
+        allocator,
+        initialSize,
+        schema,
+        uaoSize,
+        preferDictionaryRatio,
+        compressionCodec,
+        compressionLevel,
+        checksumAlgorithm,
+        partitionChecksums,
+        writeMetrics,
+        taskContext,
+        spills,
+        this::spill);
   }
 
   public long[] getChecksums() {
@@ -237,7 +250,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
         }
       }
 
-      activeSpillSorter = new SpillSorter();
+      activeSpillSorter = createSpillSorter();
     } else {
       activeSpillSorter.writeSortedFileNative(false, tracingEnabled);
       final long spillSize = activeSpillSorter.freeMemory();
@@ -409,244 +422,5 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
     }
 
     return spills.toArray(new SpillInfo[spills.size()]);
-  }
-
-  class SpillSorter extends SpillWriter {
-    private boolean freed = false;
-
-    private SpillInfo spillInfo;
-
-    // These variables are reset after spilling:
-    @Nullable private ShuffleInMemorySorter inMemSorter;
-
-    // This external sorter can call native code to sort partition ids and record pointers of rows.
-    // In order to do that, we need pass the address of the internal array in the sorter to native.
-    // But we cannot access it as it is private member in the Spark sorter. Instead, we allocate
-    // the array and assign the pointer array in the sorter.
-    private LongArray sorterArray;
-
-    SpillSorter() {
-      this.spillInfo = null;
-
-      this.allocator = CometShuffleExternalSorter.this.allocator;
-
-      // Allocate array for in-memory sorter.
-      // As we cannot access the address of the internal array in the sorter, so we need to
-      // allocate the array manually and expand the pointer array in the sorter.
-      // We don't want in-memory sorter to allocate memory but the initial size cannot be zero.
-      try {
-        this.inMemSorter = new ShuffleInMemorySorter(allocator, 1, true);
-      } catch (java.lang.IllegalAccessError e) {
-        throw new java.lang.RuntimeException(
-            "Error loading in-memory sorter check class path -- see "
-                + "https://github.com/apache/arrow-datafusion-comet?tab=readme-ov-file#enable-comet-shuffle",
-            e);
-      }
-      sorterArray = allocator.allocateArray(initialSize);
-      this.inMemSorter.expandPointerArray(sorterArray);
-
-      this.allocatedPages = new LinkedList<>();
-
-      this.nativeLib = new Native();
-      this.dataTypes = serializeSchema(schema);
-    }
-
-    /** Frees allocated memory pages of this writer */
-    @Override
-    public long freeMemory() {
-      // We need to synchronize here because we may get the memory usage by calling
-      // this method in the task thread.
-      synchronized (this) {
-        return super.freeMemory();
-      }
-    }
-
-    @Override
-    public long getMemoryUsage() {
-      // We need to synchronize here because we may free the memory pages in another thread,
-      // i.e. when spilling, but this method may be called in the task thread.
-      synchronized (this) {
-        long totalPageSize = super.getMemoryUsage();
-
-        if (freed) {
-          return totalPageSize;
-        } else {
-          return ((inMemSorter == null) ? 0 : inMemSorter.getMemoryUsage()) + totalPageSize;
-        }
-      }
-    }
-
-    @Override
-    protected void spill(int required) throws IOException {
-      CometShuffleExternalSorter.this.spill();
-    }
-
-    /** Free the pointer array held by this sorter. */
-    public void freeArray() {
-      synchronized (this) {
-        inMemSorter.free();
-        freed = true;
-      }
-    }
-
-    /**
-     * Reset the in-memory sorter's pointer array only after freeing up the memory pages holding the
-     * records.
-     */
-    public void reset() {
-      // We allocate pointer array outside the sorter.
-      // So we can get array address which can be used by native code.
-      inMemSorter.reset();
-      sorterArray = allocator.allocateArray(initialSize);
-      inMemSorter.expandPointerArray(sorterArray);
-    }
-
-    void setSpillInfo(SpillInfo spillInfo) {
-      this.spillInfo = spillInfo;
-    }
-
-    public int numRecords() {
-      return this.inMemSorter.numRecords();
-    }
-
-    public void writeSortedFileNative(boolean isLastFile, boolean tracingEnabled)
-        throws IOException {
-      // This call performs the actual sort.
-      long arrayAddr = this.sorterArray.getBaseOffset();
-      int pos = inMemSorter.numRecords();
-      nativeLib.sortRowPartitionsNative(arrayAddr, pos, tracingEnabled);
-      ShuffleInMemorySorter.ShuffleSorterIterator sortedRecords =
-          new ShuffleInMemorySorter.ShuffleSorterIterator(pos, this.sorterArray, 0);
-
-      // If there are no sorted records, so we don't need to create an empty spill file.
-      if (!sortedRecords.hasNext()) {
-        return;
-      }
-
-      final ShuffleWriteMetricsReporter writeMetricsToUse;
-
-      if (isLastFile) {
-        // We're writing the final non-spill file, so we _do_ want to count this as shuffle bytes.
-        writeMetricsToUse = writeMetrics;
-      } else {
-        // We're spilling, so bytes written should be counted towards spill rather than write.
-        // Create a dummy WriteMetrics object to absorb these metrics, since we don't want to count
-        // them towards shuffle bytes written.
-        writeMetricsToUse = new ShuffleWriteMetrics();
-      }
-
-      int currentPartition = -1;
-
-      final RowPartition rowPartition = new RowPartition(initialSize);
-
-      while (sortedRecords.hasNext()) {
-        sortedRecords.loadNext();
-        final int partition = sortedRecords.packedRecordPointer.getPartitionId();
-        assert (partition >= currentPartition);
-        if (partition != currentPartition) {
-          // Switch to the new partition
-          if (currentPartition != -1) {
-
-            if (partitionChecksums.length > 0) {
-              // If checksum is enabled, we need to update the checksum for the current partition.
-              setChecksum(partitionChecksums[currentPartition]);
-              setChecksumAlgo(checksumAlgorithm);
-            }
-
-            long written =
-                doSpilling(
-                    dataTypes,
-                    spillInfo.file,
-                    rowPartition,
-                    writeMetricsToUse,
-                    preferDictionaryRatio,
-                    compressionCodec,
-                    compressionLevel,
-                    tracingEnabled);
-            spillInfo.partitionLengths[currentPartition] = written;
-
-            // Store the checksum for the current partition.
-            partitionChecksums[currentPartition] = getChecksum();
-          }
-          currentPartition = partition;
-        }
-
-        final long recordPointer = sortedRecords.packedRecordPointer.getRecordPointer();
-        final long recordOffsetInPage = allocator.getOffsetInPage(recordPointer);
-        // Note that we need to skip over record key (partition id)
-        // Note that we already use off-heap memory for serialized rows, so recordPage is always
-        // null.
-        int recordSizeInBytes = UnsafeAlignedOffset.getSize(null, recordOffsetInPage) - 4;
-        long recordReadPosition = recordOffsetInPage + uaoSize + 4; // skip over record length too
-        rowPartition.addRow(recordReadPosition, recordSizeInBytes);
-      }
-
-      if (currentPartition != -1) {
-        long written =
-            doSpilling(
-                dataTypes,
-                spillInfo.file,
-                rowPartition,
-                writeMetricsToUse,
-                preferDictionaryRatio,
-                compressionCodec,
-                compressionLevel,
-                tracingEnabled);
-        spillInfo.partitionLengths[currentPartition] = written;
-
-        synchronized (spills) {
-          spills.add(spillInfo);
-        }
-      }
-
-      if (!isLastFile) { // i.e. this is a spill file
-        // The current semantics of `shuffleRecordsWritten` seem to be that it's updated when
-        // records
-        // are written to disk, not when they enter the shuffle sorting code. DiskBlockObjectWriter
-        // relies on its `recordWritten()` method being called in order to trigger periodic updates
-        // to
-        // `shuffleBytesWritten`. If we were to remove the `recordWritten()` call and increment that
-        // counter at a higher-level, then the in-progress metrics for records written and bytes
-        // written would get out of sync.
-        //
-        // When writing the last file, we pass `writeMetrics` directly to the DiskBlockObjectWriter;
-        // in all other cases, we pass in a dummy write metrics to capture metrics, then copy those
-        // metrics to the true write metrics here. The reason for performing this copying is so that
-        // we can avoid reporting spilled bytes as shuffle write bytes.
-        //
-        // Note that we intentionally ignore the value of `writeMetricsToUse.shuffleWriteTime()`.
-        // Consistent with ExternalSorter, we do not count this IO towards shuffle write time.
-        // SPARK-3577 tracks the spill time separately.
-
-        // This is guaranteed to be a ShuffleWriteMetrics based on the if check in the beginning
-        // of this method.
-        synchronized (writeMetrics) {
-          writeMetrics.incRecordsWritten(
-              ((ShuffleWriteMetrics) writeMetricsToUse).recordsWritten());
-          taskContext
-              .taskMetrics()
-              .incDiskBytesSpilled(((ShuffleWriteMetrics) writeMetricsToUse).bytesWritten());
-        }
-      }
-    }
-
-    public boolean hasSpaceForAnotherRecord() {
-      return inMemSorter.hasSpaceForAnotherRecord();
-    }
-
-    public void expandPointerArray(LongArray newArray) {
-      inMemSorter.expandPointerArray(newArray);
-      this.sorterArray = newArray;
-    }
-
-    public void insertRecord(Object recordBase, long recordOffset, int length, int partitionId) {
-      final Object base = currentPage.getBaseObject();
-      final long recordAddress = allocator.encodePageNumberAndOffset(currentPage, pageCursor);
-      UnsafeAlignedOffset.putSize(base, pageCursor, length);
-      pageCursor += uaoSize;
-      Platform.copyMemory(recordBase, recordOffset, base, pageCursor, length);
-      pageCursor += length;
-      inMemSorter.insertRecord(recordAddress, partitionId);
-    }
   }
 }

@@ -228,9 +228,9 @@ macro_rules! hash_list_array {
         let values = list_array.values();
         let offsets = list_array.offsets();
 
-        // For each row, hash the elements in its list
-        for (row_idx, hash) in $hashes.iter_mut().enumerate() {
-            if !list_array.is_null(row_idx) {
+        if list_array.null_count() == 0 {
+            // Fast path: no nulls, skip null checks
+            for (row_idx, hash) in $hashes.iter_mut().enumerate() {
                 let start = offsets[row_idx] as usize;
                 let end = offsets[row_idx + 1] as usize;
                 let len = end - start;
@@ -240,6 +240,22 @@ macro_rules! hash_list_array {
                     let mut single_hash = [*hash];
                     $recursive_hash_method(&[elem_array], &mut single_hash)?;
                     *hash = single_hash[0];
+                }
+            }
+        } else {
+            // Slow path: array has nulls, check each row
+            for (row_idx, hash) in $hashes.iter_mut().enumerate() {
+                if !list_array.is_null(row_idx) {
+                    let start = offsets[row_idx] as usize;
+                    let end = offsets[row_idx + 1] as usize;
+                    let len = end - start;
+                    // Hash each element in sequence, chaining the hash values
+                    for elem_idx in 0..len {
+                        let elem_array = values.slice(start + elem_idx, 1);
+                        let mut single_hash = [*hash];
+                        $recursive_hash_method(&[elem_array], &mut single_hash)?;
+                        *hash = single_hash[0];
+                    }
                 }
             }
         }
@@ -477,9 +493,9 @@ macro_rules! create_hashes_internal {
                     let values = list_array.values();
                     let list_size = *size as usize;
 
-                    // For each row, hash the elements in its fixed-size list
-                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                        if !list_array.is_null(row_idx) {
+                    if list_array.null_count() == 0 {
+                        // Fast path: no nulls, skip null checks
+                        for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
                             let start = row_idx * list_size;
                             // Hash each element in sequence, chaining the hash values
                             for elem_idx in 0..list_size {
@@ -487,6 +503,20 @@ macro_rules! create_hashes_internal {
                                 let mut single_hash = [*hash];
                                 $recursive_hash_method(&[elem_array], &mut single_hash)?;
                                 *hash = single_hash[0];
+                            }
+                        }
+                    } else {
+                        // Slow path: array has nulls, check each row
+                        for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
+                            if !list_array.is_null(row_idx) {
+                                let start = row_idx * list_size;
+                                // Hash each element in sequence, chaining the hash values
+                                for elem_idx in 0..list_size {
+                                    let elem_array = values.slice(start + elem_idx, 1);
+                                    let mut single_hash = [*hash];
+                                    $recursive_hash_method(&[elem_array], &mut single_hash)?;
+                                    *hash = single_hash[0];
+                                }
                             }
                         }
                     }
@@ -507,9 +537,9 @@ macro_rules! create_hashes_internal {
                     let values = map_array.values();
                     let offsets = map_array.offsets();
 
-                    // For each row, hash the key-value pairs in sequence
-                    for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
-                        if !map_array.is_null(row_idx) {
+                    if map_array.null_count() == 0 {
+                        // Fast path: no nulls, skip null checks
+                        for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
                             let start = offsets[row_idx] as usize;
                             let end = offsets[row_idx + 1] as usize;
                             // Hash each key-value pair in sequence
@@ -525,6 +555,28 @@ macro_rules! create_hashes_internal {
                                 single_hash = [*hash];
                                 $recursive_hash_method(&[value_array], &mut single_hash)?;
                                 *hash = single_hash[0];
+                            }
+                        }
+                    } else {
+                        // Slow path: array has nulls, check each row
+                        for (row_idx, hash) in $hashes_buffer.iter_mut().enumerate() {
+                            if !map_array.is_null(row_idx) {
+                                let start = offsets[row_idx] as usize;
+                                let end = offsets[row_idx + 1] as usize;
+                                // Hash each key-value pair in sequence
+                                for entry_idx in start..end {
+                                    // Hash the key
+                                    let key_array = keys.slice(entry_idx, 1);
+                                    let mut single_hash = [*hash];
+                                    $recursive_hash_method(&[key_array], &mut single_hash)?;
+                                    *hash = single_hash[0];
+
+                                    // Hash the value
+                                    let value_array = values.slice(entry_idx, 1);
+                                    single_hash = [*hash];
+                                    $recursive_hash_method(&[value_array], &mut single_hash)?;
+                                    *hash = single_hash[0];
+                                }
                             }
                         }
                     }
