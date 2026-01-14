@@ -188,6 +188,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[DateSub] -> CometDateSub,
     classOf[FromUnixTime] -> CometFromUnixTime,
     classOf[Hour] -> CometHour,
+    classOf[MakeDate] -> CometMakeDate,
     classOf[Minute] -> CometMinute,
     classOf[Second] -> CometSecond,
     classOf[TruncDate] -> CometTruncDate,
