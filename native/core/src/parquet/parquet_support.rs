@@ -385,7 +385,7 @@ fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_stor
     }
 }
 
-#[cfg(feature = "hdfs-opendal")]
+#[cfg(all(feature = "hdfs-opendal", not(feature = "hdfs")))]
 fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
     let name_node = get_name_node_uri(url)?;
     let builder = opendal::services::Hdfs::default().name_node(&name_node);
@@ -401,7 +401,7 @@ fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_stor
     Ok((Box::new(store), path))
 }
 
-#[cfg(feature = "hdfs-opendal")]
+#[cfg(all(feature = "hdfs-opendal", not(feature = "hdfs")))]
 fn get_name_node_uri(url: &Url) -> Result<String, object_store::Error> {
     use std::fmt::Write;
     if let Some(host) = url.host() {

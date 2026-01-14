@@ -42,7 +42,10 @@ use once_cell::sync::OnceCell;
 #[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
 use tikv_jemallocator::Jemalloc;
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(
+    feature = "mimalloc",
+    not(all(not(target_env = "msvc"), feature = "jemalloc"))
+))]
 use mimalloc::MiMalloc;
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
@@ -59,7 +62,10 @@ pub mod parquet;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(
+    feature = "mimalloc",
+    not(all(not(target_env = "msvc"), feature = "jemalloc"))
+))]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
