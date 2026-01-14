@@ -3445,6 +3445,7 @@ mod tests {
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
+    use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
@@ -3452,6 +3453,8 @@ mod tests {
 
     use crate::execution::operators::ExecutionError;
     use crate::execution::planner::literal_to_array_ref;
+    use crate::parquet::parquet_support::SparkParquetOptions;
+    use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::spark_expression::ListLiteral;
     use datafusion_comet_proto::{
@@ -3461,6 +3464,7 @@ mod tests {
         spark_operator,
         spark_operator::{operator::OpStruct, Operator},
     };
+    use datafusion_comet_spark_expr::EvalMode;
 
     #[test]
     fn test_unpack_dictionary_primitive() {
@@ -4057,8 +4061,15 @@ mod tests {
                 .with_table_parquet_options(TableParquetOptions::new()),
         ) as Arc<dyn FileSource>;
 
+        let spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
+
+        let expr_adapter_factory: Arc<dyn PhysicalExprAdapterFactory> = Arc::new(
+            SparkPhysicalExprAdapterFactory::new(spark_parquet_options, None),
+        );
+
         let object_store_url = ObjectStoreUrl::local_filesystem();
         let file_scan_config = FileScanConfigBuilder::new(object_store_url, source)
+            .with_expr_adapter(Some(expr_adapter_factory))
             .with_file_groups(file_groups)
             .build();
 
