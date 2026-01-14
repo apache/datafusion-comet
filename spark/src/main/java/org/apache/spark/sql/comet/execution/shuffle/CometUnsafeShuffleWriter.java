@@ -227,28 +227,12 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
     } finally {
       if (tracingEnabled) {
         nativeLib.traceEnd("CometUnsafeShuffleWriter");
-      }
-      if (sorter != null) {
-        try {
-          sorter.cleanupResources();
-        } catch (Exception e) {
-          // Only throw this error if we won't be masking another
-          // error.
-          if (success) {
-            throw e;
-          } else {
-            logger.error(
-                "In addition to a failure during writing, we failed during " + "cleanup.", e);
-          }
-        } finally {
-          // Ensure allocator is nulled out after sorter cleanup
-          sorter = null;
-          allocator = null;
+        if (allocator != null) {
+          nativeLib.logMemoryUsage(offheapMemKey, this.allocator.getUsed());
         }
       }
-      if (tracingEnabled && allocator != null) {
-        nativeLib.logMemoryUsage(offheapMemKey, this.allocator.getUsed());
-      }
+      // Note: We don't cleanup the sorter here. Cleanup is handled in stop() to avoid
+      // potential double-cleanup and to centralize resource management in one place.
     }
   }
 
@@ -404,8 +388,14 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       // in-memory records, we write out the in-memory records to a file but do not count that
       // final write as bytes spilled (instead, it's accounted as shuffle write). The merge needs
       // to be counted as shuffle write, but this will lead to double-counting of the final
-      // SpillInfo's bytes.
-      writeMetrics.decBytesWritten(spills[spills.length - 1].file.length());
+      // SpillInfo's bytes. We need to decrement by the actual bytes written (sum of partition
+      // lengths), not the file length, as these may differ due to native writer overhead,
+      // compression, and disk allocation.
+      long lastSpillBytesWritten = 0;
+      for (long length : spills[spills.length - 1].partitionLengths) {
+        lastSpillBytesWritten += length;
+      }
+      writeMetrics.decBytesWritten(lastSpillBytesWritten);
       partitionLengths = mapWriter.commitAllPartitions(sorter.getChecksums()).getPartitionLengths();
     } catch (Exception e) {
       try {
@@ -583,14 +573,23 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         }
       }
     } finally {
+      // Cleanup is centralized here to avoid double-cleanup issues.
+      // This finally block always runs, whether stop() is called after successful write()
+      // or after a failed write(). The sorter will be null if write() completed successfully.
       if (sorter != null) {
-        // If sorter is non-null, then this implies that we called stop() in response to an error,
-        // so we need to clean up memory and spill files created by the sorter
-        sorter.cleanupResources();
-        sorter = null;
+        try {
+          sorter.cleanupResources();
+        } catch (Exception e) {
+          // Log but don't throw to avoid masking any exception from the try block above
+          logger.error("Failed to cleanup shuffle writer resources in stop()", e);
+        } finally {
+          sorter = null;
+          allocator = null;
+        }
+      } else if (allocator != null) {
+        // If sorter is null but allocator isn't, still clean up allocator reference
+        allocator = null;
       }
-      // Ensure allocator reference is cleared after cleanup
-      allocator = null;
     }
   }
 
