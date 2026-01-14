@@ -22,7 +22,6 @@ package org.apache.spark.shuffle.sort;
 import java.io.File;
 import java.io.IOException;
 import java.util.LinkedList;
-import java.util.concurrent.*;
 
 import scala.Tuple2;
 
@@ -174,33 +173,34 @@ public final class CometShuffleExternalSyncSorter
     }
 
     spilling = true;
+    try {
+      logger.info(
+          "Thread {} spilling sort data of {} to disk ({} {} so far)",
+          Thread.currentThread().getId(),
+          Utils.bytesToString(getMemoryUsage()),
+          spills.size(),
+          spills.size() > 1 ? " times" : " time");
 
-    logger.info(
-        "Thread {} spilling sort data of {} to disk ({} {} so far)",
-        Thread.currentThread().getId(),
-        Utils.bytesToString(getMemoryUsage()),
-        spills.size(),
-        spills.size() > 1 ? " times" : " time");
+      final Tuple2<TempShuffleBlockId, File> spilledFileInfo =
+          blockManager.diskBlockManager().createTempShuffleBlock();
+      final File file = spilledFileInfo._2();
+      final TempShuffleBlockId blockId = spilledFileInfo._1();
+      final SpillInfo spillInfo = new SpillInfo(numPartitions, file, blockId);
 
-    final Tuple2<TempShuffleBlockId, File> spilledFileInfo =
-        blockManager.diskBlockManager().createTempShuffleBlock();
-    final File file = spilledFileInfo._2();
-    final TempShuffleBlockId blockId = spilledFileInfo._1();
-    final SpillInfo spillInfo = new SpillInfo(numPartitions, file, blockId);
+      activeSpillSorter.setSpillInfo(spillInfo);
+      activeSpillSorter.writeSortedFileNative(false, tracingEnabled);
+      final long spillSize = activeSpillSorter.freeMemory();
+      activeSpillSorter.reset();
 
-    activeSpillSorter.setSpillInfo(spillInfo);
-    activeSpillSorter.writeSortedFileNative(false, tracingEnabled);
-    final long spillSize = activeSpillSorter.freeMemory();
-    activeSpillSorter.reset();
-
-    // Reset the in-memory sorter's pointer array only after freeing up the memory pages holding
-    // the records. Otherwise, if the task is over allocated memory, then without freeing the
-    // memory pages, we might not be able to get memory for the pointer array.
-    synchronized (CometShuffleExternalSyncSorter.this) {
-      taskContext.taskMetrics().incMemoryBytesSpilled(spillSize);
+      // Reset the in-memory sorter's pointer array only after freeing up the memory pages holding
+      // the records. Otherwise, if the task is over allocated memory, then without freeing the
+      // memory pages, we might not be able to get memory for the pointer array.
+      synchronized (CometShuffleExternalSyncSorter.this) {
+        taskContext.taskMetrics().incMemoryBytesSpilled(spillSize);
+      }
+    } finally {
+      spilling = false;
     }
-
-    spilling = false;
   }
 
   private long getMemoryUsage() {
