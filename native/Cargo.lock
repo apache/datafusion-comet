@@ -1835,6 +1835,7 @@ dependencies = [
  "datafusion-comet-spark-expr",
  "datafusion-datasource",
  "datafusion-functions-nested",
+ "datafusion-physical-expr-adapter",
  "datafusion-spark",
  "futures",
  "hdfs-sys",
