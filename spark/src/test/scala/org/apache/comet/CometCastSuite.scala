@@ -212,7 +212,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(
       generateBytes(),
       DataTypes.BinaryType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes, testAnsi = false, testTry = false)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes,
+      testAnsi = false,
+      testTry = false)
   }
 
   ignore("cast ByteType to TimestampType") {
@@ -287,7 +289,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(
       generateShorts(),
       DataTypes.BinaryType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes, testAnsi = false, testTry = false)
+      hasIncompatibleType = usingParquetExecWithIncompatTypes,
+      testAnsi = false,
+      testTry = false)
   }
 
   ignore("cast ShortType to TimestampType") {
@@ -397,7 +401,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast LongType to BinaryType") {
     //    Spark does not support ANSI or Try mode
-    castTest(generateLongs(), DataTypes.BinaryType , testAnsi = false, testTry = false)
+    castTest(generateLongs(), DataTypes.BinaryType, testAnsi = false, testTry = false)
   }
 
   ignore("cast LongType to TimestampType") {
@@ -1348,7 +1352,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator(df)
         }
 
-        if (testTry){
+        if (testTry) {
           // try_cast() should always return null for invalid inputs
           val df2 =
             data.select(col("a"), col("a").try_cast(toType)).orderBy(col("a"))
@@ -1414,9 +1418,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
 
           // try_cast() should always return null for invalid inputs
-          if (testTry){
+          if (testTry) {
             val df2 =
-              data.select(col("a"), col("a").cast(toType)).orderBy(col("a"))
+              data.select(col("a"), col("a").try_cast(toType)).orderBy(col("a"))
             if (hasIncompatibleType) {
               checkSparkAnswer(df2)
             } else {

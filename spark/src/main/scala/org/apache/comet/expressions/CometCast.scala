@@ -276,13 +276,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         Compatible()
       case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
         Compatible()
-      case DataTypes.BinaryType =>
-        if (evalMode == CometEvalMode.LEGACY) {
-          Compatible()
-        } else {
-          Unsupported(
-            Some(s"Spark does not support byte to binary conversion in ${evalMode} eval mode"))
-        }
+      case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) =>
+        Compatible()
       case _ =>
         unsupported(DataTypes.ByteType, toType)
     }
@@ -295,13 +290,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         Compatible()
       case DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
         Compatible()
-      case DataTypes.BinaryType =>
-        if (evalMode == CometEvalMode.LEGACY) {
-          Compatible()
-        } else {
-          Unsupported(
-            Some(s"Spark does not support short to binary conversion in ${evalMode} eval mode"))
-        }
+      case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) =>
+        Compatible()
       case _ =>
         unsupported(DataTypes.ShortType, toType)
     }
@@ -316,13 +306,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         Compatible()
       case _: DecimalType =>
         Compatible()
-      case DataTypes.BinaryType =>
-        if (evalMode == CometEvalMode.LEGACY) {
-          Compatible()
-        } else {
-          Unsupported(
-            Some(s"Spark does not support int to binary conversion in ${evalMode} eval mode"))
-        }
+      case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) => Compatible()
       case _ =>
         unsupported(DataTypes.IntegerType, toType)
     }
@@ -337,13 +321,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         Compatible()
       case _: DecimalType =>
         Compatible()
-      case DataTypes.BinaryType =>
-        if (evalMode == CometEvalMode.LEGACY) {
-          Compatible()
-        } else {
-          Unsupported(
-            Some(s"Spark does not support long to binary conversion in ${evalMode} eval mode"))
-        }
+      case DataTypes.BinaryType if (evalMode == CometEvalMode.LEGACY) => Compatible()
       case _ =>
         unsupported(DataTypes.LongType, toType)
     }
