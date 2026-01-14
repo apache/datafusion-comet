@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
+use crate::EvalMode::Legacy;
 use crate::{timezone, BinaryOutputStyle};
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::builder::StringBuilder;
@@ -25,8 +26,8 @@ use arrow::array::{
 };
 use arrow::compute::can_cast_types;
 use arrow::datatypes::{
-    i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type,
-    GenericBinaryType, Schema,
+    i256, ArrowDictionaryKeyType, ArrowNativeType, DataType, Decimal256Type, GenericBinaryType,
+    Schema,
 };
 use arrow::{
     array::{
@@ -66,7 +67,6 @@ use std::{
     num::Wrapping,
     sync::Arc,
 };
-use crate::EvalMode::Legacy;
 
 static TIMESTAMP_FORMAT: Option<&str> = Some("%Y-%m-%d %H:%M:%S%.f");
 
@@ -305,7 +305,10 @@ fn can_cast_from_timestamp(to_type: &DataType, _options: &SparkCastOptions) -> b
 
 fn can_cast_from_boolean(to_type: &DataType, _: &SparkCastOptions) -> bool {
     use DataType::*;
-    matches!(to_type, Int8 | Int16 | Int32 | Int64 | Float32 | Float64)
+    matches!(
+        to_type,
+        Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Decimal128(_, _)
+    )
 }
 
 fn can_cast_from_byte(to_type: &DataType, _: &SparkCastOptions) -> bool {
@@ -1126,9 +1129,18 @@ fn cast_array(
         (Binary, Utf8) => Ok(cast_binary_to_string::<i32>(&array, cast_options)?),
         (Date32, Timestamp(_, tz)) => Ok(cast_date_to_timestamp(&array, cast_options, tz)?),
         (Int8, Binary) if (eval_mode == Legacy) => cast_whole_num_to_binary!(&array, Int8Array, 1),
-        (Int16, Binary) if (eval_mode == Legacy)  => cast_whole_num_to_binary!(&array, Int16Array, 2),
-        (Int32, Binary) if (eval_mode == Legacy) => cast_whole_num_to_binary!(&array, Int32Array, 4),
-        (Int64, Binary) if (eval_mode == Legacy) => cast_whole_num_to_binary!(&array, Int64Array, 8),
+        (Int16, Binary) if (eval_mode == Legacy) => {
+            cast_whole_num_to_binary!(&array, Int16Array, 2)
+        }
+        (Int32, Binary) if (eval_mode == Legacy) => {
+            cast_whole_num_to_binary!(&array, Int32Array, 4)
+        }
+        (Int64, Binary) if (eval_mode == Legacy) => {
+            cast_whole_num_to_binary!(&array, Int64Array, 8)
+        }
+        (Boolean, Decimal128(precision, scale)) => {
+            cast_boolean_to_decimal(&array, *precision, *scale)
+        }
         _ if cast_options.is_adapting_schema
             || is_datafusion_spark_compatible(from_type, to_type) =>
         {
@@ -1189,6 +1201,16 @@ fn cast_date_to_timestamp(
     Ok(Arc::new(
         builder.finish().with_timezone_opt(target_tz.clone()),
     ))
+}
+
+fn cast_boolean_to_decimal(array: &ArrayRef, precision: u8, scale: i8) -> SparkResult<ArrayRef> {
+    let bool_array = array.as_boolean();
+    let scale_factor = 10_i128.pow(scale as u32);
+    let result: Decimal128Array = bool_array
+        .iter()
+        .map(|v| v.map(|b| if b { scale_factor } else { 0 }))
+        .collect();
+    Ok(Arc::new(result.with_precision_and_scale(precision, scale)?))
 }
 
 fn cast_string_to_float(

@@ -134,9 +134,16 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateBools(), DataTypes.DoubleType)
   }
 
-  ignore("cast BooleanType to DecimalType(10,2)") {
-    // Arrow error: Cast error: Casting from Boolean to Decimal128(10, 2) not supported
+  test("cast BooleanType to DecimalType(10,2)") {
     castTest(generateBools(), DataTypes.createDecimalType(10, 2))
+  }
+
+  test("cast BooleanType to DecimalType(14,4)") {
+    castTest(generateBools(), DataTypes.createDecimalType(14, 4))
+  }
+
+  test("cast BooleanType to DecimalType(30,0)") {
+    castTest(generateBools(), DataTypes.createDecimalType(30, 0))
   }
 
   test("cast BooleanType to StringType") {
@@ -1440,9 +1447,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
 
         if (testTry) {
+          data.createOrReplaceTempView("t")
           // try_cast() should always return null for invalid inputs
+//          not using spark DSL since it `try_cast` is only available from Spark 4x
           val df2 =
-            data.select(col("a"), col("a").try_cast(toType)).orderBy(col("a"))
+            spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
           if (hasIncompatibleType) {
             checkSparkAnswer(df2)
           } else {
@@ -1506,8 +1515,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
           // try_cast() should always return null for invalid inputs
           if (testTry) {
+            data.createOrReplaceTempView("t")
             val df2 =
-              data.select(col("a"), col("a").try_cast(toType)).orderBy(col("a"))
+              spark.sql(s"select a, try_cast(a as ${toType.sql}) from t order by a")
             if (hasIncompatibleType) {
               checkSparkAnswer(df2)
             } else {

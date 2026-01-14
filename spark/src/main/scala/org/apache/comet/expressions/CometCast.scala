@@ -21,7 +21,7 @@ package org.apache.comet.expressions
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, DataTypes, DecimalType, NullType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, NullType, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -264,7 +264,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
 
   private def canCastFromBoolean(toType: DataType): SupportLevel = toType match {
     case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
-        DataTypes.FloatType | DataTypes.DoubleType =>
+        DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
       Compatible()
     case _ => unsupported(DataTypes.BooleanType, toType)
   }
