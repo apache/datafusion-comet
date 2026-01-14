@@ -240,9 +240,13 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
             logger.error(
                 "In addition to a failure during writing, we failed during " + "cleanup.", e);
           }
+        } finally {
+          // Ensure allocator is nulled out after sorter cleanup
+          sorter = null;
+          allocator = null;
         }
       }
-      if (tracingEnabled) {
+      if (tracingEnabled && allocator != null) {
         nativeLib.logMemoryUsage(offheapMemKey, this.allocator.getUsed());
       }
     }
@@ -275,6 +279,10 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
   void closeAndWriteOutput() throws IOException {
     assert (sorter != null);
     updatePeakMemoryUsed();
+    // Close serialization streams to ensure proper resource cleanup
+    if (serOutputStream != null) {
+      serOutputStream.close();
+    }
     serBuffer = null;
     serOutputStream = null;
     final SpillInfo[] spills = sorter.closeAndGetSpills();
@@ -282,6 +290,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       partitionLengths = mergeSpills(spills);
     } finally {
       sorter = null;
+      allocator = null; // Sorter has freed all memory blocks, release allocator reference
       for (SpillInfo spill : spills) {
         if (spill.file.exists() && !spill.file.delete()) {
           logger.error("Error while deleting spill file {}", spill.file.getPath());
@@ -498,13 +507,15 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       throws IOException {
     logger.debug("Merge shuffle spills with TransferTo for mapId {}", mapId);
     final int numPartitions = partitioner.numPartitions();
+    final FileInputStream[] spillInputStreams = new FileInputStream[spills.length];
     final FileChannel[] spillInputChannels = new FileChannel[spills.length];
     final long[] spillInputChannelPositions = new long[spills.length];
 
     boolean threwException = true;
     try {
       for (int i = 0; i < spills.length; i++) {
-        spillInputChannels[i] = new FileInputStream(spills[i].file).getChannel();
+        spillInputStreams[i] = new FileInputStream(spills[i].file);
+        spillInputChannels[i] = spillInputStreams[i].getChannel();
         // Only convert the partitionLengths when debug level is enabled.
         if (logger.isDebugEnabled()) {
           logger.debug(
@@ -548,6 +559,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
       for (int i = 0; i < spills.length; i++) {
         assert (spillInputChannelPositions[i] == spills[i].file.length());
         Closeables.close(spillInputChannels[i], threwException);
+        Closeables.close(spillInputStreams[i], threwException);
       }
     }
   }
@@ -575,13 +587,16 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
         // If sorter is non-null, then this implies that we called stop() in response to an error,
         // so we need to clean up memory and spill files created by the sorter
         sorter.cleanupResources();
+        sorter = null;
       }
+      // Ensure allocator reference is cleared after cleanup
+      allocator = null;
     }
   }
 
   @Override
   public long[] getPartitionLengths() {
-    return new long[0];
+    return partitionLengths != null ? partitionLengths : new long[0];
   }
 
   private static final class StreamFallbackChannelWrapper implements WritableByteChannelWrapper {
