@@ -24,11 +24,13 @@ import java.util.Locale
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SparkException
+import org.apache.spark.sql.{SaveMode, SparkSession}
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.SQLConf.PartitionOverwriteMode
 
 import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -59,6 +61,10 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
 
             if (cmd.bucketSpec.isDefined) {
               return Unsupported(Some("Bucketed writes are not supported"))
+            }
+
+            if (SQLConf.get.partitionOverwriteMode == PartitionOverwriteMode.DYNAMIC) {
+              return Unsupported(Some("Dynamic partition overwrite is not supported"))
             }
 
             if (cmd.partitionColumns.nonEmpty || cmd.staticPartitions.nonEmpty) {
@@ -158,6 +164,14 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
     val cmd = op.cmd.asInstanceOf[InsertIntoHadoopFsRelationCommand]
     val outputPath = cmd.outputPath.toString
 
+//    TODO : support dynamic partition overwrite
+    if (cmd.mode == SaveMode.Overwrite) {
+      val fs = cmd.outputPath.getFileSystem(SparkSession.active.sparkContext.hadoopConfiguration)
+      if (fs.exists(cmd.outputPath)) {
+        fs.delete(cmd.outputPath, true)
+      }
+    }
+
     // Get the child plan from the WriteFilesExec or use the child directly
     val childPlan = op.child match {
       case writeFiles: WriteFilesExec =>
@@ -167,8 +181,6 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         // Fallback: use the child directly
         other
     }
-
-    val isDynamicOverWriteMode = cmd.partitionColumns.nonEmpty
 
     // Create FileCommitProtocol for atomic writes
     val jobId = java.util.UUID.randomUUID().toString

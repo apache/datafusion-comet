@@ -27,7 +27,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.QueryExecution
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
-import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -269,6 +269,54 @@ class CometParquetWriterSuite extends CometTestBase {
           }
           // Verify data
           assert(result.count() == 1000)
+        }
+      }
+    }
+  }
+
+  test("partitioned write - data correctness per partition") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output").getAbsolutePath
+
+      withTempPath { inputDir =>
+        val inputPath = createTestData(inputDir)
+
+        withSQLConf(
+          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          CometConf.getOperatorAllowIncompatConfigKey(
+            classOf[DataWritingCommandExec]) -> "true") {
+
+          val inputDf = spark.read.parquet(inputPath).filter(col("c1") <= lit(10))
+          val partCols = inputDf.columns.take(2)
+          val col1 = partCols(0)
+          val col2 = partCols(1)
+
+          inputDf.write.partitionBy(partCols: _*).parquet(outputPath)
+
+          // unique combinations
+          val combinations = inputDf
+            .select(partCols.head, partCols.last)
+            .distinct()
+            .collect()
+            .map(r => (r.getBoolean(0), r.getByte(1)))
+
+          combinations.foreach { tuple =>
+            val val1 = tuple._1
+            val val2 = tuple._2
+
+            val partitionPath = s"$outputPath/${partCols.head}=$val1/${partCols.last}=$val2"
+
+            val actualDf = spark.read.parquet(partitionPath)
+            val expectedDf = inputDf
+              .filter(col(col1) === val1)
+              .filter(col(col2) === val2)
+              .drop(col1, col2)
+
+            checkAnswer(actualDf, expectedDf)
+          }
+
+          // Verify total count as well
+          checkAnswer(spark.read.parquet(outputPath), inputDf)
         }
       }
     }
