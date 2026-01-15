@@ -122,4 +122,44 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         StructField("fmt", DataTypes.StringType, true)))
     FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
   }
+
+  test("make_date") {
+    import org.apache.spark.sql.Row
+
+    // Create test data with year, month, day columns (no nulls to avoid edge cases)
+    val r = new Random(42)
+    val testData = (1 to 1000).map { _ =>
+      // Generate reasonable date components
+      val year = 1900 + r.nextInt(200) // 1900-2099
+      val month = 1 + r.nextInt(12) // 1-12
+      val day = 1 + r.nextInt(28) // 1-28 to avoid invalid dates
+      Row(year, month, day)
+    }
+    val schema = StructType(
+      Seq(
+        StructField("year", DataTypes.IntegerType, false),
+        StructField("month", DataTypes.IntegerType, false),
+        StructField("day", DataTypes.IntegerType, false)))
+    val df = spark.createDataFrame(spark.sparkContext.parallelize(testData), schema)
+    df.createOrReplaceTempView("tbl")
+
+    // Test with column values
+    checkSparkAnswerAndOperator(
+      "SELECT year, month, day, make_date(year, month, day) FROM tbl ORDER BY year, month, day")
+
+    // Disable constant folding to ensure literal expressions are executed by Comet
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      // Test with literal values
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 12, 25)")
+      checkSparkAnswerAndOperator("SELECT make_date(1970, 1, 1)")
+      checkSparkAnswerAndOperator("SELECT make_date(2000, 2, 29)") // Leap year
+
+      // Test null handling
+      checkSparkAnswerAndOperator("SELECT make_date(NULL, 1, 1)")
+      checkSparkAnswerAndOperator("SELECT make_date(2023, NULL, 1)")
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 1, NULL)")
+    }
+  }
 }
