@@ -234,6 +234,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.CreateArray.enabled` | Enable Comet acceleration for `CreateArray` | true |
 | `spark.comet.expression.CreateNamedStruct.enabled` | Enable Comet acceleration for `CreateNamedStruct` | true |
 | `spark.comet.expression.DateAdd.enabled` | Enable Comet acceleration for `DateAdd` | true |
+| `spark.comet.expression.DateFromUnixDate.enabled` | Enable Comet acceleration for `DateFromUnixDate` | true |
 | `spark.comet.expression.DateSub.enabled` | Enable Comet acceleration for `DateSub` | true |
 | `spark.comet.expression.DayOfMonth.enabled` | Enable Comet acceleration for `DayOfMonth` | true |
 | `spark.comet.expression.DayOfWeek.enabled` | Enable Comet acceleration for `DayOfWeek` | true |
@@ -266,6 +267,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.IsNull.enabled` | Enable Comet acceleration for `IsNull` | true |
 | `spark.comet.expression.JsonToStructs.enabled` | Enable Comet acceleration for `JsonToStructs` | true |
 | `spark.comet.expression.KnownFloatingPointNormalized.enabled` | Enable Comet acceleration for `KnownFloatingPointNormalized` | true |
+| `spark.comet.expression.LastDay.enabled` | Enable Comet acceleration for `LastDay` | true |
 | `spark.comet.expression.Length.enabled` | Enable Comet acceleration for `Length` | true |
 | `spark.comet.expression.LessThan.enabled` | Enable Comet acceleration for `LessThan` | true |
 | `spark.comet.expression.LessThanOrEqual.enabled` | Enable Comet acceleration for `LessThanOrEqual` | true |

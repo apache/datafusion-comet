@@ -185,8 +185,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   private val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[DateAdd] -> CometDateAdd,
+    classOf[DateFromUnixDate] -> CometDateFromUnixDate,
     classOf[DateSub] -> CometDateSub,
     classOf[FromUnixTime] -> CometFromUnixTime,
+    classOf[LastDay] -> CometLastDay,
     classOf[Hour] -> CometHour,
     classOf[Minute] -> CometMinute,
     classOf[Second] -> CometSecond,
