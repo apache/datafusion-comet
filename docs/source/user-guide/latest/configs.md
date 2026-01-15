@@ -286,6 +286,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Month.enabled` | Enable Comet acceleration for `Month` | true |
 | `spark.comet.expression.Multiply.enabled` | Enable Comet acceleration for `Multiply` | true |
 | `spark.comet.expression.Murmur3Hash.enabled` | Enable Comet acceleration for `Murmur3Hash` | true |
+| `spark.comet.expression.NextDay.enabled` | Enable Comet acceleration for `NextDay` | true |
 | `spark.comet.expression.Not.enabled` | Enable Comet acceleration for `Not` | true |
 | `spark.comet.expression.OctetLength.enabled` | Enable Comet acceleration for `OctetLength` | true |
 | `spark.comet.expression.Or.enabled` | Enable Comet acceleration for `Or` | true |
