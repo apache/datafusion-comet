@@ -302,7 +302,7 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
               (map('x', -1)),
               (map()),
               (null)""")
-        checkSparkAnswer("SELECT c, hash(c) FROM t")
+        checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t")
       }
     }
   }
