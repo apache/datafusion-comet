@@ -176,8 +176,6 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.exec.takeOrderedAndProject.enabled` | Whether to enable takeOrderedAndProject by default. | true |
 | `spark.comet.exec.union.enabled` | Whether to enable union by default. | true |
 | `spark.comet.exec.window.enabled` | Whether to enable window by default. | true |
-| `spark.comet.window.aggregate.functions.enabled` | Comma-separated list of aggregate functions enabled for native window operations. Valid values: COUNT,SUM,MIN,MAX,AVG. Empty string disables all window aggregates. This is an incremental rollout feature flag for window function support. |  |
-| `spark.comet.window.frame.types.enabled` | Comma-separated list of window frame types enabled for native execution. Valid values: ROWS_UNBOUNDED (ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING), ROWS_BOUNDED (ROWS BETWEEN with numeric offsets). Empty string disables all native window frames. |  |
 <!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
