@@ -66,8 +66,43 @@ this can be overridden by setting `spark.comet.regexp.allowIncompatible=true`.
 
 ## Window Functions
 
-Comet's support for window functions is incomplete and known to be incorrect. It is disabled by default and
-should not be used in production. The feature will be enabled in a future release. Tracking issue: [#2721](https://github.com/apache/datafusion-comet/issues/2721).
+Comet's support for window functions is **experimental** and disabled by default. Currently, only windowed aggregate
+functions (COUNT, SUM, AVG, MIN, MAX) with ROWS BETWEEN frames are supported. Ranking functions (ROW_NUMBER, RANK, etc.)
+and offset functions (LAG, LEAD) are not yet supported and will fall back to Spark.
+
+### Enabling Window Aggregates (Experimental)
+
+Window aggregate support can be enabled via feature flags for incremental rollout:
+
+```scala
+// Enable specific aggregate functions
+spark.conf.set("spark.comet.window.aggregate.functions.enabled", "COUNT,SUM,MIN,MAX,AVG")
+
+// Enable specific frame types
+spark.conf.set("spark.comet.window.frame.types.enabled", "ROWS_UNBOUNDED,ROWS_BOUNDED")
+```
+
+**Configuration Options:**
+
+- `spark.comet.window.aggregate.functions.enabled`: Comma-separated list of aggregate functions to enable.
+  Valid values: `COUNT`, `SUM`, `MIN`, `MAX`, `AVG`. Default: `""` (disabled).
+
+- `spark.comet.window.frame.types.enabled`: Comma-separated list of window frame types to enable.
+  Valid values: `ROWS_UNBOUNDED` (for `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING`),
+  `ROWS_BOUNDED` (for `ROWS BETWEEN` with numeric offsets). Default: `""` (disabled).
+
+**Supported:**
+- Window aggregates: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
+- Frame types: `ROWS BETWEEN` with `UNBOUNDED PRECEDING`, `CURRENT ROW`, `UNBOUNDED FOLLOWING`, and numeric offsets
+- `PARTITION BY` and `ORDER BY` clauses (can be different columns)
+
+**Not Supported:**
+- Ranking functions: `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `PERCENT_RANK`, `NTILE`, `CUME_DIST`
+- Offset functions: `LAG`, `LEAD`
+- Value functions: `FIRST_VALUE`, `LAST_VALUE`, `NTH_VALUE`
+- `RANGE BETWEEN` with numeric or temporal expressions (tracking issue: [#1246](https://github.com/apache/datafusion-comet/issues/1246))
+
+Tracking issue: [#2721](https://github.com/apache/datafusion-comet/issues/2721).
 
 ## Cast
 

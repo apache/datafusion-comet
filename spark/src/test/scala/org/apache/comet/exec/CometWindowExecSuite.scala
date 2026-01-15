@@ -499,9 +499,8 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: ROW_NUMBER not supported
-  // Falls back to Spark Window operator
-  ignore("window: ROW_NUMBER with PARTITION BY and ORDER BY") {
+  // ROW_NUMBER not supported - verify fallback
+  test("window: ROW_NUMBER falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -517,13 +516,12 @@ class CometWindowExecSuite extends CometTestBase {
           ROW_NUMBER() OVER (PARTITION BY a ORDER BY b, c) as row_num
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Native window functions not enabled for this query")
     }
   }
 
-  // TODO: RANK not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: RANK with PARTITION BY and ORDER BY") {
+  // RANK not supported - verify fallback
+  test("window: RANK falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -539,13 +537,12 @@ class CometWindowExecSuite extends CometTestBase {
           RANK() OVER (PARTITION BY a ORDER BY b) as rnk
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Native window functions not enabled for this query")
     }
   }
 
-  // TODO: DENSE_RANK not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: DENSE_RANK with PARTITION BY and ORDER BY") {
+  // DENSE_RANK not supported - verify fallback
+  test("window: DENSE_RANK falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -561,13 +558,12 @@ class CometWindowExecSuite extends CometTestBase {
           DENSE_RANK() OVER (PARTITION BY a ORDER BY b) as dense_rnk
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Native window functions not enabled for this query")
     }
   }
 
-  // TODO: PERCENT_RANK not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: PERCENT_RANK with PARTITION BY and ORDER BY") {
+  // PERCENT_RANK not supported - verify fallback
+  test("window: PERCENT_RANK falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -583,13 +579,12 @@ class CometWindowExecSuite extends CometTestBase {
           PERCENT_RANK() OVER (PARTITION BY a ORDER BY b) as pct_rnk
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Native window functions not enabled for this query")
     }
   }
 
-  // TODO: NTILE not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: NTILE with PARTITION BY and ORDER BY") {
+  // NTILE not supported - verify fallback
+  test("window: NTILE falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -605,12 +600,12 @@ class CometWindowExecSuite extends CometTestBase {
           NTILE(4) OVER (PARTITION BY a ORDER BY b) as ntile_4
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Native window functions not enabled for this query")
     }
   }
 
-  // TODO: LAG produces incorrect results
-  ignore("window: LAG with default offset") {
+  // LAG not supported - verify fallback
+  test("window: LAG falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -626,12 +621,12 @@ class CometWindowExecSuite extends CometTestBase {
           LAG(c) OVER (PARTITION BY a ORDER BY b) as lag_c
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Native window functions not enabled for this query")
     }
   }
 
-  // TODO: LAG with offset 2 produces incorrect results
-  ignore("window: LAG with offset 2 and default value") {
+  // LAG with offset not supported - verify fallback
+  test("window: LAG with offset falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -647,12 +642,12 @@ class CometWindowExecSuite extends CometTestBase {
           LAG(c, 2, -1) OVER (PARTITION BY a ORDER BY b) as lag_c_2
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Native window functions not enabled for this query")
     }
   }
 
-  // TODO: LEAD produces incorrect results
-  ignore("window: LEAD with default offset") {
+  // LEAD not supported - verify fallback
+  test("window: LEAD falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -668,12 +663,12 @@ class CometWindowExecSuite extends CometTestBase {
           LEAD(c) OVER (PARTITION BY a ORDER BY b) as lead_c
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Native window functions not enabled for this query")
     }
   }
 
-  // TODO: LEAD with offset 2 produces incorrect results
-  ignore("window: LEAD with offset 2 and default value") {
+  // LEAD with offset not supported - verify fallback
+  test("window: LEAD with offset falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -689,7 +684,7 @@ class CometWindowExecSuite extends CometTestBase {
           LEAD(c, 2, -1) OVER (PARTITION BY a ORDER BY b) as lead_c_2
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Native window functions not enabled for this query")
     }
   }
 
@@ -758,9 +753,8 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  // TODO: CUME_DIST not supported - falls back to Spark Window operator
-  // Error: "Partitioning and sorting specifications must be the same"
-  ignore("window: CUME_DIST with PARTITION BY and ORDER BY") {
+  // CUME_DIST not supported - verify fallback
+  test("window: CUME_DIST falls back to Spark") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -776,7 +770,7 @@ class CometWindowExecSuite extends CometTestBase {
           CUME_DIST() OVER (PARTITION BY a ORDER BY b) as cume_dist
         FROM window_test
       """)
-      checkSparkAnswerAndOperator(df)
+      checkSparkAnswerAndFallbackReason(df, "Native window functions not enabled for this query")
     }
   }
 
