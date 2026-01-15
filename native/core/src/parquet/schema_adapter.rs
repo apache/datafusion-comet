@@ -80,6 +80,7 @@ impl ParquetSchemaAdapterStream {
         source_schema: &Schema,
         parquet_options: &SparkParquetOptions,
     ) -> Vec<Option<usize>> {
+        dbg!("map_schema");
         let mut field_mappings = vec![None; required_schema.fields().len()];
 
         for (required_idx, required_field) in required_schema.fields().iter().enumerate() {
@@ -100,11 +101,15 @@ impl ParquetSchemaAdapterStream {
             field_mappings[required_idx] = source_idx;
         }
 
+        dbg!("end map_schema");
+
         field_mappings
     }
 
     /// Map a batch from the source schema to the required schema
     fn map_batch(&self, batch: RecordBatch) -> datafusion::common::Result<RecordBatch> {
+        dbg!("map_batch");
+
         let batch_rows = batch.num_rows();
         let batch_cols = batch.columns().to_vec();
 
@@ -155,7 +160,11 @@ impl ParquetSchemaAdapterStream {
 
         let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
         let schema = Arc::<Schema>::clone(&self.required_schema);
-        RecordBatch::try_new_with_options(schema, cols, &options).map_err(|e| e.into())
+        dbg!("end map_batch");
+
+        let x = RecordBatch::try_new_with_options(schema, cols, &options).map_err(|e| e.into());
+        dbg!(&x);
+        x
     }
 }
 
@@ -309,6 +318,7 @@ impl ExecutionPlan for ParquetSchemaAdapterExec {
     ) -> datafusion::common::Result<datafusion::execution::SendableRecordBatchStream> {
         // Execute the input plan to get its stream
         let input_stream = self.input.execute(partition, context)?;
+        dbg!(&input_stream.schema());
         let source_schema = input_stream.schema();
 
         // Wrap the input stream with schema adaptation
@@ -319,6 +329,7 @@ impl ExecutionPlan for ParquetSchemaAdapterExec {
             self.parquet_options.clone(),
             self.default_values.clone(),
         );
+
 
         Ok(Box::pin(adapter_stream))
     }

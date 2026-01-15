@@ -1059,6 +1059,8 @@ impl PhysicalPlanner {
                     scan.encryption_enabled,
                 )?;
 
+                dbg!("after datasource");
+
                 // Wrap the scan with ParquetSchemaAdapterExec to handle schema transformations
                 let parquet_options = crate::parquet::parquet_support::SparkParquetOptions::new(
                     datafusion_comet_spark_expr::EvalMode::Legacy,
