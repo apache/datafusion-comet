@@ -96,7 +96,7 @@ public final class CometShuffleExternalSorterAsync
   private final LinkedList<SpillInfo> spills = new LinkedList<>();
 
   /** Peak memory used by this sorter so far, in bytes. */
-  private long peakMemoryUsedBytes;
+  private volatile long peakMemoryUsedBytes;
 
   // Checksum calculator for each partition. Empty when shuffle checksum disabled.
   private final long[] partitionChecksums;
