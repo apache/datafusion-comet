@@ -154,6 +154,21 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       // Test null handling
       checkSparkAnswerAndOperator("SELECT datediff(NULL, DATE('2009-07-30'))")
       checkSparkAnswerAndOperator("SELECT datediff(DATE('2009-07-30'), NULL)")
+
+      // Test leap year edge cases
+      // 1900 was NOT a leap year (divisible by 100 but not 400)
+      // 2000 WAS a leap year (divisible by 400)
+      // So Feb 27 to Mar 1 spans different number of days:
+      // 1900: 2 days (Feb 28, Mar 1)
+      // 2000: 3 days (Feb 28, Feb 29, Mar 1)
+      checkSparkAnswerAndOperator("SELECT datediff(DATE('1900-03-01'), DATE('1900-02-27'))")
+      checkSparkAnswerAndOperator("SELECT datediff(DATE('2000-03-01'), DATE('2000-02-27'))")
+
+      // Additional leap year tests
+      // 2004 was a leap year (divisible by 4, not by 100)
+      checkSparkAnswerAndOperator("SELECT datediff(DATE('2004-03-01'), DATE('2004-02-28'))")
+      // 2100 will NOT be a leap year (divisible by 100 but not 400)
+      checkSparkAnswerAndOperator("SELECT datediff(DATE('2100-03-01'), DATE('2100-02-28'))")
     }
   }
 }
