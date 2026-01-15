@@ -611,7 +611,7 @@ public class CometUnsafeShuffleWriter<K, V> extends ShuffleWriter<K, V> {
 
   @Override
   public long[] getPartitionLengths() {
-    return partitionLengths != null ? partitionLengths : new long[0];
+    return new long[0];
   }
 
   private static final class StreamFallbackChannelWrapper implements WritableByteChannelWrapper {
