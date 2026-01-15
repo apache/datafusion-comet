@@ -42,7 +42,10 @@ class CometWindowExecSuite extends CometTestBase {
       withSQLConf(
         CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_EXEC_WINDOW_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO,
+        // Enable window aggregate functions by default for all tests
+        CometConf.COMET_WINDOW_AGGREGATE_FUNCTIONS_ENABLED.key -> "COUNT,SUM,MIN,MAX,AVG",
+        CometConf.COMET_WINDOW_FRAME_TYPES_ENABLED.key -> "ROWS_UNBOUNDED,ROWS_BOUNDED") {
         testFun
       }
     }
@@ -305,7 +308,7 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("SELECT a, b, c, COUNT(*) OVER () as cnt FROM window_test")
-      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -321,13 +324,12 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("SELECT a, b, c, SUM(c) OVER (PARTITION BY a) as sum_c FROM window_test")
-      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
-  // TODO: AVG with PARTITION BY and ORDER BY not supported
-  // Falls back to Spark Window operator - "Partitioning and sorting specifications must be the same"
-  ignore("window: AVG with PARTITION BY and ORDER BY") {
+  // AVG with PARTITION BY and ORDER BY - now supported with feature flags
+  test("window: AVG with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -361,13 +363,12 @@ class CometWindowExecSuite extends CometTestBase {
           MAX(c) OVER (ORDER BY b) as max_c
         FROM window_test
       """)
-      checkSparkAnswerAndFallbackReason(df, "Native WindowExec has known correctness issues")
+      checkSparkAnswerAndOperator(df)
     }
   }
 
-  // TODO: COUNT with ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW produces incorrect results
-  // Returns wrong cnt values - ordering issue causes swapped values for rows with same partition
-  ignore("window: COUNT with ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW") {
+  // COUNT with ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW - now supported with feature flags
+  test("window: COUNT with ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -380,15 +381,16 @@ class CometWindowExecSuite extends CometTestBase {
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("""
         SELECT a, b, c,
-          COUNT(*) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as cnt
+          COUNT(*) OVER (PARTITION BY a ORDER BY b
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as cnt
         FROM window_test
       """)
       checkSparkAnswerAndOperator(df)
     }
   }
 
-  // TODO: SUM with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING produces incorrect results
-  ignore("window: SUM with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING") {
+  // SUM with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING - now supported with feature flags
+  test("window: SUM with ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -401,16 +403,16 @@ class CometWindowExecSuite extends CometTestBase {
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("""
         SELECT a, b, c,
-          SUM(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) as sum_c
+          SUM(c) OVER (PARTITION BY a ORDER BY b
+            ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) as sum_c
         FROM window_test
       """)
       checkSparkAnswerAndOperator(df)
     }
   }
 
-  // TODO: AVG with ROWS BETWEEN produces incorrect results
-  // Returns wrong avg_c values - calculation appears to be off
-  ignore("window: AVG with ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING") {
+  // AVG with ROWS BETWEEN - now supported with feature flags
+  test("window: AVG with ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -423,15 +425,16 @@ class CometWindowExecSuite extends CometTestBase {
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("""
         SELECT a, b, c,
-          AVG(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) as avg_c
+          AVG(c) OVER (PARTITION BY a ORDER BY b
+            ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) as avg_c
         FROM window_test
       """)
       checkSparkAnswerAndOperator(df)
     }
   }
 
-  // TODO: SUM with ROWS BETWEEN produces incorrect results
-  ignore("window: SUM with ROWS BETWEEN 2 PRECEDING AND CURRENT ROW") {
+  // SUM with ROWS BETWEEN - now supported with feature flags
+  test("window: SUM with ROWS BETWEEN 2 PRECEDING AND CURRENT ROW") {
     withTempDir { dir =>
       (0 until 30)
         .map(i => (i % 3, i % 5, i))
@@ -444,7 +447,8 @@ class CometWindowExecSuite extends CometTestBase {
       spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
       val df = sql("""
         SELECT a, b, c,
-          SUM(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) as sum_c
+          SUM(c) OVER (PARTITION BY a ORDER BY b
+            ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) as sum_c
         FROM window_test
       """)
       checkSparkAnswerAndOperator(df)
@@ -1046,6 +1050,83 @@ class CometWindowExecSuite extends CometTestBase {
         FROM window_test
       """)
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // New test: Multiple aggregate functions with feature flags enabled (uses default flags)
+  test("window: multiple aggregate functions in single query with feature flags") {
+    withTempDir { dir =>
+      (0 until 30)
+        .map(i => (i % 3, i % 5, i))
+        .toDF("a", "b", "c")
+        .repartition(3)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+      val df = sql("""
+        SELECT a, b, c,
+          COUNT(*) OVER (PARTITION BY a) as cnt,
+          SUM(c) OVER (PARTITION BY a) as sum_c,
+          AVG(c) OVER (PARTITION BY a) as avg_c,
+          MIN(c) OVER (PARTITION BY a) as min_c,
+          MAX(c) OVER (PARTITION BY a) as max_c
+        FROM window_test
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // New test: Verify fallback when feature flags are not enabled
+  test("window: aggregates fall back when feature flags disabled") {
+    // Explicitly disable feature flags
+    withSQLConf(
+      CometConf.COMET_WINDOW_AGGREGATE_FUNCTIONS_ENABLED.key -> "",
+      CometConf.COMET_WINDOW_FRAME_TYPES_ENABLED.key -> "") {
+      withTempDir { dir =>
+        (0 until 30)
+          .map(i => (i % 3, i % 5, i))
+          .toDF("a", "b", "c")
+          .repartition(3)
+          .write
+          .mode("overwrite")
+          .parquet(dir.toString)
+
+        spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+        val df = sql("SELECT a, b, c, COUNT(*) OVER (PARTITION BY a) as cnt FROM window_test")
+        checkSparkAnswerAndFallbackReason(
+          df,
+          "Native window functions not enabled for this query")
+      }
+    }
+  }
+
+  // New test: Partial feature flag enablement
+  test("window: only COUNT enabled via feature flag") {
+    withSQLConf(
+      CometConf.COMET_WINDOW_AGGREGATE_FUNCTIONS_ENABLED.key -> "COUNT",
+      CometConf.COMET_WINDOW_FRAME_TYPES_ENABLED.key -> "ROWS_UNBOUNDED") {
+      withTempDir { dir =>
+        (0 until 30)
+          .map(i => (i % 3, i % 5, i))
+          .toDF("a", "b", "c")
+          .repartition(3)
+          .write
+          .mode("overwrite")
+          .parquet(dir.toString)
+
+        spark.read.parquet(dir.toString).createOrReplaceTempView("window_test")
+        // COUNT should work
+        val df1 = sql("SELECT a, b, c, COUNT(*) OVER (PARTITION BY a) as cnt FROM window_test")
+        checkSparkAnswerAndOperator(df1)
+
+        // SUM should fall back since it's not enabled
+        val df2 = sql("SELECT a, b, c, SUM(c) OVER (PARTITION BY a) as sum_c FROM window_test")
+        checkSparkAnswerAndFallbackReason(
+          df2,
+          "Native window functions not enabled for this query")
+      }
     }
   }
 }

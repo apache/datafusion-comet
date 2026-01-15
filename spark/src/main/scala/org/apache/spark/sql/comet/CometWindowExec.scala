@@ -22,7 +22,7 @@ package org.apache.spark.sql.comet
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, AttributeSet, CurrentRow, Expression, NamedExpression, RangeFrame, RowFrame, SortOrder, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Complete, Count, Max, Min, Sum}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Complete, Count, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -34,7 +34,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.{AggSerde, CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel}
+import org.apache.comet.serde.{AggSerde, CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto}
 
@@ -44,7 +44,70 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     CometConf.COMET_EXEC_WINDOW_ENABLED)
 
   override def getSupportLevel(op: WindowExec): SupportLevel = {
-    Incompatible(Some("Native WindowExec has known correctness issues"))
+    if (!windowFunctionsEnabled(op)) {
+      Incompatible(Some("Native window functions not enabled for this query"))
+    } else {
+      Compatible()
+    }
+  }
+
+  private def windowFunctionsEnabled(op: WindowExec): Boolean = {
+    val enabledFunctions = CometConf.COMET_WINDOW_AGGREGATE_FUNCTIONS_ENABLED
+      .get(op.conf)
+      .split(",")
+      .map(_.trim.toUpperCase(java.util.Locale.ROOT))
+      .filter(_.nonEmpty)
+      .toSet
+
+    val enabledFrames = CometConf.COMET_WINDOW_FRAME_TYPES_ENABLED
+      .get(op.conf)
+      .split(",")
+      .map(_.trim.toUpperCase(java.util.Locale.ROOT))
+      .filter(_.nonEmpty)
+      .toSet
+
+    if (enabledFunctions.isEmpty || enabledFrames.isEmpty) {
+      return false
+    }
+
+    // Check if all window expressions use enabled functions and frames
+    op.windowExpression.forall(expr =>
+      checkWindowExprEnabled(expr, enabledFunctions, enabledFrames))
+  }
+
+  private def checkWindowExprEnabled(
+      expr: NamedExpression,
+      enabledFunctions: Set[String],
+      enabledFrames: Set[String]): Boolean = {
+    expr match {
+      case Alias(winExpr: WindowExpression, _) =>
+        // Check if aggregate function is enabled
+        val funcEnabled = winExpr.windowFunction match {
+          case AggregateExpression(Count(_), _, _, _, _) =>
+            enabledFunctions.contains("COUNT")
+          case AggregateExpression(_: Sum, _, _, _, _) =>
+            enabledFunctions.contains("SUM")
+          case AggregateExpression(_: Min, _, _, _, _) =>
+            enabledFunctions.contains("MIN")
+          case AggregateExpression(_: Max, _, _, _, _) =>
+            enabledFunctions.contains("MAX")
+          case AggregateExpression(_: Average, _, _, _, _) =>
+            enabledFunctions.contains("AVG")
+          case _ => false
+        }
+
+        // Check if frame type is enabled
+        val frameEnabled = winExpr.windowSpec.frameSpecification match {
+          case SpecifiedWindowFrame(RowFrame, UnboundedPreceding, UnboundedFollowing) =>
+            enabledFrames.contains("ROWS_UNBOUNDED")
+          case SpecifiedWindowFrame(RowFrame, _, _) =>
+            enabledFrames.contains("ROWS_BOUNDED")
+          case _ => false
+        }
+
+        funcEnabled && frameEnabled
+      case _ => false
+    }
   }
 
   override def convert(
@@ -69,11 +132,6 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
     if (winExprs.length != op.windowExpression.length) {
       withInfo(op, "Unsupported window expression(s)")
-      return None
-    }
-
-    if (op.partitionSpec.nonEmpty && op.orderSpec.nonEmpty &&
-      !validatePartitionAndSortSpecsForWindowFunc(op.partitionSpec, op.orderSpec, op)) {
       return None
     }
 
@@ -126,6 +184,13 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
                 Some(agg)
               } else {
                 withInfo(windowExpr, s"datatype ${s.dataType} is not supported", expr)
+                None
+              }
+            case avg: Average =>
+              if (AggSerde.avgDataTypeSupported(avg.dataType)) {
+                Some(agg)
+              } else {
+                withInfo(windowExpr, s"datatype ${avg.dataType} is not supported", expr)
                 None
               }
             case _ =>
@@ -277,40 +342,6 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       op.orderSpec,
       op.child,
       SerializedPlan(None))
-  }
-
-  private def validatePartitionAndSortSpecsForWindowFunc(
-      partitionSpec: Seq[Expression],
-      orderSpec: Seq[SortOrder],
-      op: SparkPlan): Boolean = {
-    if (partitionSpec.length != orderSpec.length) {
-      return false
-    }
-
-    val partitionColumnNames = partitionSpec.collect {
-      case a: AttributeReference => a.name
-      case other =>
-        withInfo(op, s"Unsupported partition expression: ${other.getClass.getSimpleName}")
-        return false
-    }
-
-    val orderColumnNames = orderSpec.collect { case s: SortOrder =>
-      s.child match {
-        case a: AttributeReference => a.name
-        case other =>
-          withInfo(op, s"Unsupported sort expression: ${other.getClass.getSimpleName}")
-          return false
-      }
-    }
-
-    if (partitionColumnNames.zip(orderColumnNames).exists { case (partCol, orderCol) =>
-        partCol != orderCol
-      }) {
-      withInfo(op, "Partitioning and sorting specifications must be the same.")
-      return false
-    }
-
-    true
   }
 
 }
