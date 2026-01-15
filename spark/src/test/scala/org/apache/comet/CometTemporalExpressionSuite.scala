@@ -21,7 +21,7 @@ package org.apache.comet
 
 import scala.util.Random
 
-import org.apache.spark.sql.{CometTestBase, SaveMode}
+import org.apache.spark.sql.{CometTestBase, Row, SaveMode}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -132,6 +132,44 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
         checkSparkAnswerAndOperator("SELECT d, unix_timestamp(d) from date_tbl order by d")
       }
+    }
+  }
+
+  test("unix_timestamp - timestamp_ntz input falls back to Spark") {
+    // TimestampNTZ is not supported because Comet incorrectly applies timezone
+    // conversion. TimestampNTZ stores local time without timezone, so the unix
+    // timestamp should just be the value divided by microseconds per second.
+    val r = new Random(42)
+    val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
+    val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
+    ntzDF.createOrReplaceTempView("ntz_tbl")
+    checkSparkAnswerAndFallbackReason(
+      "SELECT ts_ntz, unix_timestamp(ts_ntz) from ntz_tbl order by ts_ntz",
+      "unix_timestamp does not support input type: TimestampNTZType")
+  }
+
+  test("unix_timestamp - string input falls back to Spark") {
+    withTempView("string_tbl") {
+      // Create test data with timestamp strings
+      val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, true)))
+      val data = Seq(
+        Row("2020-01-01 00:00:00"),
+        Row("2021-06-15 12:30:45"),
+        Row("2022-12-31 23:59:59"),
+        Row(null))
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("string_tbl")
+
+      // String input should fall back to Spark
+      checkSparkAnswerAndFallbackReason(
+        "SELECT ts_str, unix_timestamp(ts_str) from string_tbl order by ts_str",
+        "unix_timestamp does not support input type: StringType")
+
+      // String input with custom format should also fall back
+      checkSparkAnswerAndFallbackReason(
+        "SELECT ts_str, unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss') from string_tbl",
+        "unix_timestamp does not support input type: StringType")
     }
   }
 
