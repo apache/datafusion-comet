@@ -174,12 +174,14 @@ public final class CometShuffleExternalSyncSorter
 
     spilling = true;
     try {
-      logger.info(
-          "Thread {} spilling sort data of {} to disk ({} {} so far)",
-          Thread.currentThread().getId(),
-          Utils.bytesToString(getMemoryUsage()),
-          spills.size(),
-          spills.size() > 1 ? " times" : " time");
+      if (logger.isInfoEnabled()) {
+        logger.info(
+            "Thread {} spilling sort data of {} to disk ({} {} so far)",
+            Thread.currentThread().getId(),
+            Utils.bytesToString(getMemoryUsage()),
+            spills.size(),
+            spills.size() > 1 ? " times" : " time");
+      }
 
       final Tuple2<TempShuffleBlockId, File> spilledFileInfo =
           blockManager.diskBlockManager().createTempShuffleBlock();
@@ -195,9 +197,7 @@ public final class CometShuffleExternalSyncSorter
       // Reset the in-memory sorter's pointer array only after freeing up the memory pages holding
       // the records. Otherwise, if the task is over allocated memory, then without freeing the
       // memory pages, we might not be able to get memory for the pointer array.
-      synchronized (CometShuffleExternalSyncSorter.this) {
-        taskContext.taskMetrics().incMemoryBytesSpilled(spillSize);
-      }
+      taskContext.taskMetrics().incMemoryBytesSpilled(spillSize);
     } finally {
       spilling = false;
     }
@@ -291,8 +291,10 @@ public final class CometShuffleExternalSyncSorter
     assert (activeSpillSorter != null);
     int threshold = numElementsForSpillThreshold;
     if (activeSpillSorter.numRecords() >= threshold) {
-      logger.info(
-          "Spilling data because number of spilledRecords crossed the threshold " + threshold);
+      if (logger.isInfoEnabled()) {
+        logger.info(
+            "Spilling data because number of spilledRecords crossed the threshold " + threshold);
+      }
       spill();
     }
 

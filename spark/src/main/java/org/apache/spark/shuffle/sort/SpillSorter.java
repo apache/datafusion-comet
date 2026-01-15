@@ -187,7 +187,18 @@ public class SpillSorter extends SpillWriter {
       // We allocate pointer array outside the sorter.
       // So we can get array address which can be used by native code.
       inMemSorter.reset();
-      sorterArray = allocator.allocateArray(initialSize);
+
+      // OPTIMIZATION: Reuse existing array if it's appropriately sized
+      // Only reallocate if array is too small or excessively large (> 4x initial)
+      if (sorterArray == null
+          || sorterArray.size() < initialSize
+          || sorterArray.size() > initialSize * 4) {
+        if (sorterArray != null) {
+          allocator.freeArray(sorterArray);
+        }
+        sorterArray = allocator.allocateArray(initialSize);
+      }
+      // Reuse existing array - just reset the position in the in-memory sorter
       inMemSorter.expandPointerArray(sorterArray);
       freed = false;
     }
