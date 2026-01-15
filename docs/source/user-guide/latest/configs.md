@@ -202,6 +202,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.ArrayJoin.enabled` | Enable Comet acceleration for `ArrayJoin` | true |
 | `spark.comet.expression.ArrayMax.enabled` | Enable Comet acceleration for `ArrayMax` | true |
 | `spark.comet.expression.ArrayMin.enabled` | Enable Comet acceleration for `ArrayMin` | true |
+| `spark.comet.expression.ArrayPosition.enabled` | Enable Comet acceleration for `ArrayPosition` | true |
 | `spark.comet.expression.ArrayRemove.enabled` | Enable Comet acceleration for `ArrayRemove` | true |
 | `spark.comet.expression.ArrayRepeat.enabled` | Enable Comet acceleration for `ArrayRepeat` | true |
 | `spark.comet.expression.ArrayUnion.enabled` | Enable Comet acceleration for `ArrayUnion` | true |
