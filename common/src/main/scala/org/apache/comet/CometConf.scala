@@ -274,25 +274,6 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("explode", defaultValue = true)
   val COMET_EXEC_WINDOW_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("window", defaultValue = true)
-  val COMET_WINDOW_AGGREGATE_FUNCTIONS_ENABLED: ConfigEntry[String] =
-    conf("spark.comet.window.aggregate.functions.enabled")
-      .category(CATEGORY_ENABLE_EXEC)
-      .doc(
-        "Comma-separated list of aggregate functions enabled for native window operations. " +
-          "Valid values: COUNT,SUM,MIN,MAX,AVG. Empty string disables all window aggregates. " +
-          "This is an incremental rollout feature flag for window function support.")
-      .stringConf
-      .createWithDefault("")
-  val COMET_WINDOW_FRAME_TYPES_ENABLED: ConfigEntry[String] =
-    conf("spark.comet.window.frame.types.enabled")
-      .category(CATEGORY_ENABLE_EXEC)
-      .doc(
-        "Comma-separated list of window frame types enabled for native execution. " +
-          "Valid values: ROWS_UNBOUNDED (ROWS BETWEEN UNBOUNDED PRECEDING AND " +
-          "UNBOUNDED FOLLOWING), ROWS_BOUNDED (ROWS BETWEEN with numeric offsets). " +
-          "Empty string disables all native window frames.")
-      .stringConf
-      .createWithDefault("")
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
