@@ -33,7 +33,7 @@ use std::{
 };
 use url::Url;
 
-use arrow::datatypes::{DataType, Int16Type, Int32Type, Int64Type, Int8Type, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::{
@@ -113,7 +113,7 @@ fn build_partition_path(
 
 fn get_partition_value(array: &ArrayRef, row: usize) -> Result<String> {
     if array.is_null(row) {
-        return Ok("__HIVE_DEFAULT_PARTITION__".to_string());
+        Ok("__HIVE_DEFAULT_PARTITION__".to_string())
     } else {
         // relying on arrow's cast op to get string representation
         let string_array = cast(array, &DataType::Utf8)?;
@@ -600,6 +600,13 @@ impl ExecutionPlan for ParquetWriterExec {
                     let partition_ranges: Partitions = partition(&partition_columns)?;
 
                     for partition_batch in partition_ranges.ranges() {
+                        let partition_path: String = build_partition_path(
+                            &sorted_batch,
+                            partition_batch.start,
+                            &partition_cols,
+                            &partition_indices,
+                        );
+
                         let record_batch: RecordBatch = sorted_batch
                             .slice(
                                 partition_batch.start,
@@ -607,12 +614,6 @@ impl ExecutionPlan for ParquetWriterExec {
                             )
                             .project(&non_partition_indices)
                             .expect("cannot project partition columns");
-                        let partition_path: String = build_partition_path(
-                            &record_batch,
-                            0,
-                            &partition_cols,
-                            &partition_indices,
-                        );
                         eprintln!("Partition path: {:?}", partition_path);
 
                         let full_path_part_file = if let Some(attempt_id) = task_attempt_id {
@@ -627,17 +628,19 @@ impl ExecutionPlan for ParquetWriterExec {
                             )
                         };
                         eprintln!("full path: {:?}", full_path_part_file);
+                        let write_schema = Arc::new(output_schema.project(&non_partition_indices)?);
 
                         if !writers.contains_key(&partition_path) {
                             let writer = Self::create_arrow_writer(
                                 &full_path_part_file,
-                                Arc::clone(&output_schema),
+                                Arc::clone(&write_schema),
                                 props.clone(),
                             )?;
                             writers.insert(partition_path.clone(), writer);
                         }
 
                         // write data now
+                        // TODO : Write success file in base dir after the writes are completed and also support dynamic partition overwrite
                         writers
                             .get_mut(&partition_path)
                             .unwrap()
@@ -646,6 +649,14 @@ impl ExecutionPlan for ParquetWriterExec {
                             .map_err(|e| {
                                 DataFusionError::Execution(format!("Failed to write batch: {}", e))
                             })?;
+
+                        let file_size = std::fs::metadata(&full_path_part_file)
+                            .map(|m| m.len() as i64)
+                            .unwrap_or(0);
+
+                        files_written.add(1);
+                        bytes_written.add(file_size as usize);
+                        rows_written.add(total_rows as usize);
                     }
                 }
 

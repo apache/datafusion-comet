@@ -27,6 +27,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.QueryExecution
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -229,10 +230,9 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
-  test("parquet write with mode overwrite") {
+  test("partitioned parquet write") {
     withTempPath { dir =>
-      val outputPath = new File(dir, "output.parquet").getAbsolutePath
-
+      val outputPath = dir.getAbsolutePath
       withTempPath { inputDir =>
         val inputPath = createTestData(inputDir)
 
@@ -243,15 +243,32 @@ class CometParquetWriterSuite extends CometTestBase {
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
           val df = spark.read.parquet(inputPath)
+          // Pick first column to partition by
+          val partCols = df.columns.take(3)
 
-          // First write
-          df.repartition(2).write.parquet(outputPath)
-          //          verifyWrittenFile(outputPath)
-          // Second write (with overwrite mode and a different record count to make sure we are not reading the same data)
-          df.limit(500).repartition(2).write.mode("overwrite").parquet(outputPath)
-          //          // Verify the data was written
-          val resultDf = spark.read.parquet(outputPath)
-          assert(resultDf.count() == 500, "Expected 1000 rows after overwrite")
+          val uniquePartitions = df.select(partCols.map(col): _*).distinct().collect()
+          val expectedPaths = uniquePartitions.map { row =>
+            partCols.zipWithIndex
+              .map { case (colName, i) =>
+                val value =
+                  if (row.isNullAt(i)) "__HIVE_DEFAULT_PARTITION__" else row.get(i).toString
+                s"$colName=$value"
+              }
+              .mkString("/")
+          }.toSet
+
+          df.write.partitionBy(partCols: _*).parquet(outputPath)
+
+          val result = spark.read.parquet(outputPath)
+          val actualFiles = result.inputFiles
+          actualFiles.foreach { filePath =>
+            val matchesPartition = expectedPaths.exists(p => filePath.contains(p))
+            assert(
+              matchesPartition,
+              s"File $filePath doesn't match any expected partition: $expectedPaths")
+          }
+          // Verify data
+          assert(result.count() == 1000)
         }
       }
     }
