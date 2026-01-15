@@ -134,7 +134,7 @@ class CometNativeShuffleWriter[K, V](
 
     // Report spill metrics to Spark's task metrics so they appear in
     // PySpark/Spark UI task summaries (not just SQL metrics)
-    val spilledBytes = metrics.get("spilled_bytes").map(_.value).getOrElse(0L)
+    val spilledBytes = nativeSQLMetrics.get("spilled_bytes").map(_.value).getOrElse(0L)
     if (spilledBytes > 0) {
       context.taskMetrics().incMemoryBytesSpilled(spilledBytes)
       context.taskMetrics().incDiskBytesSpilled(spilledBytes)
