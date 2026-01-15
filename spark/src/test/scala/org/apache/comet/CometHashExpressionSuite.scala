@@ -19,22 +19,15 @@
 
 package org.apache.comet
 
-<<<<<<< HEAD
-=======
 import scala.util.Random
 
->>>>>>> apache/main
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
-<<<<<<< HEAD
-=======
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
-
->>>>>>> apache/main
 /**
  * Test suite for Spark murmur3 hash function compatibility between Spark and Comet.
  *
