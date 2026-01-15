@@ -188,15 +188,16 @@ simply concatenates batches to reach the configured batch size.
 
 ### Round Robin Partitioning
 
-Round robin partitioning distributes rows evenly across partitions in a deterministic way:
+Comet implements round robin partitioning using hash-based assignment for determinism:
 
-1. Computes a Murmur3 hash of **all columns** in each row (using seed 42)
-2. Sorts rows by their hash values to ensure deterministic ordering
-3. Assigns rows to partitions sequentially: `partition_id = sorted_index % num_partitions`
+1. Computes a Murmur3 hash of columns (using seed 42)
+2. Assigns partitions directly using the hash: `partition_id = hash % num_partitions`
 
-This approach ensures that repeated execution of the same query produces identical results,
-which is critical for fault tolerance and retry logic. Unlike Spark's round robin implementation
-which uses random seeding, Comet's hash-based approach guarantees determinism across retries.
+This approach guarantees determinism across retries, which is critical for fault tolerance.
+However, unlike true round robin which cycles through partitions row-by-row, hash-based
+assignment only provides even distribution when the data has sufficient variation in the
+hashed columns. Data with low cardinality or identical values may result in skewed partition
+sizes.
 
 ## Memory Management
 
