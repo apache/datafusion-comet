@@ -28,6 +28,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
+
 /**
  * Test suite for Spark murmur3 hash function compatibility between Spark and Comet.
  *
