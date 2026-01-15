@@ -1,8 +1,8 @@
 == Physical Plan ==
-TakeOrderedAndProject (42)
-+- * Filter (41)
-   +- Window (40)
-      +- * CometColumnarToRow (39)
+* CometColumnarToRow (42)
++- CometTakeOrderedAndProject (41)
+   +- CometFilter (40)
+      +- CometWindowExec (39)
          +- CometSort (38)
             +- CometExchange (37)
                +- CometProject (36)
@@ -212,20 +212,20 @@ Arguments: hashpartitioning(item_sk#24, 5), ENSURE_REQUIREMENTS, CometNativeShuf
 Input [4]: [item_sk#24, d_date#25, web_sales#26, store_sales#27]
 Arguments: [item_sk#24, d_date#25, web_sales#26, store_sales#27], [item_sk#24 ASC NULLS FIRST, d_date#25 ASC NULLS FIRST]
 
-(39) CometColumnarToRow [codegen id : 11]
+(39) CometWindowExec
 Input [4]: [item_sk#24, d_date#25, web_sales#26, store_sales#27]
+Arguments: [item_sk#24, d_date#25, web_sales#26, store_sales#27, web_cumulative#28, store_cumulative#29], [max(web_sales#26) windowspecdefinition(item_sk#24, d_date#25 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS web_cumulative#28, max(store_sales#27) windowspecdefinition(item_sk#24, d_date#25 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS store_cumulative#29], [item_sk#24], [d_date#25 ASC NULLS FIRST]
 
-(40) Window
-Input [4]: [item_sk#24, d_date#25, web_sales#26, store_sales#27]
-Arguments: [max(web_sales#26) windowspecdefinition(item_sk#24, d_date#25 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS web_cumulative#28, max(store_sales#27) windowspecdefinition(item_sk#24, d_date#25 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS store_cumulative#29], [item_sk#24], [d_date#25 ASC NULLS FIRST]
-
-(41) Filter [codegen id : 12]
+(40) CometFilter
 Input [6]: [item_sk#24, d_date#25, web_sales#26, store_sales#27, web_cumulative#28, store_cumulative#29]
 Condition : ((isnotnull(web_cumulative#28) AND isnotnull(store_cumulative#29)) AND (web_cumulative#28 > store_cumulative#29))
 
-(42) TakeOrderedAndProject
+(41) CometTakeOrderedAndProject
 Input [6]: [item_sk#24, d_date#25, web_sales#26, store_sales#27, web_cumulative#28, store_cumulative#29]
-Arguments: 100, [item_sk#24 ASC NULLS FIRST, d_date#25 ASC NULLS FIRST], [item_sk#24, d_date#25, web_sales#26, store_sales#27, web_cumulative#28, store_cumulative#29]
+Arguments: TakeOrderedAndProject(limit=100, orderBy=[item_sk#24 ASC NULLS FIRST,d_date#25 ASC NULLS FIRST], output=[item_sk#24,d_date#25,web_sales#26,store_sales#27,web_cumulative#28,store_cumulative#29]), [item_sk#24, d_date#25, web_sales#26, store_sales#27, web_cumulative#28, store_cumulative#29], 100, 0, [item_sk#24 ASC NULLS FIRST, d_date#25 ASC NULLS FIRST], [item_sk#24, d_date#25, web_sales#26, store_sales#27, web_cumulative#28, store_cumulative#29]
+
+(42) CometColumnarToRow [codegen id : 11]
+Input [6]: [item_sk#24, d_date#25, web_sales#26, store_sales#27, web_cumulative#28, store_cumulative#29]
 
 ===== Subqueries =====
 

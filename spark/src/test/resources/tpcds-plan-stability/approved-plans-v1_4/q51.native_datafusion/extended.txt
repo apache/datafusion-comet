@@ -1,7 +1,7 @@
-TakeOrderedAndProject
-+- Filter
-   +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
-      +- CometColumnarToRow
+CometColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometFilter
+      +- CometWindowExec
          +- CometSort
             +- CometExchange
                +- CometProject
@@ -9,7 +9,7 @@ TakeOrderedAndProject
                      :- CometSort
                      :  +- CometColumnarExchange
                      :     +- Project
-                     :        +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
+                     :        +- Window
                      :           +- CometColumnarToRow
                      :              +- CometSort
                      :                 +- CometColumnarExchange
@@ -36,7 +36,7 @@ TakeOrderedAndProject
                      +- CometSort
                         +- CometColumnarExchange
                            +- Project
-                              +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
+                              +- Window
                                  +- CometColumnarToRow
                                     +- CometSort
                                        +- CometColumnarExchange
@@ -56,4 +56,4 @@ TakeOrderedAndProject
                                                                      +- CometFilter
                                                                         +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 23 out of 47 eligible operators (48%). Final plan contains 10 transitions between Spark and Comet.
+Comet accelerated 26 out of 47 eligible operators (55%). Final plan contains 10 transitions between Spark and Comet.

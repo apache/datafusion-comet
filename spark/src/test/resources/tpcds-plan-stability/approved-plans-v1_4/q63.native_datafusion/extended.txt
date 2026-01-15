@@ -1,8 +1,8 @@
-TakeOrderedAndProject
-+- Project
-   +- Filter
-      +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
-         +- CometColumnarToRow
+CometColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometProject
+      +- CometFilter
+         +- CometWindowExec
             +- CometSort
                +- CometColumnarExchange
                   +- HashAggregate
@@ -39,4 +39,4 @@ TakeOrderedAndProject
                                           +- CometFilter
                                              +- CometNativeScan parquet spark_catalog.default.store
 
-Comet accelerated 14 out of 33 eligible operators (42%). Final plan contains 7 transitions between Spark and Comet.
+Comet accelerated 18 out of 33 eligible operators (54%). Final plan contains 7 transitions between Spark and Comet.
