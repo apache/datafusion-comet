@@ -132,9 +132,108 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
     val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
     val keyExprProto = exprToProto(expr.children(1), inputs, binding)
 
-    val arrayContainsScalarExpr =
+    // Check if array is null - if so, return null
+    val isArrayNotNullExpr = createUnaryExpr(
+      expr,
+      expr.children.head,
+      inputs,
+      binding,
+      (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
+
+    // Check if search value is null - if so, return null
+    val isKeyNotNullExpr = createUnaryExpr(
+      expr,
+      expr.children(1),
+      inputs,
+      binding,
+      (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
+
+    // Check if value exists in array
+    val arrayHasValueExpr =
       scalarFunctionExprToProto("array_has", arrayExprProto, keyExprProto)
-    optExprWithInfo(arrayContainsScalarExpr, expr, expr.children: _*)
+
+    // Check if array contains null elements (for three-valued logic)
+    val nullKeyLiteralProto = exprToProto(Literal(null, expr.children(1).dataType), Seq.empty)
+    val arrayHasNullExpr =
+      scalarFunctionExprToProto("array_has", arrayExprProto, nullKeyLiteralProto)
+
+    // Build the three-valued logic:
+    // 1. If array is null -> return null
+    // 2. If key is null -> return null
+    // 3. If array_has(array, key) is true -> return true
+    // 4. If array_has(array, key) is false AND array_has(array, null) is true
+    //    -> return null (indeterminate)
+    // 5. If array_has(array, key) is false AND array_has(array, null) is false
+    //    -> return false
+    if (isArrayNotNullExpr.isDefined && isKeyNotNullExpr.isDefined &&
+      arrayHasValueExpr.isDefined && arrayHasNullExpr.isDefined &&
+      nullKeyLiteralProto.isDefined) {
+      // Create boolean literals
+      val trueLiteralProto = exprToProto(Literal(true, BooleanType), Seq.empty)
+      val falseLiteralProto = exprToProto(Literal(false, BooleanType), Seq.empty)
+      val nullBooleanLiteralProto = exprToProto(Literal(null, BooleanType), Seq.empty)
+
+      if (trueLiteralProto.isDefined && falseLiteralProto.isDefined &&
+        nullBooleanLiteralProto.isDefined) {
+        // If array_has(array, key) is false, check if array has nulls
+        // If array_has(array, null) is true -> return null, else return false
+        val whenNotFoundCheckNulls = ExprOuterClass.CaseWhen
+          .newBuilder()
+          .addWhen(arrayHasNullExpr.get) // if array has nulls
+          .addThen(nullBooleanLiteralProto.get) // return null (indeterminate)
+          .setElseExpr(falseLiteralProto.get) // else return false
+          .build()
+
+        // If array_has(array, key) is true, return true, else check null case
+        val whenValueFound = ExprOuterClass.CaseWhen
+          .newBuilder()
+          .addWhen(arrayHasValueExpr.get) // if value found
+          .addThen(trueLiteralProto.get) // return true
+          .setElseExpr(
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setCaseWhen(whenNotFoundCheckNulls)
+              .build()
+          ) // else check null case
+          .build()
+
+        // Check if key is null -> return null, else use the logic above
+        val whenKeyNotNull = ExprOuterClass.CaseWhen
+          .newBuilder()
+          .addWhen(isKeyNotNullExpr.get) // if key is not null
+          .addThen(
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setCaseWhen(whenValueFound)
+              .build())
+          .setElseExpr(nullBooleanLiteralProto.get) // key is null -> return null
+          .build()
+
+        // Outer case: if array is null, return null, else use the logic above
+        val outerCaseWhen = ExprOuterClass.CaseWhen
+          .newBuilder()
+          .addWhen(isArrayNotNullExpr.get) // if array is not null
+          .addThen(
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setCaseWhen(whenKeyNotNull)
+              .build())
+          .setElseExpr(nullBooleanLiteralProto.get) // array is null -> return null
+          .build()
+
+        Some(
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setCaseWhen(outerCaseWhen)
+            .build())
+      } else {
+        withInfo(expr, expr.children: _*)
+        None
+      }
+    } else {
+      withInfo(expr, expr.children: _*)
+      None
+    }
   }
 }
 
@@ -614,3 +713,4 @@ trait ArraysBase {
     }
   }
 }
+

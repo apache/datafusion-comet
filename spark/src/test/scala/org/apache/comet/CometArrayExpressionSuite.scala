@@ -325,6 +325,43 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array_contains - three-valued null logic") {
+    // Test Spark's three-valued logic for array_contains:
+    // 1. Returns true if value is found
+    // 2. Returns false if no match found AND no null elements exist
+    // 3. Returns null if no match found BUT null elements exist (indeterminate)
+    // 4. Returns null if search value is null
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 100)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+        // Test case 1: value found -> returns true
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, 2, 3), 2) FROM t1"))
+
+        // Test case 2: no match, no nulls -> returns false
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, 2, 3), 5) FROM t1"))
+
+        // Test case 3: no match, but null exists -> returns null (indeterminate)
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, null, 3), 2) FROM t1"))
+
+        // Test case 4: match found even with nulls -> returns true
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, null, 3), 1) FROM t1"))
+
+        // Test case 5: search value is null -> returns null
+        checkSparkAnswerAndOperator(
+          sql("SELECT array_contains(array(1, 2, 3), cast(null as int)) FROM t1"))
+
+        // Test case 6: array with nulls, searching for existing value -> returns true
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, null, 3), 3) FROM t1"))
+
+        // Test case 7: empty array -> returns false
+        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(), 1) FROM t1"))
+      }
+    }
+  }
+
   test("array_contains - test all types (convert from Parquet)") {
     withTempDir { dir =>
       val path = new Path(dir.toURI.toString, "test.parquet")
