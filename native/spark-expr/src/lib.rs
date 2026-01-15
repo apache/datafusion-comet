@@ -20,6 +20,7 @@
 #![deny(clippy::clone_on_ref_ptr)]
 
 mod error;
+mod query_context;
 
 pub mod kernels;
 pub use kernels::temporal::date_trunc_dyn;
@@ -75,7 +76,7 @@ pub use datetime_funcs::{
     SparkDateDiff, SparkDateTrunc, SparkHour, SparkMakeDate, SparkMinute, SparkSecond,
     SparkUnixTimestamp, TimestampTruncExpr,
 };
-pub use error::{SparkError, SparkResult};
+pub use error::{SparkError, SparkErrorWithContext, SparkResult};
 pub use hash_funcs::*;
 pub use json_funcs::{FromJson, ToJson};
 pub use math_funcs::{
@@ -83,6 +84,7 @@ pub use math_funcs::{
     spark_decimal_integral_div, spark_floor, spark_make_decimal, spark_round, spark_unhex,
     spark_unscaled_value, CheckOverflow, NegativeExpr, NormalizeNaNAndZero,
 };
+pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
 pub use string_funcs::*;
 
 /// Spark supports three evaluation modes when evaluating expressions, which affect
@@ -117,6 +119,10 @@ pub(crate) fn arithmetic_overflow_error(from_type: &str) -> SparkError {
     SparkError::ArithmeticOverflow {
         from_type: from_type.to_string(),
     }
+}
+
+pub(crate) fn decimal_sum_overflow_error() -> SparkError {
+    SparkError::DecimalSumOverflow
 }
 
 pub(crate) fn divide_by_zero_error() -> SparkError {

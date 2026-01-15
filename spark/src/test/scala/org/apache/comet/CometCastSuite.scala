@@ -913,6 +913,33 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest((validDates ++ invalidDates ++ fuzzDates).toDF("a"), DataTypes.DateType)
   }
 
+  // https://github.com/apache/datafusion-comet/issues/2215
+  test("(ansi) cast error message should include SQL query") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withTable("cast_error_msg") {
+        // Create a table with string data using DataFrame API
+        Seq("a").toDF("s").write.format("parquet").saveAsTable("cast_error_msg")
+        // Try to cast invalid string to date - should throw exception with SQL context
+        val exception = intercept[Exception] {
+          sql("select cast(s as date) from cast_error_msg").collect()
+        }
+        val errorMessage = exception.getMessage
+        // Verify error message contains the cast invalid input error
+        assert(
+          errorMessage.contains("CAST_INVALID_INPUT") ||
+            errorMessage.contains("cannot be cast to"),
+          s"Error message should contain cast error: $errorMessage")
+
+        assert(
+          errorMessage.contains("select cast(s as date) from cast_error_msg"),
+          s"Error message should contain SQL query text but got: $errorMessage")
+      }
+    }
+  }
+
   test("cast StringType to TimestampType disabled by default") {
     withSQLConf((SQLConf.SESSION_LOCAL_TIMEZONE.key, "UTC")) {
       val values = Seq("2020-01-01T12:34:56.123456", "T2").toDF("a")
@@ -1526,20 +1553,11 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 if (CometSparkSessionExtensions.isSpark40Plus) {
                   // for Spark 4 we expect to sparkException carries the message
                   assert(sparkMessage.contains("SQLSTATE"))
-                  if (sparkMessage.startsWith("[NUMERIC_VALUE_OUT_OF_RANGE.WITH_SUGGESTION]")) {
-                    assert(
-                      sparkMessage.replace(".WITH_SUGGESTION] ", "]").startsWith(cometMessage))
-                  } else if (cometMessage.startsWith("[CAST_INVALID_INPUT]") || cometMessage
-                      .startsWith("[CAST_OVERFLOW]")) {
-                    assert(
-                      sparkMessage.startsWith(
-                        cometMessage
-                          .replace(
-                            "If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.",
-                            "")))
-                  } else {
-                    assert(sparkMessage.startsWith(cometMessage))
-                  }
+                  // we compare a subset of the error message. Comet grabs the query
+                  // context eagerly so it displays the call site at the
+                  // line of code where the cast method was called, whereas spark grabs the context
+                  // lazily and displays the call site at the line of code where the error is checked.
+                  assert(sparkMessage.startsWith(cometMessage.substring(0, 40)))
                 } else {
                   // for Spark 3.4 we expect to reproduce the error message exactly
                   assert(cometMessage == sparkMessage)
