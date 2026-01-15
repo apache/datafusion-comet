@@ -20,6 +20,8 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
+// Import MapSort for Spark 4.0 support
+import org.apache.spark.sql.catalyst.expressions.MapSort
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
@@ -55,6 +57,11 @@ trait CometExprShim extends CommonStringExprs {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     expr match {
+      // MapSort is used by Spark 4.0+ to make maps comparable for partitioning.
+      // For hash partitioning, we can just use the underlying map expression.
+      case MapSort(child) =>
+        exprToProtoInternal(child, inputs, binding)
+
       case s: StaticInvoke
           if s.staticObject == classOf[StringDecode] &&
             s.dataType.isInstanceOf[StringType] &&
