@@ -75,19 +75,21 @@ impl ScalarUDFImpl for SparkDateDiff {
         let end_arr = end_date.into_array(1)?;
         let start_arr = start_date.into_array(1)?;
 
-        let end_date_array = end_arr.as_any().downcast_ref::<Date32Array>().ok_or_else(|| {
-            DataFusionError::Execution("date_diff expects Date32Array for end_date".to_string())
-        })?;
+        let end_date_array = end_arr
+            .as_any()
+            .downcast_ref::<Date32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Execution("date_diff expects Date32Array for end_date".to_string())
+            })?;
 
-        let start_date_array =
-            start_arr
-                .as_any()
-                .downcast_ref::<Date32Array>()
-                .ok_or_else(|| {
-                    DataFusionError::Execution(
-                        "date_diff expects Date32Array for start_date".to_string(),
-                    )
-                })?;
+        let start_date_array = start_arr
+            .as_any()
+            .downcast_ref::<Date32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Execution(
+                    "date_diff expects Date32Array for start_date".to_string(),
+                )
+            })?;
 
         // Date32 stores days since epoch, so difference is just subtraction
         let result: Int32Array =
