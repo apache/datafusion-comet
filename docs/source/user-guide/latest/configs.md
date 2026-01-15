@@ -333,6 +333,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.TruncTimestamp.enabled` | Enable Comet acceleration for `TruncTimestamp` | true |
 | `spark.comet.expression.UnaryMinus.enabled` | Enable Comet acceleration for `UnaryMinus` | true |
 | `spark.comet.expression.Unhex.enabled` | Enable Comet acceleration for `Unhex` | true |
+| `spark.comet.expression.UnixDate.enabled` | Enable Comet acceleration for `UnixDate` | true |
 | `spark.comet.expression.UnscaledValue.enabled` | Enable Comet acceleration for `UnscaledValue` | true |
 | `spark.comet.expression.Upper.enabled` | Enable Comet acceleration for `Upper` | true |
 | `spark.comet.expression.WeekDay.enabled` | Enable Comet acceleration for `WeekDay` | true |
