@@ -92,11 +92,13 @@ spark.conf.set("spark.comet.window.frame.types.enabled", "ROWS_UNBOUNDED,ROWS_BO
   `ROWS_BOUNDED` (for `ROWS BETWEEN` with numeric offsets). Default: `""` (disabled).
 
 **Supported:**
+
 - Window aggregates: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
 - Frame types: `ROWS BETWEEN` with `UNBOUNDED PRECEDING`, `CURRENT ROW`, `UNBOUNDED FOLLOWING`, and numeric offsets
 - `PARTITION BY` and `ORDER BY` clauses (can be different columns)
 
 **Not Supported:**
+
 - Ranking functions: `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `PERCENT_RANK`, `NTILE`, `CUME_DIST`
 - Offset functions: `LAG`, `LEAD`
 - Value functions: `FIRST_VALUE`, `LAST_VALUE`, `NTH_VALUE`

@@ -43,6 +43,6 @@ not supported by Comet will fall back to regular Spark execution.
 | SortExec                          | Yes               |                                                                                                                    |
 | SortMergeJoinExec                 | Yes               |                                                                                                                    |
 | UnionExec                         | Yes               |                                                                                                                    |
-| WindowExec                        | Experimental      | Experimental support for windowed aggregates. Disabled by default. See [Comet Compatibility Guide] for details.   |
+| WindowExec                        | Experimental      | Experimental support for windowed aggregates. Disabled by default. See [Comet Compatibility Guide] for details.    |
 
 [Comet Compatibility Guide]: compatibility.md
