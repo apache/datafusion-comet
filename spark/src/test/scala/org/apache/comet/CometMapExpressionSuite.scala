@@ -157,4 +157,165 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  test("map_sort with integer keys") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = spark
+            .range(5)
+            .select(map(lit(3), lit("c"), lit(1), lit("a"), lit(2), lit("b")).alias("m"))
+          df.write.parquet(path.toString)
+        }
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(sql("SELECT map_sort(m) FROM t1"))
+      }
+    }
+  }
+
+  test("map_sort with string keys") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = spark
+            .range(5)
+            .select(map(lit("z"), lit(1), lit("a"), lit(2), lit("m"), lit(3)).alias("m"))
+          df.write.parquet(path.toString)
+        }
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(sql("SELECT map_sort(m) FROM t1"))
+      }
+    }
+  }
+
+  test("map_sort with double keys") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = spark
+            .range(5)
+            .select(map(lit(3.5), lit("c"), lit(1.2), lit("a"), lit(2.8), lit("b")).alias("m"))
+          df.write.parquet(path.toString)
+        }
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(sql("SELECT map_sort(m) FROM t1"))
+      }
+    }
+  }
+
+  test("map_sort with null and empty maps") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = spark
+            .range(5)
+            .select(
+              when(col("id") === 0, lit(null))
+                .when(col("id") === 1, map())
+                .when(col("id") === 2, map(lit(1), lit("a")))
+                .otherwise(map(lit(3), lit("c"), lit(2), lit("b")))
+                .alias("m"))
+          df.write.parquet(path.toString)
+        }
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(sql("SELECT map_sort(m) FROM t1"))
+      }
+    }
+  }
+
+  test("map_sort with struct keys") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = spark
+            .range(3)
+            .select(
+              map(
+                struct(lit(2), lit("b")),
+                lit("second"),
+                struct(lit(1), lit("a")),
+                lit("first"),
+                struct(lit(3), lit("c")),
+                lit("third")).alias("m"))
+          df.write.parquet(path.toString)
+        }
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(sql("SELECT map_sort(m) FROM t1"))
+      }
+    }
+  }
+
+  test("map_sort with array keys") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = spark
+            .range(3)
+            .select(
+              map(
+                array(lit(2), lit(3)),
+                lit("array2"),
+                array(lit(1), lit(2)),
+                lit("array1"),
+                array(lit(3), lit(4)),
+                lit("array3")).alias("m"))
+          df.write.parquet(path.toString)
+        }
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(sql("SELECT map_sort(m) FROM t1"))
+      }
+    }
+  }
+
+  test("map_sort with complex values") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = spark
+            .range(3)
+            .select(
+              map(
+                lit(3),
+                struct(lit("c"), array(lit(30), lit(31))),
+                lit(1),
+                struct(lit("a"), array(lit(10), lit(11))),
+                lit(2),
+                struct(lit("b"), array(lit(20), lit(21)))).alias("m"))
+          df.write.parquet(path.toString)
+        }
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndOperator(sql("SELECT map_sort(m) FROM t1"))
+      }
+    }
+  }
+
+  test("map_sort fallback for non-orderable keys") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val df = spark
+            .range(3)
+            .select(
+              map(
+                map(lit(1), lit("inner1")),
+                lit("outer1"),
+                map(lit(2), lit("inner2")),
+                lit("outer2")).alias("m"))
+          df.write.parquet(path.toString)
+        }
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+        checkSparkAnswerAndFallbackReason(
+          sql("SELECT map_sort(m) FROM t1"),
+          "map_sort requires orderable key type")
+      }
+    }
+  }
+
 }
