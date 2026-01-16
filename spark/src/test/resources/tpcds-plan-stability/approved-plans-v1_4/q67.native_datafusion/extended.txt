@@ -1,6 +1,6 @@
 TakeOrderedAndProject
 +- Filter
-   +- Window
+   +-  Window [COMET: Partition expressions must be a subset of order expressions for native window]
       +- CometColumnarToRow
          +- CometSort
             +- CometColumnarExchange

@@ -1,7 +1,7 @@
-CometColumnarToRow
-+- CometTakeOrderedAndProject
-   +- CometFilter
-      +- CometWindowExec
+TakeOrderedAndProject
++- Filter
+   +-  Window [COMET: Partition expressions must be a subset of order expressions for native window]
+      +- CometColumnarToRow
          +- CometSort
             +- CometExchange
                +- CometProject
@@ -9,7 +9,7 @@ CometColumnarToRow
                      :- CometSort
                      :  +- CometColumnarExchange
                      :     +- Project
-                     :        +- Window
+                     :        +-  Window [COMET: Partition expressions must be a subset of order expressions for native window]
                      :           +- CometColumnarToRow
                      :              +- CometSort
                      :                 +- CometExchange
@@ -33,7 +33,7 @@ CometColumnarToRow
                      +- CometSort
                         +- CometColumnarExchange
                            +- Project
-                              +- Window
+                              +-  Window [COMET: Partition expressions must be a subset of order expressions for native window]
                                  +- CometColumnarToRow
                                     +- CometSort
                                        +- CometExchange
@@ -50,4 +50,4 @@ CometColumnarToRow
                                                                +- CometFilter
                                                                   +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
 
-Comet accelerated 40 out of 47 eligible operators (85%). Final plan contains 4 transitions between Spark and Comet.
+Comet accelerated 37 out of 47 eligible operators (78%). Final plan contains 4 transitions between Spark and Comet.

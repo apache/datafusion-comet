@@ -1,9 +1,9 @@
 == Physical Plan ==
-* CometColumnarToRow (30)
-+- CometTakeOrderedAndProject (29)
-   +- CometProject (28)
-      +- CometFilter (27)
-         +- CometWindowExec (26)
+TakeOrderedAndProject (30)
++- * Project (29)
+   +- * Filter (28)
+      +- Window (27)
+         +- * CometColumnarToRow (26)
             +- CometSort (25)
                +- CometColumnarExchange (24)
                   +- * HashAggregate (23)
@@ -148,24 +148,24 @@ Arguments: hashpartitioning(i_category#7, i_brand#5, s_store_name#16, s_company_
 Input [8]: [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, _w0#22]
 Arguments: [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, _w0#22], [i_category#7 ASC NULLS FIRST, i_brand#5 ASC NULLS FIRST, s_store_name#16 ASC NULLS FIRST, s_company_name#17 ASC NULLS FIRST]
 
-(26) CometWindowExec
+(26) CometColumnarToRow [codegen id : 6]
 Input [8]: [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, _w0#22]
-Arguments: [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, _w0#22, avg_monthly_sales#23], [avg(_w0#22) windowspecdefinition(i_category#7, i_brand#5, s_store_name#16, s_company_name#17, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS avg_monthly_sales#23], [i_category#7, i_brand#5, s_store_name#16, s_company_name#17]
 
-(27) CometFilter
+(27) Window
+Input [8]: [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, _w0#22]
+Arguments: [avg(_w0#22) windowspecdefinition(i_category#7, i_brand#5, s_store_name#16, s_company_name#17, specifiedwindowframe(RowFrame, unboundedpreceding$(), unboundedfollowing$())) AS avg_monthly_sales#23], [i_category#7, i_brand#5, s_store_name#16, s_company_name#17]
+
+(28) Filter [codegen id : 7]
 Input [9]: [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, _w0#22, avg_monthly_sales#23]
 Condition : CASE WHEN NOT (avg_monthly_sales#23 = 0.000000) THEN ((abs((sum_sales#21 - avg_monthly_sales#23)) / avg_monthly_sales#23) > 0.1000000000000000) END
 
-(28) CometProject
+(29) Project [codegen id : 7]
+Output [8]: [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, avg_monthly_sales#23]
 Input [9]: [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, _w0#22, avg_monthly_sales#23]
-Arguments: [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, avg_monthly_sales#23], [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, avg_monthly_sales#23]
 
-(29) CometTakeOrderedAndProject
+(30) TakeOrderedAndProject
 Input [8]: [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, avg_monthly_sales#23]
-Arguments: TakeOrderedAndProject(limit=100, orderBy=[(sum_sales#21 - avg_monthly_sales#23) ASC NULLS FIRST,s_store_name#16 ASC NULLS FIRST], output=[i_category#7,i_class#6,i_brand#5,s_store_name#16,s_company_name#17,d_moy#14,sum_sales#21,avg_monthly_sales#23]), [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, avg_monthly_sales#23], 100, 0, [(sum_sales#21 - avg_monthly_sales#23) ASC NULLS FIRST, s_store_name#16 ASC NULLS FIRST], [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, avg_monthly_sales#23]
-
-(30) CometColumnarToRow [codegen id : 6]
-Input [8]: [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, avg_monthly_sales#23]
+Arguments: 100, [(sum_sales#21 - avg_monthly_sales#23) ASC NULLS FIRST, s_store_name#16 ASC NULLS FIRST], [i_category#7, i_class#6, i_brand#5, s_store_name#16, s_company_name#17, d_moy#14, sum_sales#21, avg_monthly_sales#23]
 
 ===== Subqueries =====
 
