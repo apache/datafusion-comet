@@ -657,6 +657,26 @@ under the License.
 </pre></div>
 </div>
 </section>
+<section id="testing-with-literal-values">
+<h4>Testing with Literal Values<a class="headerlink" href="#testing-with-literal-values" title="Link to this heading">#</a></h4>
+<p>When writing tests that use literal values (e.g., <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">my_func('literal')</span></code>), Spark’s constant folding optimizer may evaluate the expression at planning time rather than execution time. This means your Comet implementation might not actually be exercised during the test.</p>
+<p>To ensure literal expressions are executed by Comet, disable the constant folding optimizer:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">&quot;my_func with literals&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">withSQLConf</span><span class="p">(</span><span class="nc">SQLConf</span><span class="p">.</span><span class="nc">OPTIMIZER_EXCLUDED_RULES</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span>
+<span class="w">      </span><span class="s">&quot;org.apache.spark.sql.catalyst.optimizer.ConstantFolding&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">checkSparkAnswerAndOperator</span><span class="p">(</span><span class="s">&quot;SELECT my_func(&#39;literal_value&#39;)&quot;</span><span class="p">)</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>This is particularly important for:</p>
+<ul class="simple">
+<li><p>Edge case tests using specific literal values (e.g., null handling, overflow conditions)</p></li>
+<li><p>Tests verifying behavior with special input values</p></li>
+<li><p>Any test where the expression inputs are entirely literal</p></li>
+</ul>
+<p>When possible, prefer testing with column references from tables (as shown in the <code class="docutils literal notranslate"><span class="pre">unhex</span></code> example above), which naturally avoids the constant folding issue.</p>
+</section>
 </section>
 <section id="adding-the-expression-to-the-protobuf-definition">
 <h3>Adding the Expression To the Protobuf Definition<a class="headerlink" href="#adding-the-expression-to-the-protobuf-definition" title="Link to this heading">#</a></h3>
