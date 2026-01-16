@@ -17,6 +17,11 @@
 
 //! Parquet writer operator for writing RecordBatches to Parquet files
 
+use arrow::array::{ArrayRef, AsArray};
+use arrow::compute::{
+    cast, lexsort_to_indices, partition, take, Partitions, SortColumn, SortOptions,
+};
+use opendal::Operator;
 use std::{
     any::Any,
     collections::HashMap,
@@ -26,9 +31,6 @@ use std::{
     io::Cursor,
     sync::Arc,
 };
-use arrow::array::{ArrayRef, AsArray};
-use arrow::compute::{cast, lexsort_to_indices, partition, take, Partitions, SortColumn, SortOptions};
-use opendal::Operator;
 
 use crate::execution::shuffle::CompressionCodec;
 use crate::parquet::parquet_support::{
@@ -505,9 +507,12 @@ impl ExecutionPlan for ParquetWriterExec {
         use datafusion::physical_plan::metrics::MetricBuilder;
 
         // Create metrics for tracking write statistics
-        let files_written = MetricBuilder::new(&self.metrics).counter("files_written", partition_size);
-        let bytes_written = MetricBuilder::new(&self.metrics).counter("bytes_written", partition_size);
-        let rows_written = MetricBuilder::new(&self.metrics).counter("rows_written", partition_size);
+        let files_written =
+            MetricBuilder::new(&self.metrics).counter("files_written", partition_size);
+        let bytes_written =
+            MetricBuilder::new(&self.metrics).counter("bytes_written", partition_size);
+        let rows_written =
+            MetricBuilder::new(&self.metrics).counter("rows_written", partition_size);
 
         let runtime_env = context.runtime_env();
         let input = self.input.execute(partition_size, context)?;
