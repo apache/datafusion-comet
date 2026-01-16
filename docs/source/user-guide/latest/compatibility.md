@@ -66,18 +66,23 @@ this can be overridden by setting `spark.comet.regexp.allowIncompatible=true`.
 
 ## Window Functions
 
-Comet supports window aggregate functions with ROWS BETWEEN frames. These are enabled by default when
-`spark.comet.exec.window.enabled=true` (the default). Ranking functions (ROW_NUMBER, RANK, etc.)
-and offset functions (LAG, LEAD) are not yet supported and will automatically fall back to Spark.
+Comet supports a subset of window aggregate functions. These are enabled by default when
+`spark.comet.exec.window.enabled=true` (the default). Unsupported window functions will automatically
+fall back to Spark.
 
 **Supported:**
 
-- Window aggregates: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
-- Frame types: `ROWS BETWEEN` with `UNBOUNDED PRECEDING`, `CURRENT ROW`, `UNBOUNDED FOLLOWING`, and numeric offsets
-- `PARTITION BY` and `ORDER BY` clauses (can be different columns)
+- Window aggregates: `COUNT`, `SUM`, `MIN`, `MAX`
+- `PARTITION BY` only (no `ORDER BY`)
+- `ORDER BY` only (no `PARTITION BY`)
+- `PARTITION BY` with `ORDER BY` when partition columns are a subset of order columns
+  (e.g., `PARTITION BY a ORDER BY a, b` works, but `PARTITION BY a ORDER BY b` does not)
 
-**Not Supported:**
+**Not Yet Supported:**
 
+- `AVG` window aggregate (native implementation has known issues)
+- `PARTITION BY` with `ORDER BY` using different columns (falls back to Spark)
+- `ROWS BETWEEN` frames with `PARTITION BY` and `ORDER BY` on different columns
 - Ranking functions: `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `PERCENT_RANK`, `NTILE`, `CUME_DIST`
 - Offset functions: `LAG`, `LEAD`
 - Value functions: `FIRST_VALUE`, `LAST_VALUE`, `NTH_VALUE`
