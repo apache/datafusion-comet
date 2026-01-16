@@ -219,7 +219,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         // Non-UTC timezones should fall back to Spark as Incompatible
         checkSparkAnswerAndFallbackReason(
-          s"SELECT c0, date_format(c0, 'yyyy-MM-dd HH:mm:ss') from tbl order by c0",
+          "SELECT c0, date_format(c0, 'yyyy-MM-dd HH:mm:ss') from tbl order by c0",
           s"Non-UTC timezone '$tz' may produce different results")
       }
     }
@@ -236,7 +236,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         "spark.comet.expr.DateFormatClass.allowIncompatible" -> "true") {
         // With allowIncompatible enabled, Comet will execute the expression
         // Results may differ from Spark but should not throw errors
-        checkSparkAnswer(s"SELECT c0, date_format(c0, 'yyyy-MM-dd') from tbl order by c0")
+        checkSparkAnswer("SELECT c0, date_format(c0, 'yyyy-MM-dd') from tbl order by c0")
       }
     }
   }
