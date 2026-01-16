@@ -17,10 +17,12 @@
 
 mod date_trunc;
 mod extract_date_part;
+mod seconds_to_timestamp;
 mod timestamp_trunc;
 
 pub use date_trunc::SparkDateTrunc;
 pub use extract_date_part::SparkHour;
 pub use extract_date_part::SparkMinute;
 pub use extract_date_part::SparkSecond;
+pub use seconds_to_timestamp::SparkSecondsToTimestamp;
 pub use timestamp_trunc::TimestampTruncExpr;

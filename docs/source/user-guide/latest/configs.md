@@ -300,6 +300,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Round.enabled` | Enable Comet acceleration for `Round` | true |
 | `spark.comet.expression.ScalarSubquery.enabled` | Enable Comet acceleration for `ScalarSubquery` | true |
 | `spark.comet.expression.Second.enabled` | Enable Comet acceleration for `Second` | true |
+| `spark.comet.expression.SecondsToTimestamp.enabled` | Enable Comet acceleration for `SecondsToTimestamp` | true |
 | `spark.comet.expression.Sha1.enabled` | Enable Comet acceleration for `Sha1` | true |
 | `spark.comet.expression.Sha2.enabled` | Enable Comet acceleration for `Sha2` | true |
 | `spark.comet.expression.ShiftLeft.enabled` | Enable Comet acceleration for `ShiftLeft` | true |
