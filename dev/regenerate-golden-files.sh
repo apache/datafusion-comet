@@ -65,6 +65,15 @@ check_repo_root() {
     fi
 }
 
+# Build native code
+build_native() {
+    echo ""
+    echo "=============================================="
+    echo "[INFO] Building native code"
+    echo "=============================================="
+    cd native && cargo build && cd ..
+}
+
 # Install Comet for a specific Spark version
 install_for_spark_version() {
     local spark_version=$1
@@ -137,6 +146,9 @@ main() {
     # Set SPARK_HOME to current directory (required for golden file output)
     export SPARK_HOME=$(pwd)
     echo "[INFO] SPARK_HOME set to: $SPARK_HOME"
+
+    # Build native code first
+    build_native
 
     # Determine which versions to process
     local versions
