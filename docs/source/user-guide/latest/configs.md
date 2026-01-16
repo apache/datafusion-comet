@@ -234,6 +234,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.CreateArray.enabled` | Enable Comet acceleration for `CreateArray` | true |
 | `spark.comet.expression.CreateNamedStruct.enabled` | Enable Comet acceleration for `CreateNamedStruct` | true |
 | `spark.comet.expression.DateAdd.enabled` | Enable Comet acceleration for `DateAdd` | true |
+| `spark.comet.expression.DateFormatClass.enabled` | Enable Comet acceleration for `DateFormatClass` | true |
 | `spark.comet.expression.DateSub.enabled` | Enable Comet acceleration for `DateSub` | true |
 | `spark.comet.expression.DayOfMonth.enabled` | Enable Comet acceleration for `DayOfMonth` | true |
 | `spark.comet.expression.DayOfWeek.enabled` | Enable Comet acceleration for `DayOfWeek` | true |

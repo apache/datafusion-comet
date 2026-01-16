@@ -21,8 +21,8 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, WeekDay, WeekOfYear, Year}
-import org.apache.spark.sql.types.{DateType, IntegerType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.types.{DateType, IntegerType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -351,6 +351,98 @@ object CometTruncTimestamp extends CometExpressionSerde[TruncTimestamp] {
     } else {
       withInfo(expr, expr.timestamp, expr.format)
       None
+    }
+  }
+}
+
+/**
+ * Converts Spark DateFormatClass expression to DataFusion's to_char function.
+ *
+ * Spark uses Java SimpleDateFormat patterns while DataFusion uses strftime patterns. This
+ * implementation supports a whitelist of common format strings that can be reliably mapped
+ * between the two systems.
+ */
+object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
+
+  /**
+   * Mapping from Spark SimpleDateFormat patterns to strftime patterns. Only formats in this map
+   * are supported.
+   */
+  val supportedFormats: Map[String, String] = Map(
+    // Full date formats
+    "yyyy-MM-dd" -> "%Y-%m-%d",
+    "yyyy/MM/dd" -> "%Y/%m/%d",
+    "yyyy-MM-dd HH:mm:ss" -> "%Y-%m-%d %H:%M:%S",
+    "yyyy/MM/dd HH:mm:ss" -> "%Y/%m/%d %H:%M:%S",
+    // Date components
+    "yyyy" -> "%Y",
+    "yy" -> "%y",
+    "MM" -> "%m",
+    "dd" -> "%d",
+    // Time formats
+    "HH:mm:ss" -> "%H:%M:%S",
+    "HH:mm" -> "%H:%M",
+    "HH" -> "%H",
+    "mm" -> "%M",
+    "ss" -> "%S",
+    // Combined formats
+    "yyyyMMdd" -> "%Y%m%d",
+    "yyyyMM" -> "%Y%m",
+    // Month and day names
+    "EEEE" -> "%A",
+    "EEE" -> "%a",
+    "MMMM" -> "%B",
+    "MMM" -> "%b",
+    // 12-hour time
+    "hh:mm:ss a" -> "%I:%M:%S %p",
+    "hh:mm a" -> "%I:%M %p",
+    "h:mm a" -> "%-I:%M %p",
+    // ISO formats
+    "yyyy-MM-dd'T'HH:mm:ss" -> "%Y-%m-%dT%H:%M:%S")
+
+  override def getSupportLevel(expr: DateFormatClass): SupportLevel = {
+    expr.right match {
+      case Literal(fmt: UTF8String, _) =>
+        val format = fmt.toString
+        if (supportedFormats.contains(format)) {
+          Compatible()
+        } else {
+          Unsupported(
+            Some(
+              s"Format '$format' is not supported. Supported formats: " +
+                supportedFormats.keys.mkString(", ")))
+        }
+      case _ =>
+        Unsupported(Some("Only literal format strings are supported"))
+    }
+  }
+
+  override def convert(
+      expr: DateFormatClass,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // Get the format string - must be a literal for us to map it
+    val strftimeFormat = expr.right match {
+      case Literal(fmt: UTF8String, _) =>
+        supportedFormats.get(fmt.toString)
+      case _ => None
+    }
+
+    strftimeFormat match {
+      case Some(format) =>
+        val childExpr = exprToProtoInternal(expr.left, inputs, binding)
+        val formatExpr = exprToProtoInternal(Literal(format), inputs, binding)
+
+        val optExpr = scalarFunctionExprToProtoWithReturnType(
+          "to_char",
+          StringType,
+          false,
+          childExpr,
+          formatExpr)
+        optExprWithInfo(optExpr, expr, expr.left, expr.right)
+      case None =>
+        withInfo(expr, expr.left, expr.right)
+        None
     }
   }
 }
