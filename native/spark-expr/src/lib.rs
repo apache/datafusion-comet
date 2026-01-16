@@ -44,6 +44,7 @@ mod bitwise_funcs;
 mod comet_scalar_funcs;
 pub mod hash_funcs;
 
+mod map_funcs;
 mod string_funcs;
 
 mod datetime_funcs;
@@ -63,6 +64,7 @@ pub use array_funcs::*;
 pub use bitwise_funcs::*;
 pub use conditional_funcs::*;
 pub use conversion_funcs::*;
+pub use map_funcs::*;
 pub use nondetermenistic_funcs::*;
 
 pub use comet_scalar_funcs::{
