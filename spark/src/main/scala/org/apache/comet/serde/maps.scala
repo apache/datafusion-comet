@@ -20,9 +20,11 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.objects.RowOrdering
 import org.apache.spark.sql.types._
 
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
 
@@ -154,5 +156,23 @@ object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from
       return Incompatible(Some(valueUnsupportedReason))
     }
     Compatible(None)
+  }
+}
+
+object CometMapSort extends CometExpressionSerde[MapSort] {
+
+  override def convert(
+      expr: MapSort,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val keyType = expr.base.dataType.asInstanceOf[MapType].keyType
+    if (!RowOrdering.isOrderable(keyType)) {
+      withInfo(expr, s"map_sort requires orderable key type, got: $keyType")
+      return None
+    }
+
+    val childExpr = exprToProtoInternal(expr.base, inputs, binding)
+    val mapSortScalarExpr = scalarFunctionExprToProto("map_sort", childExpr)
+    optExprWithInfo(mapSortScalarExpr, expr, expr.children: _*)
   }
 }
