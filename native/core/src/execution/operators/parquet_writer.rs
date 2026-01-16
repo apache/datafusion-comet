@@ -17,12 +17,6 @@
 
 //! Parquet writer operator for writing RecordBatches to Parquet files
 
-use arrow::array::{ArrayRef, AsArray};
-use arrow::compute::{
-    cast, lexsort_to_indices, partition, take, Partitions, SortColumn, SortOptions,
-};
-use opendal::{services::Hdfs, Operator};
-use std::collections::HashMap;
 use std::{
     any::Any,
     collections::HashMap,
@@ -32,20 +26,15 @@ use std::{
     io::Cursor,
     sync::Arc,
 };
-
-
-use url::Url;
-
-use arrow::datatypes::{DataType, Schema, SchemaRef};
-
-
+use arrow::array::{ArrayRef, AsArray};
+use arrow::compute::{cast, lexsort_to_indices, partition, take, Partitions, SortColumn, SortOptions};
 use opendal::Operator;
 
 use crate::execution::shuffle::CompressionCodec;
 use crate::parquet::parquet_support::{
     create_hdfs_operator, is_hdfs_scheme, prepare_object_store_with_configs,
 };
-
+use arrow::datatypes::{DataType, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::{
@@ -516,12 +505,12 @@ impl ExecutionPlan for ParquetWriterExec {
         use datafusion::physical_plan::metrics::MetricBuilder;
 
         // Create metrics for tracking write statistics
-        let files_written = MetricBuilder::new(&self.metrics).counter("files_written", partition);
-        let bytes_written = MetricBuilder::new(&self.metrics).counter("bytes_written", partition);
-        let rows_written = MetricBuilder::new(&self.metrics).counter("rows_written", partition);
+        let files_written = MetricBuilder::new(&self.metrics).counter("files_written", partition_size);
+        let bytes_written = MetricBuilder::new(&self.metrics).counter("bytes_written", partition_size);
+        let rows_written = MetricBuilder::new(&self.metrics).counter("rows_written", partition_size);
 
         let runtime_env = context.runtime_env();
-        let input = self.input.execute(partition, context)?;
+        let input = self.input.execute(partition_size, context)?;
         let input_schema = self.input.schema();
         let work_dir = self.work_dir.clone();
         let task_attempt_id = self.task_attempt_id;
@@ -547,13 +536,6 @@ impl ExecutionPlan for ParquetWriterExec {
             .build();
 
         let object_store_options = self.object_store_options.clone();
-        let mut writer = Self::create_arrow_writer(
-            &part_file,
-            Arc::clone(&output_schema),
-            props,
-            runtime_env,
-            &object_store_options,
-        )?;
 
         // Clone schema for use in async closure
         let schema_for_write = Arc::clone(&output_schema);
