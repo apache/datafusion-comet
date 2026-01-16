@@ -401,11 +401,19 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
     "yyyy-MM-dd'T'HH:mm:ss" -> "%Y-%m-%dT%H:%M:%S")
 
   override def getSupportLevel(expr: DateFormatClass): SupportLevel = {
+    // Check timezone - only UTC is fully compatible
+    val timezone = expr.timeZoneId.getOrElse("UTC")
+    val isUtc = timezone == "UTC" || timezone == "Etc/UTC"
+
     expr.right match {
       case Literal(fmt: UTF8String, _) =>
         val format = fmt.toString
         if (supportedFormats.contains(format)) {
-          Compatible()
+          if (isUtc) {
+            Compatible()
+          } else {
+            Incompatible(Some(s"Non-UTC timezone '$timezone' may produce different results"))
+          }
         } else {
           Unsupported(
             Some(

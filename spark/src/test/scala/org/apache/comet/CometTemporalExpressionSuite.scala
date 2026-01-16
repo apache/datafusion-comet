@@ -209,4 +209,36 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
+  test("date_format with non-UTC timezone falls back to Spark") {
+    createTimestampTestData.createOrReplaceTempView("tbl")
+
+    val nonUtcTimezones =
+      Seq("America/New_York", "America/Los_Angeles", "Europe/London", "Asia/Tokyo")
+
+    for (tz <- nonUtcTimezones) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        // Non-UTC timezones should fall back to Spark as Incompatible
+        checkSparkAnswerAndFallbackReason(
+          s"SELECT c0, date_format(c0, 'yyyy-MM-dd HH:mm:ss') from tbl order by c0",
+          s"Non-UTC timezone '$tz' may produce different results")
+      }
+    }
+  }
+
+  test("date_format with non-UTC timezone works when allowIncompatible is enabled") {
+    createTimestampTestData.createOrReplaceTempView("tbl")
+
+    val nonUtcTimezones = Seq("America/New_York", "Europe/London", "Asia/Tokyo")
+
+    for (tz <- nonUtcTimezones) {
+      withSQLConf(
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
+        "spark.comet.expr.DateFormatClass.allowIncompatible" -> "true") {
+        // With allowIncompatible enabled, Comet will execute the expression
+        // Results may differ from Spark but should not throw errors
+        checkSparkAnswer(s"SELECT c0, date_format(c0, 'yyyy-MM-dd') from tbl order by c0")
+      }
+    }
+  }
+
 }
