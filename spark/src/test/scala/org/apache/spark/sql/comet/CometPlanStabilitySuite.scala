@@ -225,6 +225,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
       CometConf.COMET_DPP_FALLBACK_ENABLED.key -> "false",
       CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_WINDOW_ENABLED.key -> "true",
       // as well as for v1.4/q9, v1.4/q44, v2.7.0/q6, v2.7.0/q64
       CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB") {
@@ -267,6 +268,7 @@ trait CometPlanStabilitySuite extends DisableAdaptiveExecutionSuite with TPCDSBa
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "1g")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+    conf.set(CometConf.COMET_EXEC_WINDOW_ENABLED.key, "true")
 
     new TestSparkSession(new SparkContext("local[1]", this.getClass.getCanonicalName, conf))
   }

@@ -34,7 +34,7 @@ import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.{AggSerde, CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
+import org.apache.comet.serde.{AggSerde, CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto}
 
@@ -44,6 +44,16 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     CometConf.COMET_EXEC_WINDOW_ENABLED)
 
   override def getSupportLevel(op: WindowExec): SupportLevel = {
+    // DataFusion requires that partition expressions must be part of the sort ordering.
+    // If partition spec and order spec use different columns, we need to fall back to Spark.
+    if (op.partitionSpec.nonEmpty && op.orderSpec.nonEmpty) {
+      val orderExprs = op.orderSpec.map(_.child).toSet
+      val partitionExprsInOrder = op.partitionSpec.forall(orderExprs.contains)
+      if (!partitionExprsInOrder) {
+        return Unsupported(
+          Some("Partition expressions must be a subset of order expressions for native window"))
+      }
+    }
     Compatible()
   }
 
@@ -123,13 +133,10 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
                 withInfo(windowExpr, s"datatype ${s.dataType} is not supported", expr)
                 None
               }
-            case avg: Average =>
-              if (AggSerde.avgDataTypeSupported(avg.dataType)) {
-                Some(agg)
-              } else {
-                withInfo(windowExpr, s"datatype ${avg.dataType} is not supported", expr)
-                None
-              }
+            case _: Average =>
+              // TODO: AVG is not yet supported in native window (native code bug)
+              withInfo(windowExpr, "AVG is not yet supported for native window function", expr)
+              None
             case _ =>
               withInfo(
                 windowExpr,
