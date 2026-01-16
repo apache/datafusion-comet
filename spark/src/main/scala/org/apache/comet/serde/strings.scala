@@ -21,13 +21,14 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, InitCap, Length, Like, Literal, Lower, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, InitCap, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode, RegExp}
 import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.LiteralOuterClass
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
@@ -109,6 +110,44 @@ object CometSubstring extends CometExpressionSerde[Substring] {
       case _ =>
         withInfo(expr, "Substring pos and len must be literals")
         None
+    }
+  }
+}
+
+object CometRight extends CometExpressionSerde[Right] {
+
+  override def convert(expr: Right, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    expr.len match {
+      case Literal(lenValue, _) =>
+        val lenInt = lenValue.asInstanceOf[Int]
+        if (lenInt <= 0) {
+          val literalBuilder = LiteralOuterClass.Literal.newBuilder()
+          literalBuilder.setIsNull(false)
+          literalBuilder.setStringVal("")
+          Some(ExprOuterClass.Expr.newBuilder().setLiteral(literalBuilder).build())
+        } else {
+          exprToProtoInternal(expr.str, inputs, binding) match {
+            case Some(strExpr) =>
+              val builder = ExprOuterClass.Substring.newBuilder()
+              builder.setChild(strExpr)
+              builder.setStart(-lenInt)
+              builder.setLen(lenInt)
+              Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
+            case None =>
+              withInfo(expr, expr.str)
+              None
+          }
+        }
+      case _ =>
+        withInfo(expr, "RIGHT len must be a literal")
+        None
+    }
+  }
+
+  override def getSupportLevel(expr: Right): SupportLevel = {
+    expr.str.dataType match {
+      case _: StringType => Compatible()
+      case _ => Unsupported(Some(s"RIGHT does not support ${expr.str.dataType}"))
     }
   }
 }
