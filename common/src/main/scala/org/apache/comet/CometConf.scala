@@ -369,8 +369,7 @@ object CometConf extends ShimCometConf {
           "has a different binary layout. Instead, Comet implements round-robin as hash " +
           "partitioning on all columns, which achieves the same goals: even distribution, " +
           "deterministic output (for fault tolerance), and no semantic grouping. " +
-          "This is functionally correct but may cause test failures when comparing " +
-          "results with Spark.")
+          "Sorted output will be identical to Spark, but unsorted row ordering may differ.")
       .booleanConf
       .createWithDefault(false)
 

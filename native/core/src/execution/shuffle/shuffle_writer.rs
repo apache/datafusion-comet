@@ -617,6 +617,7 @@ impl MultiPartitionShuffleRepartitioner {
 
                     // Collect columns for hashing, respecting max_hash_columns limit
                     // max_hash_columns of 0 means no limit (hash all columns)
+                    // Negative values are normalized to 0 in the planner
                     let num_columns_to_hash = if *max_hash_columns == 0 {
                         input.num_columns()
                     } else {
