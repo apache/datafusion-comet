@@ -17,88 +17,95 @@
 # under the License.
 
 """
-Run shuffle size comparison benchmark.
+Run PySpark benchmarks.
 
-Run this script once per mode (spark, jvm, native) with appropriate spark-submit configs.
-Check the Spark UI to compare shuffle sizes between modes.
+Run benchmarks by name with appropriate spark-submit configs for different modes
+(spark, jvm, native). Check the Spark UI to compare results between modes.
 """
 
 import argparse
-import time
-import json
+import sys
 
 from pyspark.sql import SparkSession
 
-
-def run_benchmark(spark: SparkSession, data_path: str, mode: str) -> int:
-    """Run the benchmark query and return duration in ms."""
-
-    spark.catalog.clearCache()
-
-    df = spark.read.parquet(data_path)
-    row_count = df.count()
-    print(f"Number of rows: {row_count:,}")
-
-    start_time = time.time()
-
-    # Repartition by a different key to force full shuffle of all columns
-    # This shuffles all 50 columns including nested structs, arrays, maps
-    repartitioned = df.repartition(200, "group_key")
-
-    # Write to parquet to force materialization
-    output_path = f"/tmp/shuffle-benchmark-output-{mode}"
-    repartitioned.write.mode("overwrite").parquet(output_path)
-    print(f"Wrote repartitioned data to: {output_path}")
-
-    duration_ms = int((time.time() - start_time) * 1000)
-    return duration_ms
+from benchmarks import get_benchmark, list_benchmarks
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run shuffle benchmark for a single mode"
+        description="Run PySpark benchmarks",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run hash partitioning shuffle benchmark in Spark mode
+  python run_benchmark.py --data /path/to/data --mode spark --benchmark shuffle-hash
+
+  # Run round-robin shuffle benchmark in Comet native mode
+  python run_benchmark.py --data /path/to/data --mode native --benchmark shuffle-roundrobin
+
+  # List all available benchmarks
+  python run_benchmark.py --list-benchmarks
+        """
     )
     parser.add_argument(
         "--data", "-d",
-        required=True,
         help="Path to input parquet data"
     )
     parser.add_argument(
         "--mode", "-m",
-        required=True,
         choices=["spark", "jvm", "native"],
         help="Shuffle mode being tested"
+    )
+    parser.add_argument(
+        "--benchmark", "-b",
+        default="shuffle-hash",
+        help="Benchmark to run (default: shuffle-hash)"
+    )
+    parser.add_argument(
+        "--list-benchmarks",
+        action="store_true",
+        help="List all available benchmarks and exit"
     )
 
     args = parser.parse_args()
 
+    # Handle --list-benchmarks
+    if args.list_benchmarks:
+        print("Available benchmarks:\n")
+        for name, description in list_benchmarks():
+            print(f"  {name:25s} - {description}")
+        return 0
+
+    # Validate required arguments
+    if not args.data:
+        parser.error("--data is required when running a benchmark")
+    if not args.mode:
+        parser.error("--mode is required when running a benchmark")
+
+    # Get the benchmark class
+    try:
+        benchmark_cls = get_benchmark(args.benchmark)
+    except KeyError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        print("\nUse --list-benchmarks to see available benchmarks", file=sys.stderr)
+        return 1
+
+    # Create Spark session
     spark = SparkSession.builder \
-        .appName(f"ShuffleBenchmark-{args.mode.upper()}") \
+        .appName(f"{benchmark_cls.name()}-{args.mode.upper()}") \
         .getOrCreate()
 
-    print("\n" + "=" * 80)
-    print(f"Shuffle Benchmark: {args.mode.upper()}")
-    print("=" * 80)
-    print(f"Data path: {args.data}")
-
-    # Print shuffle configuration
-    conf = spark.sparkContext.getConf()
-    print(f"Shuffle manager: {conf.get('spark.shuffle.manager', 'default')}")
-    print(f"Comet enabled: {conf.get('spark.comet.enabled', 'false')}")
-    print(f"Comet shuffle enabled: {conf.get('spark.comet.exec.shuffle.enabled', 'false')}")
-    print(f"Comet shuffle mode: {conf.get('spark.comet.shuffle.mode', 'not set')}")
-    print(f"Spark UI: {spark.sparkContext.uiWebUrl}")
-
     try:
-        duration_ms = run_benchmark(spark, args.data, args.mode)
-        print(f"\nDuration: {duration_ms:,} ms")
-        print("\nCheck Spark UI for shuffle sizes")
+        # Create and run the benchmark
+        benchmark = benchmark_cls(spark, args.data, args.mode)
+        results = benchmark.execute_timed()
+
+        print("\nCheck Spark UI for shuffle sizes and detailed metrics")
+        return 0
 
     finally:
         spark.stop()
 
-    print("=" * 80 + "\n")
-
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
