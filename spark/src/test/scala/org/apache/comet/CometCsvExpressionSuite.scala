@@ -27,6 +27,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.StructsToCsv
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.StringType
 
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
@@ -71,6 +72,9 @@ class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper
     val table = "t1"
     withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
       withTable(table) {
+        val newLinesStr =
+          """ abc
+            | bcde""".stripMargin
         sql(s"create table $table(col string) using parquet")
         sql(s"insert into $table values('')")
         sql(s"insert into $table values(cast(null as string))")
@@ -78,8 +82,34 @@ class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper
         sql(s"insert into $table values('abc   ')")
         sql(s"insert into $table values('  abc   ')")
         sql(s"""insert into $table values('abc \"abc\"')""")
-        val df = sql(s"select * from $table")
+        sql(s"""insert into $table values('$newLinesStr')""")
+        sql(s"""insert into $table values('abc,def')""")
+        sql(s"""insert into $table values('abc;def;ghi')""")
+        sql(s"""insert into $table values('abc\tdef')""")
+        sql(s"""insert into $table values('a"b"c')""")
+        sql(s"""insert into $table values('"quoted"')""")
+        sql(s"""insert into $table values('line1\nline2')""")
+        sql(s"""insert into $table values('line1\rline2')""")
+        sql(s"""insert into $table values('line1\r\nline2')""")
+        sql(s"""insert into $table values('a''b')""")
+        sql(s"""insert into $table values('a\\\\b')""")
+
+        val df = sql(s"select * from $table order by col")
+
+        // Default options
         checkSparkAnswerAndOperator(df.select(to_csv(struct(col("col"), lit(1)))))
+
+        // Custom delimiter
+        checkSparkAnswerAndOperator(
+          df.select(to_csv(struct(col("col"), lit(1)), Map("delimiter" -> ";").asJava)))
+
+        checkSparkAnswerAndOperator(
+          df.select(to_csv(struct(col("col"), lit(1)), Map("delimiter" -> "|").asJava)))
+
+        checkSparkAnswerAndOperator(
+          df.select(to_csv(struct(col("col"), lit(1)), Map("delimiter" -> "\t").asJava)))
+
+        // Whitespace handling
         checkSparkAnswerAndOperator(
           df.select(
             to_csv(
@@ -88,8 +118,78 @@ class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper
                 "delimiter" -> ";",
                 "ignoreLeadingWhiteSpace" -> "false",
                 "ignoreTrailingWhiteSpace" -> "false").asJava)))
+
+        checkSparkAnswerAndOperator(
+          df.select(
+            to_csv(
+              struct(col("col"), lit(1)),
+              Map(
+                "ignoreLeadingWhiteSpace" -> "true",
+                "ignoreTrailingWhiteSpace" -> "false").asJava)))
+
+        checkSparkAnswerAndOperator(
+          df.select(
+            to_csv(
+              struct(col("col"), lit(1)),
+              Map(
+                "ignoreLeadingWhiteSpace" -> "false",
+                "ignoreTrailingWhiteSpace" -> "true").asJava)))
+
+        checkSparkAnswerAndOperator(df.select(to_csv(
+          struct(col("col"), lit(1)),
+          Map("ignoreLeadingWhiteSpace" -> "true", "ignoreTrailingWhiteSpace" -> "true").asJava)))
+
+        // Escape character
+        checkSparkAnswerAndOperator(
+          df.select(to_csv(struct(col("col"), lit(1)), Map("escape" -> "\\").asJava)))
+
+        checkSparkAnswerAndOperator(
+          df.select(to_csv(struct(col("col"), lit(1)), Map("escape" -> "/").asJava)))
+
+        // Quote options
         checkSparkAnswerAndOperator(
           df.select(to_csv(struct(col("col"), lit(1)), Map("quoteAll" -> "true").asJava)))
+
+        checkSparkAnswerAndOperator(
+          df.select(to_csv(struct(col("col"), lit(1)), Map("quoteAll" -> "false").asJava)))
+
+        // Null value representation
+        checkSparkAnswerAndOperator(
+          df.select(to_csv(struct(col("col"), lit(1)), Map("nullValue" -> "NULL").asJava)))
+
+        checkSparkAnswerAndOperator(
+          df.select(to_csv(struct(col("col"), lit(1)), Map("nullValue" -> "N/A").asJava)))
+
+        checkSparkAnswerAndOperator(
+          df.select(to_csv(struct(col("col"), lit(1)), Map("nullValue" -> "").asJava)))
+
+        // Combined options
+        checkSparkAnswerAndOperator(
+          df.select(
+            to_csv(
+              struct(col("col"), lit(1)),
+              Map(
+                "delimiter" -> "|",
+                "quoteAll" -> "false",
+                "escape" -> "\\",
+                "nullValue" -> "NULL").asJava)))
+
+        checkSparkAnswerAndOperator(
+          df.select(to_csv(
+            struct(col("col"), lit(1)),
+            Map(
+              "delimiter" -> ";",
+              "quoteAll" -> "false",
+              "ignoreLeadingWhiteSpace" -> "true",
+              "ignoreTrailingWhiteSpace" -> "true",
+              "nullValue" -> "N/A").asJava)))
+
+        // Edge cases with multiple columns
+        checkSparkAnswerAndOperator(
+          df.select(
+            to_csv(
+              struct(col("col"), lit(1), lit("test"), lit(null).cast(StringType)),
+              Map("delimiter" -> ",", "quoteAll" -> "true").asJava)))
       }
     }
   }

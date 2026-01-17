@@ -150,7 +150,8 @@ pub fn to_csv_inner(
     let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
     let mut csv_string = String::with_capacity(array.len() * 16);
 
-    let quote = write_options.quote.as_ref();
+    let quote_char = write_options.quote.chars().next().unwrap_or('"');
+    let escape_char = write_options.escape.chars().next().unwrap_or('\\');
     for row_idx in 0..array.len() {
         if array.is_null(row_idx) {
             builder.append_null();
@@ -160,34 +161,49 @@ pub fn to_csv_inner(
                 if col_idx > 0 {
                     csv_string.push_str(&write_options.delimiter);
                 }
-                let mut value = column.value(row_idx);
-                let is_string_field = is_string[col_idx];
-                if is_string_field {
-                    if write_options.ignore_leading_white_space {
-                        value = value.trim_start();
+                if column.is_null(row_idx) {
+                    if write_options.quote_all {
+                        csv_string.push(quote_char);
                     }
-                    if write_options.ignore_trailing_white_space {
-                        value = value.trim_end();
+                    csv_string.push_str(&write_options.null_value);
+                    if write_options.quote_all {
+                        csv_string.push(quote_char);
                     }
-                }
-                let needs_quoting = write_options.quote_all
-                    || (is_string_field
-                        && !string_arrays[col_idx].is_null(row_idx)
-                        && (value.contains(&write_options.delimiter)
-                            || value.contains(quote)
-                            || value.is_empty()));
-
-                let needs_escaping = is_string_field && needs_quoting;
-                if needs_quoting {
-                    csv_string.push_str(quote);
-                }
-                if needs_escaping {
-                    escape_value(value, quote, &write_options.escape, &mut csv_string);
                 } else {
-                    csv_string.push_str(value);
-                }
-                if needs_quoting {
-                    csv_string.push_str(quote);
+                    let mut value = column.value(row_idx);
+                    let is_string_field = is_string[col_idx];
+
+                    if is_string_field {
+                        if write_options.ignore_leading_white_space {
+                            value = value.trim_start();
+                        }
+                        if write_options.ignore_trailing_white_space {
+                            value = value.trim_end();
+                        }
+                    }
+
+                    let needs_quoting = write_options.quote_all
+                        || (is_string_field
+                            && (value.contains(&write_options.delimiter)
+                                || value.contains(quote_char)
+                                || value.contains('\n')
+                                || value.contains('\r'))
+                            || value.is_empty());
+
+                    let needs_escaping = needs_quoting
+                        && (value.contains(quote_char) || value.contains(escape_char));
+
+                    if needs_quoting {
+                        csv_string.push(quote_char);
+                    }
+                    if needs_escaping {
+                        escape_value(value, quote_char, escape_char, &mut csv_string);
+                    } else {
+                        csv_string.push_str(value);
+                    }
+                    if needs_quoting {
+                        csv_string.push(quote_char);
+                    }
                 }
             }
             builder.append_value(&csv_string);
@@ -197,11 +213,10 @@ pub fn to_csv_inner(
 }
 
 #[inline]
-fn escape_value(value: &str, quote: &str, escape: &str, output: &mut String) {
+fn escape_value(value: &str, quote_char: char, escape_char: char, output: &mut String) {
     for ch in value.chars() {
-        let ch_str = ch.to_string();
-        if ch_str == quote || ch_str == escape {
-            output.push_str(escape);
+        if ch == quote_char || ch == escape_char {
+            output.push(escape_char);
         }
         output.push(ch);
     }
