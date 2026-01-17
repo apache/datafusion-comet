@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::encryption_funcs::spark_aes_encrypt;
 use crate::hash_funcs::*;
 use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
@@ -164,6 +165,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "xxhash64" => {
             let func = Arc::new(spark_xxhash64);
             make_comet_scalar_udf!("xxhash64", func, without data_type)
+        }
+        "aes_encrypt" => {
+            let func = Arc::new(spark_aes_encrypt);
+            make_comet_scalar_udf!("aes_encrypt", func, without data_type)
         }
         "isnan" => {
             let func = Arc::new(spark_isnan);
