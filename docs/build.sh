@@ -36,4 +36,15 @@ python3 generate-versions.py
 rm temp/user-guide/0.9/overview.md 2> /dev/null
 rm temp/user-guide/0.8/overview.md 2> /dev/null
 
+# Generate dynamic content (configs, compatibility matrices) for latest docs
+# This runs GenerateDocs against the temp copy, not source files
+echo "Generating dynamic documentation content..."
+cd ..
+./mvnw -q compile -pl spark -DskipTests -am
+./mvnw -q exec:java -pl spark \
+  -Dexec.mainClass=org.apache.comet.GenerateDocs \
+  -Dexec.arguments="$(pwd)/docs/temp/user-guide/latest/" \
+  -Dexec.classpathScope=compile
+cd docs
+
 make SOURCEDIR=`pwd`/temp html
