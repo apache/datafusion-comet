@@ -20,6 +20,7 @@ from datetime import datetime
 import json
 from pyspark.sql import SparkSession
 import time
+from typing import Dict
 
 # rename same columns aliases
 # a, a, b, b -> a, a_1, b, b_1
@@ -37,7 +38,7 @@ def dedup_columns(df):
             new_cols.append(f"{c}_{counts[c]}")
     return df.toDF(*new_cols)
 
-def main(benchmark: str, data_path: str, query_path: str, iterations: int, output: str, name: str, query_num: int = None, write_path: str = None):
+def main(benchmark: str, data_path: str, query_path: str, iterations: int, output: str, name: str, format: str, query_num: int = None, write_path: str = None, options: Dict[str, str] = None):
 
     # Initialize a SparkSession
     spark = SparkSession.builder \
@@ -58,9 +59,9 @@ def main(benchmark: str, data_path: str, query_path: str, iterations: int, outpu
         raise "invalid benchmark"
 
     for table in table_names:
-        path = f"{data_path}/{table}.parquet"
+        path = f"{data_path}/{table}.{format}"
         print(f"Registering table {table} using path {path}")
-        df = spark.read.parquet(path)
+        df = spark.read.format(format).options(**options).load(path)
         df.createOrReplaceTempView(table)
 
     conf_dict = {k: v for k, v in spark.sparkContext.getConf().getAll()}
@@ -146,7 +147,7 @@ def main(benchmark: str, data_path: str, query_path: str, iterations: int, outpu
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DataFusion benchmark derived from TPC-H / TPC-DS")
-    parser.add_argument("--benchmark", required=True, help="Benchmark to run (tpch or tpcds)")
+    parser.add_argument("--benchmark", required=True, default="tpch", help="Benchmark to run (tpch or tpcds)")
     parser.add_argument("--data", required=True, help="Path to data files")
     parser.add_argument("--queries", required=True, help="Path to query files")
     parser.add_argument("--iterations", required=False, default="1", help="How many iterations to run")
@@ -154,7 +155,9 @@ if __name__ == "__main__":
     parser.add_argument("--name", required=True, help="Prefix for result file e.g. spark/comet/gluten")
     parser.add_argument("--query", required=False, type=int, help="Specific query number to run (1-based). If not specified, all queries will be run.")
     parser.add_argument("--write", required=False, help="Path to save query results to, in Parquet format.")
+    parser.add_argument("--format", required=True, default="parquet", help="Input file format (parquet, csv, json)")
+    parser.add_argument("--options", type=json.loads, required=False, default={}, help='Spark options as JSON string, e.g., \'{"header": "true", "delimiter": ","}\'')
     args = parser.parse_args()
 
-    main(args.benchmark, args.data, args.queries, int(args.iterations), args.output, args.name, args.query, args.write)
+    main(args.benchmark, args.data, args.queries, int(args.iterations), args.output, args.name, args.format, args.query, args.write, args.options)
 
