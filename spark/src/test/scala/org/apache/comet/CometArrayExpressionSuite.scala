@@ -338,26 +338,35 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
         // Test case 1: value found -> returns true
-        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, 2, 3), 2) FROM t1"))
+        // Use column references to avoid constant folding
+        checkSparkAnswerAndOperator(sql(
+          "SELECT array_contains(array(_2, _3, _4), _3) FROM t1 WHERE _2 = 1 AND _3 = 2 AND _4 = 3"))
 
         // Test case 2: no match, no nulls -> returns false
-        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, 2, 3), 5) FROM t1"))
+        checkSparkAnswerAndOperator(sql(
+          "SELECT array_contains(array(_2, _3, _4), 999) FROM t1 WHERE _2 = 1 AND _3 = 2 AND _4 = 3 AND _2 IS NOT NULL AND _3 IS NOT NULL AND _4 IS NOT NULL"))
 
         // Test case 3: no match, but null exists -> returns null (indeterminate)
-        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, null, 3), 2) FROM t1"))
+        // Use CASE to create array with null to avoid constant folding
+        checkSparkAnswerAndOperator(sql(
+          "SELECT array_contains(CASE WHEN _2 >= 0 THEN array(_2, cast(null as int), _4) ELSE array(_2, cast(null as int), _4) END, 999) FROM t1 WHERE _2 = 1 AND _4 = 3 AND _2 IS NOT NULL AND _4 IS NOT NULL"))
 
         // Test case 4: match found even with nulls -> returns true
-        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, null, 3), 1) FROM t1"))
+        checkSparkAnswerAndOperator(sql(
+          "SELECT array_contains(CASE WHEN _2 >= 0 THEN array(_2, cast(null as int), _4) ELSE array(_2, cast(null as int), _4) END, _2) FROM t1 WHERE _2 = 1 AND _4 = 3 AND _2 IS NOT NULL AND _4 IS NOT NULL"))
 
         // Test case 5: search value is null -> returns null
-        checkSparkAnswerAndOperator(
-          sql("SELECT array_contains(array(1, 2, 3), cast(null as int)) FROM t1"))
+        checkSparkAnswerAndOperator(sql(
+          "SELECT array_contains(array(_2, _3, _4), cast(null as int)) FROM t1 WHERE _2 = 1 AND _3 = 2 AND _4 = 3"))
 
         // Test case 6: array with nulls, searching for existing value -> returns true
-        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(1, null, 3), 3) FROM t1"))
+        checkSparkAnswerAndOperator(sql(
+          "SELECT array_contains(CASE WHEN _2 >= 0 THEN array(_2, cast(null as int), _4) ELSE array(_2, cast(null as int), _4) END, _4) FROM t1 WHERE _2 = 1 AND _4 = 3 AND _2 IS NOT NULL AND _4 IS NOT NULL"))
 
         // Test case 7: empty array -> returns false
-        checkSparkAnswerAndOperator(sql("SELECT array_contains(array(), 1) FROM t1"))
+        // Use conditional logic to create empty array to avoid constant folding
+        checkSparkAnswerAndOperator(sql(
+          "SELECT array_contains(CASE WHEN _2 < 0 THEN array(_2) ELSE array() END, 1) FROM t1 WHERE _2 >= 0"))
       }
     }
   }
