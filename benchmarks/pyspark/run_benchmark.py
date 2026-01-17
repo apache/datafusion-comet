@@ -41,9 +41,13 @@ def run_benchmark(spark: SparkSession, data_path: str, mode: str) -> int:
 
     start_time = time.time()
 
-    # Repartition by a different key to force full shuffle of all columns
-    # This shuffles all 50 columns including nested structs, arrays, maps
-    repartitioned = df.repartition(200, "group_key")
+    # Repartition to force full shuffle of all columns
+
+    # repartition using round-robin partitioning
+    repartitioned = df.repartition(200)
+
+    # repartition using hash partitioning
+    # repartitioned = df.repartition(200, "group_key")
 
     # Write to parquet to force materialization
     output_path = f"/tmp/shuffle-benchmark-output-{mode}"
@@ -74,6 +78,9 @@ def main():
 
     spark = SparkSession.builder \
         .appName(f"ShuffleBenchmark-{args.mode.upper()}") \
+        .config("spark.comet.explain.format", "verbose") \
+        .config("spark.comet.explainFallback.enabled", "true") \
+        .config("spark.comet.logFallbackReasons.enabled", "true") \
         .getOrCreate()
 
     print("\n" + "=" * 80)

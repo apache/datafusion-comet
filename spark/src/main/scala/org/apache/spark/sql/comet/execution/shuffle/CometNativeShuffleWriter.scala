@@ -31,7 +31,7 @@ import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{IndexShuffleBlockResolver, ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, SinglePartition}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -291,6 +291,16 @@ class CometNativeShuffleWriter[K, V](
           val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
           shuffleWriterBuilder.setPartitioning(
             partitioningBuilder.setRangePartition(partitioning).build())
+
+        case _: RoundRobinPartitioning =>
+          val partitioning = PartitioningOuterClass.RoundRobinPartition.newBuilder()
+          partitioning.setNumPartitions(outputPartitioning.numPartitions)
+          partitioning.setMaxHashColumns(
+            CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS.get())
+
+          val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
+          shuffleWriterBuilder.setPartitioning(
+            partitioningBuilder.setRoundRobinPartition(partitioning).build())
 
         case _ =>
           throw new UnsupportedOperationException(
