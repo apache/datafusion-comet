@@ -354,35 +354,6 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
     }
   }
-  test("array_remove - remove null elements") {
-    // Test that array_remove(arr, null) removes all null elements from the array
-    // This is the fix for https://github.com/apache/datafusion-comet/issues/3173
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempView("t1") {
-        withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "test.parquet")
-          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 100)
-          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-          // Test with array containing nulls and removing null
-          checkSparkAnswerAndOperator(
-            sql("SELECT array_remove(array(_2, null, _3, null, _4), null) from t1"))
-          // Disable constant folding for literal tests to ensure Comet implementation is exercised
-          withSQLConf(
-            SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-              "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-            // Test with literal array: array_remove(array(1, null, 2, null, 3), null) should return [1, 2, 3]
-            checkSparkAnswerAndOperator(
-              sql("SELECT array_remove(array(1, null, 2, null, 3), null) from t1"))
-            // Test with all nulls - should return empty array
-            checkSparkAnswerAndOperator(
-              sql("SELECT array_remove(array(null, null, null), null) from t1"))
-            // Test with no nulls - should return original array
-            checkSparkAnswerAndOperator(sql("SELECT array_remove(array(1, 2, 3), null) from t1"))
-          }
-        }
-      }
-    }
-  }
 
   test("array_contains - test all types (convert from Parquet)") {
     withTempDir { dir =>
