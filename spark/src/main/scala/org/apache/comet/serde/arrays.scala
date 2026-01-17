@@ -546,7 +546,6 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
 object CometSize extends CometExpressionSerde[Size] {
 
   override def getSupportLevel(expr: Size): SupportLevel = {
-    // TODO respect spark.sql.legacy.sizeOfNull
     expr.child.dataType match {
       case _: ArrayType => Compatible()
       case _: MapType => Unsupported(Some("size does not support map inputs"))
@@ -554,7 +553,6 @@ object CometSize extends CometExpressionSerde[Size] {
         // this should be unreachable because Spark only supports map and array inputs
         Unsupported(Some(s"Unsupported child data type: $other"))
     }
-
   }
 
   override def convert(
@@ -562,10 +560,41 @@ object CometSize extends CometExpressionSerde[Size] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val arrayExprProto = exprToProto(expr.child, inputs, binding)
-
-    val sizeScalarExpr = scalarFunctionExprToProto("size", arrayExprProto)
-    optExprWithInfo(sizeScalarExpr, expr)
+    for {
+      isNotNullExprProto <- createIsNotNullExprProto(expr, inputs, binding)
+      sizeScalarExprProto <- scalarFunctionExprToProto("size", arrayExprProto)
+      emptyLiteralExprProto <- createLiteralExprProto(SQLConf.get.legacySizeOfNull)
+    } yield {
+      val caseWhenExpr = ExprOuterClass.CaseWhen
+        .newBuilder()
+        .addWhen(isNotNullExprProto)
+        .addThen(sizeScalarExprProto)
+        .setElseExpr(emptyLiteralExprProto)
+        .build()
+      ExprOuterClass.Expr
+        .newBuilder()
+        .setCaseWhen(caseWhenExpr)
+        .build()
+    }
   }
+
+  private def createIsNotNullExprProto(
+      expr: Size,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createUnaryExpr(
+      expr,
+      expr.child,
+      inputs,
+      binding,
+      (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
+  }
+
+  private def createLiteralExprProto(legacySizeOfNull: Boolean): Option[ExprOuterClass.Expr] = {
+    val value = if (legacySizeOfNull) -1 else null
+    exprToProto(Literal(value, IntegerType), Seq.empty)
+  }
+
 }
 
 trait ArraysBase {

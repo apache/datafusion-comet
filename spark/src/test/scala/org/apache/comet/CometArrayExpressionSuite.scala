@@ -26,6 +26,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArraysOverlap, ArrayUnion}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
@@ -868,6 +869,24 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             "SELECT size(array(_2, _3, _4, _5, _6)) from t1 where _2 is not null order by _2, _3, _4, _5, _6"
           )
         ) // int arrays
+      }
+    }
+  }
+
+  test("size - respect to legacySizeOfNull") {
+    val table = "t1"
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
+      withTable(table) {
+        sql(s"create table $table(col array<string>) using parquet")
+        sql(s"insert into $table values(null)")
+        withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "false") {
+          checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+        }
+        withSQLConf(
+          SQLConf.LEGACY_SIZE_OF_NULL.key -> "true",
+          SQLConf.ANSI_ENABLED.key -> "false") {
+          checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+        }
       }
     }
   }

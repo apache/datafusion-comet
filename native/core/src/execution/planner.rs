@@ -1267,6 +1267,12 @@ impl PhysicalPlanner {
                     ))),
                 }?;
 
+                let object_store_options: HashMap<String, String> = writer
+                    .object_store_options
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+
                 let parquet_writer = Arc::new(ParquetWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     writer.output_path.clone(),
@@ -1280,6 +1286,7 @@ impl PhysicalPlanner {
                     codec,
                     self.partition,
                     writer.column_names.clone(),
+                    object_store_options,
                 )?);
 
                 Ok((
