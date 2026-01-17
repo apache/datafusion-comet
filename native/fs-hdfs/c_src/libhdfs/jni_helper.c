@@ -26,8 +26,8 @@
 
 #include <errno.h>
 #include <dirent.h>
-#include <stdio.h> 
-#include <string.h> 
+#include <stdio.h>
+#include <string.h>
 
 static struct htable *gClassRefHTable = NULL;
 
@@ -116,16 +116,16 @@ jthrowable invokeMethod(JNIEnv *env, jvalue *retval, MethType methType,
     jclass cls;
     jmethodID mid;
     jthrowable jthr;
-    const char *str; 
+    const char *str;
     char returnType;
-    
+
     jthr = validateMethodType(env, methType);
     if (jthr)
         return jthr;
     jthr = globalClassReference(className, env, &cls);
     if (jthr)
         return jthr;
-    jthr = methodIdFromClass(className, methName, methSignature, 
+    jthr = methodIdFromClass(className, methName, methSignature,
                             methType, env, &mid);
     if (jthr)
         return jthr;
@@ -202,19 +202,19 @@ jthrowable invokeMethod(JNIEnv *env, jvalue *retval, MethType methType,
     return NULL;
 }
 
-jthrowable constructNewObjectOfClass(JNIEnv *env, jobject *out, const char *className, 
+jthrowable constructNewObjectOfClass(JNIEnv *env, jobject *out, const char *className,
                                   const char *ctorSignature, ...)
 {
     va_list args;
     jclass cls;
-    jmethodID mid; 
+    jmethodID mid;
     jobject jobj;
     jthrowable jthr;
 
     jthr = globalClassReference(className, env, &cls);
     if (jthr)
         return jthr;
-    jthr = methodIdFromClass(className, "<init>", ctorSignature, 
+    jthr = methodIdFromClass(className, "<init>", ctorSignature,
                             INSTANCE, env, &mid);
     if (jthr)
         return jthr;
@@ -228,8 +228,8 @@ jthrowable constructNewObjectOfClass(JNIEnv *env, jobject *out, const char *clas
 }
 
 
-jthrowable methodIdFromClass(const char *className, const char *methName, 
-                            const char *methSignature, MethType methType, 
+jthrowable methodIdFromClass(const char *className, const char *methName,
+                            const char *methSignature, MethType methType,
                             JNIEnv *env, jmethodID *out)
 {
     jclass cls;
@@ -641,9 +641,9 @@ static char* getClassPath()
  */
 static JNIEnv* getGlobalJNIEnv(void)
 {
-    JavaVM* vmBuf[VM_BUF_LENGTH]; 
+    JavaVM* vmBuf[VM_BUF_LENGTH];
     JNIEnv *env;
-    jint rv = 0; 
+    jint rv = 0;
     jint noVMs = 0;
     jthrowable jthr;
     char *hadoopClassPath;
@@ -670,8 +670,8 @@ static JNIEnv* getGlobalJNIEnv(void)
         if (hadoopClassPath == NULL) {
             fprintf(stderr, "Environment variable CLASSPATH not set!\n");
             return NULL;
-        } 
-        optHadoopClassPathLen = strlen(hadoopClassPath) + 
+        }
+        optHadoopClassPathLen = strlen(hadoopClassPath) +
           strlen(hadoopClassPathVMArg) + 1;
         optHadoopClassPath = malloc(sizeof(char)*optHadoopClassPathLen);
         snprintf(optHadoopClassPath, optHadoopClassPathLen,
@@ -715,7 +715,7 @@ static JNIEnv* getGlobalJNIEnv(void)
         //Create the VM
         vm_args.version = JNI_VERSION_1_2;
         vm_args.options = options;
-        vm_args.nOptions = noArgs; 
+        vm_args.nOptions = noArgs;
         vm_args.ignoreUnrecognized = 1;
 
         rv = JNI_CreateJavaVM(&vm, (void*)&env, &vm_args);
@@ -898,7 +898,7 @@ jthrowable hadoopConfSetStr(JNIEnv *env, jobject jConfiguration,
     if (jthr)
         goto done;
     jthr = invokeMethod(env, NULL, INSTANCE, jConfiguration,
-            "org/apache/hadoop/conf/Configuration", "set", 
+            "org/apache/hadoop/conf/Configuration", "set",
             "(Ljava/lang/String;Ljava/lang/String;)V",
             jkey, jvalue);
     if (jthr)
@@ -938,4 +938,3 @@ jthrowable fetchEnumInstance(JNIEnv *env, const char *className,
     *out = jEnum;
     return NULL;
 }
-

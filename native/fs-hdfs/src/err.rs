@@ -24,7 +24,7 @@ pub enum HdfsErr {
     Generic(String),
     /// file path
     FileNotFound(String),
-    /// file path           
+    /// file path
     FileAlreadyExists(String),
     /// name node address
     CannotConnectToNameNode(String),
