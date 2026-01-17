@@ -1879,6 +1879,7 @@ dependencies = [
  "datafusion",
  "futures",
  "hex",
+ "memchr",
  "num",
  "rand 0.9.2",
  "regex",
