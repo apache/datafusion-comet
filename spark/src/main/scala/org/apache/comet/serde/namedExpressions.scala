@@ -47,8 +47,7 @@ object CometAttributeReference extends CometExpressionSerde[AttributeReference] 
     if (dataType.isDefined) {
       if (binding) {
         // Spark may produce unresolvable attributes in some cases,
-        // for example https://github.com/apache/datafusion-comet/issues/925.
-        // So, we allow the binding to fail.
+        // for example partial aggregation or https://github.com/apache/datafusion-comet/issues/925.
         val boundRef: Any = BindReferences
           .bindReference(attr, inputs, allowFailures = true)
 
