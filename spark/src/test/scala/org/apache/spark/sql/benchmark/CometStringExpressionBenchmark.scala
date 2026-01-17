@@ -72,11 +72,12 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("rpad", "select rpad(c1, 150, 'x') from parquetV1Table"),
     StringExprConfig("rtrim", "select rtrim(c1) from parquetV1Table"),
     StringExprConfig("space", "select space(2) from parquetV1Table"),
-    StringExprConfig("startswith", "select startswith(c1, '1') from parquetV1Table"),
+    StringExprConfig("startsWith", "select startsWith(c1, '123') from parquetV1Table"),
     StringExprConfig("substring", "select substring(c1, 1, 100) from parquetV1Table"),
     StringExprConfig("translate", "select translate(c1, '123456', 'aBcDeF') from parquetV1Table"),
     StringExprConfig("trim", "select trim(c1) from parquetV1Table"),
-    StringExprConfig("upper", "select upper(c1) from parquetV1Table"))
+    StringExprConfig("upper", "select upper(c1) from parquetV1Table"),
+    StringExprConfig("endsWith", "select endsWith(c1, '123') from parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     runBenchmarkWithTable("String expressions", 1024) { v =>
