@@ -161,6 +161,10 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
     }
   }
 
+  // ==================== Complex Types ====================
+  // Note: The SQL hash() expression for complex types falls back to Spark execution.
+  // These tests verify correctness of the hash values (used by native shuffle partitioning).
+
   test("hash - array of decimal (precision > 18) falls back to Spark") {
     withTable("t") {
       sql("CREATE TABLE t(c ARRAY<DECIMAL(20, 2)>) USING parquet")

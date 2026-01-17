@@ -49,9 +49,9 @@ JVM shuffle (`CometColumnarExchange`) is used instead of native shuffle (`CometE
 3. **Unsupported partitioning type**: Native shuffle only supports `HashPartitioning`, `RangePartitioning`,
    and `SinglePartition`. JVM shuffle additionally supports `RoundRobinPartitioning`.
 
-4. **Unsupported partition key types**: For `HashPartitioning` and `RangePartitioning`, native shuffle
-   only supports primitive types as partition keys. Complex types (struct, array, map) cannot be used
-   as partition keys in native shuffle, though they are fully supported as data columns in both implementations.
+4. **Unsupported partition key types**: For `RangePartitioning`, native shuffle only supports primitive
+   types as partition keys. Complex types (struct, array, map) are supported as hash partition keys in
+   native shuffle.
 
 ## Input Handling
 

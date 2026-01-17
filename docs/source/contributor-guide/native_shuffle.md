@@ -55,9 +55,9 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 
    `RoundRobinPartitioning` requires JVM shuffle.
 
-4. **Supported partition key types**: For `HashPartitioning` and `RangePartitioning`, partition
-   keys must be primitive types. Complex types (struct, array, map) as partition keys require
-   JVM shuffle. Note that complex types are fully supported as data columns in native shuffle.
+4. **Supported partition key types**: For `HashPartitioning`, both primitive and complex types
+   (struct, array, map) are supported as partition keys. For `RangePartitioning`, only primitive
+   types are supported as partition keys.
 
 ## Architecture
 
