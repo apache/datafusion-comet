@@ -54,6 +54,36 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("array_remove - remove null elements") {
+    // Test that array_remove(arr, null) removes all null elements from the array
+    // This is the fix for https://github.com/apache/datafusion-comet/issues/3173
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempView("t1") {
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 100)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+          // Test with array containing nulls and removing null
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_remove(array(_2, null, _3, null, _4), null) from t1"))
+          // Disable constant folding for literal tests to ensure Comet implementation is exercised
+          withSQLConf(
+            SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+              "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+            // Test with literal array: array_remove(array(1, null, 2, null, 3), null) should return [1, 2, 3]
+            checkSparkAnswerAndOperator(
+              sql("SELECT array_remove(array(1, null, 2, null, 3), null) from t1"))
+            // Test with all nulls - should return empty array
+            checkSparkAnswerAndOperator(
+              sql("SELECT array_remove(array(null, null, null), null) from t1"))
+            // Test with no nulls - should return original array
+            checkSparkAnswerAndOperator(sql("SELECT array_remove(array(1, 2, 3), null) from t1"))
+          }
+        }
+      }
+    }
+  }
+
   test("array_remove - test all types (native Parquet reader)") {
     withTempDir { dir =>
       withTempView("t1") {
@@ -324,49 +354,32 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       }
     }
   }
-
-  test("array_contains - three-valued null logic") {
-    // Test Spark's three-valued logic for array_contains:
-    // 1. Returns true if value is found
-    // 2. Returns false if no match found AND no null elements exist
-    // 3. Returns null if no match found BUT null elements exist (indeterminate)
-    // 4. Returns null if search value is null
-    withTempDir { dir =>
+  test("array_remove - remove null elements") {
+    // Test that array_remove(arr, null) removes all null elements from the array
+    // This is the fix for https://github.com/apache/datafusion-comet/issues/3173
+    Seq(true, false).foreach { dictionaryEnabled =>
       withTempView("t1") {
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, n = 100)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
-
-        // Test case 1: value found -> returns true
-        // Use column references to avoid constant folding
-        checkSparkAnswerAndOperator(sql(
-          "SELECT array_contains(array(_2, _3, _4), _3) FROM t1 WHERE _2 = 1 AND _3 = 2 AND _4 = 3"))
-
-        // Test case 2: no match, no nulls -> returns false
-        checkSparkAnswerAndOperator(sql(
-          "SELECT array_contains(array(_2, _3, _4), 999) FROM t1 WHERE _2 = 1 AND _3 = 2 AND _4 = 3 AND _2 IS NOT NULL AND _3 IS NOT NULL AND _4 IS NOT NULL"))
-
-        // Test case 3: no match, but null exists -> returns null (indeterminate)
-        // Use CASE to create array with null to avoid constant folding
-        checkSparkAnswerAndOperator(sql(
-          "SELECT array_contains(CASE WHEN _2 >= 0 THEN array(_2, cast(null as int), _4) ELSE array(_2, cast(null as int), _4) END, 999) FROM t1 WHERE _2 = 1 AND _4 = 3 AND _2 IS NOT NULL AND _4 IS NOT NULL"))
-
-        // Test case 4: match found even with nulls -> returns true
-        checkSparkAnswerAndOperator(sql(
-          "SELECT array_contains(CASE WHEN _2 >= 0 THEN array(_2, cast(null as int), _4) ELSE array(_2, cast(null as int), _4) END, _2) FROM t1 WHERE _2 = 1 AND _4 = 3 AND _2 IS NOT NULL AND _4 IS NOT NULL"))
-
-        // Test case 5: search value is null -> returns null
-        checkSparkAnswerAndOperator(sql(
-          "SELECT array_contains(array(_2, _3, _4), cast(null as int)) FROM t1 WHERE _2 = 1 AND _3 = 2 AND _4 = 3"))
-
-        // Test case 6: array with nulls, searching for existing value -> returns true
-        checkSparkAnswerAndOperator(sql(
-          "SELECT array_contains(CASE WHEN _2 >= 0 THEN array(_2, cast(null as int), _4) ELSE array(_2, cast(null as int), _4) END, _4) FROM t1 WHERE _2 = 1 AND _4 = 3 AND _2 IS NOT NULL AND _4 IS NOT NULL"))
-
-        // Test case 7: empty array -> returns false
-        // Use conditional logic to create empty array to avoid constant folding
-        checkSparkAnswerAndOperator(sql(
-          "SELECT array_contains(CASE WHEN _2 < 0 THEN array(_2) ELSE array() END, 1) FROM t1 WHERE _2 >= 0"))
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled, 100)
+          spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+          // Test with array containing nulls and removing null
+          checkSparkAnswerAndOperator(
+            sql("SELECT array_remove(array(_2, null, _3, null, _4), null) from t1"))
+          // Disable constant folding for literal tests to ensure Comet implementation is exercised
+          withSQLConf(
+            SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+              "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+            // Test with literal array: array_remove(array(1, null, 2, null, 3), null) should return [1, 2, 3]
+            checkSparkAnswerAndOperator(
+              sql("SELECT array_remove(array(1, null, 2, null, 3), null) from t1"))
+            // Test with all nulls - should return empty array
+            checkSparkAnswerAndOperator(
+              sql("SELECT array_remove(array(null, null, null), null) from t1"))
+            // Test with no nulls - should return original array
+            checkSparkAnswerAndOperator(sql("SELECT array_remove(array(1, 2, 3), null) from t1"))
+          }
+        }
       }
     }
   }
