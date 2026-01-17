@@ -41,6 +41,7 @@ parquet = { version = "57.2.0", default-features = false, features = ["experimen
 datafusion = { version = "51.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
 datafusion-datasource = { version = "51.0.0" }
 datafusion-spark = { version = "51.0.0" }
+datafusion-physical-expr-adapter = { version = "51.0.0" }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-proto = { path = "proto" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
