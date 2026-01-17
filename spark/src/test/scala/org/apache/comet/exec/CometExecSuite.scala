@@ -32,11 +32,12 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
 import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, Hex}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, BloomFilterAggregate, Final, Partial}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SQLExecution, UnionExec}
-import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
+import org.apache.spark.sql.execution.{CollectLimitExec, ProjectExec, SparkPlan, SQLExecution, UnionExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec, QueryStageExec}
+import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
@@ -1144,6 +1145,68 @@ class CometExecSuite extends CometTestBase {
           val df = sql(f"SELECT bloom_filter_agg(cast(_2 as $input_type)) FROM tbl")
           checkSparkAnswerAndOperator(df)
         }
+    }
+
+    spark.sessionState.functionRegistry.dropFunction(funcId_bloom_filter_agg)
+  }
+
+  test("bloom_filter_agg - Spark partial / Comet final merge") {
+    // This test exercises the merge_filter() fix that handles Spark's full serialization
+    // format (12-byte header + bits) when merging from Spark partial to Comet final aggregates.
+    val funcId_bloom_filter_agg = new FunctionIdentifier("bloom_filter_agg")
+    spark.sessionState.functionRegistry.registerFunction(
+      funcId_bloom_filter_agg,
+      new ExpressionInfo(classOf[BloomFilterAggregate].getName, "bloom_filter_agg"),
+      (children: Seq[Expression]) =>
+        children.size match {
+          case 1 => new BloomFilterAggregate(children.head)
+          case 2 => new BloomFilterAggregate(children.head, children(1))
+          case 3 => new BloomFilterAggregate(children.head, children(1), children(2))
+        })
+
+    // Helper to count operators in plan
+    def countOperators(plan: SparkPlan, opClass: Class[_]): Int = {
+      stripAQEPlan(plan).collect {
+        case stage: QueryStageExec =>
+          countOperators(stage.plan, opClass)
+        case op if op.getClass.isAssignableFrom(opClass) => 1
+      }.sum
+    }
+
+    withParquetTable(
+      (0 until 1000)
+        .map(_ => (Random.nextInt(1000), Random.nextInt(100))),
+      "tbl") {
+
+      withSQLConf(
+        // Disable Comet partial aggregates to force Spark partial / Comet final scenario
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_AGGREGATE_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+
+        val df = sql(
+          "SELECT bloom_filter_agg(cast(_2 as long), cast(1000 as long)) FROM tbl GROUP BY _1")
+
+        // Verify the query executes successfully (tests merge_filter compatibility)
+        checkSparkAnswer(df)
+
+        // Verify we have Spark partial aggregates and Comet final aggregates
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        val sparkPartialAggs = plan.collect {
+          case agg: HashAggregateExec if agg.aggregateExpressions.exists(_.mode == Partial) => agg
+        }
+        val cometFinalAggs = plan.collect {
+          case agg: CometHashAggregateExec if agg.aggregateExpressions.exists(_.mode == Final) =>
+            agg
+        }
+
+        assert(
+          sparkPartialAggs.nonEmpty,
+          s"Expected Spark partial aggregates but found none. Plan: $plan")
+        assert(
+          cometFinalAggs.nonEmpty,
+          s"Expected Comet final aggregates but found none. Plan: $plan")
+      }
     }
 
     spark.sessionState.functionRegistry.dropFunction(funcId_bloom_filter_agg)
