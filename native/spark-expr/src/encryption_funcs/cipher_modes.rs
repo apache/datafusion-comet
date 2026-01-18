@@ -15,11 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use super::crypto_utils::{generate_random_iv, validate_iv_length, validate_key_length, CryptoError};
+use super::crypto_utils::{
+    generate_random_iv, validate_iv_length, validate_key_length, CryptoError,
+};
 
 pub trait CipherMode: Send + Sync + std::fmt::Debug {
+    #[allow(dead_code)]
     fn name(&self) -> &str;
+    #[allow(dead_code)]
     fn iv_length(&self) -> usize;
+    #[allow(dead_code)]
     fn supports_aad(&self) -> bool;
 
     fn encrypt(
@@ -194,7 +199,10 @@ impl CipherMode for GcmMode {
                         msg: input,
                         aad: aad_data,
                     },
-                    None => Payload { msg: input, aad: &[] },
+                    None => Payload {
+                        msg: input,
+                        aad: &[],
+                    },
                 };
                 cipher
                     .encrypt(nonce, payload)
@@ -207,7 +215,10 @@ impl CipherMode for GcmMode {
                         msg: input,
                         aad: aad_data,
                     },
-                    None => Payload { msg: input, aad: &[] },
+                    None => Payload {
+                        msg: input,
+                        aad: &[],
+                    },
                 };
                 cipher
                     .encrypt(nonce, payload)
@@ -246,7 +257,7 @@ mod tests {
         let mode = EcbMode;
         assert_eq!(mode.name(), "ECB");
         assert_eq!(mode.iv_length(), 0);
-        assert_eq!(mode.supports_aad(), false);
+        assert!(!mode.supports_aad());
     }
 
     #[test]
@@ -258,7 +269,7 @@ mod tests {
         let result = mode.encrypt(input, key, None, None);
         assert!(result.is_ok());
         let encrypted = result.unwrap();
-        assert!(encrypted.len() > 0);
+        assert!(!encrypted.is_empty());
         assert_ne!(&encrypted[..], input);
     }
 
@@ -283,7 +294,10 @@ mod tests {
 
         let result = mode.encrypt(input, key, None, Some(aad));
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), CryptoError::UnsupportedAad(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            CryptoError::UnsupportedAad(_)
+        ));
     }
 
     #[test]
@@ -294,7 +308,10 @@ mod tests {
 
         let result = mode.encrypt(input, key, None, None);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), CryptoError::InvalidKeyLength(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            CryptoError::InvalidKeyLength(_)
+        ));
     }
 
     #[test]
@@ -302,7 +319,7 @@ mod tests {
         let mode = CbcMode;
         assert_eq!(mode.name(), "CBC");
         assert_eq!(mode.iv_length(), 16);
-        assert_eq!(mode.supports_aad(), false);
+        assert!(!mode.supports_aad());
     }
 
     #[test]
@@ -339,7 +356,10 @@ mod tests {
 
         let result = mode.encrypt(input, key, None, Some(aad));
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), CryptoError::UnsupportedAad(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            CryptoError::UnsupportedAad(_)
+        ));
     }
 
     #[test]
@@ -351,7 +371,10 @@ mod tests {
 
         let result = mode.encrypt(input, key, Some(&iv), None);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), CryptoError::InvalidIvLength { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            CryptoError::InvalidIvLength { .. }
+        ));
     }
 
     #[test]
@@ -359,7 +382,7 @@ mod tests {
         let mode = GcmMode;
         assert_eq!(mode.name(), "GCM");
         assert_eq!(mode.iv_length(), 12);
-        assert_eq!(mode.supports_aad(), true);
+        assert!(mode.supports_aad());
     }
 
     #[test]
@@ -395,7 +418,10 @@ mod tests {
 
         let result = mode.encrypt(input, key, Some(&iv), None);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), CryptoError::InvalidIvLength { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            CryptoError::InvalidIvLength { .. }
+        ));
     }
 
     #[test]
@@ -430,7 +456,10 @@ mod tests {
     fn test_get_cipher_mode_invalid() {
         let mode = get_cipher_mode("CTR", "NONE");
         assert!(mode.is_err());
-        assert!(matches!(mode.unwrap_err(), CryptoError::UnsupportedMode(_, _)));
+        assert!(matches!(
+            mode.unwrap_err(),
+            CryptoError::UnsupportedMode(_, _)
+        ));
     }
 
     #[test]

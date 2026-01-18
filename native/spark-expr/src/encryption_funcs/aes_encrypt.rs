@@ -48,7 +48,13 @@ pub fn spark_aes_encrypt(args: &[ColumnarValue]) -> Result<ColumnarValue> {
         encrypt_scalar(input_arg, key_arg, mode_arg, padding_arg, iv_arg, aad_arg)
     } else {
         encrypt_batch(
-            input_arg, key_arg, mode_arg, padding_arg, iv_arg, aad_arg, batch_size,
+            input_arg,
+            key_arg,
+            mode_arg,
+            padding_arg,
+            iv_arg,
+            aad_arg,
+            batch_size,
         )
     }
 }
@@ -91,9 +97,7 @@ fn encrypt_scalar(
     };
 
     let aad = match aad_arg {
-        ColumnarValue::Scalar(ScalarValue::Binary(Some(v))) if !v.is_empty() => {
-            Some(v.as_slice())
-        }
+        ColumnarValue::Scalar(ScalarValue::Binary(Some(v))) if !v.is_empty() => Some(v.as_slice()),
         _ => None,
     };
 
@@ -103,9 +107,7 @@ fn encrypt_scalar(
         .encrypt(input.as_ref().unwrap(), key.as_ref().unwrap(), iv, aad)
         .map_err(|e| DataFusionError::Execution(format!("{:?}", e)))?;
 
-    Ok(ColumnarValue::Scalar(ScalarValue::Binary(Some(
-        encrypted,
-    ))))
+    Ok(ColumnarValue::Scalar(ScalarValue::Binary(Some(encrypted))))
 }
 
 fn encrypt_batch(
@@ -221,10 +223,7 @@ mod tests {
         let input = ScalarValue::Binary(Some(b"Spark".to_vec()));
         let key = ScalarValue::Binary(Some(b"0000111122223333".to_vec()));
 
-        let args = vec![
-            ColumnarValue::Scalar(input),
-            ColumnarValue::Scalar(key),
-        ];
+        let args = vec![ColumnarValue::Scalar(input), ColumnarValue::Scalar(key)];
 
         let result = spark_aes_encrypt(&args);
         assert!(result.is_ok());
@@ -323,13 +322,16 @@ mod tests {
         let input = ScalarValue::Binary(Some(b"test".to_vec()));
         let key = ScalarValue::Binary(Some(b"short".to_vec()));
 
-        let args = vec![
-            ColumnarValue::Scalar(input),
-            ColumnarValue::Scalar(key),
-        ];
+        let args = vec![ColumnarValue::Scalar(input), ColumnarValue::Scalar(key)];
 
         let result = spark_aes_encrypt(&args);
-        assert!(result.is_err() || matches!(result.unwrap(), ColumnarValue::Scalar(ScalarValue::Binary(None))));
+        assert!(
+            result.is_err()
+                || matches!(
+                    result.unwrap(),
+                    ColumnarValue::Scalar(ScalarValue::Binary(None))
+                )
+        );
     }
 
     #[test]
@@ -337,14 +339,14 @@ mod tests {
         let input = ScalarValue::Binary(None);
         let key = ScalarValue::Binary(Some(b"0000111122223333".to_vec()));
 
-        let args = vec![
-            ColumnarValue::Scalar(input),
-            ColumnarValue::Scalar(key),
-        ];
+        let args = vec![ColumnarValue::Scalar(input), ColumnarValue::Scalar(key)];
 
         let result = spark_aes_encrypt(&args);
         assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), ColumnarValue::Scalar(ScalarValue::Binary(None))));
+        assert!(matches!(
+            result.unwrap(),
+            ColumnarValue::Scalar(ScalarValue::Binary(None))
+        ));
     }
 
     #[test]
@@ -352,14 +354,14 @@ mod tests {
         let input = ScalarValue::Binary(Some(b"test".to_vec()));
         let key = ScalarValue::Binary(None);
 
-        let args = vec![
-            ColumnarValue::Scalar(input),
-            ColumnarValue::Scalar(key),
-        ];
+        let args = vec![ColumnarValue::Scalar(input), ColumnarValue::Scalar(key)];
 
         let result = spark_aes_encrypt(&args);
         assert!(result.is_ok());
-        assert!(matches!(result.unwrap(), ColumnarValue::Scalar(ScalarValue::Binary(None))));
+        assert!(matches!(
+            result.unwrap(),
+            ColumnarValue::Scalar(ScalarValue::Binary(None))
+        ));
     }
 
     #[test]
@@ -388,7 +390,7 @@ mod tests {
             let binary_array = array.as_any().downcast_ref::<BinaryArray>().unwrap();
             for i in 0..3 {
                 assert!(!binary_array.is_null(i));
-                assert!(binary_array.value(i).len() > 0);
+                assert!(!binary_array.value(i).is_empty());
             }
         } else {
             panic!("Expected array result");
@@ -426,10 +428,8 @@ mod tests {
 
     #[test]
     fn test_aes_encrypt_mixed_scalar_array() {
-        let input_array = BinaryArray::from(vec![
-            Some(b"message1".as_ref()),
-            Some(b"message2".as_ref()),
-        ]);
+        let input_array =
+            BinaryArray::from(vec![Some(b"message1".as_ref()), Some(b"message2".as_ref())]);
         let key = ScalarValue::Binary(Some(b"0000111122223333".to_vec()));
 
         let args = vec![
