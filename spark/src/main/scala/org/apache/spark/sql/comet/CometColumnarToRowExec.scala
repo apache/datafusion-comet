@@ -45,7 +45,7 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.{SparkFatalException, Utils}
 import org.apache.spark.util.io.ChunkedByteBuffer
 
-import org.apache.comet.vector.{CometColumnarArray, CometColumnarMap, CometListVector, CometMapVector, CometPlainVector}
+import org.apache.comet.vector.{CometColumnarArray, CometColumnarMap, CometColumnarRow, CometListVector, CometMapVector, CometPlainVector, CometStructVector}
 
 /**
  * Copied from Spark `ColumnarToRowExec`. Comet needs the fix for SPARK-50235 but cannot wait for
@@ -316,6 +316,45 @@ case class CometColumnarToRowExec(child: SparkPlan)
   }
 
   /**
+   * Generate optimized code for StructType columns using a reusable CometColumnarRow. This avoids
+   * creating a new ColumnarRow object per-row.
+   */
+  private def genCodeForCometStruct(
+      ctx: CodegenContext,
+      columnVar: String,
+      ordinal: String,
+      reusableRowVar: String,
+      dataType: DataType,
+      nullable: Boolean): ExprCode = {
+    val cometRowClz = classOf[CometColumnarRow].getName
+
+    val isNullVar = if (nullable) {
+      JavaCode.isNullVariable(ctx.freshName("isNull"))
+    } else {
+      FalseLiteral
+    }
+    val valueVar = ctx.freshName("value")
+
+    val str = s"cometStructVector[$columnVar, $ordinal]"
+    val code = code"${ctx.registerComment(str)}" + (if (nullable) {
+                                                      code"""
+        boolean $isNullVar = $columnVar.isNullAt($ordinal);
+        $cometRowClz $valueVar = null;
+        if (!$isNullVar) {
+          $reusableRowVar.update($ordinal);
+          $valueVar = $reusableRowVar;
+        }
+      """
+                                                    } else {
+                                                      code"""
+        $reusableRowVar.update($ordinal);
+        $cometRowClz $valueVar = $reusableRowVar;
+      """
+                                                    })
+    ExprCode(code, isNullVar, JavaCode.variable(valueVar, dataType))
+  }
+
+  /**
    * Produce code to process the input iterator as [[ColumnarBatch]]es. This produces an
    * [[org.apache.spark.sql.catalyst.expressions.UnsafeRow]] for each row in each batch.
    */
@@ -336,12 +375,14 @@ case class CometColumnarToRowExec(child: SparkPlan)
     val columnVectorClz = classOf[ColumnVector].getName
     val cometListVectorClz = classOf[CometListVector].getName
     val cometMapVectorClz = classOf[CometMapVector].getName
+    val cometStructVectorClz = classOf[CometStructVector].getName
     val cometArrayClz = classOf[CometColumnarArray].getName
     val cometMapClz = classOf[CometColumnarMap].getName
+    val cometRowClz = classOf[CometColumnarRow].getName
 
     // For each column, create mutable state and assignment code.
-    // For ArrayType and MapType, also create cached state for offset addresses, child vectors,
-    // and reusable wrapper objects.
+    // For ArrayType, MapType, and StructType, also create cached state for offset addresses,
+    // child vectors, and reusable wrapper objects.
     case class ColumnInfo(
         colVar: String,
         assignCode: String,
@@ -350,7 +391,9 @@ case class CometColumnarToRowExec(child: SparkPlan)
         // For ArrayType: (offsetAddrVar, reusableArrayVar)
         arrayInfo: Option[(String, String)] = None,
         // For MapType: (offsetAddrVar, reusableMapVar)
-        mapInfo: Option[(String, String)] = None)
+        mapInfo: Option[(String, String)] = None,
+        // For StructType: reusableRowVar
+        structInfo: Option[String] = None)
 
     val columnInfos = output.zipWithIndex.map { case (attr, i) =>
       val colVarName = ctx.addMutableState(columnVectorClzs(i), s"colInstance$i")
@@ -403,6 +446,23 @@ case class CometColumnarToRowExec(child: SparkPlan)
             attr.nullable,
             mapInfo = Some((offsetAddrVar, reusableMapVar)))
 
+        case _: StructType =>
+          val reusableRowVar = ctx.addMutableState(cometRowClz, s"reusableRow$i")
+          // scalastyle:off line.size.limit
+          val extraAssign =
+            s"""
+               |if ($colVarName instanceof $cometStructVectorClz) {
+               |  $reusableRowVar = new $cometRowClz($colVarName);
+               |}
+             """.stripMargin
+          // scalastyle:on line.size.limit
+          ColumnInfo(
+            colVarName,
+            baseAssign + extraAssign,
+            attr.dataType,
+            attr.nullable,
+            structInfo = Some(reusableRowVar))
+
         case _ =>
           ColumnInfo(colVarName, baseAssign, attr.dataType, attr.nullable)
       }
@@ -428,8 +488,8 @@ case class CometColumnarToRowExec(child: SparkPlan)
     ctx.currentVars = null
     val rowidx = ctx.freshName("rowIdx")
     val columnsBatchInput = columnInfos.map { info =>
-      (info.arrayInfo, info.mapInfo) match {
-        case (Some((offsetAddrVar, reusableArrayVar)), _) =>
+      (info.arrayInfo, info.mapInfo, info.structInfo) match {
+        case (Some((offsetAddrVar, reusableArrayVar)), _, _) =>
           // Use optimized code generation for ArrayType with reusable wrapper
           genCodeForCometArray(
             ctx,
@@ -439,7 +499,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
             reusableArrayVar,
             info.dataType,
             info.nullable)
-        case (_, Some((offsetAddrVar, reusableMapVar))) =>
+        case (_, Some((offsetAddrVar, reusableMapVar)), _) =>
           // Use optimized code generation for MapType with reusable wrapper
           genCodeForCometMap(
             ctx,
@@ -447,6 +507,15 @@ case class CometColumnarToRowExec(child: SparkPlan)
             rowidx,
             offsetAddrVar,
             reusableMapVar,
+            info.dataType,
+            info.nullable)
+        case (_, _, Some(reusableRowVar)) =>
+          // Use optimized code generation for StructType with reusable wrapper
+          genCodeForCometStruct(
+            ctx,
+            info.colVar,
+            rowidx,
+            reusableRowVar,
             info.dataType,
             info.nullable)
         case _ =>
