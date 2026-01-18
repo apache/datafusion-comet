@@ -105,9 +105,9 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TESTING)
       .doc(
         "Whether to enable native Parquet write through Comet. When enabled, " +
-          "Comet will intercept Parquet write operations and execute them natively. " +
-          "Supports all data types including complex types (arrays, maps, structs). " +
-          "This feature is experimental and does not yet support partitioned or bucketed writes.")
+          "Comet will intercept Parquet write operations and execute them natively. This " +
+          "feature is highly experimental and only partially implemented. It should not " +
+          "be used in production.")
       .booleanConf
       .createWithDefault(false)
 
