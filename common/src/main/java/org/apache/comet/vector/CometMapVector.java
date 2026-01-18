@@ -26,6 +26,7 @@ import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarMap;
+import org.apache.spark.unsafe.Platform;
 
 /** A Comet column vector for map type. */
 public class CometMapVector extends CometDecodedVector {
@@ -33,6 +34,7 @@ public class CometMapVector extends CometDecodedVector {
   final ValueVector dataVector;
   final CometStructVector dataColumnVector;
   final DictionaryProvider dictionaryProvider;
+  final long offsetBufferAddress;
 
   final ColumnVector keys;
   final ColumnVector values;
@@ -44,6 +46,7 @@ public class CometMapVector extends CometDecodedVector {
     this.mapVector = ((MapVector) vector);
     this.dataVector = mapVector.getDataVector();
     this.dictionaryProvider = dictionaryProvider;
+    this.offsetBufferAddress = mapVector.getOffsetBuffer().memoryAddress();
 
     if (dataVector instanceof StructVector) {
       this.dataColumnVector = new CometStructVector(dataVector, useDecimal128, dictionaryProvider);
@@ -63,11 +66,26 @@ public class CometMapVector extends CometDecodedVector {
     }
   }
 
+  /** Returns the cached offset buffer memory address for direct access. */
+  public long getOffsetBufferAddress() {
+    return offsetBufferAddress;
+  }
+
+  /** Returns the wrapped column vector for map keys. */
+  public ColumnVector getKeysVector() {
+    return keys;
+  }
+
+  /** Returns the wrapped column vector for map values. */
+  public ColumnVector getValuesVector() {
+    return values;
+  }
+
   @Override
   public ColumnarMap getMap(int i) {
     if (isNullAt(i)) return null;
-    int start = mapVector.getOffsetBuffer().getInt(i * MapVector.OFFSET_WIDTH);
-    int end = mapVector.getOffsetBuffer().getInt((i + 1) * MapVector.OFFSET_WIDTH);
+    int start = Platform.getInt(null, offsetBufferAddress + (long) i * MapVector.OFFSET_WIDTH);
+    int end = Platform.getInt(null, offsetBufferAddress + (long) (i + 1) * MapVector.OFFSET_WIDTH);
 
     return new ColumnarMap(keys, values, start, end - start);
   }

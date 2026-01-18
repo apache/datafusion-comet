@@ -25,6 +25,7 @@ import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.sql.vectorized.ColumnarArray;
+import org.apache.spark.unsafe.Platform;
 
 /** A Comet column vector for list type. */
 public class CometListVector extends CometDecodedVector {
@@ -32,6 +33,7 @@ public class CometListVector extends CometDecodedVector {
   final ValueVector dataVector;
   final ColumnVector dataColumnVector;
   final DictionaryProvider dictionaryProvider;
+  final long offsetBufferAddress;
 
   public CometListVector(
       ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
@@ -41,13 +43,24 @@ public class CometListVector extends CometDecodedVector {
     this.dataVector = listVector.getDataVector();
     this.dictionaryProvider = dictionaryProvider;
     this.dataColumnVector = getVector(dataVector, useDecimal128, dictionaryProvider);
+    this.offsetBufferAddress = listVector.getOffsetBuffer().memoryAddress();
+  }
+
+  /** Returns the cached offset buffer memory address for direct access. */
+  public long getOffsetBufferAddress() {
+    return offsetBufferAddress;
+  }
+
+  /** Returns the wrapped data column vector for the array elements. */
+  public ColumnVector getDataColumnVector() {
+    return dataColumnVector;
   }
 
   @Override
   public ColumnarArray getArray(int i) {
     if (isNullAt(i)) return null;
-    int start = listVector.getOffsetBuffer().getInt(i * ListVector.OFFSET_WIDTH);
-    int end = listVector.getOffsetBuffer().getInt((i + 1) * ListVector.OFFSET_WIDTH);
+    int start = Platform.getInt(null, offsetBufferAddress + (long) i * ListVector.OFFSET_WIDTH);
+    int end = Platform.getInt(null, offsetBufferAddress + (long) (i + 1) * ListVector.OFFSET_WIDTH);
 
     return new ColumnarArray(dataColumnVector, start, end - start);
   }
