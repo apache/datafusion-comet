@@ -248,8 +248,11 @@ class CometParquetWriterSuite extends CometTestBase {
       }
 
       // Now read and write with Comet native writer
+      // Enable COMET_SCAN_ALLOW_INCOMPATIBLE so that native_iceberg_compat scan is used
+      // (which supports complex types) instead of falling back to native_comet
       withSQLConf(
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
         CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true") {
@@ -491,8 +494,11 @@ class CometParquetWriterSuite extends CometTestBase {
         }
 
         // Write with Comet native writer
+        // Enable COMET_SCAN_ALLOW_INCOMPATIBLE so that native_iceberg_compat scan is used
+        // (which supports complex types) instead of falling back to native_comet
         withSQLConf(
           CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
           SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
           CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
