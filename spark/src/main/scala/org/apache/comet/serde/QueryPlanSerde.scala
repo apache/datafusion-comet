@@ -142,9 +142,6 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[XxHash64] -> CometXxHash64,
     classOf[Sha1] -> CometSha1)
 
-  private val encryptionExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
-    classOf[AesEncrypt] -> CometAesEncrypt)
-
   private val stringExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[Ascii] -> CometScalarFunction("ascii"),
     classOf[BitLength] -> CometScalarFunction("bit_length"),
@@ -229,7 +226,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
    * Mapping of Spark expression class to Comet expression handler.
    */
   val exprSerdeMap: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    mathExpressions ++ hashExpressions ++ encryptionExpressions ++ stringExpressions ++
+    mathExpressions ++ hashExpressions ++ stringExpressions ++
       conditionalExpressions ++ mapExpressions ++ predicateExpressions ++
       structExpressions ++ bitwiseExpressions ++ miscExpressions ++ arrayExpressions ++
       temporalExpressions ++ conversionExpressions
