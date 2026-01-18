@@ -138,18 +138,10 @@ case class CometNativeWriteExec(
   }
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    // Get the input data from the child operator
-    val childRDD = if (child.supportsColumnar) {
-      child.executeColumnar()
-    } else {
-      // If child doesn't support columnar, convert to columnar
-      child.execute().mapPartitionsInternal { _ =>
-        // TODO this could delegate to CometRowToColumnar, but maybe Comet
-        // does not need to support this case?
-        throw new UnsupportedOperationException(
-          "Row-based child operators not yet supported for native write")
-      }
-    }
+    // Child is guaranteed to be a CometPlan (either already a Comet operator or wrapped
+    // with CometSparkToColumnarExec in CometDataWritingCommand.createExec()).
+    // This ensures we always receive Arrow-format batches.
+    val childRDD = child.executeColumnar()
 
     // Capture metadata before the transformation
     val numPartitions = childRDD.getNumPartitions
@@ -203,7 +195,7 @@ case class CometNativeWriteExec(
 
       val execIterator = new CometExecIterator(
         CometExec.newIterId,
-        Seq(iter),
+        Seq(iter), // Child already produces Arrow batches via CometSparkToColumnarExec
         numOutputCols,
         planBytes,
         nativeMetrics,
