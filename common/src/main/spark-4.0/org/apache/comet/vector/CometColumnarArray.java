@@ -26,6 +26,7 @@ import org.apache.spark.sql.types.Decimal;
 import org.apache.spark.sql.vectorized.ColumnVector;
 import org.apache.spark.unsafe.types.CalendarInterval;
 import org.apache.spark.unsafe.types.UTF8String;
+import org.apache.spark.unsafe.types.VariantVal;
 
 /**
  * A mutable implementation of ArrayData backed by a ColumnVector. Unlike Spark's ColumnarArray
@@ -175,8 +176,8 @@ public class CometColumnarArray extends ArrayData {
     return data.getStruct(offset + ordinal);
   }
 
-  // Note: getVariant is added in Spark 4.x, no @Override to maintain Spark 3.x compatibility
-  public Object getVariant(int ordinal) {
+  @Override
+  public VariantVal getVariant(int ordinal) {
     throw new UnsupportedOperationException("Variant type is not supported");
   }
 
