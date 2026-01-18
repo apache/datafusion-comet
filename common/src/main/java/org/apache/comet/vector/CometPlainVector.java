@@ -70,6 +70,19 @@ public class CometPlainVector extends CometDecodedVector {
     this.isReused = isReused;
   }
 
+  /** Returns the cached value buffer memory address for direct access. */
+  public long getValueBufferAddress() {
+    return valueBufferAddress;
+  }
+
+  /** Returns the element size in bytes for fixed-width types, or -1 for variable-width. */
+  public int getElementSize() {
+    if (valueVector instanceof BaseFixedWidthVector) {
+      return ((BaseFixedWidthVector) valueVector).getTypeWidth();
+    }
+    return -1;
+  }
+
   @Override
   public void setNumNulls(int numNulls) {
     super.setNumNulls(numNulls);

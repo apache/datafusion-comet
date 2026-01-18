@@ -355,6 +355,61 @@ case class CometColumnarToRowExec(child: SparkPlan)
   }
 
   /**
+   * Generate optimized code for fixed-width primitive types using direct memory access. This
+   * caches the value buffer address per-batch and uses Platform.getXxx() for direct reads.
+   */
+  private def genCodeForFixedWidth(
+      ctx: CodegenContext,
+      columnVar: String,
+      ordinal: String,
+      valueBufferAddrVar: String,
+      dataType: DataType,
+      nullable: Boolean): ExprCode = {
+    val platformClz = "org.apache.spark.unsafe.Platform"
+    val javaType = CodeGenerator.javaType(dataType)
+
+    val isNullVar = if (nullable) {
+      JavaCode.isNullVariable(ctx.freshName("isNull"))
+    } else {
+      FalseLiteral
+    }
+    val valueVar = ctx.freshName("value")
+
+    // Determine the Platform method and element size based on data type
+    val (platformMethod, elementSize) = dataType match {
+      case ByteType => ("getByte", 1)
+      case ShortType => ("getShort", 2)
+      case IntegerType | DateType => ("getInt", 4)
+      case LongType | TimestampType => ("getLong", 8)
+      case FloatType => ("getFloat", 4)
+      case DoubleType => ("getDouble", 8)
+      case _ => throw new IllegalArgumentException(s"Unsupported fixed-width type: $dataType")
+    }
+
+    val str = s"fixedWidthVector[$columnVar, $ordinal, ${dataType.simpleString}]"
+    val addrExpr = s"$valueBufferAddrVar + (long) $ordinal * ${elementSize}L"
+    val readExpr = s"$platformClz.$platformMethod(null, $addrExpr)"
+    val code = code"${ctx.registerComment(str)}" + (if (nullable) {
+                                                      code"""
+        boolean $isNullVar = $columnVar.isNullAt($ordinal);
+        $javaType $valueVar = $isNullVar ?
+          ${CodeGenerator.defaultValue(dataType)} : $readExpr;
+      """
+                                                    } else {
+                                                      code"$javaType $valueVar = $readExpr;"
+                                                    })
+    ExprCode(code, isNullVar, JavaCode.variable(valueVar, dataType))
+  }
+
+  /** Check if a data type is a fixed-width primitive that can use direct memory access. */
+  private def isFixedWidthPrimitive(dataType: DataType): Boolean = dataType match {
+    case ByteType | ShortType | IntegerType | LongType => true
+    case FloatType | DoubleType => true
+    case DateType | TimestampType => true
+    case _ => false
+  }
+
+  /**
    * Produce code to process the input iterator as [[ColumnarBatch]]es. This produces an
    * [[org.apache.spark.sql.catalyst.expressions.UnsafeRow]] for each row in each batch.
    */
@@ -379,10 +434,11 @@ case class CometColumnarToRowExec(child: SparkPlan)
     val cometArrayClz = classOf[CometColumnarArray].getName
     val cometMapClz = classOf[CometColumnarMap].getName
     val cometRowClz = classOf[CometColumnarRow].getName
+    val cometPlainVectorClz = classOf[CometPlainVector].getName
 
     // For each column, create mutable state and assignment code.
-    // For ArrayType, MapType, and StructType, also create cached state for offset addresses,
-    // child vectors, and reusable wrapper objects.
+    // For ArrayType, MapType, StructType, and fixed-width primitives, also create cached state
+    // for offset addresses, child vectors, value buffer addresses, and reusable wrapper objects.
     case class ColumnInfo(
         colVar: String,
         assignCode: String,
@@ -393,7 +449,9 @@ case class CometColumnarToRowExec(child: SparkPlan)
         // For MapType: (offsetAddrVar, reusableMapVar)
         mapInfo: Option[(String, String)] = None,
         // For StructType: reusableRowVar
-        structInfo: Option[String] = None)
+        structInfo: Option[String] = None,
+        // For fixed-width primitives: valueBufferAddrVar
+        fixedWidthInfo: Option[String] = None)
 
     val columnInfos = output.zipWithIndex.map { case (attr, i) =>
       val colVarName = ctx.addMutableState(columnVectorClzs(i), s"colInstance$i")
@@ -463,6 +521,23 @@ case class CometColumnarToRowExec(child: SparkPlan)
             attr.nullable,
             structInfo = Some(reusableRowVar))
 
+        case dt if isFixedWidthPrimitive(dt) =>
+          val valueBufferAddrVar = ctx.addMutableState("long", s"valueBufferAddr$i")
+          // scalastyle:off line.size.limit
+          val extraAssign =
+            s"""
+               |if ($colVarName instanceof $cometPlainVectorClz) {
+               |  $valueBufferAddrVar = (($cometPlainVectorClz) $colVarName).getValueBufferAddress();
+               |}
+             """.stripMargin
+          // scalastyle:on line.size.limit
+          ColumnInfo(
+            colVarName,
+            baseAssign + extraAssign,
+            attr.dataType,
+            attr.nullable,
+            fixedWidthInfo = Some(valueBufferAddrVar))
+
         case _ =>
           ColumnInfo(colVarName, baseAssign, attr.dataType, attr.nullable)
       }
@@ -488,8 +563,8 @@ case class CometColumnarToRowExec(child: SparkPlan)
     ctx.currentVars = null
     val rowidx = ctx.freshName("rowIdx")
     val columnsBatchInput = columnInfos.map { info =>
-      (info.arrayInfo, info.mapInfo, info.structInfo) match {
-        case (Some((offsetAddrVar, reusableArrayVar)), _, _) =>
+      (info.arrayInfo, info.mapInfo, info.structInfo, info.fixedWidthInfo) match {
+        case (Some((offsetAddrVar, reusableArrayVar)), _, _, _) =>
           // Use optimized code generation for ArrayType with reusable wrapper
           genCodeForCometArray(
             ctx,
@@ -499,7 +574,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
             reusableArrayVar,
             info.dataType,
             info.nullable)
-        case (_, Some((offsetAddrVar, reusableMapVar)), _) =>
+        case (_, Some((offsetAddrVar, reusableMapVar)), _, _) =>
           // Use optimized code generation for MapType with reusable wrapper
           genCodeForCometMap(
             ctx,
@@ -509,13 +584,22 @@ case class CometColumnarToRowExec(child: SparkPlan)
             reusableMapVar,
             info.dataType,
             info.nullable)
-        case (_, _, Some(reusableRowVar)) =>
+        case (_, _, Some(reusableRowVar), _) =>
           // Use optimized code generation for StructType with reusable wrapper
           genCodeForCometStruct(
             ctx,
             info.colVar,
             rowidx,
             reusableRowVar,
+            info.dataType,
+            info.nullable)
+        case (_, _, _, Some(valueBufferAddrVar)) =>
+          // Use optimized code generation for fixed-width primitives with direct memory access
+          genCodeForFixedWidth(
+            ctx,
+            info.colVar,
+            rowidx,
+            valueBufferAddrVar,
             info.dataType,
             info.nullable)
         case _ =>
