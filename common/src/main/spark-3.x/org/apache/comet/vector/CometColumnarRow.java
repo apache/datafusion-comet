@@ -27,7 +27,6 @@ import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.Decimal;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.vectorized.ColumnVector;
-import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.types.CalendarInterval;
 import org.apache.spark.unsafe.types.UTF8String;
 
@@ -35,19 +34,11 @@ import org.apache.spark.unsafe.types.UTF8String;
  * A mutable implementation of InternalRow backed by a ColumnVector for struct types. Unlike Spark's
  * ColumnarRow which has final fields, this class allows updating the rowId to enable object reuse
  * across rows, reducing GC pressure.
- *
- * <p>This class also implements wrapper pooling for nested complex types (arrays, maps, structs) to
- * avoid per-field allocations when accessing nested data.
  */
 public class CometColumnarRow extends InternalRow {
   private ColumnVector data;
   private int rowId;
   private int numFields;
-
-  // Reusable wrappers for nested complex types, indexed by field ordinal
-  private CometColumnarArray[] reusableNestedArrays;
-  private CometColumnarMap[] reusableNestedMaps;
-  private CometColumnarRow[] reusableNestedRows;
 
   public CometColumnarRow(ColumnVector data) {
     this.data = data;
@@ -162,63 +153,17 @@ public class CometColumnarRow extends InternalRow {
 
   @Override
   public InternalRow getStruct(int ordinal, int numFields) {
-    ColumnVector child = data.getChild(ordinal);
-    if (child instanceof CometStructVector) {
-      if (reusableNestedRows == null) {
-        reusableNestedRows = new CometColumnarRow[this.numFields];
-      }
-      if (reusableNestedRows[ordinal] == null) {
-        reusableNestedRows[ordinal] = new CometColumnarRow(child);
-      }
-      reusableNestedRows[ordinal].update(rowId);
-      return reusableNestedRows[ordinal];
-    }
-    return child.getStruct(rowId);
+    return data.getChild(ordinal).getStruct(rowId);
   }
 
   @Override
   public ArrayData getArray(int ordinal) {
-    ColumnVector child = data.getChild(ordinal);
-    if (child instanceof CometListVector) {
-      CometListVector listVector = (CometListVector) child;
-      long offsetAddr = listVector.getOffsetBufferAddress();
-      int start = Platform.getInt(null, offsetAddr + (long) rowId * 4L);
-      int end = Platform.getInt(null, offsetAddr + (long) (rowId + 1) * 4L);
-      int len = end - start;
-
-      if (reusableNestedArrays == null) {
-        reusableNestedArrays = new CometColumnarArray[numFields];
-      }
-      if (reusableNestedArrays[ordinal] == null) {
-        reusableNestedArrays[ordinal] = new CometColumnarArray(listVector.getDataColumnVector());
-      }
-      reusableNestedArrays[ordinal].update(start, len);
-      return reusableNestedArrays[ordinal];
-    }
-    return child.getArray(rowId);
+    return data.getChild(ordinal).getArray(rowId);
   }
 
   @Override
   public MapData getMap(int ordinal) {
-    ColumnVector child = data.getChild(ordinal);
-    if (child instanceof CometMapVector) {
-      CometMapVector mapVector = (CometMapVector) child;
-      long offsetAddr = mapVector.getOffsetBufferAddress();
-      int start = Platform.getInt(null, offsetAddr + (long) rowId * 4L);
-      int end = Platform.getInt(null, offsetAddr + (long) (rowId + 1) * 4L);
-      int len = end - start;
-
-      if (reusableNestedMaps == null) {
-        reusableNestedMaps = new CometColumnarMap[numFields];
-      }
-      if (reusableNestedMaps[ordinal] == null) {
-        reusableNestedMaps[ordinal] =
-            new CometColumnarMap(mapVector.getKeysVector(), mapVector.getValuesVector());
-      }
-      reusableNestedMaps[ordinal].update(start, len);
-      return reusableNestedMaps[ordinal];
-    }
-    return child.getMap(rowId);
+    return data.getChild(ordinal).getMap(rowId);
   }
 
   @Override
