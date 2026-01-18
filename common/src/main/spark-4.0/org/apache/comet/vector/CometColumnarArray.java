@@ -19,11 +19,14 @@
 
 package org.apache.comet.vector;
 
+import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.catalyst.util.ArrayData;
 import org.apache.spark.sql.catalyst.util.GenericArrayData;
+import org.apache.spark.sql.catalyst.util.MapData;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.Decimal;
 import org.apache.spark.sql.vectorized.ColumnVector;
+import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.types.CalendarInterval;
 import org.apache.spark.unsafe.types.UTF8String;
 import org.apache.spark.unsafe.types.VariantVal;
@@ -32,11 +35,19 @@ import org.apache.spark.unsafe.types.VariantVal;
  * A mutable implementation of ArrayData backed by a ColumnVector. Unlike Spark's ColumnarArray
  * which has final fields, this class allows updating the offset and length to enable object reuse
  * across rows, reducing GC pressure.
+ *
+ * <p>This class also implements wrapper pooling for nested complex types (arrays, maps, structs) to
+ * avoid per-element allocations when accessing nested data.
  */
 public class CometColumnarArray extends ArrayData {
   private ColumnVector data;
   private int offset;
   private int length;
+
+  // Reusable wrappers for nested complex types to avoid per-element allocations
+  private CometColumnarArray reusableNestedArray;
+  private CometColumnarMap reusableNestedMap;
+  private CometColumnarRow reusableNestedRow;
 
   public CometColumnarArray(ColumnVector data) {
     this.data = data;
@@ -56,8 +67,14 @@ public class CometColumnarArray extends ArrayData {
     this.length = length;
   }
 
-  /** Updates both the data vector and the slice. */
+  /** Updates both the data vector and the slice. Resets nested wrappers when data changes. */
   public void update(ColumnVector data, int offset, int length) {
+    if (this.data != data) {
+      // Reset reusable wrappers when underlying data changes
+      this.reusableNestedArray = null;
+      this.reusableNestedMap = null;
+      this.reusableNestedRow = null;
+    }
     this.data = data;
     this.offset = offset;
     this.length = length;
@@ -163,17 +180,54 @@ public class CometColumnarArray extends ArrayData {
 
   @Override
   public ArrayData getArray(int ordinal) {
-    return data.getArray(offset + ordinal);
+    int idx = offset + ordinal;
+    if (data instanceof CometListVector) {
+      CometListVector listVector = (CometListVector) data;
+      long offsetAddr = listVector.getOffsetBufferAddress();
+      int start = Platform.getInt(null, offsetAddr + (long) idx * 4L);
+      int end = Platform.getInt(null, offsetAddr + (long) (idx + 1) * 4L);
+      int len = end - start;
+
+      if (reusableNestedArray == null) {
+        reusableNestedArray = new CometColumnarArray(listVector.getDataColumnVector());
+      }
+      reusableNestedArray.update(start, len);
+      return reusableNestedArray;
+    }
+    return data.getArray(idx);
   }
 
   @Override
-  public org.apache.spark.sql.catalyst.util.MapData getMap(int ordinal) {
-    return data.getMap(offset + ordinal);
+  public MapData getMap(int ordinal) {
+    int idx = offset + ordinal;
+    if (data instanceof CometMapVector) {
+      CometMapVector mapVector = (CometMapVector) data;
+      long offsetAddr = mapVector.getOffsetBufferAddress();
+      int start = Platform.getInt(null, offsetAddr + (long) idx * 4L);
+      int end = Platform.getInt(null, offsetAddr + (long) (idx + 1) * 4L);
+      int len = end - start;
+
+      if (reusableNestedMap == null) {
+        reusableNestedMap =
+            new CometColumnarMap(mapVector.getKeysVector(), mapVector.getValuesVector());
+      }
+      reusableNestedMap.update(start, len);
+      return reusableNestedMap;
+    }
+    return data.getMap(idx);
   }
 
   @Override
-  public org.apache.spark.sql.catalyst.InternalRow getStruct(int ordinal, int numFields) {
-    return data.getStruct(offset + ordinal);
+  public InternalRow getStruct(int ordinal, int numFields) {
+    int idx = offset + ordinal;
+    if (data instanceof CometStructVector) {
+      if (reusableNestedRow == null) {
+        reusableNestedRow = new CometColumnarRow(data);
+      }
+      reusableNestedRow.update(idx);
+      return reusableNestedRow;
+    }
+    return data.getStruct(idx);
   }
 
   @Override
