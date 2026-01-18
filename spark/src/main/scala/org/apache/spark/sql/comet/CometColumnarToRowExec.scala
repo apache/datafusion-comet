@@ -45,7 +45,7 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.{SparkFatalException, Utils}
 import org.apache.spark.util.io.ChunkedByteBuffer
 
-import org.apache.comet.vector.CometPlainVector
+import org.apache.comet.vector.{CometColumnarArray, CometColumnarMap, CometColumnarRow, CometListVector, CometMapVector, CometPlainVector, CometStructVector}
 
 /**
  * Copied from Spark `ColumnarToRowExec`. Comet needs the fix for SPARK-50235 but cannot wait for
@@ -210,6 +210,151 @@ case class CometColumnarToRowExec(child: SparkPlan)
   }
 
   /**
+   * Generate optimized code for ArrayType columns using Comet's direct memory access. This caches
+   * the offset buffer address and data vector per-batch, and reuses a CometColumnarArray instance
+   * to avoid object allocation per-row.
+   */
+  private def genCodeForCometArray(
+      ctx: CodegenContext,
+      columnVar: String,
+      ordinal: String,
+      offsetAddrVar: String,
+      reusableArrayVar: String,
+      dataType: DataType,
+      nullable: Boolean): ExprCode = {
+    val cometArrayClz = classOf[CometColumnarArray].getName
+    val platformClz = "org.apache.spark.unsafe.Platform"
+
+    val isNullVar = if (nullable) {
+      JavaCode.isNullVariable(ctx.freshName("isNull"))
+    } else {
+      FalseLiteral
+    }
+    val valueVar = ctx.freshName("value")
+    val startVar = ctx.freshName("start")
+    val endVar = ctx.freshName("end")
+    val lenVar = ctx.freshName("len")
+
+    val str = s"cometArrayVector[$columnVar, $ordinal]"
+    // scalastyle:off line.size.limit
+    val code = code"${ctx.registerComment(str)}" + (if (nullable) {
+                                                      code"""
+        boolean $isNullVar = $columnVar.isNullAt($ordinal);
+        $cometArrayClz $valueVar = null;
+        if (!$isNullVar) {
+          int $startVar = $platformClz.getInt(null, $offsetAddrVar + (long) $ordinal * 4L);
+          int $endVar = $platformClz.getInt(null, $offsetAddrVar + (long) ($ordinal + 1) * 4L);
+          int $lenVar = $endVar - $startVar;
+          $reusableArrayVar.update($startVar, $lenVar);
+          $valueVar = $reusableArrayVar;
+        }
+      """
+                                                    } else {
+                                                      code"""
+        int $startVar = $platformClz.getInt(null, $offsetAddrVar + (long) $ordinal * 4L);
+        int $endVar = $platformClz.getInt(null, $offsetAddrVar + (long) ($ordinal + 1) * 4L);
+        int $lenVar = $endVar - $startVar;
+        $reusableArrayVar.update($startVar, $lenVar);
+        $cometArrayClz $valueVar = $reusableArrayVar;
+      """
+                                                    })
+    // scalastyle:on line.size.limit
+    ExprCode(code, isNullVar, JavaCode.variable(valueVar, dataType))
+  }
+
+  /**
+   * Generate optimized code for MapType columns using Comet's direct memory access. This caches
+   * the offset buffer address, keys vector, and values vector per-batch, and reuses a
+   * CometColumnarMap instance to avoid object allocation per-row.
+   */
+  private def genCodeForCometMap(
+      ctx: CodegenContext,
+      columnVar: String,
+      ordinal: String,
+      offsetAddrVar: String,
+      reusableMapVar: String,
+      dataType: DataType,
+      nullable: Boolean): ExprCode = {
+    val cometMapClz = classOf[CometColumnarMap].getName
+    val platformClz = "org.apache.spark.unsafe.Platform"
+
+    val isNullVar = if (nullable) {
+      JavaCode.isNullVariable(ctx.freshName("isNull"))
+    } else {
+      FalseLiteral
+    }
+    val valueVar = ctx.freshName("value")
+    val startVar = ctx.freshName("start")
+    val endVar = ctx.freshName("end")
+    val lenVar = ctx.freshName("len")
+
+    val str = s"cometMapVector[$columnVar, $ordinal]"
+    // scalastyle:off line.size.limit
+    val code = code"${ctx.registerComment(str)}" + (if (nullable) {
+                                                      code"""
+        boolean $isNullVar = $columnVar.isNullAt($ordinal);
+        $cometMapClz $valueVar = null;
+        if (!$isNullVar) {
+          int $startVar = $platformClz.getInt(null, $offsetAddrVar + (long) $ordinal * 4L);
+          int $endVar = $platformClz.getInt(null, $offsetAddrVar + (long) ($ordinal + 1) * 4L);
+          int $lenVar = $endVar - $startVar;
+          $reusableMapVar.update($startVar, $lenVar);
+          $valueVar = $reusableMapVar;
+        }
+      """
+                                                    } else {
+                                                      code"""
+        int $startVar = $platformClz.getInt(null, $offsetAddrVar + (long) $ordinal * 4L);
+        int $endVar = $platformClz.getInt(null, $offsetAddrVar + (long) ($ordinal + 1) * 4L);
+        int $lenVar = $endVar - $startVar;
+        $reusableMapVar.update($startVar, $lenVar);
+        $cometMapClz $valueVar = $reusableMapVar;
+      """
+                                                    })
+    // scalastyle:on line.size.limit
+    ExprCode(code, isNullVar, JavaCode.variable(valueVar, dataType))
+  }
+
+  /**
+   * Generate optimized code for StructType columns using a reusable CometColumnarRow. This avoids
+   * creating a new ColumnarRow object per-row.
+   */
+  private def genCodeForCometStruct(
+      ctx: CodegenContext,
+      columnVar: String,
+      ordinal: String,
+      reusableRowVar: String,
+      dataType: DataType,
+      nullable: Boolean): ExprCode = {
+    val cometRowClz = classOf[CometColumnarRow].getName
+
+    val isNullVar = if (nullable) {
+      JavaCode.isNullVariable(ctx.freshName("isNull"))
+    } else {
+      FalseLiteral
+    }
+    val valueVar = ctx.freshName("value")
+
+    val str = s"cometStructVector[$columnVar, $ordinal]"
+    val code = code"${ctx.registerComment(str)}" + (if (nullable) {
+                                                      code"""
+        boolean $isNullVar = $columnVar.isNullAt($ordinal);
+        $cometRowClz $valueVar = null;
+        if (!$isNullVar) {
+          $reusableRowVar.update($ordinal);
+          $valueVar = $reusableRowVar;
+        }
+      """
+                                                    } else {
+                                                      code"""
+        $reusableRowVar.update($ordinal);
+        $cometRowClz $valueVar = $reusableRowVar;
+      """
+                                                    })
+    ExprCode(code, isNullVar, JavaCode.variable(valueVar, dataType))
+  }
+
+  /**
    * Produce code to process the input iterator as [[ColumnarBatch]]es. This produces an
    * [[org.apache.spark.sql.catalyst.expressions.UnsafeRow]] for each row in each batch.
    */
@@ -227,11 +372,104 @@ case class CometColumnarToRowExec(child: SparkPlan)
     val idx = ctx.addMutableState(CodeGenerator.JAVA_INT, "batchIdx") // init as batchIdx = 0
     val columnVectorClzs =
       child.vectorTypes.getOrElse(Seq.fill(output.indices.size)(classOf[ColumnVector].getName))
-    val (colVars, columnAssigns) = columnVectorClzs.zipWithIndex.map {
-      case (columnVectorClz, i) =>
-        val name = ctx.addMutableState(columnVectorClz, s"colInstance$i")
-        (name, s"$name = ($columnVectorClz) $batch.column($i);")
-    }.unzip
+    val columnVectorClz = classOf[ColumnVector].getName
+    val cometListVectorClz = classOf[CometListVector].getName
+    val cometMapVectorClz = classOf[CometMapVector].getName
+    val cometStructVectorClz = classOf[CometStructVector].getName
+    val cometArrayClz = classOf[CometColumnarArray].getName
+    val cometMapClz = classOf[CometColumnarMap].getName
+    val cometRowClz = classOf[CometColumnarRow].getName
+
+    // For each column, create mutable state and assignment code.
+    // For ArrayType, MapType, and StructType, also create cached state for offset addresses,
+    // child vectors, and reusable wrapper objects.
+    case class ColumnInfo(
+        colVar: String,
+        assignCode: String,
+        dataType: DataType,
+        nullable: Boolean,
+        // For ArrayType: (offsetAddrVar, reusableArrayVar)
+        arrayInfo: Option[(String, String)] = None,
+        // For MapType: (offsetAddrVar, reusableMapVar)
+        mapInfo: Option[(String, String)] = None,
+        // For StructType: reusableRowVar
+        structInfo: Option[String] = None)
+
+    val columnInfos = output.zipWithIndex.map { case (attr, i) =>
+      val colVarName = ctx.addMutableState(columnVectorClzs(i), s"colInstance$i")
+      val baseAssign = s"$colVarName = (${columnVectorClzs(i)}) $batch.column($i);"
+
+      attr.dataType match {
+        case _: ArrayType =>
+          val offsetAddrVar = ctx.addMutableState("long", s"arrayOffsetAddr$i")
+          val dataColVar = ctx.freshName(s"arrayDataCol$i")
+          val reusableArrayVar = ctx.addMutableState(cometArrayClz, s"reusableArray$i")
+          // scalastyle:off line.size.limit
+          val extraAssign =
+            s"""
+               |if ($colVarName instanceof $cometListVectorClz) {
+               |  $cometListVectorClz cometList$i = ($cometListVectorClz) $colVarName;
+               |  $offsetAddrVar = cometList$i.getOffsetBufferAddress();
+               |  $columnVectorClz $dataColVar = cometList$i.getDataColumnVector();
+               |  $reusableArrayVar = new $cometArrayClz($dataColVar);
+               |}
+             """.stripMargin
+          // scalastyle:on line.size.limit
+          ColumnInfo(
+            colVarName,
+            baseAssign + extraAssign,
+            attr.dataType,
+            attr.nullable,
+            arrayInfo = Some((offsetAddrVar, reusableArrayVar)))
+
+        case _: MapType =>
+          val offsetAddrVar = ctx.addMutableState("long", s"mapOffsetAddr$i")
+          val keysColVar = ctx.freshName(s"mapKeysCol$i")
+          val valuesColVar = ctx.freshName(s"mapValuesCol$i")
+          val reusableMapVar = ctx.addMutableState(cometMapClz, s"reusableMap$i")
+          // scalastyle:off line.size.limit
+          val extraAssign =
+            s"""
+               |if ($colVarName instanceof $cometMapVectorClz) {
+               |  $cometMapVectorClz cometMap$i = ($cometMapVectorClz) $colVarName;
+               |  $offsetAddrVar = cometMap$i.getOffsetBufferAddress();
+               |  $columnVectorClz $keysColVar = cometMap$i.getKeysVector();
+               |  $columnVectorClz $valuesColVar = cometMap$i.getValuesVector();
+               |  $reusableMapVar = new $cometMapClz($keysColVar, $valuesColVar);
+               |}
+             """.stripMargin
+          // scalastyle:on line.size.limit
+          ColumnInfo(
+            colVarName,
+            baseAssign + extraAssign,
+            attr.dataType,
+            attr.nullable,
+            mapInfo = Some((offsetAddrVar, reusableMapVar)))
+
+        case _: StructType =>
+          val reusableRowVar = ctx.addMutableState(cometRowClz, s"reusableRow$i")
+          // scalastyle:off line.size.limit
+          val extraAssign =
+            s"""
+               |if ($colVarName instanceof $cometStructVectorClz) {
+               |  $reusableRowVar = new $cometRowClz($colVarName);
+               |}
+             """.stripMargin
+          // scalastyle:on line.size.limit
+          ColumnInfo(
+            colVarName,
+            baseAssign + extraAssign,
+            attr.dataType,
+            attr.nullable,
+            structInfo = Some(reusableRowVar))
+
+        case _ =>
+          ColumnInfo(colVarName, baseAssign, attr.dataType, attr.nullable)
+      }
+    }
+
+    val colVars = columnInfos.map(_.colVar)
+    val columnAssigns = columnInfos.map(_.assignCode)
 
     val nextBatch = ctx.freshName("nextBatch")
     val nextBatchFuncName = ctx.addNewFunction(
@@ -249,8 +487,41 @@ case class CometColumnarToRowExec(child: SparkPlan)
 
     ctx.currentVars = null
     val rowidx = ctx.freshName("rowIdx")
-    val columnsBatchInput = (output zip colVars).map { case (attr, colVar) =>
-      genCodeColumnVector(ctx, colVar, rowidx, attr.dataType, attr.nullable)
+    val columnsBatchInput = columnInfos.map { info =>
+      (info.arrayInfo, info.mapInfo, info.structInfo) match {
+        case (Some((offsetAddrVar, reusableArrayVar)), _, _) =>
+          // Use optimized code generation for ArrayType with reusable wrapper
+          genCodeForCometArray(
+            ctx,
+            info.colVar,
+            rowidx,
+            offsetAddrVar,
+            reusableArrayVar,
+            info.dataType,
+            info.nullable)
+        case (_, Some((offsetAddrVar, reusableMapVar)), _) =>
+          // Use optimized code generation for MapType with reusable wrapper
+          genCodeForCometMap(
+            ctx,
+            info.colVar,
+            rowidx,
+            offsetAddrVar,
+            reusableMapVar,
+            info.dataType,
+            info.nullable)
+        case (_, _, Some(reusableRowVar)) =>
+          // Use optimized code generation for StructType with reusable wrapper
+          genCodeForCometStruct(
+            ctx,
+            info.colVar,
+            rowidx,
+            reusableRowVar,
+            info.dataType,
+            info.nullable)
+        case _ =>
+          // Use standard code generation for other types
+          genCodeColumnVector(ctx, info.colVar, rowidx, info.dataType, info.nullable)
+      }
     }
     val localIdx = ctx.freshName("localIdx")
     val localEnd = ctx.freshName("localEnd")
