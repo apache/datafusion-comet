@@ -1025,6 +1025,10 @@ fn cast_array(
             cast_string_to_timestamp(&array, to_type, eval_mode, &cast_options.timezone)
         }
         (Utf8, Date32) => cast_string_to_date(&array, to_type, eval_mode),
+        (Date32, Int32) => {
+            // Date32 is stored as days since epoch (i32), so this is a simple reinterpret cast
+            Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
+        }
         (Utf8, Float32 | Float64) => cast_string_to_float(&array, to_type, eval_mode),
         (Utf8 | LargeUtf8, Decimal128(precision, scale)) => {
             cast_string_to_decimal(&array, to_type, precision, scale, eval_mode)
@@ -1318,7 +1322,7 @@ fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> b
                 | DataType::Utf8 // note that there can be formatting differences
         ),
         DataType::Utf8 => matches!(to_type, DataType::Binary),
-        DataType::Date32 => matches!(to_type, DataType::Utf8),
+        DataType::Date32 => matches!(to_type, DataType::Int32 | DataType::Utf8),
         DataType::Timestamp(_, _) => {
             matches!(
                 to_type,

@@ -358,7 +358,7 @@ fn value_field(entries_field: &FieldRef) -> Option<FieldRef> {
     }
 }
 
-fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>) -> bool {
+pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>) -> bool {
     const COMET_LIBHDFS_SCHEMES_KEY: &str = "fs.comet.libhdfs.schemes";
     let scheme = url.scheme();
     if let Some(libhdfs_schemes) = object_store_configs.get(COMET_LIBHDFS_SCHEMES_KEY) {
@@ -387,20 +387,26 @@ fn create_hdfs_object_store(
     }
 }
 
-// Creates an HDFS object store from a URL using OpenDAL
+// Creates an OpenDAL HDFS Operator from a URL with optional configuration
 #[cfg(feature = "hdfs-opendal")]
-fn create_hdfs_object_store(
-    url: &Url,
-) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+pub(crate) fn create_hdfs_operator(url: &Url) -> Result<opendal::Operator, object_store::Error> {
     let name_node = get_name_node_uri(url)?;
     let builder = opendal::services::Hdfs::default().name_node(&name_node);
 
-    let op = opendal::Operator::new(builder)
+    opendal::Operator::new(builder)
         .map_err(|error| object_store::Error::Generic {
             store: "hdfs-opendal",
             source: error.into(),
-        })?
-        .finish();
+        })
+        .map(|op| op.finish())
+}
+
+// Creates an HDFS object store from a URL using OpenDAL
+#[cfg(feature = "hdfs-opendal")]
+pub(crate) fn create_hdfs_object_store(
+    url: &Url,
+) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+    let op = create_hdfs_operator(url)?;
     let store = object_store_opendal::OpendalStore::new(op);
     let path = Path::parse(url.path())?;
     Ok((Box::new(store), path))

@@ -21,11 +21,14 @@ under the License.
 
 [![Apache licensed][license-badge]][license-url]
 [![Discord chat][discord-badge]][discord-url]
+[![Pending PRs][pending-pr-badge]][pending-pr-url]
 
 [license-badge]: https://img.shields.io/badge/license-Apache%20v2-blue.svg
 [license-url]: https://github.com/apache/datafusion-comet/blob/main/LICENSE.txt
 [discord-badge]: https://img.shields.io/discord/885562378132000778.svg?logo=discord&style=flat-square
 [discord-url]: https://discord.gg/3EAr4ZX6JK
+[pending-pr-badge]: https://img.shields.io/github/issues-search/apache/datafusion-comet?query=is%3Apr+is%3Aopen+draft%3Afalse+review%3Arequired+status%3Asuccess&label=Pending%20PRs&logo=github
+[pending-pr-url]: https://github.com/apache/datafusion-comet/pulls?q=is%3Apr+is%3Aopen+draft%3Afalse+review%3Arequired+status%3Asuccess+sort%3Aupdated-desc
 
 <img src="docs/source/_static/images/DataFusionComet-Logo-Light.png" width="512" alt="logo"/>
 

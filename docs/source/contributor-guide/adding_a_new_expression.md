@@ -236,6 +236,29 @@ test("unhex") {
 }
 ```
 
+#### Testing with Literal Values
+
+When writing tests that use literal values (e.g., `SELECT my_func('literal')`), Spark's constant folding optimizer may evaluate the expression at planning time rather than execution time. This means your Comet implementation might not actually be exercised during the test.
+
+To ensure literal expressions are executed by Comet, disable the constant folding optimizer:
+
+```scala
+test("my_func with literals") {
+  withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+      "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+    checkSparkAnswerAndOperator("SELECT my_func('literal_value')")
+  }
+}
+```
+
+This is particularly important for:
+
+- Edge case tests using specific literal values (e.g., null handling, overflow conditions)
+- Tests verifying behavior with special input values
+- Any test where the expression inputs are entirely literal
+
+When possible, prefer testing with column references from tables (as shown in the `unhex` example above), which naturally avoids the constant folding issue.
+
 ### Adding the Expression To the Protobuf Definition
 
 Once you have the expression implemented in Scala, you might need to update the protobuf definition to include the new expression. You may not need to do this if the expression is already covered by the existing protobuf definition (e.g. you're adding a new scalar function that uses the `ScalarFunc` message).
