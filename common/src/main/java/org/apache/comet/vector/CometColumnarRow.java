@@ -166,6 +166,11 @@ public class CometColumnarRow extends InternalRow {
     return data.getChild(ordinal).getMap(rowId);
   }
 
+  // Note: getVariant is added in Spark 4.x, no @Override to maintain Spark 3.x compatibility
+  public Object getVariant(int ordinal) {
+    throw new UnsupportedOperationException("Variant type is not supported");
+  }
+
   @Override
   public Object get(int ordinal, DataType dataType) {
     if (isNullAt(ordinal)) {
