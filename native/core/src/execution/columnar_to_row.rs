@@ -278,7 +278,9 @@ fn get_field_value(data_type: &DataType, array: &ArrayRef, row_idx: usize) -> Co
         }
         // Variable-length types use placeholder (will be overwritten)
         DataType::Utf8
+        | DataType::LargeUtf8
         | DataType::Binary
+        | DataType::LargeBinary
         | DataType::Decimal128(_, _)
         | DataType::Struct(_)
         | DataType::List(_)
@@ -301,8 +303,16 @@ fn get_variable_length_data(
             let arr = array.as_any().downcast_ref::<StringArray>().unwrap();
             Ok(Some(arr.value(row_idx).as_bytes().to_vec()))
         }
+        DataType::LargeUtf8 => {
+            let arr = array.as_any().downcast_ref::<LargeStringArray>().unwrap();
+            Ok(Some(arr.value(row_idx).as_bytes().to_vec()))
+        }
         DataType::Binary => {
             let arr = array.as_any().downcast_ref::<BinaryArray>().unwrap();
+            Ok(Some(arr.value(row_idx).to_vec()))
+        }
+        DataType::LargeBinary => {
+            let arr = array.as_any().downcast_ref::<LargeBinaryArray>().unwrap();
             Ok(Some(arr.value(row_idx).to_vec()))
         }
         DataType::Decimal128(precision, _) if *precision > MAX_LONG_DIGITS => {
@@ -357,6 +367,51 @@ fn i128_to_spark_decimal_bytes(value: i128) -> Vec<u8> {
 #[inline]
 const fn round_up_to_8(value: usize) -> usize {
     value.div_ceil(8) * 8
+}
+
+/// Gets the element size in bytes for UnsafeArrayData.
+/// Unlike UnsafeRow fields which are always 8 bytes, UnsafeArrayData uses
+/// the actual primitive size for fixed-width types.
+fn get_element_size(data_type: &DataType) -> usize {
+    match data_type {
+        DataType::Boolean => 1,
+        DataType::Int8 => 1,
+        DataType::Int16 => 2,
+        DataType::Int32 => 4,
+        DataType::Int64 => 8,
+        DataType::Float32 => 4,
+        DataType::Float64 => 8,
+        DataType::Date32 => 4,
+        DataType::Timestamp(_, _) => 8,
+        DataType::Decimal128(precision, _) if *precision <= MAX_LONG_DIGITS => 8,
+        // Variable-length types use 8 bytes for offset+length
+        _ => 8,
+    }
+}
+
+/// Writes a primitive value with the correct size for UnsafeArrayData.
+fn write_array_element(buffer: &mut Vec<u8>, data_type: &DataType, value: i64, offset: usize) {
+    match data_type {
+        DataType::Boolean => {
+            buffer[offset] = if value != 0 { 1 } else { 0 };
+        }
+        DataType::Int8 => {
+            buffer[offset] = value as u8;
+        }
+        DataType::Int16 => {
+            buffer[offset..offset + 2].copy_from_slice(&(value as i16).to_le_bytes());
+        }
+        DataType::Int32 | DataType::Date32 => {
+            buffer[offset..offset + 4].copy_from_slice(&(value as i32).to_le_bytes());
+        }
+        DataType::Float32 => {
+            buffer[offset..offset + 4].copy_from_slice(&(value as u32).to_le_bytes());
+        }
+        // All 8-byte types
+        _ => {
+            buffer[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+    }
 }
 
 /// Writes a nested struct value to bytes.
@@ -418,9 +473,14 @@ fn write_list_data(
 ) -> CometResult<Vec<u8>> {
     let values = list_array.value(row_idx);
     let num_elements = values.len();
+    let element_type = element_field.data_type();
+    let element_size = get_element_size(element_type);
 
     // UnsafeArrayData format:
-    // [numElements: 8 bytes][null bitset][element offsets or values]
+    // [numElements: 8 bytes][null bitset][elements with type-specific size]
+    // The null bitset is aligned to 8 bytes.
+    // For primitive types, elements use their natural size (e.g., 4 bytes for INT).
+    // For variable-length types, elements use 8 bytes (offset + length).
 
     let element_bitset_width = ColumnarToRowContext::calculate_bitset_width(num_elements);
     let mut buffer = Vec::new();
@@ -444,19 +504,20 @@ fn write_list_data(
         }
     }
 
-    // Write element values (8 bytes each for fixed-width or offset+length for variable)
+    // Write element values using type-specific element size
     let elements_start = buffer.len();
-    buffer.resize(elements_start + num_elements * 8, 0);
+    let elements_total_size = round_up_to_8(num_elements * element_size);
+    buffer.resize(elements_start + elements_total_size, 0);
 
     for i in 0..num_elements {
         if !values.is_null(i) {
-            let slot_offset = elements_start + i * 8;
-            let value = get_field_value(element_field.data_type(), &values, i)?;
-            buffer[slot_offset..slot_offset + 8].copy_from_slice(&value.to_le_bytes());
+            let slot_offset = elements_start + i * element_size;
+            let value = get_field_value(element_type, &values, i)?;
+            write_array_element(&mut buffer, element_type, value, slot_offset);
 
             // Handle variable-length element data
-            if let Some(var_data) = get_variable_length_data(element_field.data_type(), &values, i)?
-            {
+            if let Some(var_data) = get_variable_length_data(element_type, &values, i)? {
+                // Offset is relative to the array base (buffer position 0 since this is a fresh Vec)
                 let current_offset = buffer.len();
                 let len = var_data.len();
 
@@ -479,15 +540,46 @@ fn write_map_data(
     row_idx: usize,
     entries_field: &arrow::datatypes::FieldRef,
 ) -> CometResult<Vec<u8>> {
-    let entries = map_array.value(row_idx);
-
     // UnsafeMapData format:
     // [key array size: 8 bytes][key array data][value array data]
 
-    // Get keys and values from the struct array entries
-    let keys = entries.column(0);
-    let values = entries.column(1);
-    let num_entries = keys.len();
+    // Use map_array.value() to get the entries for this row.
+    // This properly handles any offset in the MapArray (e.g., from slicing or FFI).
+    let entries = map_array.value(row_idx);
+    let num_entries = entries.len();
+
+    // Get the key and value columns from the entries StructArray.
+    // entries.column() returns &ArrayRef, so we clone to get owned ArrayRef
+    // for easier manipulation.
+    let keys = entries.column(0).clone();
+    let values = entries.column(1).clone();
+
+    // Check if the column lengths match. If they don't, we may have an FFI issue
+    // where the StructArray's columns weren't properly sliced.
+    if keys.len() != num_entries || values.len() != num_entries {
+        // The columns have different lengths than the entries, which suggests
+        // they weren't properly sliced when the StructArray was created.
+        // This can happen with FFI-imported data. We need to manually slice.
+        return Err(CometError::Internal(format!(
+            "Map entries column length mismatch: entries.len()={}, keys.len()={}, values.len()={}",
+            num_entries,
+            keys.len(),
+            values.len()
+        )));
+    }
+
+    // Get the key and value types from the entries struct field
+    let (key_type, value_type) = if let DataType::Struct(fields) = entries_field.data_type() {
+        (fields[0].data_type().clone(), fields[1].data_type().clone())
+    } else {
+        return Err(CometError::Internal(format!(
+            "Map entries field is not a struct: {:?}",
+            entries_field.data_type()
+        )));
+    };
+
+    let key_element_size = get_element_size(&key_type);
+    let value_element_size = get_element_size(&value_type);
 
     let mut buffer = Vec::new();
 
@@ -505,27 +597,26 @@ fn write_map_data(
 
     // Map keys are not nullable in Spark, but we write the bitset anyway
     let key_elements_start = buffer.len();
-    buffer.resize(key_elements_start + num_entries * 8, 0);
+    let key_elements_size = round_up_to_8(num_entries * key_element_size);
+    buffer.resize(key_elements_start + key_elements_size, 0);
 
-    if let DataType::Struct(fields) = entries_field.data_type() {
-        let key_type = fields[0].data_type();
-        for i in 0..num_entries {
-            let slot_offset = key_elements_start + i * 8;
-            let value = get_field_value(key_type, keys, i)?;
-            buffer[slot_offset..slot_offset + 8].copy_from_slice(&value.to_le_bytes());
+    for i in 0..num_entries {
+        let slot_offset = key_elements_start + i * key_element_size;
+        let value = get_field_value(&key_type, &keys, i)?;
+        write_array_element(&mut buffer, &key_type, value, slot_offset);
 
-            // Handle variable-length key data
-            if let Some(var_data) = get_variable_length_data(key_type, keys, i)? {
-                let current_offset = buffer.len();
-                let len = var_data.len();
+        // Handle variable-length key data
+        if let Some(var_data) = get_variable_length_data(&key_type, &keys, i)? {
+            // Offset must be relative to the key array base (where numElements is)
+            let current_offset = buffer.len() - key_array_start;
+            let len = var_data.len();
 
-                buffer.extend_from_slice(&var_data);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
+            buffer.extend_from_slice(&var_data);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
 
-                let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
-                buffer[slot_offset..slot_offset + 8].copy_from_slice(&offset_and_len.to_le_bytes());
-            }
+            let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
+            buffer[slot_offset..slot_offset + 8].copy_from_slice(&offset_and_len.to_le_bytes());
         }
     }
 
@@ -533,6 +624,7 @@ fn write_map_data(
     buffer[key_size_offset..key_size_offset + 8].copy_from_slice(&key_array_size.to_le_bytes());
 
     // Write value array
+    let value_array_start = buffer.len();
     buffer.extend_from_slice(&(num_entries as i64).to_le_bytes());
 
     let value_bitset_width = ColumnarToRowContext::calculate_bitset_width(num_entries);
@@ -552,29 +644,28 @@ fn write_map_data(
     }
 
     let value_elements_start = buffer.len();
-    buffer.resize(value_elements_start + num_entries * 8, 0);
+    let value_elements_size = round_up_to_8(num_entries * value_element_size);
+    buffer.resize(value_elements_start + value_elements_size, 0);
 
-    if let DataType::Struct(fields) = entries_field.data_type() {
-        let value_type = fields[1].data_type();
-        for i in 0..num_entries {
-            if !values.is_null(i) {
-                let slot_offset = value_elements_start + i * 8;
-                let value = get_field_value(value_type, values, i)?;
-                buffer[slot_offset..slot_offset + 8].copy_from_slice(&value.to_le_bytes());
+    for i in 0..num_entries {
+        if !values.is_null(i) {
+            let slot_offset = value_elements_start + i * value_element_size;
+            let value = get_field_value(&value_type, &values, i)?;
+            write_array_element(&mut buffer, &value_type, value, slot_offset);
 
-                // Handle variable-length value data
-                if let Some(var_data) = get_variable_length_data(value_type, values, i)? {
-                    let current_offset = buffer.len();
-                    let len = var_data.len();
+            // Handle variable-length value data
+            if let Some(var_data) = get_variable_length_data(&value_type, &values, i)? {
+                // Offset must be relative to the value array base (where numElements is)
+                let current_offset = buffer.len() - value_array_start;
+                let len = var_data.len();
 
-                    buffer.extend_from_slice(&var_data);
-                    let padding = round_up_to_8(len) - len;
-                    buffer.extend(std::iter::repeat_n(0u8, padding));
+                buffer.extend_from_slice(&var_data);
+                let padding = round_up_to_8(len) - len;
+                buffer.extend(std::iter::repeat_n(0u8, padding));
 
-                    let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
-                    buffer[slot_offset..slot_offset + 8]
-                        .copy_from_slice(&offset_and_len.to_le_bytes());
-                }
+                let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
+                buffer[slot_offset..slot_offset + 8]
+                    .copy_from_slice(&offset_and_len.to_le_bytes());
             }
         }
     }
@@ -681,5 +772,335 @@ mod tests {
         // Test zero
         let bytes = i128_to_spark_decimal_bytes(0);
         assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn test_list_data_conversion() {
+        use arrow::datatypes::Field;
+
+        // Create a list with elements [0, 1, 2, 3, 4]
+        let values = Int32Array::from(vec![0, 1, 2, 3, 4]);
+        let offsets = arrow::buffer::OffsetBuffer::new(vec![0, 5].into());
+
+        let list_field = Arc::new(Field::new("item", DataType::Int32, true));
+        let list_array = ListArray::new(list_field.clone(), offsets, Arc::new(values), None);
+
+        // Convert the list for row 0
+        let result = write_list_data(&list_array, 0, &list_field).expect("conversion failed");
+
+        // UnsafeArrayData format for Int32:
+        // [0..8]: numElements = 5
+        // [8..16]: null bitset (8 bytes for up to 64 elements)
+        // [16..20]: element 0 (4 bytes for Int32)
+        // [20..24]: element 1 (4 bytes for Int32)
+        // ... (total 20 bytes for 5 elements, rounded up to 24 for 8-byte alignment)
+
+        let num_elements =
+            i64::from_le_bytes(result[0..8].try_into().unwrap());
+        assert_eq!(num_elements, 5, "should have 5 elements");
+
+        let bitset_width = ColumnarToRowContext::calculate_bitset_width(5);
+        assert_eq!(bitset_width, 8);
+
+        // Read each element value (Int32 uses 4 bytes per element)
+        let element_size = 4; // Int32
+        for i in 0..5 {
+            let slot_offset = 8 + bitset_width + i * element_size;
+            let value = i32::from_le_bytes(
+                result[slot_offset..slot_offset + 4].try_into().unwrap()
+            );
+            assert_eq!(value, i as i32, "element {} should be {}", i, i);
+        }
+    }
+
+    #[test]
+    fn test_list_data_conversion_multiple_rows() {
+        use arrow::datatypes::Field;
+
+        // Create multiple lists:
+        // Row 0: [0]
+        // Row 1: [0, 1]
+        // Row 2: [0, 1, 2]
+        let values = Int32Array::from(vec![
+            0,      // row 0
+            0, 1,   // row 1
+            0, 1, 2, // row 2
+        ]);
+        let offsets = arrow::buffer::OffsetBuffer::new(vec![0, 1, 3, 6].into());
+
+        let list_field = Arc::new(Field::new("item", DataType::Int32, true));
+        let list_array = ListArray::new(list_field.clone(), offsets, Arc::new(values), None);
+
+        // Test row 1 which has elements [0, 1]
+        let result = write_list_data(&list_array, 1, &list_field).expect("conversion failed");
+
+        let num_elements =
+            i64::from_le_bytes(result[0..8].try_into().unwrap());
+        assert_eq!(num_elements, 2, "row 1 should have 2 elements");
+
+        // Int32 uses 4 bytes per element
+        let element_size = 4;
+        let bitset_width = ColumnarToRowContext::calculate_bitset_width(2);
+        let slot0_offset = 8 + bitset_width;
+        let slot1_offset = slot0_offset + element_size;
+
+        let value0 = i32::from_le_bytes(result[slot0_offset..slot0_offset + 4].try_into().unwrap());
+        let value1 = i32::from_le_bytes(result[slot1_offset..slot1_offset + 4].try_into().unwrap());
+
+        assert_eq!(value0, 0, "row 1, element 0 should be 0");
+        assert_eq!(value1, 1, "row 1, element 1 should be 1");
+
+        // Also verify that list slicing is working correctly
+        let list_values = list_array.value(1);
+        assert_eq!(list_values.len(), 2, "row 1 should have 2 elements");
+        let int_arr = list_values.as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(int_arr.value(0), 0, "row 1 value[0] via Arrow should be 0");
+        assert_eq!(int_arr.value(1), 1, "row 1 value[1] via Arrow should be 1");
+    }
+
+    #[test]
+    fn test_map_data_conversion() {
+        use arrow::datatypes::{Field, Fields};
+
+        // Create a map with 3 entries: {"key_0": 0, "key_1": 10, "key_2": 20}
+        let keys = StringArray::from(vec!["key_0", "key_1", "key_2"]);
+        let values = Int32Array::from(vec![0, 10, 20]);
+
+        let entries_field = Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int32, true),
+            ])),
+            false,
+        );
+
+        let entries = StructArray::from(vec![
+            (
+                Arc::new(Field::new("key", DataType::Utf8, false)),
+                Arc::new(keys) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("value", DataType::Int32, true)),
+                Arc::new(values) as ArrayRef,
+            ),
+        ]);
+
+        let map_array = MapArray::new(
+            Arc::new(entries_field.clone()),
+            arrow::buffer::OffsetBuffer::new(vec![0, 3].into()),
+            entries,
+            None,
+            false,
+        );
+
+        // Convert the map for row 0
+        let result =
+            write_map_data(&map_array, 0, &Arc::new(entries_field)).expect("conversion failed");
+
+        // Verify the structure:
+        // - [0..8]: key array size
+        // - [8..key_end]: key array data (UnsafeArrayData format)
+        // - [key_end..]: value array data (UnsafeArrayData format)
+
+        let key_array_size = i64::from_le_bytes(result[0..8].try_into().unwrap());
+        assert!(key_array_size > 0, "key array size should be positive");
+
+        let value_array_start = (8 + key_array_size) as usize;
+        assert!(
+            value_array_start < result.len(),
+            "value array should start within buffer"
+        );
+
+        // Read value array
+        let value_num_elements =
+            i64::from_le_bytes(result[value_array_start..value_array_start + 8].try_into().unwrap());
+        assert_eq!(value_num_elements, 3, "should have 3 values");
+
+        // Value array layout for Int32 (4 bytes per element):
+        // [0..8]: numElements = 3
+        // [8..16]: null bitset (8 bytes for up to 64 elements)
+        // [16..20]: element 0 (4 bytes)
+        // [20..24]: element 1 (4 bytes)
+        // [24..28]: element 2 (4 bytes)
+        let value_bitset_width = ColumnarToRowContext::calculate_bitset_width(3);
+        assert_eq!(value_bitset_width, 8);
+
+        let element_size = 4; // Int32
+        let slot0_offset = value_array_start + 8 + value_bitset_width;
+        let slot1_offset = slot0_offset + element_size;
+        let slot2_offset = slot1_offset + element_size;
+
+        let value0 = i32::from_le_bytes(result[slot0_offset..slot0_offset + 4].try_into().unwrap());
+        let value1 = i32::from_le_bytes(result[slot1_offset..slot1_offset + 4].try_into().unwrap());
+        let value2 = i32::from_le_bytes(result[slot2_offset..slot2_offset + 4].try_into().unwrap());
+
+        assert_eq!(value0, 0, "first value should be 0");
+        assert_eq!(value1, 10, "second value should be 10");
+        assert_eq!(value2, 20, "third value should be 20");
+    }
+
+    #[test]
+    fn test_map_data_conversion_multiple_rows() {
+        use arrow::datatypes::{Field, Fields};
+
+        // Create multiple maps:
+        // Row 0: {"key_0": 0}
+        // Row 1: {"key_0": 0, "key_1": 10}
+        // Row 2: {"key_0": 0, "key_1": 10, "key_2": 20}
+        // All entries are concatenated in the underlying arrays
+        let keys = StringArray::from(vec![
+            "key_0", // row 0
+            "key_0", "key_1", // row 1
+            "key_0", "key_1", "key_2", // row 2
+        ]);
+        let values = Int32Array::from(vec![
+            0,      // row 0
+            0, 10,  // row 1
+            0, 10, 20, // row 2
+        ]);
+
+        let entries_field = Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int32, true),
+            ])),
+            false,
+        );
+
+        let entries = StructArray::from(vec![
+            (
+                Arc::new(Field::new("key", DataType::Utf8, false)),
+                Arc::new(keys) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("value", DataType::Int32, true)),
+                Arc::new(values) as ArrayRef,
+            ),
+        ]);
+
+        // Offsets: row 0 has 1 entry, row 1 has 2 entries, row 2 has 3 entries
+        let map_array = MapArray::new(
+            Arc::new(entries_field.clone()),
+            arrow::buffer::OffsetBuffer::new(vec![0, 1, 3, 6].into()),
+            entries,
+            None,
+            false,
+        );
+
+        // Test row 1 which has 2 entries
+        let result =
+            write_map_data(&map_array, 1, &Arc::new(entries_field.clone())).expect("conversion failed");
+
+        let key_array_size = i64::from_le_bytes(result[0..8].try_into().unwrap());
+        let value_array_start = (8 + key_array_size) as usize;
+
+        let value_num_elements =
+            i64::from_le_bytes(result[value_array_start..value_array_start + 8].try_into().unwrap());
+        assert_eq!(value_num_elements, 2, "row 1 should have 2 values");
+
+        // Int32 uses 4 bytes per element
+        let element_size = 4;
+        let value_bitset_width = ColumnarToRowContext::calculate_bitset_width(2);
+        let slot0_offset = value_array_start + 8 + value_bitset_width;
+        let slot1_offset = slot0_offset + element_size;
+
+        let value0 = i32::from_le_bytes(result[slot0_offset..slot0_offset + 4].try_into().unwrap());
+        let value1 = i32::from_le_bytes(result[slot1_offset..slot1_offset + 4].try_into().unwrap());
+
+        assert_eq!(value0, 0, "row 1, first value should be 0");
+        assert_eq!(value1, 10, "row 1, second value should be 10");
+
+        // Also verify that entries slicing is working correctly
+        let entries_row1 = map_array.value(1);
+        assert_eq!(entries_row1.len(), 2, "row 1 should have 2 entries");
+
+        let entries_values = entries_row1.column(1);
+        assert_eq!(entries_values.len(), 2, "row 1 values should have 2 elements");
+
+        // Check the actual values from the sliced array
+        let values_arr = entries_values
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(values_arr.value(0), 0, "row 1 value[0] via Arrow should be 0");
+        assert_eq!(values_arr.value(1), 10, "row 1 value[1] via Arrow should be 10");
+    }
+
+    /// Test map conversion with a sliced MapArray to simulate FFI import behavior.
+    /// When data comes from FFI, the MapArray might be a slice of a larger array,
+    /// and the entries' child arrays might have offsets that don't start at 0.
+    #[test]
+    fn test_map_data_conversion_sliced_maparray() {
+        use arrow::datatypes::{Field, Fields};
+
+        // Create multiple maps (same as above)
+        let keys = StringArray::from(vec![
+            "key_0",         // row 0
+            "key_0", "key_1", // row 1
+            "key_0", "key_1", "key_2", // row 2
+        ]);
+        let values = Int32Array::from(vec![
+            0,         // row 0
+            0, 10,     // row 1
+            0, 10, 20, // row 2
+        ]);
+
+        let entries_field = Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int32, true),
+            ])),
+            false,
+        );
+
+        let entries = StructArray::from(vec![
+            (
+                Arc::new(Field::new("key", DataType::Utf8, false)),
+                Arc::new(keys) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("value", DataType::Int32, true)),
+                Arc::new(values) as ArrayRef,
+            ),
+        ]);
+
+        let map_array = MapArray::new(
+            Arc::new(entries_field.clone()),
+            arrow::buffer::OffsetBuffer::new(vec![0, 1, 3, 6].into()),
+            entries,
+            None,
+            false,
+        );
+
+        // Slice the MapArray to skip row 0 - this simulates what might happen with FFI
+        let sliced_map = map_array.slice(1, 2);
+        let sliced_map_array = sliced_map
+            .as_any()
+            .downcast_ref::<MapArray>()
+            .unwrap();
+
+        // Now test row 0 of the sliced array (which is row 1 of the original)
+        let result = write_map_data(sliced_map_array, 0, &Arc::new(entries_field.clone()))
+            .expect("conversion failed");
+
+        let key_array_size = i64::from_le_bytes(result[0..8].try_into().unwrap());
+        let value_array_start = (8 + key_array_size) as usize;
+
+        let value_num_elements =
+            i64::from_le_bytes(result[value_array_start..value_array_start + 8].try_into().unwrap());
+        assert_eq!(value_num_elements, 2, "sliced row 0 should have 2 values");
+
+        let value_bitset_width = ColumnarToRowContext::calculate_bitset_width(2);
+        let slot0_offset = value_array_start + 8 + value_bitset_width;
+        let slot1_offset = slot0_offset + 4; // Int32 uses 4 bytes
+
+        let value0 = i32::from_le_bytes(result[slot0_offset..slot0_offset + 4].try_into().unwrap());
+        let value1 = i32::from_le_bytes(result[slot1_offset..slot1_offset + 4].try_into().unwrap());
+
+        assert_eq!(value0, 0, "sliced row 0, first value should be 0");
+        assert_eq!(value1, 10, "sliced row 0, second value should be 10");
     }
 }
