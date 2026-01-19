@@ -24,8 +24,8 @@ import java.io.File
 import scala.util.Random
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.comet.{CometNativeScanExec, CometNativeWriteExec}
-import org.apache.spark.sql.execution.QueryExecution
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec}
+import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
@@ -433,11 +433,21 @@ class CometParquetWriterSuite extends CometTestBase {
     // read with and without Comet and compare
     var sparkRows: Array[Row] = null
     var cometRows: Array[Row] = null
-    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
-      sparkRows = spark.read.parquet(outputPath).collect()
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      val df = spark.read.parquet(outputPath)
+      val plan = df.queryExecution.executedPlan
+      assert(
+        hasSparkScan(plan) && !hasCometScan(plan),
+        s"Expected Spark scan (not Comet) when COMET_ENABLED=false:\n${plan.treeString}")
+      sparkRows = df.collect()
     }
     withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
-      cometRows = spark.read.parquet(outputPath).collect()
+      val df = spark.read.parquet(outputPath)
+      val plan = df.queryExecution.executedPlan
+      assert(
+        hasCometScan(plan),
+        s"Expected Comet scan when COMET_NATIVE_SCAN_ENABLED=true:\n${plan.treeString}")
+      cometRows = df.collect()
     }
 
     val schema = spark.read.parquet(outputPath).schema
@@ -453,7 +463,7 @@ class CometParquetWriterSuite extends CometTestBase {
 
       // First write the input data without Comet
       withSQLConf(
-        CometConf.COMET_EXEC_ENABLED.key -> "false",
+        CometConf.COMET_ENABLED.key -> "false",
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Denver") {
         inputDf.write.parquet(inputPath)
       }
@@ -475,19 +485,23 @@ class CometParquetWriterSuite extends CometTestBase {
         parquetDf.write.parquet(outputPath)
       }
 
-      // scalastyle:off
-
       // Verify round-trip: read with Spark and Comet, compare results
       var sparkRows: Array[Row] = null
-      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         val df = spark.read.parquet(outputPath)
-        println(df.queryExecution.executedPlan)
+        val plan = df.queryExecution.executedPlan
+        assert(
+          hasSparkScan(plan) && !hasCometScan(plan),
+          s"Expected Spark scan (not Comet) when COMET_ENABLED=false:\n${plan.treeString}")
         sparkRows = df.collect()
       }
       var cometRows: Array[Row] = null
       withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
         val df = spark.read.parquet(outputPath)
-        println(df.queryExecution.executedPlan)
+        val plan = df.queryExecution.executedPlan
+        assert(
+          hasCometScan(plan),
+          s"Expected Comet scan when COMET_NATIVE_SCAN_ENABLED=true:\n${plan.treeString}")
         cometRows = df.collect()
       }
       assert(sparkRows.length == expectedRows, s"Expected $expectedRows rows")
@@ -506,6 +520,22 @@ class CometParquetWriterSuite extends CometTestBase {
     val sparkDf = spark.createDataFrame(sparkRows.toSeq.asJava, schema)
     val cometDf = spark.createDataFrame(cometRows.toSeq.asJava, schema)
     checkAnswer(sparkDf, cometDf)
+  }
+
+  private def hasCometScan(plan: SparkPlan): Boolean = {
+    stripAQEPlan(plan).exists {
+      case _: CometScanExec => true
+      case _: CometNativeScanExec => true
+      case _: CometBatchScanExec => true
+      case _ => false
+    }
+  }
+
+  private def hasSparkScan(plan: SparkPlan): Boolean = {
+    stripAQEPlan(plan).exists {
+      case _: FileSourceScanExec => true
+      case _ => false
+    }
   }
 
 }
