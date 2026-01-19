@@ -65,6 +65,7 @@ object CometConf extends ShimCometConf {
   private val CATEGORY_SHUFFLE = "shuffle"
   private val CATEGORY_TUNING = "tuning"
   private val CATEGORY_TESTING = "testing"
+  private val CATEGORY_CBO = "cbo"
 
   def register(conf: ConfigEntry[_]): Unit = {
     assert(conf.category.nonEmpty, s"${conf.key} does not have a category defined")
@@ -771,6 +772,123 @@ object CometConf extends ShimCometConf {
       "more comprehensive, such as checking for a specific fallback reason.")
     .booleanConf
     .createWithEnvVarOrDefault("ENABLE_COMET_STRICT_TESTING", false)
+
+  // CBO Configuration Options
+
+  val COMET_CBO_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.cbo.enabled")
+    .category(CATEGORY_CBO)
+    .doc(
+      "Enable cost-based optimizer to decide Comet vs Spark execution. " +
+        "When enabled, Comet estimates whether native execution will be faster " +
+        "and falls back to Spark if not. Note: This only affects operator conversion " +
+        "(filter, project, aggregate, etc.), not scan conversion which is handled separately.")
+    .booleanConf
+    .createWithDefault(false)
+
+  val COMET_CBO_EXPLAIN_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.cbo.explain.enabled")
+    .category(CATEGORY_CBO)
+    .doc("Log CBO decision details for debugging.")
+    .booleanConf
+    .createWithDefault(false)
+
+  val COMET_CBO_SPEEDUP_THRESHOLD: ConfigEntry[Double] = conf("spark.comet.cbo.speedupThreshold")
+    .category(CATEGORY_CBO)
+    .doc("Minimum estimated speedup ratio required to use Comet. " +
+      "Values less than 1.0 allow Comet even when estimated slightly slower.")
+    .doubleConf
+    .checkValue(_ > 0, "Threshold must be positive")
+    .createWithDefault(1.0)
+
+  val COMET_CBO_DEFAULT_ROW_COUNT: ConfigEntry[Long] = conf("spark.comet.cbo.defaultRowCount")
+    .category(CATEGORY_CBO)
+    .internal()
+    .doc("Default row count estimate when statistics unavailable.")
+    .longConf
+    .createWithDefault(1000000L)
+
+  val COMET_CBO_TRANSITION_COST: ConfigEntry[Double] = conf("spark.comet.cbo.cost.transition")
+    .category(CATEGORY_CBO)
+    .internal()
+    .doc("Cost penalty per row for columnar<->row transitions.")
+    .doubleConf
+    .createWithDefault(0.001)
+
+  val COMET_CBO_SCAN_WEIGHT: ConfigEntry[Double] = conf("spark.comet.cbo.weight.scan")
+    .category(CATEGORY_CBO)
+    .internal()
+    .doc("Weight for scan operators in cost calculation.")
+    .doubleConf
+    .createWithDefault(1.0)
+
+  val COMET_CBO_FILTER_WEIGHT: ConfigEntry[Double] = conf("spark.comet.cbo.weight.filter")
+    .category(CATEGORY_CBO)
+    .internal()
+    .doc("Weight for filter operators in cost calculation.")
+    .doubleConf
+    .createWithDefault(0.1)
+
+  val COMET_CBO_PROJECT_WEIGHT: ConfigEntry[Double] = conf("spark.comet.cbo.weight.project")
+    .category(CATEGORY_CBO)
+    .internal()
+    .doc("Weight for project operators in cost calculation.")
+    .doubleConf
+    .createWithDefault(0.1)
+
+  val COMET_CBO_AGGREGATE_WEIGHT: ConfigEntry[Double] = conf("spark.comet.cbo.weight.aggregate")
+    .category(CATEGORY_CBO)
+    .internal()
+    .doc("Weight for aggregate operators in cost calculation.")
+    .doubleConf
+    .createWithDefault(2.0)
+
+  val COMET_CBO_JOIN_WEIGHT: ConfigEntry[Double] = conf("spark.comet.cbo.weight.join")
+    .category(CATEGORY_CBO)
+    .internal()
+    .doc("Weight for join operators in cost calculation.")
+    .doubleConf
+    .createWithDefault(5.0)
+
+  val COMET_CBO_SORT_WEIGHT: ConfigEntry[Double] = conf("spark.comet.cbo.weight.sort")
+    .category(CATEGORY_CBO)
+    .internal()
+    .doc("Weight for sort operators in cost calculation.")
+    .doubleConf
+    .createWithDefault(1.5)
+
+  val COMET_CBO_SCAN_SPEEDUP: ConfigEntry[Double] = conf("spark.comet.cbo.speedup.scan")
+    .category(CATEGORY_CBO)
+    .internal()
+    .doc("Expected speedup factor for Comet scan operators vs Spark.")
+    .doubleConf
+    .createWithDefault(2.0)
+
+  val COMET_CBO_FILTER_SPEEDUP: ConfigEntry[Double] = conf("spark.comet.cbo.speedup.filter")
+    .category(CATEGORY_CBO)
+    .internal()
+    .doc("Expected speedup factor for Comet filter operators vs Spark.")
+    .doubleConf
+    .createWithDefault(3.0)
+
+  val COMET_CBO_AGGREGATE_SPEEDUP: ConfigEntry[Double] = conf("spark.comet.cbo.speedup.aggregate")
+    .category(CATEGORY_CBO)
+    .internal()
+    .doc("Expected speedup factor for Comet aggregate operators vs Spark.")
+    .doubleConf
+    .createWithDefault(2.5)
+
+  val COMET_CBO_JOIN_SPEEDUP: ConfigEntry[Double] = conf("spark.comet.cbo.speedup.join")
+    .category(CATEGORY_CBO)
+    .internal()
+    .doc("Expected speedup factor for Comet join operators vs Spark.")
+    .doubleConf
+    .createWithDefault(2.0)
+
+  val COMET_CBO_SORT_SPEEDUP: ConfigEntry[Double] = conf("spark.comet.cbo.speedup.sort")
+    .category(CATEGORY_CBO)
+    .internal()
+    .doc("Expected speedup factor for Comet sort operators vs Spark.")
+    .doubleConf
+    .createWithDefault(2.0)
 
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(

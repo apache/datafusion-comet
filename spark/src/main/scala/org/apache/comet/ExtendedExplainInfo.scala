@@ -29,13 +29,14 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffl
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 import org.apache.comet.CometExplainInfo.getActualPlan
+import org.apache.comet.rules.CometCBOInfo
 
 class ExtendedExplainInfo extends ExtendedExplainGenerator {
 
   override def title: String = "Comet"
 
   def generateExtendedInfo(plan: SparkPlan): String = {
-    CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.get() match {
+    val baseInfo = CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.get() match {
       case CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE =>
         // Generates the extended info in a verbose manner, printing each node along with the
         // extended information in a tree display.
@@ -47,6 +48,14 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
         // Generates the extended info as a list of fallback reasons
         getFallbackReasons(plan).mkString("\n").trim
     }
+
+    // Add CBO info if available
+    val cboInfo = getActualPlan(plan)
+      .getTagValue(CometCBOInfo.TAG)
+      .map(analysis => s"\n${analysis.toExplainString}")
+      .getOrElse("")
+
+    baseInfo + cboInfo
   }
 
   def getFallbackReasons(plan: SparkPlan): Seq[String] = {

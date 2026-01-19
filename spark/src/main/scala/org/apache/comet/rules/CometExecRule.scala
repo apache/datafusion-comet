@@ -387,6 +387,26 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       var newPlan = transform(planWithJoinRewritten)
 
+      // CBO decision point: analyze the transformed plan and decide whether to use Comet
+      // Store the analysis to attach to the final plan later (since transforms create new nodes)
+      var cboAnalysis: Option[CostAnalysis] = None
+      if (CometConf.COMET_CBO_ENABLED.get(conf)) {
+        val costAnalysis = CometCostEstimator.analyze(newPlan, conf)
+        cboAnalysis = Some(costAnalysis)
+
+        if (CometConf.COMET_CBO_EXPLAIN_ENABLED.get(conf)) {
+          logInfo(s"Comet CBO Analysis:\n${costAnalysis.toExplainString}")
+        }
+
+        if (!costAnalysis.shouldUseComet) {
+          logInfo(
+            s"Comet CBO: Falling back to Spark " +
+              f"(speedup=${costAnalysis.estimatedSpeedup}%.2f, threshold=" +
+              f"${CometConf.COMET_CBO_SPEEDUP_THRESHOLD.get(conf)}%.2f)")
+          return planWithJoinRewritten // Return original Spark plan
+        }
+      }
+
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
       if (CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get()) {
@@ -442,9 +462,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
 
       // Convert native execution block by linking consecutive native operators.
       var firstNativeOp = true
-      newPlan.transformDown {
+      val finalPlan = newPlan.transformDown {
         case op: CometNativeExec =>
-          val newPlan = if (firstNativeOp) {
+          val transformedOp = if (firstNativeOp) {
             firstNativeOp = false
             op.convertBlock()
           } else {
@@ -468,11 +488,16 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
             firstNativeOp = true
           }
 
-          newPlan
+          transformedOp
         case op =>
           firstNativeOp = true
           op
       }
+
+      // Attach CBO info to the final plan for EXPLAIN output
+      cboAnalysis.foreach(analysis => finalPlan.setTagValue(CometCBOInfo.TAG, analysis))
+
+      finalPlan
     }
   }
 
