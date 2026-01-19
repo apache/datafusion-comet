@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.types.{DateType, IntegerType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -257,6 +257,33 @@ object CometSecond extends CometExpressionSerde[Second] {
 object CometDateAdd extends CometScalarFunction[DateAdd]("date_add")
 
 object CometDateSub extends CometScalarFunction[DateSub]("date_sub")
+
+/**
+ * Converts a date to the number of days since Unix epoch (1970-01-01). Since dates are internally
+ * stored as days since epoch, this is a simple cast to integer.
+ */
+object CometUnixDate extends CometExpressionSerde[UnixDate] {
+  override def convert(
+      expr: UnixDate,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val optExpr = childExpr.map { child =>
+      Expr
+        .newBuilder()
+        .setCast(
+          ExprOuterClass.Cast
+            .newBuilder()
+            .setChild(child)
+            .setDatatype(serializeDataType(IntegerType).get)
+            .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
+            .setAllowIncompat(false)
+            .build())
+        .build()
+    }
+    optExprWithInfo(optExpr, expr, expr.child)
+  }
+}
 
 object CometTruncDate extends CometExpressionSerde[TruncDate] {
 

@@ -241,4 +241,24 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
+  test("unix_date") {
+    val r = new Random(42)
+    val schema = StructType(Seq(StructField("c0", DataTypes.DateType, true)))
+    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
+    df.createOrReplaceTempView("tbl")
+
+    // Basic test
+    checkSparkAnswerAndOperator("SELECT c0, unix_date(c0) FROM tbl ORDER BY c0")
+
+    // Test with literal dates
+    checkSparkAnswerAndOperator(
+      "SELECT unix_date(DATE('1970-01-01')), unix_date(DATE('1970-01-02')), unix_date(DATE('2024-01-01'))")
+
+    // Test dates before Unix epoch (should return negative values)
+    checkSparkAnswerAndOperator(
+      "SELECT unix_date(DATE('1969-12-31')), unix_date(DATE('1960-01-01'))")
+
+    // Test null handling
+    checkSparkAnswerAndOperator("SELECT unix_date(NULL)")
+  }
 }
