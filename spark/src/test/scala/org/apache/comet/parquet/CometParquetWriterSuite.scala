@@ -519,7 +519,10 @@ class CometParquetWriterSuite extends CometTestBase {
 
   private def readCometRows(path: String): Array[Row] = {
     var rows: Array[Row] = null
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
+      // Override CI setting to use a scan impl that supports complex types
+      CometConf.COMET_NATIVE_SCAN_IMPL.key -> "auto") {
       val df = spark.read.parquet(path)
       val plan = df.queryExecution.executedPlan
       assert(
