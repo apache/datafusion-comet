@@ -48,7 +48,7 @@ java-locator = { version = "0.1.9", features = ["locate-jdk-only"] }
 [dependencies]
 lazy_static = "^1.4"
 libc = "^0.2"
-url = "^2.2"
+url = "^2.5"
 log = "^0.4"
 
 [dev-dependencies]
