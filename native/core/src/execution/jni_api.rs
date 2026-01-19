@@ -884,8 +884,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
         let num_cols = env.get_array_length(&array_addrs)? as usize;
 
         // Get array and schema addresses
-        let array_addrs_elements =
-            env.get_array_elements(&array_addrs, ReleaseMode::NoCopyBack)?;
+        let array_addrs_elements = env.get_array_elements(&array_addrs, ReleaseMode::NoCopyBack)?;
         let schema_addrs_elements =
             env.get_array_elements(&schema_addrs, ReleaseMode::NoCopyBack)?;
 

@@ -176,7 +176,9 @@ impl ColumnarToRowContext {
                 let word_offset = row_start + word_idx * 8;
 
                 let mut word = i64::from_le_bytes(
-                    self.buffer[word_offset..word_offset + 8].try_into().unwrap(),
+                    self.buffer[word_offset..word_offset + 8]
+                        .try_into()
+                        .unwrap(),
                 );
                 word |= 1i64 << bit_idx;
                 self.buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
@@ -390,9 +392,7 @@ fn write_nested_struct(
             buffer[field_offset..field_offset + 8].copy_from_slice(&value.to_le_bytes());
 
             // Handle variable-length nested data
-            if let Some(var_data) =
-                get_variable_length_data(field.data_type(), column, row_idx)?
-            {
+            if let Some(var_data) = get_variable_length_data(field.data_type(), column, row_idx)? {
                 let current_offset = buffer.len();
                 let len = var_data.len();
 
@@ -455,8 +455,7 @@ fn write_list_data(
             buffer[slot_offset..slot_offset + 8].copy_from_slice(&value.to_le_bytes());
 
             // Handle variable-length element data
-            if let Some(var_data) =
-                get_variable_length_data(element_field.data_type(), &values, i)?
+            if let Some(var_data) = get_variable_length_data(element_field.data_type(), &values, i)?
             {
                 let current_offset = buffer.len();
                 let len = var_data.len();
