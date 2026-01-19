@@ -284,6 +284,41 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
     }
   }
 
+  test("deeply nested: array of arrays") {
+    val data = (0 until 100).map { i =>
+      (i, (0 to i % 3).map(j => (0 to j).toArray).toArray)
+    }
+    withParquetTable(data, "nested_arrays") {
+      val df = sql("SELECT * FROM nested_arrays")
+      assertNativeC2RPresent(df)
+      checkSparkAnswer(df)
+    }
+  }
+
+  test("deeply nested: map with array values") {
+    val data = (0 until 100).map { i =>
+      (i, (0 to i % 3).map(j => (s"key_$j", (0 to j).toArray)).toMap)
+    }
+    withParquetTable(data, "map_array_values") {
+      val df = sql("SELECT * FROM map_array_values")
+      assertNativeC2RPresent(df)
+      checkSparkAnswer(df)
+    }
+  }
+
+  test("deeply nested: struct containing array of maps") {
+    val data = (0 until 100).map { i =>
+      (
+        i,
+        ((0 to i % 3).map(j => (0 to j % 2).map(k => (s"k$k", k * 10)).toMap).toArray, s"str_$i"))
+    }
+    withParquetTable(data, "struct_array_maps") {
+      val df = sql("SELECT * FROM struct_array_maps")
+      assertNativeC2RPresent(df)
+      checkSparkAnswer(df)
+    }
+  }
+
   test("all null values") {
     val df = spark
       .createDataFrame(
