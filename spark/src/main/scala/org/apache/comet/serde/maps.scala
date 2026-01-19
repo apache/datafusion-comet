@@ -19,10 +19,13 @@
 
 package org.apache.comet.serde
 
+import scala.jdk.CollectionConverters._
+
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.types.{ArrayType, MapType}
 
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
 
@@ -95,23 +98,22 @@ object CometCreateMap extends CometExpressionSerde[CreateMap] {
       expr: CreateMap,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val keys = CreateArray(expr.keys)
-    val values = CreateArray(expr.values)
-    val keysProtoExpr = exprToProtoInternal(keys, inputs, binding)
-    val valuesProtoExpr = exprToProtoInternal(values, inputs, binding)
-    // scalastyle:off println
-    println(keysProtoExpr)
-    // scalastyle:on println line=102 column=4
-    // scalastyle:off println
-    // println(valuesProtoExpr)
-    // scalastyle:on println line=103 column=4
-    val createMapScalarExpr =
-      scalarFunctionExprToProtoWithReturnType(
-        "map",
-        expr.dataType,
-        false,
-        keysProtoExpr,
-        valuesProtoExpr)
-    optExprWithInfo(createMapScalarExpr, expr, expr.children: _*)
+    val keysProtoExpr = expr.keys.map(exprToProtoInternal(_, inputs, binding))
+    val valuesProtoExpr = expr.values.map(exprToProtoInternal(_, inputs, binding))
+    if (keysProtoExpr.forall(_.isDefined) && valuesProtoExpr.forall(_.isDefined)) {
+      val createMapProtoExpr = ExprOuterClass.CreateMap
+        .newBuilder()
+        .addAllValues(keysProtoExpr.map(_.get).asJava)
+        .addAllValues(valuesProtoExpr.map(_.get).asJava)
+        .build()
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setCreateMap(createMapProtoExpr)
+          .build())
+    } else {
+      withInfo(expr, expr.children: _*)
+      None
+    }
   }
 }

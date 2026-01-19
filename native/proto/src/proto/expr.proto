@@ -85,6 +85,7 @@ message Expr {
     Rand randn = 62;
     EmptyExpr spark_partition_id = 63;
     EmptyExpr monotonically_increasing_id = 64;
+    CreateMap create_map = 65;
   }
 }
 
@@ -409,4 +410,9 @@ message ArrayJoin {
 
 message Rand {
   int64 seed = 1;
+}
+
+message CreateMap {
+  repeated Expr keys = 1;
+  repeated Expr values = 2;
 }
