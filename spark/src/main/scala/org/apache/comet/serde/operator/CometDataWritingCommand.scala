@@ -25,7 +25,7 @@ import java.util.Locale
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SparkException
-import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
+import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
@@ -172,11 +172,19 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
     // Get the child plan from the WriteFilesExec or use the child directly
     val childPlan = op.child match {
       case writeFiles: WriteFilesExec =>
-        // The WriteFilesExec child should already be a Comet operator
         writeFiles.child
       case other =>
-        // Fallback: use the child directly
         other
+    }
+
+    // Wrap with CometSparkToColumnarExec if child is not already a Comet operator.
+    // This ensures the input to CometNativeWriteExec is always in Arrow format.
+    // CometSparkToColumnarExec handles conversion from both:
+    //   - Row-based Spark operators (via rowToArrowBatchIter)
+    //   - Columnar Spark operators like RangeExec (via columnarBatchToArrowBatchIter)
+    val wrappedChild = childPlan match {
+      case _: CometPlan => childPlan // Already produces Arrow batches
+      case _ => CometSparkToColumnarExec(childPlan) // Convert Spark format to Arrow
     }
 
     // Create FileCommitProtocol for atomic writes
@@ -201,7 +209,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           throw new SparkException(s"Could not instantiate FileCommitProtocol: ${e.getMessage}")
       }
 
-    CometNativeWriteExec(nativeOp, childPlan, outputPath, committer, jobId)
+    CometNativeWriteExec(nativeOp, wrappedChild, outputPath, committer, jobId)
   }
 
   private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {
