@@ -113,6 +113,7 @@ jobs:
               org.apache.spark.CometPluginsUnifiedModeOverrideSuite
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometExecRuleSuite
+              org.apache.comet.rules.CometCBOSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
               org.apache.spark.sql.CometTPCHQuerySuite

@@ -940,6 +940,42 @@ object CometConf extends ShimCometConf {
   def getBooleanConf(name: String, defaultValue: Boolean, conf: SQLConf): Boolean = {
     conf.getConfString(name, defaultValue.toString).toLowerCase(Locale.ROOT) == "true"
   }
+
+  // CBO expression cost configuration helpers
+
+  /** Config key prefix for CBO expression costs */
+  val COMET_CBO_EXPR_COST_PREFIX = "spark.comet.cbo.exprCost"
+
+  /**
+   * Get the config key for an expression's cost multiplier. Example:
+   * spark.comet.cbo.exprCost.AttributeReference
+   */
+  def getExprCostConfigKey(exprName: String): String = {
+    s"$COMET_CBO_EXPR_COST_PREFIX.$exprName"
+  }
+
+  /**
+   * Get the config key for an expression class's cost multiplier.
+   */
+  def getExprCostConfigKey(exprClass: Class[_]): String = {
+    getExprCostConfigKey(exprClass.getSimpleName)
+  }
+
+  /**
+   * Get the cost multiplier for an expression from config, with fallback to default. A cost
+   * multiplier < 1.0 means Comet is faster, > 1.0 means Spark is faster.
+   */
+  def getExprCost(exprName: String, defaultCost: Double, conf: SQLConf): Double = {
+    getDoubleConf(getExprCostConfigKey(exprName), defaultCost, conf)
+  }
+
+  def getDoubleConf(name: String, defaultValue: Double, conf: SQLConf): Double = {
+    try {
+      conf.getConfString(name, defaultValue.toString).toDouble
+    } catch {
+      case _: NumberFormatException => defaultValue
+    }
+  }
 }
 
 object ConfigHelpers {

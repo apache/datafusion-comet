@@ -248,4 +248,68 @@ class CometCBOSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     assert(stats.cometFilters == 2)
     assert(stats.cometProjects == 2)
   }
+
+  // Expression-based costing tests
+
+  test("default expression costs favor Comet for simple expressions") {
+    // AttributeReference should be very fast in Comet (0.1)
+    assert(CometCostEstimator.DEFAULT_EXPR_COSTS("AttributeReference") < 0.5)
+    // Arithmetic should be fast in Comet
+    assert(CometCostEstimator.DEFAULT_EXPR_COSTS("Add") < 1.0)
+    assert(CometCostEstimator.DEFAULT_EXPR_COSTS("Multiply") < 1.0)
+    // Comparisons should be fast with SIMD
+    assert(CometCostEstimator.DEFAULT_EXPR_COSTS("LessThan") < 1.0)
+  }
+
+  test("expression cost can be overridden via config") {
+    withSQLConf(CometConf.COMET_CBO_EXPR_COST_PREFIX + ".TestExpr" -> "2.5") {
+      val cost = CometConf.getExprCost("TestExpr", 1.0, spark.sessionState.conf)
+      assert(cost == 2.5, "Config override should take precedence")
+    }
+  }
+
+  test("expression cost uses default when config not set") {
+    val cost = CometConf.getExprCost(
+      "NonExistentExpr",
+      CometCostEstimator.DEFAULT_UNKNOWN_EXPR_COST,
+      spark.sessionState.conf)
+    assert(cost == CometCostEstimator.DEFAULT_UNKNOWN_EXPR_COST)
+  }
+
+  test("CBO considers expression costs in projections") {
+    withParquetTable((0 until 100).map(i => (i, i * 2, s"val_$i")), "t") {
+      withSQLConf(
+        CometConf.COMET_CBO_ENABLED.key -> "true",
+        CometConf.COMET_CBO_SPEEDUP_THRESHOLD.key -> "1.0") {
+        // Query with simple projections (should favor Comet)
+        val df = spark.sql("SELECT _1, _2, _1 + _2 as sum FROM t")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("CBO considers expression costs in filters") {
+    withParquetTable((0 until 100).map(i => (i, s"val_$i")), "t") {
+      withSQLConf(
+        CometConf.COMET_CBO_ENABLED.key -> "true",
+        CometConf.COMET_CBO_SPEEDUP_THRESHOLD.key -> "1.0") {
+        // Query with comparison filter (should favor Comet)
+        val df = spark.sql("SELECT * FROM t WHERE _1 > 50 AND _1 < 80")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("PlanStatistics tracks expression costs") {
+    val stats = PlanStatistics(
+      cometOps = 2,
+      sparkOps = 1,
+      cometFilters = 1,
+      cometProjects = 1,
+      cometExprCost = 0.5,
+      sparkExprCost = 1.0)
+
+    assert(stats.cometExprCost == 0.5)
+    assert(stats.sparkExprCost == 1.0)
+  }
 }
