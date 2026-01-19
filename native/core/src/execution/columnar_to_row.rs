@@ -97,13 +97,13 @@ impl ColumnarToRowContext {
     /// This matches Spark's `UnsafeRow.calculateBitSetWidthInBytes`.
     #[inline]
     pub const fn calculate_bitset_width(num_fields: usize) -> usize {
-        ((num_fields + 63) / 64) * 8
+        num_fields.div_ceil(64) * 8
     }
 
     /// Round up to the nearest multiple of 8 for alignment.
     #[inline]
     const fn round_up_to_8(value: usize) -> usize {
-        ((value + 7) / 8) * 8
+        value.div_ceil(8) * 8
     }
 
     /// Converts Arrow arrays to Spark UnsafeRow format.
@@ -206,7 +206,7 @@ impl ColumnarToRowContext {
 
                 // Pad to 8-byte alignment
                 let padding = Self::round_up_to_8(len) - len;
-                self.buffer.extend(std::iter::repeat(0u8).take(padding));
+                self.buffer.extend(std::iter::repeat_n(0u8, padding));
 
                 // Update the field slot with (offset << 32) | length
                 let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
@@ -356,7 +356,7 @@ fn i128_to_spark_decimal_bytes(value: i128) -> Vec<u8> {
 /// Round up to the nearest multiple of 8 for alignment.
 #[inline]
 const fn round_up_to_8(value: usize) -> usize {
-    ((value + 7) / 8) * 8
+    value.div_ceil(8) * 8
 }
 
 /// Writes a nested struct value to bytes.
@@ -398,7 +398,7 @@ fn write_nested_struct(
 
                 buffer.extend_from_slice(&var_data);
                 let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat(0u8).take(padding));
+                buffer.extend(std::iter::repeat_n(0u8, padding));
 
                 let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
                 buffer[field_offset..field_offset + 8]
@@ -462,7 +462,7 @@ fn write_list_data(
 
                 buffer.extend_from_slice(&var_data);
                 let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat(0u8).take(padding));
+                buffer.extend(std::iter::repeat_n(0u8, padding));
 
                 let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
                 buffer[slot_offset..slot_offset + 8].copy_from_slice(&offset_and_len.to_le_bytes());
@@ -521,7 +521,7 @@ fn write_map_data(
 
                 buffer.extend_from_slice(&var_data);
                 let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat(0u8).take(padding));
+                buffer.extend(std::iter::repeat_n(0u8, padding));
 
                 let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
                 buffer[slot_offset..slot_offset + 8].copy_from_slice(&offset_and_len.to_le_bytes());
@@ -569,7 +569,7 @@ fn write_map_data(
 
                     buffer.extend_from_slice(&var_data);
                     let padding = round_up_to_8(len) - len;
-                    buffer.extend(std::iter::repeat(0u8).take(padding));
+                    buffer.extend(std::iter::repeat_n(0u8, padding));
 
                     let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
                     buffer[slot_offset..slot_offset + 8]
