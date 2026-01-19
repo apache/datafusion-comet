@@ -34,6 +34,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
  * Test suite for native columnar to row conversion.
@@ -373,6 +374,23 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
           s"Expected no CometNativeColumnarToRowExec when disabled.\nPlan: $plan")
         checkSparkAnswer(df)
       }
+    }
+  }
+
+  test("fuzz test with nested types") {
+    val random = new Random(42)
+    val schemaGenOptions =
+      SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = true)
+    val dataGenOptions =
+      DataGenOptions(generateNegativeZero = false, generateNaN = false, generateInfinity = false)
+
+    // Use generateSchema which creates various nested types including arrays, structs, and maps.
+    // Not all generated types may be supported by native C2R, so we just verify correctness.
+    val schema = FuzzDataGenerator.generateSchema(schemaGenOptions)
+    val df = FuzzDataGenerator.generateDataFrame(random, spark, schema, 100, dataGenOptions)
+
+    withParquetDataFrame(df) { parquetDf =>
+      checkSparkAnswer(parquetDf)
     }
   }
 
