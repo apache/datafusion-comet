@@ -23,11 +23,12 @@ import java.io.File
 
 import scala.util.Random
 
-import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.QueryExecution
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.StructType
 
 import org.apache.comet.CometConf
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
@@ -35,119 +36,6 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOpt
 class CometParquetWriterSuite extends CometTestBase {
 
   import testImplicits._
-
-  private def createTestData(inputDir: File): String = {
-    val inputPath = new File(inputDir, "input.parquet").getAbsolutePath
-    val schema = FuzzDataGenerator.generateSchema(
-      SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false))
-    val df = FuzzDataGenerator.generateDataFrame(
-      new Random(42),
-      spark,
-      schema,
-      1000,
-      DataGenOptions(generateNegativeZero = false))
-    withSQLConf(
-      CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "false",
-      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Denver") {
-      df.write.parquet(inputPath)
-    }
-    inputPath
-  }
-
-  private def writeWithCometNativeWriteExec(
-      inputPath: String,
-      outputPath: String,
-      num_partitions: Option[Int] = None): Option[QueryExecution] = {
-    val df = spark.read.parquet(inputPath)
-
-    // Use a listener to capture the execution plan during write
-    var capturedPlan: Option[QueryExecution] = None
-
-    val listener = new org.apache.spark.sql.util.QueryExecutionListener {
-      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
-        // Capture plans from write operations
-        if (funcName == "save" || funcName.contains("command")) {
-          capturedPlan = Some(qe)
-        }
-      }
-
-      override def onFailure(
-          funcName: String,
-          qe: QueryExecution,
-          exception: Exception): Unit = {}
-    }
-
-    spark.listenerManager.register(listener)
-
-    try {
-      // Perform native write with optional partitioning
-      num_partitions.fold(df)(n => df.repartition(n)).write.parquet(outputPath)
-
-      // Wait for listener to be called with timeout
-      val maxWaitTimeMs = 15000
-      val checkIntervalMs = 100
-      val maxIterations = maxWaitTimeMs / checkIntervalMs
-      var iterations = 0
-
-      while (capturedPlan.isEmpty && iterations < maxIterations) {
-        Thread.sleep(checkIntervalMs)
-        iterations += 1
-      }
-
-      // Verify that CometNativeWriteExec was used
-      assert(
-        capturedPlan.isDefined,
-        s"Listener was not called within ${maxWaitTimeMs}ms - no execution plan captured")
-
-      capturedPlan.foreach { qe =>
-        val executedPlan = stripAQEPlan(qe.executedPlan)
-
-        // Count CometNativeWriteExec instances in the plan
-        var nativeWriteCount = 0
-        executedPlan.foreach {
-          case _: CometNativeWriteExec =>
-            nativeWriteCount += 1
-          case d: DataWritingCommandExec =>
-            d.child.foreach {
-              case _: CometNativeWriteExec =>
-                nativeWriteCount += 1
-              case _ =>
-            }
-          case _ =>
-        }
-
-        assert(
-          nativeWriteCount == 1,
-          s"Expected exactly one CometNativeWriteExec in the plan, but found $nativeWriteCount:\n${executedPlan.treeString}")
-      }
-    } finally {
-      spark.listenerManager.unregister(listener)
-    }
-    capturedPlan
-  }
-
-  private def verifyWrittenFile(outputPath: String): Unit = {
-    // Verify the data was written correctly
-    val resultDf = spark.read.parquet(outputPath)
-    assert(resultDf.count() == 1000, "Expected 1000 rows to be written")
-
-    // Verify multiple part files were created
-    val outputDir = new File(outputPath)
-    val partFiles = outputDir.listFiles().filter(_.getName.startsWith("part-"))
-    // With 1000 rows and default parallelism, we should get multiple partitions
-    assert(partFiles.length > 1, "Expected multiple part files to be created")
-
-    // read with and without Comet and compare
-    var sparkDf: DataFrame = null
-    var cometDf: DataFrame = null
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false") {
-      sparkDf = spark.read.parquet(outputPath)
-    }
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
-      cometDf = spark.read.parquet(outputPath)
-    }
-    checkAnswer(sparkDf, cometDf)
-  }
 
   test("basic parquet write") {
     withTempPath { dir =>
@@ -227,53 +115,6 @@ class CometParquetWriterSuite extends CometTestBase {
             verifyWrittenFile(outputPath)
           }
         })
-      }
-    }
-  }
-
-  // ===== Complex Type Tests =====
-
-  private def writeComplexTypeData(
-      inputDf: DataFrame,
-      outputPath: String,
-      expectedRows: Int): Unit = {
-    withTempPath { inputDir =>
-      val inputPath = new File(inputDir, "input.parquet").getAbsolutePath
-
-      // First write the input data without Comet to get proper Arrow arrays when reading
-      withSQLConf(
-        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "false",
-        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Denver") {
-        inputDf.write.parquet(inputPath)
-      }
-
-      // Now read and write with Comet native writer
-      // Use auto scan mode so native_iceberg_compat is used (which supports complex types)
-      // instead of native_comet. This overrides the COMET_PARQUET_SCAN_IMPL env var set by CI.
-      withSQLConf(
-        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "auto",
-        CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
-        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
-        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true") {
-
-        val parquetDf = spark.read.parquet(inputPath)
-        parquetDf.write.parquet(outputPath)
-
-        // Verify round-trip: read with Spark and Comet, compare results
-        var sparkDf: DataFrame = null
-        var cometDf: DataFrame = null
-        withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false") {
-          sparkDf = spark.read.parquet(outputPath)
-        }
-        withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
-          cometDf = spark.read.parquet(outputPath)
-        }
-
-        assert(sparkDf.count() == expectedRows, s"Expected $expectedRows rows")
-        checkAnswer(sparkDf, cometDf)
-        checkAnswer(parquetDf, sparkDf)
       }
     }
   }
@@ -474,55 +315,197 @@ class CometParquetWriterSuite extends CometTestBase {
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
 
-      withTempPath { inputDir =>
-        val inputPath = new File(inputDir, "input.parquet").getAbsolutePath
+      // Generate test data with complex types enabled
+      val schema = FuzzDataGenerator.generateSchema(
+        SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = true))
+      val df = FuzzDataGenerator.generateDataFrame(
+        new Random(42),
+        spark,
+        schema,
+        500,
+        DataGenOptions(generateNegativeZero = false))
 
-        // Generate test data with complex types enabled
-        val schema = FuzzDataGenerator.generateSchema(
-          SchemaGenOptions(generateArray = true, generateStruct = true, generateMap = true))
-        val df = FuzzDataGenerator.generateDataFrame(
-          new Random(42),
-          spark,
-          schema,
-          500,
-          DataGenOptions(generateNegativeZero = false))
-
-        // Write input data without Comet
-        withSQLConf(
-          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "false",
-          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Denver") {
-          df.write.parquet(inputPath)
-        }
-
-        // Write with Comet native writer
-        // Use auto scan mode so native_iceberg_compat is used (which supports complex types)
-        // instead of native_comet. This overrides the COMET_PARQUET_SCAN_IMPL env var set by CI.
-        withSQLConf(
-          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> "auto",
-          CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
-          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
-          CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
-          CometConf.COMET_EXEC_ENABLED.key -> "true") {
-
-          val inputDf = spark.read.parquet(inputPath)
-          inputDf.write.parquet(outputPath)
-
-          // Verify round-trip
-          var sparkDf: DataFrame = null
-          var cometDf: DataFrame = null
-          withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false") {
-            sparkDf = spark.read.parquet(outputPath)
-          }
-          withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
-            cometDf = spark.read.parquet(outputPath)
-          }
-
-          assert(sparkDf.count() == 500, "Expected 500 rows")
-          checkAnswer(sparkDf, cometDf)
-          checkAnswer(inputDf, sparkDf)
-        }
-      }
+      writeComplexTypeData(df, outputPath, 500)
     }
   }
+
+  private def createTestData(inputDir: File): String = {
+    val inputPath = new File(inputDir, "input.parquet").getAbsolutePath
+    val schema = FuzzDataGenerator.generateSchema(
+      SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false))
+    val df = FuzzDataGenerator.generateDataFrame(
+      new Random(42),
+      spark,
+      schema,
+      1000,
+      DataGenOptions(generateNegativeZero = false))
+    withSQLConf(
+      CometConf.COMET_EXEC_ENABLED.key -> "false",
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Denver") {
+      df.write.parquet(inputPath)
+    }
+    inputPath
+  }
+
+  private def writeWithCometNativeWriteExec(
+      inputPath: String,
+      outputPath: String,
+      num_partitions: Option[Int] = None): Option[QueryExecution] = {
+    val df = spark.read.parquet(inputPath)
+
+    // Use a listener to capture the execution plan during write
+    var capturedPlan: Option[QueryExecution] = None
+
+    val listener = new org.apache.spark.sql.util.QueryExecutionListener {
+      override def onSuccess(funcName: String, qe: QueryExecution, durationNs: Long): Unit = {
+        // Capture plans from write operations
+        if (funcName == "save" || funcName.contains("command")) {
+          capturedPlan = Some(qe)
+        }
+      }
+
+      override def onFailure(
+          funcName: String,
+          qe: QueryExecution,
+          exception: Exception): Unit = {}
+    }
+
+    spark.listenerManager.register(listener)
+
+    try {
+      // Perform native write with optional partitioning
+      num_partitions.fold(df)(n => df.repartition(n)).write.parquet(outputPath)
+
+      // Wait for listener to be called with timeout
+      val maxWaitTimeMs = 15000
+      val checkIntervalMs = 100
+      val maxIterations = maxWaitTimeMs / checkIntervalMs
+      var iterations = 0
+
+      while (capturedPlan.isEmpty && iterations < maxIterations) {
+        Thread.sleep(checkIntervalMs)
+        iterations += 1
+      }
+
+      // Verify that CometNativeWriteExec was used
+      assert(
+        capturedPlan.isDefined,
+        s"Listener was not called within ${maxWaitTimeMs}ms - no execution plan captured")
+
+      capturedPlan.foreach { qe =>
+        val executedPlan = stripAQEPlan(qe.executedPlan)
+
+        // Count CometNativeWriteExec instances in the plan
+        var nativeWriteCount = 0
+        executedPlan.foreach {
+          case _: CometNativeWriteExec =>
+            nativeWriteCount += 1
+          case d: DataWritingCommandExec =>
+            d.child.foreach {
+              case _: CometNativeWriteExec =>
+                nativeWriteCount += 1
+              case _ =>
+            }
+          case _ =>
+        }
+
+        assert(
+          nativeWriteCount == 1,
+          s"Expected exactly one CometNativeWriteExec in the plan, but found $nativeWriteCount:\n${executedPlan.treeString}")
+      }
+    } finally {
+      spark.listenerManager.unregister(listener)
+    }
+    capturedPlan
+  }
+
+  private def verifyWrittenFile(outputPath: String): Unit = {
+    // Verify the data was written correctly
+    val resultDf = spark.read.parquet(outputPath)
+    assert(resultDf.count() == 1000, "Expected 1000 rows to be written")
+
+    // Verify multiple part files were created
+    val outputDir = new File(outputPath)
+    val partFiles = outputDir.listFiles().filter(_.getName.startsWith("part-"))
+    // With 1000 rows and default parallelism, we should get multiple partitions
+    assert(partFiles.length > 1, "Expected multiple part files to be created")
+
+    // read with and without Comet and compare
+    var sparkRows: Array[Row] = null
+    var cometRows: Array[Row] = null
+    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+      sparkRows = spark.read.parquet(outputPath).collect()
+    }
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
+      cometRows = spark.read.parquet(outputPath).collect()
+    }
+
+    val schema = spark.read.parquet(outputPath).schema
+    compareRows(schema, sparkRows, cometRows)
+  }
+
+  private def writeComplexTypeData(
+      inputDf: DataFrame,
+      outputPath: String,
+      expectedRows: Int): Unit = {
+    withTempPath { inputDir =>
+      val inputPath = new File(inputDir, "input.parquet").getAbsolutePath
+
+      // First write the input data without Comet
+      withSQLConf(
+        CometConf.COMET_EXEC_ENABLED.key -> "false",
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Denver") {
+        inputDf.write.parquet(inputPath)
+      }
+
+      // read the generated Parquet file and write with Comet native writer
+      withSQLConf(
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        // enable experimental native writes
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        // explicitly set scan impl to override CI defaults
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "auto",
+        // COMET_SCAN_ALLOW_INCOMPATIBLE is needed because input data contains byte/short types
+        CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
+        // use a different timezone to make sure that timezone handling works with nested types
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax") {
+
+        val parquetDf = spark.read.parquet(inputPath)
+        parquetDf.write.parquet(outputPath)
+      }
+
+      // scalastyle:off
+
+      // Verify round-trip: read with Spark and Comet, compare results
+      var sparkRows: Array[Row] = null
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        val df = spark.read.parquet(outputPath)
+        println(df.queryExecution.executedPlan)
+        sparkRows = df.collect()
+      }
+      var cometRows: Array[Row] = null
+      withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
+        val df = spark.read.parquet(outputPath)
+        println(df.queryExecution.executedPlan)
+        cometRows = df.collect()
+      }
+      assert(sparkRows.length == expectedRows, s"Expected $expectedRows rows")
+
+      val schema = spark.read.parquet(outputPath).schema
+      compareRows(schema, sparkRows, cometRows)
+    }
+  }
+
+  private def compareRows(
+      schema: StructType,
+      sparkRows: Array[Row],
+      cometRows: Array[Row]): Unit = {
+    import scala.jdk.CollectionConverters._
+    // Convert collected rows back to DataFrames for checkAnswer
+    val sparkDf = spark.createDataFrame(sparkRows.toSeq.asJava, schema)
+    val cometDf = spark.createDataFrame(cometRows.toSeq.asJava, schema)
+    checkAnswer(sparkDf, cometDf)
+  }
+
 }
