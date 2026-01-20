@@ -67,6 +67,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
+use datafusion_spark::function::map::map_from_arrays::MapFromArrays;
 use tokio::runtime::Runtime;
 
 use crate::execution::memory_pools::{
@@ -339,6 +340,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkHex::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(MapFromArrays::default()));
 }
 
 /// Prepares arrow arrays for output.

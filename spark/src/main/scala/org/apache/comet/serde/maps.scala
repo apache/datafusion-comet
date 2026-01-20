@@ -22,10 +22,11 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.types.{ArrayType, MapType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, StructType}
+import org.apache.spark.sql.types.DataTypes.{BinaryType, BooleanType, ByteType, DateType, DoubleType, FloatType, IntegerType, LongType, ShortType, StringType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
 
@@ -94,26 +95,38 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
 }
 
 object CometCreateMap extends CometExpressionSerde[CreateMap] {
+
+  override def getSupportLevel(expr: CreateMap): SupportLevel = {
+    Compatible(None)
+  }
+
   override def convert(
       expr: CreateMap,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val keysProtoExpr = expr.keys.map(exprToProtoInternal(_, inputs, binding))
-    val valuesProtoExpr = expr.values.map(exprToProtoInternal(_, inputs, binding))
-    if (keysProtoExpr.forall(_.isDefined) && valuesProtoExpr.forall(_.isDefined)) {
-      val createMapProtoExpr = ExprOuterClass.CreateMap
-        .newBuilder()
-        .addAllValues(keysProtoExpr.map(_.get).asJava)
-        .addAllValues(valuesProtoExpr.map(_.get).asJava)
-        .build()
-      Some(
-        ExprOuterClass.Expr
-          .newBuilder()
-          .setCreateMap(createMapProtoExpr)
-          .build())
-    } else {
-      withInfo(expr, expr.children: _*)
-      None
+    val keysArray = CreateArray(expr.keys)
+    val valuesArray = CreateArray(expr.values)
+    val keysExprProto = exprToProtoInternal(keysArray, inputs, binding)
+    val valuesExprProto = exprToProtoInternal(valuesArray, inputs, binding)
+    val createMapExprProto =
+      scalarFunctionExprToProtoWithReturnType(
+        "map_from_arrays",
+        expr.dataType,
+        false,
+        keysExprProto,
+        valuesExprProto)
+    optExprWithInfo(createMapExprProto, expr, expr.children: _*)
+  }
+}
+
+sealed trait MapBase {
+
+  def containsBinary(dataType: DataType): Boolean = {
+    dataType match {
+      case BinaryType => true
+      case StructType(fields) => fields.exists(field => containsBinary(field.dataType))
+      case ArrayType(elementType, _) => containsBinary(elementType)
+      case _ => false
     }
   }
 }

@@ -134,7 +134,6 @@ use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
-use datafusion_functions_nested::map::map;
 use url::Url;
 
 // For clippy error on type_complexity.
@@ -677,14 +676,6 @@ impl PhysicalPlanner {
             ExprStruct::MonotonicallyIncreasingId(_) => Ok(Arc::new(
                 MonotonicallyIncreasingId::from_partition_id(self.partition),
             )),
-            ExprStruct::CreateMap(expr) => {
-                let keys = expr.keys.iter().map(|expr| self.create_expr(expr, Arc::clone(&input_schema)))
-                    .collect::<Vec<_>>();
-                let values = expr.values.iter().map(|expr| self.create_expr(expr, Arc::clone(&input_schema)))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let create_map = map(keys, values);
-                Ok(Arc::new(create_map))
-            },
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
     }
