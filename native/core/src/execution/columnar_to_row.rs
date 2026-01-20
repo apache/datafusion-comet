@@ -47,6 +47,31 @@ use std::sync::Arc;
 /// Maximum digits for decimal that can fit in a long (8 bytes).
 const MAX_LONG_DIGITS: u8 = 18;
 
+/// Check if a data type is fixed-width for UnsafeRow purposes.
+/// Fixed-width types are stored directly in the 8-byte field slot.
+#[inline]
+fn is_fixed_width(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Boolean
+        | DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::Float32
+        | DataType::Float64
+        | DataType::Date32
+        | DataType::Timestamp(TimeUnit::Microsecond, _) => true,
+        DataType::Decimal128(p, _) => *p <= MAX_LONG_DIGITS,
+        _ => false,
+    }
+}
+
+/// Check if all columns in a schema are fixed-width.
+#[inline]
+fn is_all_fixed_width(schema: &[DataType]) -> bool {
+    schema.iter().all(is_fixed_width)
+}
+
 /// Context for columnar to row conversion.
 ///
 /// This struct maintains the output buffer and schema information needed for
@@ -68,6 +93,8 @@ pub struct ColumnarToRowContext {
     fixed_width_size: usize,
     /// Maximum batch size for pre-allocation.
     _batch_size: usize,
+    /// Whether all columns are fixed-width (enables fast path).
+    all_fixed_width: bool,
 }
 
 impl ColumnarToRowContext {
@@ -81,10 +108,15 @@ impl ColumnarToRowContext {
         let num_fields = schema.len();
         let null_bitset_width = Self::calculate_bitset_width(num_fields);
         let fixed_width_size = null_bitset_width + num_fields * 8;
+        let all_fixed_width = is_all_fixed_width(&schema);
 
         // Pre-allocate buffer for maximum batch size
-        // Estimate: fixed_width_size per row + some extra for variable-length data
-        let estimated_row_size = fixed_width_size + 64; // Conservative estimate
+        // For fixed-width schemas, we know exact size; otherwise estimate
+        let estimated_row_size = if all_fixed_width {
+            fixed_width_size
+        } else {
+            fixed_width_size + 64 // Conservative estimate for variable-length data
+        };
         let initial_capacity = batch_size * estimated_row_size;
 
         Self {
@@ -95,6 +127,7 @@ impl ColumnarToRowContext {
             null_bitset_width,
             fixed_width_size,
             _batch_size: batch_size,
+            all_fixed_width,
         }
     }
 
@@ -146,7 +179,12 @@ impl ColumnarToRowContext {
         self.offsets.reserve(num_rows);
         self.lengths.reserve(num_rows);
 
-        // Process each row
+        // Use fast path for fixed-width-only schemas
+        if self.all_fixed_width {
+            return self.convert_fixed_width(arrays, num_rows);
+        }
+
+        // Process each row (general path for variable-length data)
         for row_idx in 0..num_rows {
             let row_start = self.buffer.len();
             self.offsets.push(row_start as i32);
@@ -159,6 +197,229 @@ impl ColumnarToRowContext {
         }
 
         Ok((self.buffer.as_ptr(), &self.offsets, &self.lengths))
+    }
+
+    /// Fast path for schemas with only fixed-width columns.
+    /// Pre-allocates entire buffer and processes more efficiently.
+    fn convert_fixed_width(
+        &mut self,
+        arrays: &[ArrayRef],
+        num_rows: usize,
+    ) -> CometResult<(*const u8, &[i32], &[i32])> {
+        let row_size = self.fixed_width_size;
+        let total_size = row_size * num_rows;
+        let null_bitset_width = self.null_bitset_width;
+
+        // Pre-allocate entire buffer at once (all zeros)
+        self.buffer.resize(total_size, 0);
+
+        // Pre-fill offsets and lengths (constant for fixed-width)
+        let row_size_i32 = row_size as i32;
+        for row_idx in 0..num_rows {
+            self.offsets.push((row_idx * row_size) as i32);
+            self.lengths.push(row_size_i32);
+        }
+
+        // Process column by column for better cache locality
+        for (col_idx, array) in arrays.iter().enumerate() {
+            let field_offset_in_row = null_bitset_width + col_idx * 8;
+
+            // Write values for all rows in this column
+            self.write_column_fixed_width(
+                array,
+                &self.schema[col_idx].clone(),
+                col_idx,
+                field_offset_in_row,
+                row_size,
+                num_rows,
+            )?;
+        }
+
+        Ok((self.buffer.as_ptr(), &self.offsets, &self.lengths))
+    }
+
+    /// Write a fixed-width column's values for all rows.
+    /// Processes column-by-column for better cache locality.
+    fn write_column_fixed_width(
+        &mut self,
+        array: &ArrayRef,
+        data_type: &DataType,
+        col_idx: usize,
+        field_offset_in_row: usize,
+        row_size: usize,
+        num_rows: usize,
+    ) -> CometResult<()> {
+        // Handle nulls first - set null bits
+        if array.null_count() > 0 {
+            let word_idx = col_idx / 64;
+            let bit_idx = col_idx % 64;
+            let bit_mask = 1i64 << bit_idx;
+
+            for row_idx in 0..num_rows {
+                if array.is_null(row_idx) {
+                    let row_start = row_idx * row_size;
+                    let word_offset = row_start + word_idx * 8;
+                    let mut word = i64::from_le_bytes(
+                        self.buffer[word_offset..word_offset + 8]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    word |= bit_mask;
+                    self.buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
+                }
+            }
+        }
+
+        // Write non-null values using type-specific fast paths
+        match data_type {
+            DataType::Boolean => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<BooleanArray>()
+                    .ok_or_else(|| {
+                        CometError::Internal("Failed to downcast to BooleanArray".to_string())
+                    })?;
+                for row_idx in 0..num_rows {
+                    if !arr.is_null(row_idx) {
+                        let offset = row_idx * row_size + field_offset_in_row;
+                        self.buffer[offset] = if arr.value(row_idx) { 1 } else { 0 };
+                    }
+                }
+            }
+            DataType::Int8 => {
+                let arr = array.as_any().downcast_ref::<Int8Array>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to Int8Array".to_string())
+                })?;
+                for row_idx in 0..num_rows {
+                    if !arr.is_null(row_idx) {
+                        let offset = row_idx * row_size + field_offset_in_row;
+                        self.buffer[offset..offset + 8]
+                            .copy_from_slice(&(arr.value(row_idx) as i64).to_le_bytes());
+                    }
+                }
+            }
+            DataType::Int16 => {
+                let arr = array.as_any().downcast_ref::<Int16Array>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to Int16Array".to_string())
+                })?;
+                for row_idx in 0..num_rows {
+                    if !arr.is_null(row_idx) {
+                        let offset = row_idx * row_size + field_offset_in_row;
+                        self.buffer[offset..offset + 8]
+                            .copy_from_slice(&(arr.value(row_idx) as i64).to_le_bytes());
+                    }
+                }
+            }
+            DataType::Int32 => {
+                let arr = array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to Int32Array".to_string())
+                })?;
+                for row_idx in 0..num_rows {
+                    if !arr.is_null(row_idx) {
+                        let offset = row_idx * row_size + field_offset_in_row;
+                        self.buffer[offset..offset + 8]
+                            .copy_from_slice(&(arr.value(row_idx) as i64).to_le_bytes());
+                    }
+                }
+            }
+            DataType::Int64 => {
+                let arr = array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to Int64Array".to_string())
+                })?;
+                for row_idx in 0..num_rows {
+                    if !arr.is_null(row_idx) {
+                        let offset = row_idx * row_size + field_offset_in_row;
+                        self.buffer[offset..offset + 8]
+                            .copy_from_slice(&arr.value(row_idx).to_le_bytes());
+                    }
+                }
+            }
+            DataType::Float32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<Float32Array>()
+                    .ok_or_else(|| {
+                        CometError::Internal("Failed to downcast to Float32Array".to_string())
+                    })?;
+                for row_idx in 0..num_rows {
+                    if !arr.is_null(row_idx) {
+                        let offset = row_idx * row_size + field_offset_in_row;
+                        self.buffer[offset..offset + 8]
+                            .copy_from_slice(&(arr.value(row_idx).to_bits() as i64).to_le_bytes());
+                    }
+                }
+            }
+            DataType::Float64 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .ok_or_else(|| {
+                        CometError::Internal("Failed to downcast to Float64Array".to_string())
+                    })?;
+                for row_idx in 0..num_rows {
+                    if !arr.is_null(row_idx) {
+                        let offset = row_idx * row_size + field_offset_in_row;
+                        self.buffer[offset..offset + 8]
+                            .copy_from_slice(&(arr.value(row_idx).to_bits() as i64).to_le_bytes());
+                    }
+                }
+            }
+            DataType::Date32 => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<Date32Array>()
+                    .ok_or_else(|| {
+                        CometError::Internal("Failed to downcast to Date32Array".to_string())
+                    })?;
+                for row_idx in 0..num_rows {
+                    if !arr.is_null(row_idx) {
+                        let offset = row_idx * row_size + field_offset_in_row;
+                        self.buffer[offset..offset + 8]
+                            .copy_from_slice(&(arr.value(row_idx) as i64).to_le_bytes());
+                    }
+                }
+            }
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .ok_or_else(|| {
+                        CometError::Internal(
+                            "Failed to downcast to TimestampMicrosecondArray".to_string(),
+                        )
+                    })?;
+                for row_idx in 0..num_rows {
+                    if !arr.is_null(row_idx) {
+                        let offset = row_idx * row_size + field_offset_in_row;
+                        self.buffer[offset..offset + 8]
+                            .copy_from_slice(&arr.value(row_idx).to_le_bytes());
+                    }
+                }
+            }
+            DataType::Decimal128(precision, _) if *precision <= MAX_LONG_DIGITS => {
+                let arr = array
+                    .as_any()
+                    .downcast_ref::<Decimal128Array>()
+                    .ok_or_else(|| {
+                        CometError::Internal("Failed to downcast to Decimal128Array".to_string())
+                    })?;
+                for row_idx in 0..num_rows {
+                    if !arr.is_null(row_idx) {
+                        let offset = row_idx * row_size + field_offset_in_row;
+                        self.buffer[offset..offset + 8]
+                            .copy_from_slice(&(arr.value(row_idx) as i64).to_le_bytes());
+                    }
+                }
+            }
+            _ => {
+                return Err(CometError::Internal(format!(
+                    "Unexpected non-fixed-width type in fast path: {:?}",
+                    data_type
+                )));
+            }
+        }
+
+        Ok(())
     }
 
     /// Writes a complete row including fixed-width and variable-length portions.
@@ -1417,6 +1678,78 @@ mod tests {
         for len in lengths {
             assert_eq!(*len, 32);
         }
+    }
+
+    #[test]
+    fn test_fixed_width_fast_path() {
+        // Test that the fixed-width fast path produces correct results
+        let schema = vec![DataType::Int32, DataType::Int64, DataType::Float64];
+        let mut ctx = ColumnarToRowContext::new(schema.clone(), 100);
+
+        // Verify that the context detects this as all fixed-width
+        assert!(
+            ctx.all_fixed_width,
+            "Schema should be detected as all fixed-width"
+        );
+
+        let array1: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]));
+        let array2: ArrayRef = Arc::new(Int64Array::from(vec![Some(100i64), Some(200), None]));
+        let array3: ArrayRef = Arc::new(Float64Array::from(vec![1.5, 2.5, 3.5]));
+        let arrays = vec![array1, array2, array3];
+
+        let (ptr, offsets, lengths) = ctx.convert(&arrays, 3).unwrap();
+
+        assert!(!ptr.is_null());
+        assert_eq!(offsets.len(), 3);
+        assert_eq!(lengths.len(), 3);
+
+        // Each row: 8 bytes null bitset + 24 bytes for three fields = 32 bytes
+        let row_size = 32;
+        for (i, len) in lengths.iter().enumerate() {
+            assert_eq!(
+                *len, row_size as i32,
+                "Row {} should be {} bytes",
+                i, row_size
+            );
+        }
+
+        // Verify the actual data
+        let buffer = unsafe { std::slice::from_raw_parts(ptr, row_size * 3) };
+
+        // Row 0: int32=1 (not null), int64=100 (not null), float64=1.5 (not null)
+        let null_bitset_0 = i64::from_le_bytes(buffer[0..8].try_into().unwrap());
+        assert_eq!(null_bitset_0, 0, "Row 0 should have no nulls");
+        let val0_0 = i64::from_le_bytes(buffer[8..16].try_into().unwrap());
+        assert_eq!(val0_0, 1, "Row 0, col 0 should be 1");
+        let val0_1 = i64::from_le_bytes(buffer[16..24].try_into().unwrap());
+        assert_eq!(val0_1, 100, "Row 0, col 1 should be 100");
+        let val0_2 = f64::from_bits(u64::from_le_bytes(buffer[24..32].try_into().unwrap()));
+        assert!((val0_2 - 1.5).abs() < 0.001, "Row 0, col 2 should be 1.5");
+
+        // Row 1: int32=null, int64=200 (not null), float64=2.5 (not null)
+        let null_bitset_1 = i64::from_le_bytes(buffer[32..40].try_into().unwrap());
+        assert_eq!(null_bitset_1 & 1, 1, "Row 1, col 0 should be null");
+        let val1_1 = i64::from_le_bytes(buffer[48..56].try_into().unwrap());
+        assert_eq!(val1_1, 200, "Row 1, col 1 should be 200");
+
+        // Row 2: int32=3 (not null), int64=null, float64=3.5 (not null)
+        let null_bitset_2 = i64::from_le_bytes(buffer[64..72].try_into().unwrap());
+        assert_eq!(null_bitset_2 & 2, 2, "Row 2, col 1 should be null");
+        let val2_0 = i64::from_le_bytes(buffer[72..80].try_into().unwrap());
+        assert_eq!(val2_0, 3, "Row 2, col 0 should be 3");
+    }
+
+    #[test]
+    fn test_mixed_schema_uses_general_path() {
+        // Test that schemas with variable-length types use the general path
+        let schema = vec![DataType::Int32, DataType::Utf8];
+        let ctx = ColumnarToRowContext::new(schema, 100);
+
+        // Should NOT be detected as all fixed-width
+        assert!(
+            !ctx.all_fixed_width,
+            "Schema with Utf8 should not be all fixed-width"
+        );
     }
 
     #[test]
