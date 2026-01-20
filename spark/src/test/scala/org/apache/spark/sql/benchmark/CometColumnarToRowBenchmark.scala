@@ -23,7 +23,6 @@ import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
@@ -76,7 +75,6 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         // Create a table with various primitive types
-        import spark.implicits._
         val df = spark
           .range(values)
           .selectExpr(
@@ -133,7 +131,6 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
-        import spark.implicits._
         val df = spark
           .range(values)
           .selectExpr(
@@ -184,7 +181,6 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
-        import spark.implicits._
         val df = spark
           .range(values)
           .selectExpr(
@@ -250,7 +246,6 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
-        import spark.implicits._
         val df = spark
           .range(values)
           .selectExpr(
@@ -307,7 +302,6 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
-        import spark.implicits._
         val df = spark
           .range(values)
           .selectExpr(
@@ -366,7 +360,6 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
-        import spark.implicits._
         val df = spark
           .range(values)
           .selectExpr(
@@ -429,7 +422,6 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
 
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
-        import spark.implicits._
 
         // Generate 50 columns of mixed types
         val columns = (0 until 50).map { i =>

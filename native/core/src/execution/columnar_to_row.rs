@@ -35,7 +35,6 @@
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 
-use std::sync::Arc;
 use crate::errors::{CometError, CometResult};
 use arrow::array::types::{
     ArrowDictionaryKeyType, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type, UInt32Type,
@@ -43,6 +42,7 @@ use arrow::array::types::{
 };
 use arrow::array::*;
 use arrow::datatypes::{ArrowNativeType, DataType, TimeUnit};
+use std::sync::Arc;
 
 /// Maximum digits for decimal that can fit in a long (8 bytes).
 const MAX_LONG_DIGITS: u8 = 18;
@@ -162,6 +162,7 @@ impl ColumnarToRowContext {
     }
 
     /// Writes a complete row including fixed-width and variable-length portions.
+    /// Optimized to write directly to the buffer without intermediate allocations.
     fn write_row(&mut self, arrays: &[ArrayRef], row_idx: usize) -> CometResult<()> {
         let row_start = self.buffer.len();
         let null_bitset_width = self.null_bitset_width;
@@ -195,26 +196,21 @@ impl ColumnarToRowContext {
             }
         }
 
-        // Second pass: write variable-length data
+        // Second pass: write variable-length data directly to buffer
         for (col_idx, array) in arrays.iter().enumerate() {
             if array.is_null(row_idx) {
                 continue;
             }
 
-            let data_type = &self.schema[col_idx];
-            if let Some(var_data) = get_variable_length_data(data_type, array, row_idx)? {
-                let current_offset = self.buffer.len() - row_start;
-                let len = var_data.len();
-
-                // Write the data
-                self.buffer.extend_from_slice(&var_data);
-
-                // Pad to 8-byte alignment
-                let padding = Self::round_up_to_8(len) - len;
-                self.buffer.extend(std::iter::repeat_n(0u8, padding));
+            // Write variable-length data directly to buffer, returns actual length (0 if not variable-length)
+            let actual_len = write_variable_length_to_buffer(&mut self.buffer, array, row_idx)?;
+            if actual_len > 0 {
+                // Calculate offset: buffer grew by padded_len, but we need offset to start of data
+                let padded_len = Self::round_up_to_8(actual_len);
+                let current_offset = self.buffer.len() - padded_len - row_start;
 
                 // Update the field slot with (offset << 32) | length
-                let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
+                let offset_and_len = ((current_offset as i64) << 32) | (actual_len as i64);
                 let field_offset = row_start + null_bitset_width + col_idx * 8;
                 self.buffer[field_offset..field_offset + 8]
                     .copy_from_slice(&offset_and_len.to_le_bytes());
@@ -236,6 +232,7 @@ impl ColumnarToRowContext {
 }
 
 /// Gets the fixed-width value for a field as i64.
+#[inline]
 fn get_field_value(data_type: &DataType, array: &ArrayRef, row_idx: usize) -> CometResult<i64> {
     // Use the actual array type for dispatching to handle type mismatches
     let actual_type = array.data_type();
@@ -643,6 +640,317 @@ fn get_dictionary_value_with_key<K: ArrowDictionaryKeyType>(
     }
 }
 
+/// Writes variable-length data directly to buffer without intermediate allocations.
+/// Returns the actual (unpadded) length of the data written, or 0 if not a variable-length type.
+/// The buffer is extended with data followed by padding to 8-byte alignment.
+#[inline]
+fn write_variable_length_to_buffer(
+    buffer: &mut Vec<u8>,
+    array: &ArrayRef,
+    row_idx: usize,
+) -> CometResult<usize> {
+    let actual_type = array.data_type();
+
+    match actual_type {
+        DataType::Utf8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to StringArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            let bytes = arr.value(row_idx).as_bytes();
+            let len = bytes.len();
+            buffer.extend_from_slice(bytes);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::LargeUtf8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<LargeStringArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to LargeStringArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            let bytes = arr.value(row_idx).as_bytes();
+            let len = bytes.len();
+            buffer.extend_from_slice(bytes);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::Binary => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to BinaryArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            let bytes = arr.value(row_idx);
+            let len = bytes.len();
+            buffer.extend_from_slice(bytes);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::LargeBinary => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<LargeBinaryArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to LargeBinaryArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            let bytes = arr.value(row_idx);
+            let len = bytes.len();
+            buffer.extend_from_slice(bytes);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::Decimal128(precision, _) if *precision > MAX_LONG_DIGITS => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<Decimal128Array>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to Decimal128Array for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            // For large decimals, we still need to convert to Spark format
+            let bytes = i128_to_spark_decimal_bytes(arr.value(row_idx));
+            let len = bytes.len();
+            buffer.extend_from_slice(&bytes);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::Struct(fields) => {
+            let struct_array = array
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to StructArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            // For complex types, use the existing functions for now
+            // These can be further optimized to write directly in the future
+            let data = write_nested_struct(struct_array, row_idx, fields)?;
+            let len = data.len();
+            buffer.extend_from_slice(&data);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::List(field) => {
+            let list_array = array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to downcast to ListArray for type {:?}",
+                    actual_type
+                ))
+            })?;
+            let data = write_list_data(list_array, row_idx, field)?;
+            let len = data.len();
+            buffer.extend_from_slice(&data);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::LargeList(field) => {
+            let list_array = array
+                .as_any()
+                .downcast_ref::<LargeListArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to LargeListArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            let data = write_large_list_data(list_array, row_idx, field)?;
+            let len = data.len();
+            buffer.extend_from_slice(&data);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::Map(field, _) => {
+            let map_array = array.as_any().downcast_ref::<MapArray>().ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to downcast to MapArray for type {:?}",
+                    actual_type
+                ))
+            })?;
+            let data = write_map_data(map_array, row_idx, field)?;
+            let len = data.len();
+            buffer.extend_from_slice(&data);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::Dictionary(key_type, value_type) => {
+            // For dictionary-encoded arrays, extract the value and write it
+            write_dictionary_to_buffer(buffer, array, row_idx, key_type, value_type)
+        }
+        // Not a variable-length type
+        _ => Ok(0),
+    }
+}
+
+/// Writes dictionary-encoded value directly to buffer.
+#[inline]
+fn write_dictionary_to_buffer(
+    buffer: &mut Vec<u8>,
+    array: &ArrayRef,
+    row_idx: usize,
+    key_type: &DataType,
+    value_type: &DataType,
+) -> CometResult<usize> {
+    match key_type {
+        DataType::Int8 => {
+            write_dictionary_to_buffer_with_key::<Int8Type>(buffer, array, row_idx, value_type)
+        }
+        DataType::Int16 => {
+            write_dictionary_to_buffer_with_key::<Int16Type>(buffer, array, row_idx, value_type)
+        }
+        DataType::Int32 => {
+            write_dictionary_to_buffer_with_key::<Int32Type>(buffer, array, row_idx, value_type)
+        }
+        DataType::Int64 => {
+            write_dictionary_to_buffer_with_key::<Int64Type>(buffer, array, row_idx, value_type)
+        }
+        DataType::UInt8 => {
+            write_dictionary_to_buffer_with_key::<UInt8Type>(buffer, array, row_idx, value_type)
+        }
+        DataType::UInt16 => {
+            write_dictionary_to_buffer_with_key::<UInt16Type>(buffer, array, row_idx, value_type)
+        }
+        DataType::UInt32 => {
+            write_dictionary_to_buffer_with_key::<UInt32Type>(buffer, array, row_idx, value_type)
+        }
+        DataType::UInt64 => {
+            write_dictionary_to_buffer_with_key::<UInt64Type>(buffer, array, row_idx, value_type)
+        }
+        _ => Err(CometError::Internal(format!(
+            "Unsupported dictionary key type: {:?}",
+            key_type
+        ))),
+    }
+}
+
+/// Writes dictionary value directly to buffer with specific key type.
+#[inline]
+fn write_dictionary_to_buffer_with_key<K: ArrowDictionaryKeyType>(
+    buffer: &mut Vec<u8>,
+    array: &ArrayRef,
+    row_idx: usize,
+    value_type: &DataType,
+) -> CometResult<usize> {
+    let dict_array = array
+        .as_any()
+        .downcast_ref::<DictionaryArray<K>>()
+        .ok_or_else(|| {
+            CometError::Internal(format!(
+                "Failed to downcast to DictionaryArray<{:?}>",
+                std::any::type_name::<K>()
+            ))
+        })?;
+
+    let values = dict_array.values();
+    let key_idx = dict_array.keys().value(row_idx).to_usize().ok_or_else(|| {
+        CometError::Internal("Dictionary key index out of usize range".to_string())
+    })?;
+
+    match value_type {
+        DataType::Utf8 => {
+            let string_values = values
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast dictionary values to StringArray, actual type: {:?}",
+                        values.data_type()
+                    ))
+                })?;
+            let bytes = string_values.value(key_idx).as_bytes();
+            let len = bytes.len();
+            buffer.extend_from_slice(bytes);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::LargeUtf8 => {
+            let string_values = values
+                .as_any()
+                .downcast_ref::<LargeStringArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast dictionary values to LargeStringArray, actual type: {:?}",
+                        values.data_type()
+                    ))
+                })?;
+            let bytes = string_values.value(key_idx).as_bytes();
+            let len = bytes.len();
+            buffer.extend_from_slice(bytes);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::Binary => {
+            let binary_values = values
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast dictionary values to BinaryArray, actual type: {:?}",
+                        values.data_type()
+                    ))
+                })?;
+            let bytes = binary_values.value(key_idx);
+            let len = bytes.len();
+            buffer.extend_from_slice(bytes);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::LargeBinary => {
+            let binary_values = values
+                .as_any()
+                .downcast_ref::<LargeBinaryArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast dictionary values to LargeBinaryArray, actual type: {:?}",
+                        values.data_type()
+                    ))
+                })?;
+            let bytes = binary_values.value(key_idx);
+            let len = bytes.len();
+            buffer.extend_from_slice(bytes);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        _ => Err(CometError::Internal(format!(
+            "Unsupported dictionary value type for direct buffer write: {:?}",
+            value_type
+        ))),
+    }
+}
+
 /// Converts i128 to Spark's big-endian decimal byte format.
 fn i128_to_spark_decimal_bytes(value: i128) -> Vec<u8> {
     // Spark uses big-endian format for large decimals
@@ -680,6 +988,7 @@ const fn round_up_to_8(value: usize) -> usize {
 /// Gets the element size in bytes for UnsafeArrayData.
 /// Unlike UnsafeRow fields which are always 8 bytes, UnsafeArrayData uses
 /// the actual primitive size for fixed-width types.
+#[inline]
 fn get_element_size(data_type: &DataType) -> usize {
     match data_type {
         DataType::Boolean => 1,
@@ -698,6 +1007,7 @@ fn get_element_size(data_type: &DataType) -> usize {
 }
 
 /// Writes a primitive value with the correct size for UnsafeArrayData.
+#[inline]
 fn write_array_element(buffer: &mut [u8], data_type: &DataType, value: i64, offset: usize) {
     match data_type {
         DataType::Boolean => {
