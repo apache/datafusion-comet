@@ -232,51 +232,128 @@ impl ColumnarToRowContext {
 
 /// Gets the fixed-width value for a field as i64.
 fn get_field_value(data_type: &DataType, array: &ArrayRef, row_idx: usize) -> CometResult<i64> {
-    match data_type {
+    // Use the actual array type for dispatching to handle type mismatches
+    let actual_type = array.data_type();
+
+    match actual_type {
         DataType::Boolean => {
-            let arr = array.as_any().downcast_ref::<BooleanArray>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to BooleanArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(if arr.value(row_idx) { 1i64 } else { 0i64 })
         }
         DataType::Int8 => {
-            let arr = array.as_any().downcast_ref::<Int8Array>().unwrap();
+            let arr = array.as_any().downcast_ref::<Int8Array>().ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to downcast to Int8Array for type {:?}",
+                    actual_type
+                ))
+            })?;
             Ok(arr.value(row_idx) as i64)
         }
         DataType::Int16 => {
-            let arr = array.as_any().downcast_ref::<Int16Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<Int16Array>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to Int16Array for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(arr.value(row_idx) as i64)
         }
         DataType::Int32 => {
-            let arr = array.as_any().downcast_ref::<Int32Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to Int32Array for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(arr.value(row_idx) as i64)
         }
         DataType::Int64 => {
-            let arr = array.as_any().downcast_ref::<Int64Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to Int64Array for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(arr.value(row_idx))
         }
         DataType::Float32 => {
-            let arr = array.as_any().downcast_ref::<Float32Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to Float32Array for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(arr.value(row_idx).to_bits() as i64)
         }
         DataType::Float64 => {
-            let arr = array.as_any().downcast_ref::<Float64Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to Float64Array for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(arr.value(row_idx).to_bits() as i64)
         }
         DataType::Date32 => {
-            let arr = array.as_any().downcast_ref::<Date32Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<Date32Array>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to Date32Array for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(arr.value(row_idx) as i64)
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             let arr = array
                 .as_any()
                 .downcast_ref::<TimestampMicrosecondArray>()
-                .unwrap();
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to TimestampMicrosecondArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(arr.value(row_idx))
         }
         DataType::Decimal128(precision, _) if *precision <= MAX_LONG_DIGITS => {
-            let arr = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<Decimal128Array>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to Decimal128Array for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(arr.value(row_idx) as i64)
         }
-        // Variable-length types use placeholder (will be overwritten)
+        // Variable-length types use placeholder (will be overwritten by get_variable_length_data)
         DataType::Utf8
         | DataType::LargeUtf8
         | DataType::Binary
@@ -284,11 +361,39 @@ fn get_field_value(data_type: &DataType, array: &ArrayRef, row_idx: usize) -> Co
         | DataType::Decimal128(_, _)
         | DataType::Struct(_)
         | DataType::List(_)
+        | DataType::LargeList(_)
         | DataType::Map(_, _) => Ok(0i64),
-        dt => Err(CometError::Internal(format!(
-            "Unsupported data type for columnar to row conversion: {:?}",
-            dt
-        ))),
+        _ => {
+            // Check if the schema type is a known type that we should handle
+            match data_type {
+                DataType::Boolean
+                | DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::Float32
+                | DataType::Float64
+                | DataType::Date32
+                | DataType::Timestamp(TimeUnit::Microsecond, _)
+                | DataType::Decimal128(_, _) => Err(CometError::Internal(format!(
+                    "Type mismatch in get_field_value: schema expects {:?} but actual array type is {:?}",
+                    data_type, actual_type
+                ))),
+                // If schema is also a variable-length type, return placeholder
+                DataType::Utf8
+                | DataType::LargeUtf8
+                | DataType::Binary
+                | DataType::LargeBinary
+                | DataType::Struct(_)
+                | DataType::List(_)
+                | DataType::LargeList(_)
+                | DataType::Map(_, _) => Ok(0i64),
+                _ => Err(CometError::Internal(format!(
+                    "Unsupported data type for columnar to row conversion: schema={:?}, actual={:?}",
+                    data_type, actual_type
+                ))),
+            }
+        }
     }
 }
 
@@ -298,40 +403,136 @@ fn get_variable_length_data(
     array: &ArrayRef,
     row_idx: usize,
 ) -> CometResult<Option<Vec<u8>>> {
-    match data_type {
+    // Use the actual array type for dispatching to handle type mismatches
+    // between the serialized schema and the actual Arrow array (e.g., List vs LargeList)
+    let actual_type = array.data_type();
+
+    match actual_type {
         DataType::Utf8 => {
-            let arr = array.as_any().downcast_ref::<StringArray>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to StringArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(Some(arr.value(row_idx).as_bytes().to_vec()))
         }
         DataType::LargeUtf8 => {
-            let arr = array.as_any().downcast_ref::<LargeStringArray>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<LargeStringArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to LargeStringArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(Some(arr.value(row_idx).as_bytes().to_vec()))
         }
         DataType::Binary => {
-            let arr = array.as_any().downcast_ref::<BinaryArray>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to BinaryArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(Some(arr.value(row_idx).to_vec()))
         }
         DataType::LargeBinary => {
-            let arr = array.as_any().downcast_ref::<LargeBinaryArray>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<LargeBinaryArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to LargeBinaryArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(Some(arr.value(row_idx).to_vec()))
         }
         DataType::Decimal128(precision, _) if *precision > MAX_LONG_DIGITS => {
-            let arr = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
+            let arr = array
+                .as_any()
+                .downcast_ref::<Decimal128Array>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to Decimal128Array for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(Some(i128_to_spark_decimal_bytes(arr.value(row_idx))))
         }
         DataType::Struct(fields) => {
-            let struct_array = array.as_any().downcast_ref::<StructArray>().unwrap();
+            let struct_array = array
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to StructArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
             Ok(Some(write_nested_struct(struct_array, row_idx, fields)?))
         }
         DataType::List(field) => {
-            let list_array = array.as_any().downcast_ref::<ListArray>().unwrap();
+            let list_array = array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to downcast to ListArray for type {:?}",
+                    actual_type
+                ))
+            })?;
             Ok(Some(write_list_data(list_array, row_idx, field)?))
         }
+        DataType::LargeList(field) => {
+            let list_array = array
+                .as_any()
+                .downcast_ref::<LargeListArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to LargeListArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            Ok(Some(write_large_list_data(list_array, row_idx, field)?))
+        }
         DataType::Map(field, _) => {
-            let map_array = array.as_any().downcast_ref::<MapArray>().unwrap();
+            let map_array = array.as_any().downcast_ref::<MapArray>().ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to downcast to MapArray for type {:?}",
+                    actual_type
+                ))
+            })?;
             Ok(Some(write_map_data(map_array, row_idx, field)?))
         }
-        _ => Ok(None),
+        // For types not in the match, check if the schema type expects variable-length
+        _ => {
+            match data_type {
+                DataType::Utf8
+                | DataType::LargeUtf8
+                | DataType::Binary
+                | DataType::LargeBinary
+                | DataType::Struct(_)
+                | DataType::List(_)
+                | DataType::LargeList(_)
+                | DataType::Map(_, _) => Err(CometError::Internal(format!(
+                    "Type mismatch in columnar to row: schema expects {:?} but actual array type is {:?}",
+                    data_type, actual_type
+                ))),
+                DataType::Decimal128(precision, _) if *precision > MAX_LONG_DIGITS => {
+                    Err(CometError::Internal(format!(
+                        "Type mismatch for large decimal: schema expects {:?} but actual array type is {:?}",
+                        data_type, actual_type
+                    )))
+                }
+                _ => Ok(None),
+            }
+        }
     }
 }
 
@@ -518,6 +719,69 @@ fn write_list_data(
             // Handle variable-length element data
             if let Some(var_data) = get_variable_length_data(element_type, &values, i)? {
                 // Offset is relative to the array base (buffer position 0 since this is a fresh Vec)
+                let current_offset = buffer.len();
+                let len = var_data.len();
+
+                buffer.extend_from_slice(&var_data);
+                let padding = round_up_to_8(len) - len;
+                buffer.extend(std::iter::repeat_n(0u8, padding));
+
+                let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
+                buffer[slot_offset..slot_offset + 8].copy_from_slice(&offset_and_len.to_le_bytes());
+            }
+        }
+    }
+
+    Ok(buffer)
+}
+
+/// Writes a large list (array) value in UnsafeArrayData format.
+/// This is the same as write_list_data but for LargeListArray (64-bit offsets).
+fn write_large_list_data(
+    list_array: &LargeListArray,
+    row_idx: usize,
+    element_field: &arrow::datatypes::FieldRef,
+) -> CometResult<Vec<u8>> {
+    let values = list_array.value(row_idx);
+    let num_elements = values.len();
+    let element_type = element_field.data_type();
+    let element_size = get_element_size(element_type);
+
+    let element_bitset_width = ColumnarToRowContext::calculate_bitset_width(num_elements);
+    let mut buffer = Vec::new();
+
+    // Write number of elements
+    buffer.extend_from_slice(&(num_elements as i64).to_le_bytes());
+
+    // Write null bitset for elements
+    let null_bitset_start = buffer.len();
+    buffer.resize(null_bitset_start + element_bitset_width, 0);
+
+    for i in 0..num_elements {
+        if values.is_null(i) {
+            let word_idx = i / 64;
+            let bit_idx = i % 64;
+            let word_offset = null_bitset_start + word_idx * 8;
+            let mut word =
+                i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
+            word |= 1i64 << bit_idx;
+            buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
+        }
+    }
+
+    // Write element values using type-specific element size
+    let elements_start = buffer.len();
+    let elements_total_size = round_up_to_8(num_elements * element_size);
+    buffer.resize(elements_start + elements_total_size, 0);
+
+    for i in 0..num_elements {
+        if !values.is_null(i) {
+            let slot_offset = elements_start + i * element_size;
+            let value = get_field_value(element_type, &values, i)?;
+            write_array_element(&mut buffer, element_type, value, slot_offset);
+
+            // Handle variable-length element data
+            if let Some(var_data) = get_variable_length_data(element_type, &values, i)? {
                 let current_offset = buffer.len();
                 let len = var_data.len();
 
@@ -1116,5 +1380,69 @@ mod tests {
 
         assert_eq!(value0, 0, "sliced row 0, first value should be 0");
         assert_eq!(value1, 10, "sliced row 0, second value should be 10");
+    }
+
+    #[test]
+    fn test_large_list_data_conversion() {
+        use arrow::datatypes::Field;
+
+        // Create a large list with elements [0, 1, 2, 3, 4]
+        // LargeListArray uses i64 offsets instead of i32
+        let values = Int32Array::from(vec![0, 1, 2, 3, 4]);
+        let offsets = arrow::buffer::OffsetBuffer::new(vec![0i64, 5].into());
+
+        let list_field = Arc::new(Field::new("item", DataType::Int32, true));
+        let list_array = LargeListArray::new(list_field.clone(), offsets, Arc::new(values), None);
+
+        // Convert the list for row 0
+        let result =
+            write_large_list_data(&list_array, 0, &list_field).expect("conversion failed");
+
+        // UnsafeArrayData format for Int32:
+        // [0..8]: numElements = 5
+        // [8..16]: null bitset (8 bytes for up to 64 elements)
+        // [16..20]: element 0 (4 bytes for Int32)
+        // ... (total 20 bytes for 5 elements, rounded up to 24 for 8-byte alignment)
+
+        let num_elements = i64::from_le_bytes(result[0..8].try_into().unwrap());
+        assert_eq!(num_elements, 5, "should have 5 elements");
+
+        let bitset_width = ColumnarToRowContext::calculate_bitset_width(5);
+        assert_eq!(bitset_width, 8);
+
+        // Read each element value (Int32 uses 4 bytes per element)
+        let element_size = 4; // Int32
+        for i in 0..5 {
+            let slot_offset = 8 + bitset_width + i * element_size;
+            let value =
+                i32::from_le_bytes(result[slot_offset..slot_offset + 4].try_into().unwrap());
+            assert_eq!(value, i as i32, "element {} should be {}", i, i);
+        }
+    }
+
+    #[test]
+    fn test_get_variable_length_data_with_large_list() {
+        use arrow::datatypes::Field;
+
+        // Create a LargeListArray and pass it to get_variable_length_data
+        // This tests that the function correctly dispatches based on the actual array type
+        let values = Int32Array::from(vec![10, 20, 30]);
+        let offsets = arrow::buffer::OffsetBuffer::new(vec![0i64, 3].into());
+
+        let list_field = Arc::new(Field::new("item", DataType::Int32, true));
+        let list_array = LargeListArray::new(list_field.clone(), offsets, Arc::new(values), None);
+        let array_ref: ArrayRef = Arc::new(list_array);
+
+        // Even if we pass a List schema type, the function should handle LargeList correctly
+        // because it now uses the actual array type for dispatching
+        let list_schema_type = DataType::List(list_field);
+
+        let result = get_variable_length_data(&list_schema_type, &array_ref, 0)
+            .expect("conversion failed")
+            .expect("should have data");
+
+        // Verify the result
+        let num_elements = i64::from_le_bytes(result[0..8].try_into().unwrap());
+        assert_eq!(num_elements, 3, "should have 3 elements");
     }
 }
