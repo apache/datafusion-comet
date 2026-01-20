@@ -652,255 +652,6 @@ fn get_field_value(data_type: &DataType, array: &ArrayRef, row_idx: usize) -> Co
         }
     }
 }
-
-/// Gets variable-length data for a field, if applicable.
-fn get_variable_length_data(
-    data_type: &DataType,
-    array: &ArrayRef,
-    row_idx: usize,
-) -> CometResult<Option<Vec<u8>>> {
-    // Use the actual array type for dispatching to handle type mismatches
-    // between the serialized schema and the actual Arrow array (e.g., List vs LargeList)
-    let actual_type = array.data_type();
-
-    match actual_type {
-        DataType::Utf8 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to StringArray for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            Ok(Some(arr.value(row_idx).as_bytes().to_vec()))
-        }
-        DataType::LargeUtf8 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<LargeStringArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to LargeStringArray for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            Ok(Some(arr.value(row_idx).as_bytes().to_vec()))
-        }
-        DataType::Binary => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<BinaryArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to BinaryArray for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            Ok(Some(arr.value(row_idx).to_vec()))
-        }
-        DataType::LargeBinary => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<LargeBinaryArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to LargeBinaryArray for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            Ok(Some(arr.value(row_idx).to_vec()))
-        }
-        DataType::Decimal128(precision, _) if *precision > MAX_LONG_DIGITS => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<Decimal128Array>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Decimal128Array for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            Ok(Some(i128_to_spark_decimal_bytes(arr.value(row_idx))))
-        }
-        DataType::Struct(fields) => {
-            let struct_array = array
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to StructArray for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            Ok(Some(write_nested_struct(struct_array, row_idx, fields)?))
-        }
-        DataType::List(field) => {
-            let list_array = array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-                CometError::Internal(format!(
-                    "Failed to downcast to ListArray for type {:?}",
-                    actual_type
-                ))
-            })?;
-            Ok(Some(write_list_data(list_array, row_idx, field)?))
-        }
-        DataType::LargeList(field) => {
-            let list_array = array
-                .as_any()
-                .downcast_ref::<LargeListArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to LargeListArray for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            Ok(Some(write_large_list_data(list_array, row_idx, field)?))
-        }
-        DataType::Map(field, _) => {
-            let map_array = array.as_any().downcast_ref::<MapArray>().ok_or_else(|| {
-                CometError::Internal(format!(
-                    "Failed to downcast to MapArray for type {:?}",
-                    actual_type
-                ))
-            })?;
-            Ok(Some(write_map_data(map_array, row_idx, field)?))
-        }
-        // Handle Dictionary-encoded arrays by extracting the actual value
-        DataType::Dictionary(key_type, value_type) => {
-            get_dictionary_value(array, row_idx, key_type, value_type)
-        }
-        // For types not in the match, check if the schema type expects variable-length
-        _ => {
-            match data_type {
-                DataType::Utf8
-                | DataType::LargeUtf8
-                | DataType::Binary
-                | DataType::LargeBinary
-                | DataType::Struct(_)
-                | DataType::List(_)
-                | DataType::LargeList(_)
-                | DataType::Map(_, _) => Err(CometError::Internal(format!(
-                    "Type mismatch in columnar to row: schema expects {:?} but actual array type is {:?}",
-                    data_type, actual_type
-                ))),
-                DataType::Decimal128(precision, _) if *precision > MAX_LONG_DIGITS => {
-                    Err(CometError::Internal(format!(
-                        "Type mismatch for large decimal: schema expects {:?} but actual array type is {:?}",
-                        data_type, actual_type
-                    )))
-                }
-                _ => Ok(None),
-            }
-        }
-    }
-}
-
-/// Gets the value from a dictionary-encoded array.
-fn get_dictionary_value(
-    array: &ArrayRef,
-    row_idx: usize,
-    key_type: &DataType,
-    value_type: &DataType,
-) -> CometResult<Option<Vec<u8>>> {
-    // Handle different key types (Int8, Int16, Int32, Int64 are common)
-    match key_type {
-        DataType::Int8 => get_dictionary_value_with_key::<Int8Type>(array, row_idx, value_type),
-        DataType::Int16 => get_dictionary_value_with_key::<Int16Type>(array, row_idx, value_type),
-        DataType::Int32 => get_dictionary_value_with_key::<Int32Type>(array, row_idx, value_type),
-        DataType::Int64 => get_dictionary_value_with_key::<Int64Type>(array, row_idx, value_type),
-        DataType::UInt8 => get_dictionary_value_with_key::<UInt8Type>(array, row_idx, value_type),
-        DataType::UInt16 => get_dictionary_value_with_key::<UInt16Type>(array, row_idx, value_type),
-        DataType::UInt32 => get_dictionary_value_with_key::<UInt32Type>(array, row_idx, value_type),
-        DataType::UInt64 => get_dictionary_value_with_key::<UInt64Type>(array, row_idx, value_type),
-        _ => Err(CometError::Internal(format!(
-            "Unsupported dictionary key type: {:?}",
-            key_type
-        ))),
-    }
-}
-
-/// Gets the value from a dictionary array with a specific key type.
-fn get_dictionary_value_with_key<K: ArrowDictionaryKeyType>(
-    array: &ArrayRef,
-    row_idx: usize,
-    value_type: &DataType,
-) -> CometResult<Option<Vec<u8>>> {
-    let dict_array = array
-        .as_any()
-        .downcast_ref::<DictionaryArray<K>>()
-        .ok_or_else(|| {
-            CometError::Internal(format!(
-                "Failed to downcast to DictionaryArray<{:?}>",
-                std::any::type_name::<K>()
-            ))
-        })?;
-
-    // Get the values array (the dictionary)
-    let values = dict_array.values();
-
-    // Get the key for this row (index into the dictionary)
-    let key_idx = dict_array.keys().value(row_idx).to_usize().ok_or_else(|| {
-        CometError::Internal("Dictionary key index out of usize range".to_string())
-    })?;
-
-    // Extract the value based on the value type
-    match value_type {
-        DataType::Utf8 => {
-            let string_values = values
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast dictionary values to StringArray, actual type: {:?}",
-                        values.data_type()
-                    ))
-                })?;
-            Ok(Some(string_values.value(key_idx).as_bytes().to_vec()))
-        }
-        DataType::LargeUtf8 => {
-            let string_values = values
-                .as_any()
-                .downcast_ref::<LargeStringArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast dictionary values to LargeStringArray, actual type: {:?}",
-                        values.data_type()
-                    ))
-                })?;
-            Ok(Some(string_values.value(key_idx).as_bytes().to_vec()))
-        }
-        DataType::Binary => {
-            let binary_values = values
-                .as_any()
-                .downcast_ref::<BinaryArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast dictionary values to BinaryArray, actual type: {:?}",
-                        values.data_type()
-                    ))
-                })?;
-            Ok(Some(binary_values.value(key_idx).to_vec()))
-        }
-        DataType::LargeBinary => {
-            let binary_values = values
-                .as_any()
-                .downcast_ref::<LargeBinaryArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast dictionary values to LargeBinaryArray, actual type: {:?}",
-                        values.data_type()
-                    ))
-                })?;
-            Ok(Some(binary_values.value(key_idx).to_vec()))
-        }
-        _ => Err(CometError::Internal(format!(
-            "Unsupported dictionary value type for variable-length data: {:?}",
-            value_type
-        ))),
-    }
-}
-
 /// Writes variable-length data directly to buffer without intermediate allocations.
 /// Returns the actual (unpadded) length of the data written, or 0 if not a variable-length type.
 /// The buffer is extended with data followed by padding to 8-byte alignment.
@@ -1009,14 +760,8 @@ fn write_variable_length_to_buffer(
                         actual_type
                     ))
                 })?;
-            // For complex types, use the existing functions for now
-            // These can be further optimized to write directly in the future
-            let data = write_nested_struct(struct_array, row_idx, fields)?;
-            let len = data.len();
-            buffer.extend_from_slice(&data);
-            let padding = round_up_to_8(len) - len;
-            buffer.extend(std::iter::repeat_n(0u8, padding));
-            Ok(len)
+            // Use optimized direct-write function
+            write_struct_to_buffer(buffer, struct_array, row_idx, fields)
         }
         DataType::List(field) => {
             let list_array = array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
@@ -1025,12 +770,8 @@ fn write_variable_length_to_buffer(
                     actual_type
                 ))
             })?;
-            let data = write_list_data(list_array, row_idx, field)?;
-            let len = data.len();
-            buffer.extend_from_slice(&data);
-            let padding = round_up_to_8(len) - len;
-            buffer.extend(std::iter::repeat_n(0u8, padding));
-            Ok(len)
+            // Use optimized direct-write function
+            write_list_to_buffer(buffer, list_array, row_idx, field)
         }
         DataType::LargeList(field) => {
             let list_array = array
@@ -1042,12 +783,8 @@ fn write_variable_length_to_buffer(
                         actual_type
                     ))
                 })?;
-            let data = write_large_list_data(list_array, row_idx, field)?;
-            let len = data.len();
-            buffer.extend_from_slice(&data);
-            let padding = round_up_to_8(len) - len;
-            buffer.extend(std::iter::repeat_n(0u8, padding));
-            Ok(len)
+            // Use optimized direct-write function
+            write_large_list_to_buffer(buffer, list_array, row_idx, field)
         }
         DataType::Map(field, _) => {
             let map_array = array.as_any().downcast_ref::<MapArray>().ok_or_else(|| {
@@ -1056,12 +793,8 @@ fn write_variable_length_to_buffer(
                     actual_type
                 ))
             })?;
-            let data = write_map_data(map_array, row_idx, field)?;
-            let len = data.len();
-            buffer.extend_from_slice(&data);
-            let padding = round_up_to_8(len) - len;
-            buffer.extend(std::iter::repeat_n(0u8, padding));
-            Ok(len)
+            // Use optimized direct-write function
+            write_map_to_buffer(buffer, map_array, row_idx, field)
         }
         DataType::Dictionary(key_type, value_type) => {
             // For dictionary-encoded arrays, extract the value and write it
@@ -1293,17 +1026,29 @@ fn write_array_element(buffer: &mut [u8], data_type: &DataType, value: i64, offs
     }
 }
 
-/// Writes a nested struct value to bytes.
-fn write_nested_struct(
+// =============================================================================
+// Optimized direct-write functions for complex types
+// These write directly to the output buffer to avoid intermediate allocations.
+// =============================================================================
+
+/// Writes a struct value directly to the buffer.
+/// Returns the unpadded length written.
+#[inline]
+fn write_struct_to_buffer(
+    buffer: &mut Vec<u8>,
     struct_array: &StructArray,
     row_idx: usize,
     fields: &arrow::datatypes::Fields,
-) -> CometResult<Vec<u8>> {
+) -> CometResult<usize> {
     let num_fields = fields.len();
     let nested_bitset_width = ColumnarToRowContext::calculate_bitset_width(num_fields);
     let nested_fixed_size = nested_bitset_width + num_fields * 8;
 
-    let mut buffer = vec![0u8; nested_fixed_size];
+    // Remember where this struct starts in the buffer
+    let struct_start = buffer.len();
+
+    // Reserve space for fixed-width portion (zeros for null bits and field slots)
+    buffer.resize(struct_start + nested_fixed_size, 0);
 
     // Write each field of the struct
     for (field_idx, field) in fields.iter().enumerate() {
@@ -1314,127 +1059,90 @@ fn write_nested_struct(
             // Set null bit in nested struct
             let word_idx = field_idx / 64;
             let bit_idx = field_idx % 64;
-            let word_offset = word_idx * 8;
+            let word_offset = struct_start + word_idx * 8;
             let mut word =
                 i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
             word |= 1i64 << bit_idx;
             buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
         } else {
-            // Write field value
-            let field_offset = nested_bitset_width + field_idx * 8;
-            let value = get_field_value(field.data_type(), column, row_idx)?;
-            buffer[field_offset..field_offset + 8].copy_from_slice(&value.to_le_bytes());
+            let field_offset = struct_start + nested_bitset_width + field_idx * 8;
 
-            // Handle variable-length nested data
-            if let Some(var_data) = get_variable_length_data(field.data_type(), column, row_idx)? {
-                let current_offset = buffer.len();
-                let len = var_data.len();
+            // Check if this field has variable-length data
+            let var_len = write_nested_variable_to_buffer(
+                buffer,
+                field.data_type(),
+                column,
+                row_idx,
+                struct_start,
+            )?;
 
-                buffer.extend_from_slice(&var_data);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-
-                let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
+            if var_len > 0 {
+                // Variable-length field: compute offset relative to struct start
+                let padded_len = round_up_to_8(var_len);
+                let data_offset = buffer.len() - padded_len - struct_start;
+                let offset_and_len = ((data_offset as i64) << 32) | (var_len as i64);
                 buffer[field_offset..field_offset + 8]
                     .copy_from_slice(&offset_and_len.to_le_bytes());
+            } else {
+                // Fixed-width field: write value directly
+                let value = get_field_value(field.data_type(), column, row_idx)?;
+                buffer[field_offset..field_offset + 8].copy_from_slice(&value.to_le_bytes());
             }
         }
     }
 
-    Ok(buffer)
+    Ok(buffer.len() - struct_start)
 }
 
-/// Writes a list (array) value in UnsafeArrayData format.
-fn write_list_data(
+/// Writes a list value directly to the buffer in UnsafeArrayData format.
+/// Returns the unpadded length written.
+#[inline]
+fn write_list_to_buffer(
+    buffer: &mut Vec<u8>,
     list_array: &ListArray,
     row_idx: usize,
     element_field: &arrow::datatypes::FieldRef,
-) -> CometResult<Vec<u8>> {
+) -> CometResult<usize> {
     let values = list_array.value(row_idx);
-    let num_elements = values.len();
-    let element_type = element_field.data_type();
-    let element_size = get_element_size(element_type);
-
-    // UnsafeArrayData format:
-    // [numElements: 8 bytes][null bitset][elements with type-specific size]
-    // The null bitset is aligned to 8 bytes.
-    // For primitive types, elements use their natural size (e.g., 4 bytes for INT).
-    // For variable-length types, elements use 8 bytes (offset + length).
-
-    let element_bitset_width = ColumnarToRowContext::calculate_bitset_width(num_elements);
-    let mut buffer = Vec::new();
-
-    // Write number of elements
-    buffer.extend_from_slice(&(num_elements as i64).to_le_bytes());
-
-    // Write null bitset for elements
-    let null_bitset_start = buffer.len();
-    buffer.resize(null_bitset_start + element_bitset_width, 0);
-
-    for i in 0..num_elements {
-        if values.is_null(i) {
-            let word_idx = i / 64;
-            let bit_idx = i % 64;
-            let word_offset = null_bitset_start + word_idx * 8;
-            let mut word =
-                i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
-            word |= 1i64 << bit_idx;
-            buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
-        }
-    }
-
-    // Write element values using type-specific element size
-    let elements_start = buffer.len();
-    let elements_total_size = round_up_to_8(num_elements * element_size);
-    buffer.resize(elements_start + elements_total_size, 0);
-
-    for i in 0..num_elements {
-        if !values.is_null(i) {
-            let slot_offset = elements_start + i * element_size;
-            let value = get_field_value(element_type, &values, i)?;
-            write_array_element(&mut buffer, element_type, value, slot_offset);
-
-            // Handle variable-length element data
-            if let Some(var_data) = get_variable_length_data(element_type, &values, i)? {
-                // Offset is relative to the array base (buffer position 0 since this is a fresh Vec)
-                let current_offset = buffer.len();
-                let len = var_data.len();
-
-                buffer.extend_from_slice(&var_data);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-
-                let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
-                buffer[slot_offset..slot_offset + 8].copy_from_slice(&offset_and_len.to_le_bytes());
-            }
-        }
-    }
-
-    Ok(buffer)
+    write_array_data_to_buffer(buffer, &values, element_field.data_type())
 }
 
-/// Writes a large list (array) value in UnsafeArrayData format.
-/// This is the same as write_list_data but for LargeListArray (64-bit offsets).
-fn write_large_list_data(
+/// Writes a large list value directly to the buffer in UnsafeArrayData format.
+/// Returns the unpadded length written.
+#[inline]
+fn write_large_list_to_buffer(
+    buffer: &mut Vec<u8>,
     list_array: &LargeListArray,
     row_idx: usize,
     element_field: &arrow::datatypes::FieldRef,
-) -> CometResult<Vec<u8>> {
+) -> CometResult<usize> {
     let values = list_array.value(row_idx);
+    write_array_data_to_buffer(buffer, &values, element_field.data_type())
+}
+
+/// Common implementation for writing array data to buffer.
+/// Handles both List and LargeList array element data.
+fn write_array_data_to_buffer(
+    buffer: &mut Vec<u8>,
+    values: &ArrayRef,
+    element_type: &DataType,
+) -> CometResult<usize> {
     let num_elements = values.len();
-    let element_type = element_field.data_type();
     let element_size = get_element_size(element_type);
 
+    // UnsafeArrayData format:
+    // [numElements: 8 bytes][null bitset][elements with type-specific size][var-len data]
+    let array_start = buffer.len();
     let element_bitset_width = ColumnarToRowContext::calculate_bitset_width(num_elements);
-    let mut buffer = Vec::new();
 
     // Write number of elements
     buffer.extend_from_slice(&(num_elements as i64).to_le_bytes());
 
-    // Write null bitset for elements
+    // Reserve space for null bitset
     let null_bitset_start = buffer.len();
     buffer.resize(null_bitset_start + element_bitset_width, 0);
 
+    // Set null bits
     for i in 0..num_elements {
         if values.is_null(i) {
             let word_idx = i / 64;
@@ -1447,61 +1155,56 @@ fn write_large_list_data(
         }
     }
 
-    // Write element values using type-specific element size
+    // Reserve space for element values
     let elements_start = buffer.len();
     let elements_total_size = round_up_to_8(num_elements * element_size);
     buffer.resize(elements_start + elements_total_size, 0);
 
+    // Write element values
     for i in 0..num_elements {
         if !values.is_null(i) {
             let slot_offset = elements_start + i * element_size;
-            let value = get_field_value(element_type, &values, i)?;
-            write_array_element(&mut buffer, element_type, value, slot_offset);
 
-            // Handle variable-length element data
-            if let Some(var_data) = get_variable_length_data(element_type, &values, i)? {
-                let current_offset = buffer.len();
-                let len = var_data.len();
+            // Check if this element has variable-length data
+            let var_len =
+                write_nested_variable_to_buffer(buffer, element_type, values, i, array_start)?;
 
-                buffer.extend_from_slice(&var_data);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-
-                let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
+            if var_len > 0 {
+                // Variable-length element: compute offset relative to array start
+                let padded_len = round_up_to_8(var_len);
+                let data_offset = buffer.len() - padded_len - array_start;
+                let offset_and_len = ((data_offset as i64) << 32) | (var_len as i64);
                 buffer[slot_offset..slot_offset + 8].copy_from_slice(&offset_and_len.to_le_bytes());
+            } else {
+                // Fixed-width element: write value directly
+                let value = get_field_value(element_type, values, i)?;
+                write_array_element(buffer, element_type, value, slot_offset);
             }
         }
     }
 
-    Ok(buffer)
+    Ok(buffer.len() - array_start)
 }
 
-/// Writes a map value in UnsafeMapData format.
-fn write_map_data(
+/// Writes a map value directly to the buffer in UnsafeMapData format.
+/// Returns the unpadded length written.
+fn write_map_to_buffer(
+    buffer: &mut Vec<u8>,
     map_array: &MapArray,
     row_idx: usize,
     entries_field: &arrow::datatypes::FieldRef,
-) -> CometResult<Vec<u8>> {
+) -> CometResult<usize> {
     // UnsafeMapData format:
     // [key array size: 8 bytes][key array data][value array data]
+    let map_start = buffer.len();
 
-    // Use map_array.value() to get the entries for this row.
-    // This properly handles any offset in the MapArray (e.g., from slicing or FFI).
     let entries = map_array.value(row_idx);
     let num_entries = entries.len();
 
-    // Get the key and value columns from the entries StructArray.
-    // entries.column() returns &ArrayRef, so we clone to get owned ArrayRef
-    // for easier manipulation.
     let keys = Arc::clone(entries.column(0));
     let values = Arc::clone(entries.column(1));
 
-    // Check if the column lengths match. If they don't, we may have an FFI issue
-    // where the StructArray's columns weren't properly sliced.
     if keys.len() != num_entries || values.len() != num_entries {
-        // The columns have different lengths than the entries, which suggests
-        // they weren't properly sliced when the StructArray was created.
-        // This can happen with FFI-imported data. We need to manually slice.
         return Err(CometError::Internal(format!(
             "Map entries column length mismatch: entries.len()={}, keys.len()={}, values.len()={}",
             num_entries,
@@ -1510,7 +1213,6 @@ fn write_map_data(
         )));
     }
 
-    // Get the key and value types from the entries struct field
     let (key_type, value_type) = if let DataType::Struct(fields) = entries_field.data_type() {
         (fields[0].data_type().clone(), fields[1].data_type().clone())
     } else {
@@ -1520,98 +1222,255 @@ fn write_map_data(
         )));
     };
 
-    let key_element_size = get_element_size(&key_type);
-    let value_element_size = get_element_size(&value_type);
-
-    let mut buffer = Vec::new();
-
-    // Placeholder for key array size (will be filled in later)
+    // Placeholder for key array size
     let key_size_offset = buffer.len();
     buffer.extend_from_slice(&0i64.to_le_bytes());
 
-    // Write key array (as UnsafeArrayData)
+    // Write key array directly
     let key_array_start = buffer.len();
-    buffer.extend_from_slice(&(num_entries as i64).to_le_bytes());
-
-    let key_bitset_width = ColumnarToRowContext::calculate_bitset_width(num_entries);
-    let key_null_start = buffer.len();
-    buffer.resize(key_null_start + key_bitset_width, 0);
-
-    // Map keys are not nullable in Spark, but we write the bitset anyway
-    let key_elements_start = buffer.len();
-    let key_elements_size = round_up_to_8(num_entries * key_element_size);
-    buffer.resize(key_elements_start + key_elements_size, 0);
-
-    for i in 0..num_entries {
-        let slot_offset = key_elements_start + i * key_element_size;
-        let value = get_field_value(&key_type, &keys, i)?;
-        write_array_element(&mut buffer, &key_type, value, slot_offset);
-
-        // Handle variable-length key data
-        if let Some(var_data) = get_variable_length_data(&key_type, &keys, i)? {
-            // Offset must be relative to the key array base (where numElements is)
-            let current_offset = buffer.len() - key_array_start;
-            let len = var_data.len();
-
-            buffer.extend_from_slice(&var_data);
-            let padding = round_up_to_8(len) - len;
-            buffer.extend(std::iter::repeat_n(0u8, padding));
-
-            let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
-            buffer[slot_offset..slot_offset + 8].copy_from_slice(&offset_and_len.to_le_bytes());
-        }
-    }
-
+    write_array_data_to_buffer_for_map(buffer, &keys, &key_type, key_array_start, false)?;
     let key_array_size = (buffer.len() - key_array_start) as i64;
     buffer[key_size_offset..key_size_offset + 8].copy_from_slice(&key_array_size.to_le_bytes());
 
-    // Write value array
+    // Write value array directly
     let value_array_start = buffer.len();
-    buffer.extend_from_slice(&(num_entries as i64).to_le_bytes());
+    write_array_data_to_buffer_for_map(buffer, &values, &value_type, value_array_start, true)?;
 
-    let value_bitset_width = ColumnarToRowContext::calculate_bitset_width(num_entries);
-    let value_null_start = buffer.len();
-    buffer.resize(value_null_start + value_bitset_width, 0);
+    Ok(buffer.len() - map_start)
+}
 
-    for i in 0..num_entries {
-        if values.is_null(i) {
-            let word_idx = i / 64;
-            let bit_idx = i % 64;
-            let word_offset = value_null_start + word_idx * 8;
-            let mut word =
-                i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
-            word |= 1i64 << bit_idx;
-            buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
-        }
-    }
+/// Helper for writing array data in map context (keys or values).
+/// Similar to write_array_data_to_buffer but handles offset calculation relative to array base.
+fn write_array_data_to_buffer_for_map(
+    buffer: &mut Vec<u8>,
+    array: &ArrayRef,
+    element_type: &DataType,
+    array_base: usize,
+    check_nulls: bool,
+) -> CometResult<()> {
+    let num_elements = array.len();
+    let element_size = get_element_size(element_type);
+    let element_bitset_width = ColumnarToRowContext::calculate_bitset_width(num_elements);
 
-    let value_elements_start = buffer.len();
-    let value_elements_size = round_up_to_8(num_entries * value_element_size);
-    buffer.resize(value_elements_start + value_elements_size, 0);
+    // Write number of elements
+    buffer.extend_from_slice(&(num_elements as i64).to_le_bytes());
 
-    for i in 0..num_entries {
-        if !values.is_null(i) {
-            let slot_offset = value_elements_start + i * value_element_size;
-            let value = get_field_value(&value_type, &values, i)?;
-            write_array_element(&mut buffer, &value_type, value, slot_offset);
+    // Reserve space for null bitset
+    let null_bitset_start = buffer.len();
+    buffer.resize(null_bitset_start + element_bitset_width, 0);
 
-            // Handle variable-length value data
-            if let Some(var_data) = get_variable_length_data(&value_type, &values, i)? {
-                // Offset must be relative to the value array base (where numElements is)
-                let current_offset = buffer.len() - value_array_start;
-                let len = var_data.len();
-
-                buffer.extend_from_slice(&var_data);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-
-                let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
-                buffer[slot_offset..slot_offset + 8].copy_from_slice(&offset_and_len.to_le_bytes());
+    // Set null bits (only for values, keys are not nullable in Spark)
+    if check_nulls {
+        for i in 0..num_elements {
+            if array.is_null(i) {
+                let word_idx = i / 64;
+                let bit_idx = i % 64;
+                let word_offset = null_bitset_start + word_idx * 8;
+                let mut word =
+                    i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
+                word |= 1i64 << bit_idx;
+                buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
             }
         }
     }
 
-    Ok(buffer)
+    // Reserve space for element values
+    let elements_start = buffer.len();
+    let elements_total_size = round_up_to_8(num_elements * element_size);
+    buffer.resize(elements_start + elements_total_size, 0);
+
+    // Write element values
+    for i in 0..num_elements {
+        let is_null = if check_nulls { array.is_null(i) } else { false };
+        if !is_null {
+            let slot_offset = elements_start + i * element_size;
+
+            // Check if this element has variable-length data
+            let var_len =
+                write_nested_variable_to_buffer(buffer, element_type, array, i, array_base)?;
+
+            if var_len > 0 {
+                // Variable-length element: compute offset relative to array base
+                let padded_len = round_up_to_8(var_len);
+                let data_offset = buffer.len() - padded_len - array_base;
+                let offset_and_len = ((data_offset as i64) << 32) | (var_len as i64);
+                buffer[slot_offset..slot_offset + 8].copy_from_slice(&offset_and_len.to_le_bytes());
+            } else {
+                // Fixed-width element: write value directly
+                let value = get_field_value(element_type, array, i)?;
+                write_array_element(buffer, element_type, value, slot_offset);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Writes variable-length data for a nested field directly to buffer.
+/// Used by struct, list, and map writers for their nested elements.
+/// Returns the unpadded length written (0 if not variable-length).
+fn write_nested_variable_to_buffer(
+    buffer: &mut Vec<u8>,
+    data_type: &DataType,
+    array: &ArrayRef,
+    row_idx: usize,
+    _base_offset: usize,
+) -> CometResult<usize> {
+    let actual_type = array.data_type();
+
+    match actual_type {
+        DataType::Utf8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to StringArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            let bytes = arr.value(row_idx).as_bytes();
+            let len = bytes.len();
+            buffer.extend_from_slice(bytes);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::LargeUtf8 => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<LargeStringArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to LargeStringArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            let bytes = arr.value(row_idx).as_bytes();
+            let len = bytes.len();
+            buffer.extend_from_slice(bytes);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::Binary => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to BinaryArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            let bytes = arr.value(row_idx);
+            let len = bytes.len();
+            buffer.extend_from_slice(bytes);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::LargeBinary => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<LargeBinaryArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to LargeBinaryArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            let bytes = arr.value(row_idx);
+            let len = bytes.len();
+            buffer.extend_from_slice(bytes);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::Decimal128(precision, _) if *precision > MAX_LONG_DIGITS => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<Decimal128Array>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to Decimal128Array for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            let bytes = i128_to_spark_decimal_bytes(arr.value(row_idx));
+            let len = bytes.len();
+            buffer.extend_from_slice(&bytes);
+            let padding = round_up_to_8(len) - len;
+            buffer.extend(std::iter::repeat_n(0u8, padding));
+            Ok(len)
+        }
+        DataType::Struct(fields) => {
+            let struct_array = array
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to StructArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            write_struct_to_buffer(buffer, struct_array, row_idx, fields)
+        }
+        DataType::List(field) => {
+            let list_array = array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to downcast to ListArray for type {:?}",
+                    actual_type
+                ))
+            })?;
+            write_list_to_buffer(buffer, list_array, row_idx, field)
+        }
+        DataType::LargeList(field) => {
+            let list_array = array
+                .as_any()
+                .downcast_ref::<LargeListArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast to LargeListArray for type {:?}",
+                        actual_type
+                    ))
+                })?;
+            write_large_list_to_buffer(buffer, list_array, row_idx, field)
+        }
+        DataType::Map(field, _) => {
+            let map_array = array.as_any().downcast_ref::<MapArray>().ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to downcast to MapArray for type {:?}",
+                    actual_type
+                ))
+            })?;
+            write_map_to_buffer(buffer, map_array, row_idx, field)
+        }
+        DataType::Dictionary(key_type, value_type) => {
+            write_dictionary_to_buffer(buffer, array, row_idx, key_type, value_type)
+        }
+        // Check if schema type expects variable-length but actual type doesn't match
+        _ => match data_type {
+            DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::Struct(_)
+            | DataType::List(_)
+            | DataType::LargeList(_)
+            | DataType::Map(_, _) => Err(CometError::Internal(format!(
+                "Type mismatch in nested write: schema expects {:?} but actual array type is {:?}",
+                data_type, actual_type
+            ))),
+            DataType::Decimal128(precision, _) if *precision > MAX_LONG_DIGITS => {
+                Err(CometError::Internal(format!(
+                    "Type mismatch for large decimal: schema expects {:?} but actual is {:?}",
+                    data_type, actual_type
+                )))
+            }
+            _ => Ok(0), // Not a variable-length type
+        },
+    }
 }
 
 #[cfg(test)]
@@ -2167,87 +2026,5 @@ mod tests {
                 i32::from_le_bytes(result[slot_offset..slot_offset + 4].try_into().unwrap());
             assert_eq!(value, i as i32, "element {} should be {}", i, i);
         }
-    }
-
-    #[test]
-    fn test_get_variable_length_data_with_large_list() {
-        use arrow::datatypes::Field;
-
-        // Create a LargeListArray and pass it to get_variable_length_data
-        // This tests that the function correctly dispatches based on the actual array type
-        let values = Int32Array::from(vec![10, 20, 30]);
-        let offsets = arrow::buffer::OffsetBuffer::new(vec![0i64, 3].into());
-
-        let list_field = Arc::new(Field::new("item", DataType::Int32, true));
-        let list_array = LargeListArray::new(list_field.clone(), offsets, Arc::new(values), None);
-        let array_ref: ArrayRef = Arc::new(list_array);
-
-        // Even if we pass a List schema type, the function should handle LargeList correctly
-        // because it now uses the actual array type for dispatching
-        let list_schema_type = DataType::List(list_field);
-
-        let result = get_variable_length_data(&list_schema_type, &array_ref, 0)
-            .expect("conversion failed")
-            .expect("should have data");
-
-        // Verify the result
-        let num_elements = i64::from_le_bytes(result[0..8].try_into().unwrap());
-        assert_eq!(num_elements, 3, "should have 3 elements");
-    }
-
-    #[test]
-    fn test_dictionary_encoded_string_array() {
-        // Create a dictionary-encoded string array
-        // This simulates what Spark/Parquet might send through FFI for optimized string columns
-        let keys = Int32Array::from(vec![0, 1, 2, 0, 1]); // indices into dictionary
-        let values = StringArray::from(vec!["hello", "world", "test"]);
-
-        let dict_array: DictionaryArray<Int32Type> =
-            DictionaryArray::try_new(keys, Arc::new(values)).expect("failed to create dict array");
-        let array_ref: ArrayRef = Arc::new(dict_array);
-
-        // Test that we can extract values correctly even when schema says Utf8
-        let schema_type = DataType::Utf8;
-
-        // Row 0 should be "hello" (key=0)
-        let result = get_variable_length_data(&schema_type, &array_ref, 0)
-            .expect("conversion failed")
-            .expect("should have data");
-        assert_eq!(result, b"hello", "row 0 should be 'hello'");
-
-        // Row 1 should be "world" (key=1)
-        let result = get_variable_length_data(&schema_type, &array_ref, 1)
-            .expect("conversion failed")
-            .expect("should have data");
-        assert_eq!(result, b"world", "row 1 should be 'world'");
-
-        // Row 2 should be "test" (key=2)
-        let result = get_variable_length_data(&schema_type, &array_ref, 2)
-            .expect("conversion failed")
-            .expect("should have data");
-        assert_eq!(result, b"test", "row 2 should be 'test'");
-
-        // Row 3 should be "hello" again (key=0)
-        let result = get_variable_length_data(&schema_type, &array_ref, 3)
-            .expect("conversion failed")
-            .expect("should have data");
-        assert_eq!(result, b"hello", "row 3 should be 'hello'");
-    }
-
-    #[test]
-    fn test_get_field_value_with_dictionary() {
-        // Test that get_field_value returns 0 (placeholder) for dictionary types
-        let keys = Int32Array::from(vec![0, 1]);
-        let values = StringArray::from(vec!["a", "b"]);
-
-        let dict_array: DictionaryArray<Int32Type> =
-            DictionaryArray::try_new(keys, Arc::new(values)).expect("failed to create dict array");
-        let array_ref: ArrayRef = Arc::new(dict_array);
-
-        let schema_type = DataType::Utf8;
-
-        // Should return 0 as placeholder for variable-length type
-        let result = get_field_value(&schema_type, &array_ref, 0).expect("should not fail");
-        assert_eq!(result, 0, "dictionary type should return 0 placeholder");
     }
 }
