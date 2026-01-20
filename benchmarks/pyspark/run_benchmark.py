@@ -66,6 +66,11 @@ Examples:
         action="store_true",
         help="List all available benchmarks and exit"
     )
+    parser.add_argument(
+        "--print-configs",
+        action="store_true",
+        help="Print benchmark-specific Spark configs and exit (for shell scripts)"
+    )
 
     args = parser.parse_args()
 
@@ -74,6 +79,20 @@ Examples:
         print("Available benchmarks:\n")
         for name, description in list_benchmarks():
             print(f"  {name:25s} - {description}")
+        return 0
+
+    # Handle --print-configs (requires --benchmark and --mode)
+    if args.print_configs:
+        if not args.mode:
+            parser.error("--mode is required when using --print-configs")
+        try:
+            benchmark_cls = get_benchmark(args.benchmark)
+        except KeyError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        configs = benchmark_cls.get_spark_configs(args.mode)
+        for key, value in configs.items():
+            print(f"--conf {key}={value}")
         return 0
 
     # Validate required arguments
@@ -90,10 +109,14 @@ Examples:
         print("\nUse --list-benchmarks to see available benchmarks", file=sys.stderr)
         return 1
 
-    # Create Spark session
-    spark = SparkSession.builder \
-        .appName(f"{benchmark_cls.name()}-{args.mode.upper()}") \
-        .getOrCreate()
+    # Get benchmark-specific configs
+    benchmark_configs = benchmark_cls.get_spark_configs(args.mode)
+
+    # Create Spark session with benchmark-specific configs
+    builder = SparkSession.builder.appName(f"{benchmark_cls.name()}-{args.mode.upper()}")
+    for key, value in benchmark_configs.items():
+        builder = builder.config(key, value)
+    spark = builder.getOrCreate()
 
     try:
         # Create and run the benchmark

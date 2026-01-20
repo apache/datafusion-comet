@@ -128,3 +128,86 @@ class ShuffleRoundRobinBenchmark(ShuffleBenchmark):
     def _repartition(self, df: DataFrame) -> DataFrame:
         """Repartition using round-robin (no partition columns specified)."""
         return df.repartition(self.num_partitions)
+
+
+# Variants with explicit native write configuration
+
+
+class ShuffleHashNativeWriteBenchmark(ShuffleHashBenchmark):
+    """Shuffle benchmark using hash partitioning with Comet native parquet writes."""
+
+    @classmethod
+    def name(cls) -> str:
+        return "shuffle-hash-native-write"
+
+    @classmethod
+    def description(cls) -> str:
+        return "Hash shuffle with Comet native parquet writes enabled"
+
+    @classmethod
+    def get_spark_configs(cls, mode: str) -> dict:
+        configs = super().get_spark_configs(mode)
+        if mode != "spark":
+            configs.update({
+                "spark.comet.parquet.write.enabled": "true",
+                "spark.comet.operator.DataWritingCommandExec.allowIncompatible": "true",
+            })
+        return configs
+
+
+class ShuffleHashSparkWriteBenchmark(ShuffleHashBenchmark):
+    """Shuffle benchmark using hash partitioning with Spark parquet writes."""
+
+    @classmethod
+    def name(cls) -> str:
+        return "shuffle-hash-spark-write"
+
+    @classmethod
+    def description(cls) -> str:
+        return "Hash shuffle with Comet native parquet writes disabled"
+
+    @classmethod
+    def get_spark_configs(cls, mode: str) -> dict:
+        configs = super().get_spark_configs(mode)
+        configs["spark.comet.parquet.write.enabled"] = "false"
+        return configs
+
+
+class ShuffleRoundRobinNativeWriteBenchmark(ShuffleRoundRobinBenchmark):
+    """Shuffle benchmark using round-robin partitioning with Comet native parquet writes."""
+
+    @classmethod
+    def name(cls) -> str:
+        return "shuffle-roundrobin-native-write"
+
+    @classmethod
+    def description(cls) -> str:
+        return "Round-robin shuffle with Comet native parquet writes enabled"
+
+    @classmethod
+    def get_spark_configs(cls, mode: str) -> dict:
+        configs = super().get_spark_configs(mode)
+        if mode != "spark":
+            configs.update({
+                "spark.comet.parquet.write.enabled": "true",
+                "spark.comet.operator.DataWritingCommandExec.allowIncompatible": "true",
+            })
+        return configs
+
+
+class ShuffleRoundRobinSparkWriteBenchmark(ShuffleRoundRobinBenchmark):
+    """Shuffle benchmark using round-robin partitioning with Spark parquet writes."""
+
+    @classmethod
+    def name(cls) -> str:
+        return "shuffle-roundrobin-spark-write"
+
+    @classmethod
+    def description(cls) -> str:
+        return "Round-robin shuffle with Comet native parquet writes disabled"
+
+    @classmethod
+    def get_spark_configs(cls, mode: str) -> dict:
+        configs = super().get_spark_configs(mode)
+        configs["spark.comet.parquet.write.enabled"] = "false"
+        return configs

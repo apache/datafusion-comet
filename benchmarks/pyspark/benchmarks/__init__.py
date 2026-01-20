@@ -25,13 +25,24 @@ This module provides a central registry for discovering and running benchmarks.
 from typing import Dict, Type, List
 
 from .base import Benchmark
-from .shuffle import ShuffleHashBenchmark, ShuffleRoundRobinBenchmark
+from .shuffle import (
+    ShuffleHashBenchmark,
+    ShuffleRoundRobinBenchmark,
+    ShuffleHashNativeWriteBenchmark,
+    ShuffleHashSparkWriteBenchmark,
+    ShuffleRoundRobinNativeWriteBenchmark,
+    ShuffleRoundRobinSparkWriteBenchmark,
+)
 
 
 # Registry of all available benchmarks
 _BENCHMARK_REGISTRY: Dict[str, Type[Benchmark]] = {
     ShuffleHashBenchmark.name(): ShuffleHashBenchmark,
     ShuffleRoundRobinBenchmark.name(): ShuffleRoundRobinBenchmark,
+    ShuffleHashNativeWriteBenchmark.name(): ShuffleHashNativeWriteBenchmark,
+    ShuffleHashSparkWriteBenchmark.name(): ShuffleHashSparkWriteBenchmark,
+    ShuffleRoundRobinNativeWriteBenchmark.name(): ShuffleRoundRobinNativeWriteBenchmark,
+    ShuffleRoundRobinSparkWriteBenchmark.name(): ShuffleRoundRobinSparkWriteBenchmark,
 }
 
 
@@ -76,4 +87,8 @@ __all__ = [
     'list_benchmarks',
     'ShuffleHashBenchmark',
     'ShuffleRoundRobinBenchmark',
+    'ShuffleHashNativeWriteBenchmark',
+    'ShuffleHashSparkWriteBenchmark',
+    'ShuffleRoundRobinNativeWriteBenchmark',
+    'ShuffleRoundRobinSparkWriteBenchmark',
 ]

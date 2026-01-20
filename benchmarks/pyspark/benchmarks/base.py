@@ -55,6 +55,31 @@ class Benchmark(ABC):
         """Return a short description of the benchmark."""
         pass
 
+    @classmethod
+    def get_spark_configs(cls, mode: str) -> Dict[str, str]:
+        """
+        Return Spark configurations required by this benchmark.
+
+        These configs are applied when creating the SparkSession.
+        Subclasses can override to specify benchmark-specific configs.
+        Subclasses should call super().get_spark_configs(mode) and update
+        the returned dict to preserve common configs.
+
+        Args:
+            mode: Execution mode (spark, jvm, native)
+
+        Returns:
+            Dictionary of config key -> value
+        """
+        if mode == "spark":
+            return {}
+        # Common configs for all Comet benchmarks (jvm and native modes)
+        return {
+            "spark.comet.enabled": "true",
+            "spark.comet.logFallbackReasons.enabled": "true",
+            "spark.comet.explainFallback.enabled": "true",
+        }
+
     @abstractmethod
     def run(self) -> Dict[str, Any]:
         """
@@ -109,6 +134,7 @@ class Benchmark(ABC):
         print(f"Comet enabled: {conf.get('spark.comet.enabled', 'false')}")
         print(f"Comet shuffle enabled: {conf.get('spark.comet.exec.shuffle.enabled', 'false')}")
         print(f"Comet shuffle mode: {conf.get('spark.comet.shuffle.mode', 'not set')}")
+        print(f"Comet native write: {conf.get('spark.comet.parquet.write.enabled', 'false')}")
         print(f"Spark UI: {self.spark.sparkContext.uiWebUrl}")
 
     def _time_operation(self, operation_fn):
