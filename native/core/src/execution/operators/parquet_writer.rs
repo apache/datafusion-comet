@@ -535,8 +535,12 @@ impl ExecutionPlan for ParquetWriterExec {
                 DataFusionError::Execution(format!("Failed to close writer: {}", e))
             })?;
 
-            // Get file size
-            let file_size = std::fs::metadata(&part_file)
+            // Get file size - strip file:// prefix if present for local filesystem access
+            let local_path = part_file
+                .strip_prefix("file://")
+                .or_else(|| part_file.strip_prefix("file:"))
+                .unwrap_or(&part_file);
+            let file_size = std::fs::metadata(local_path)
                 .map(|m| m.len() as i64)
                 .unwrap_or(0);
 

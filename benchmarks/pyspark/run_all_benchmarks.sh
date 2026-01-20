@@ -72,7 +72,7 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.memory.offHeap.size=16g \
   --conf spark.comet.enabled=true \
   --conf spark.comet.operator.DataWritingCommandExec.allowIncompatible=true \
-  --conf spark.comet.parquet.write.enabled=false \
+  --conf spark.comet.parquet.write.enabled=true \
   --conf spark.comet.logFallbackReasons.enabled=true \
   --conf spark.comet.explainFallback.enabled=true \
   --conf spark.comet.shuffle.mode=jvm \
