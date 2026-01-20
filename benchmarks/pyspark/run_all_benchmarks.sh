@@ -71,6 +71,7 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.memory.offHeap.enabled=true \
   --conf spark.memory.offHeap.size=16g \
   --conf spark.comet.enabled=true \
+  --conf spark.comet.exec.columnarToRow.native.enabled=true \
   --conf spark.comet.exec.enabled=true \
   --conf spark.comet.exec.all.enabled=true \
   --conf spark.comet.exec.shuffle.enabled=true \
