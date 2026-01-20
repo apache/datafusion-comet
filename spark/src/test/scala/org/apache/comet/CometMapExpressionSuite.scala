@@ -27,7 +27,8 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BinaryType
 
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.serde.CometCreateMap
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 class CometMapExpressionSuite extends CometTestBase {
 
@@ -165,7 +166,10 @@ class CometMapExpressionSuite extends CometTestBase {
       val random = new Random(42)
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         val schemaGenOptions =
-          SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false)
+          SchemaGenOptions(
+            generateArray = true,
+            generateStruct = true,
+            primitiveTypes = SchemaGenOptions.defaultPrimitiveTypes.filterNot(_ == BinaryType))
         val dataGenOptions = DataGenOptions(allowNull = false, generateNegativeZero = false)
         ParquetGenerator.makeParquetFile(
           random,
@@ -177,10 +181,23 @@ class CometMapExpressionSuite extends CometTestBase {
       }
       val df = spark.read.parquet(filename)
       df.createOrReplaceTempView("t1")
-      for (fieldName <- df.schema.filter(_.dataType != BinaryType).map(_.name)) {
+      for (fieldName <- df.schema.fieldNames) {
         checkSparkAnswerAndOperator(spark.sql(s"SELECT map($fieldName, $fieldName) FROM t1"))
       }
     }
   }
 
+  test("create_map - fallback for binary type") {
+    val table = "t2"
+    withTable(table) {
+      sql(
+        s"create table $table using parquet as select cast('abc' as binary) as c1 from range(10)")
+      checkSparkAnswerAndFallbackReason(
+        sql(s"select map(c1, 1) from $table"),
+        CometCreateMap.keyUnsupportedReason)
+      checkSparkAnswerAndFallbackReason(
+        sql(s"select map(1, c1) from $table"),
+        CometCreateMap.valueUnsupportedReason)
+    }
+  }
 }

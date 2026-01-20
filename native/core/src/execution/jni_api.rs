@@ -46,6 +46,7 @@ use datafusion_spark::function::datetime::date_add::SparkDateAdd;
 use datafusion_spark::function::datetime::date_sub::SparkDateSub;
 use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
+use datafusion_spark::function::map::map_from_arrays::MapFromArrays;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::math::hex::SparkHex;
 use datafusion_spark::function::string::char::CharFunc;
@@ -67,7 +68,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
-use datafusion_spark::function::map::map_from_arrays::MapFromArrays;
 use tokio::runtime::Runtime;
 
 use crate::execution::memory_pools::{

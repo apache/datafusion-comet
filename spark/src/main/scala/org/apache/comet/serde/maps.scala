@@ -94,9 +94,18 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
   }
 }
 
-object CometCreateMap extends CometExpressionSerde[CreateMap] {
+object CometCreateMap extends CometExpressionSerde[CreateMap] with MapBase {
+  val keyUnsupportedReason = "Using BinaryType as Map keys is not allowed in create map function"
+  val valueUnsupportedReason =
+    "Using BinaryType as Map values is not allowed in create map function"
 
   override def getSupportLevel(expr: CreateMap): SupportLevel = {
+    if (containsBinary(expr.dataType.keyType)) {
+      return Incompatible(Some(keyUnsupportedReason))
+    }
+    if (containsBinary(expr.dataType.valueType)) {
+      return Incompatible(Some(valueUnsupportedReason))
+    }
     Compatible(None)
   }
 
@@ -121,7 +130,7 @@ object CometCreateMap extends CometExpressionSerde[CreateMap] {
 
 sealed trait MapBase {
 
-  def containsBinary(dataType: DataType): Boolean = {
+  protected def containsBinary(dataType: DataType): Boolean = {
     dataType match {
       case BinaryType => true
       case StructType(fields) => fields.exists(field => containsBinary(field.dataType))

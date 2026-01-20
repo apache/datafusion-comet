@@ -232,6 +232,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Cosh.enabled` | Enable Comet acceleration for `Cosh` | true |
 | `spark.comet.expression.Cot.enabled` | Enable Comet acceleration for `Cot` | true |
 | `spark.comet.expression.CreateArray.enabled` | Enable Comet acceleration for `CreateArray` | true |
+| `spark.comet.expression.CreateMap.enabled` | Enable Comet acceleration for `CreateMap` | true |
 | `spark.comet.expression.CreateNamedStruct.enabled` | Enable Comet acceleration for `CreateNamedStruct` | true |
 | `spark.comet.expression.DateAdd.enabled` | Enable Comet acceleration for `DateAdd` | true |
 | `spark.comet.expression.DateFormatClass.enabled` | Enable Comet acceleration for `DateFormatClass` | true |
