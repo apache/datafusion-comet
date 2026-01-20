@@ -65,7 +65,7 @@ enum TypedArray<'a> {
     LargeString(&'a LargeStringArray),
     Binary(&'a BinaryArray),
     LargeBinary(&'a LargeBinaryArray),
-    Struct(&'a StructArray, arrow::datatypes::Fields),
+    Struct(&'a StructArray, arrow::datatypes::Fields, Vec<TypedElements<'a>>),
     List(&'a ListArray, arrow::datatypes::FieldRef),
     LargeList(&'a LargeListArray, arrow::datatypes::FieldRef),
     Map(&'a MapArray, arrow::datatypes::FieldRef),
@@ -162,12 +162,20 @@ impl<'a> TypedArray<'a> {
                         CometError::Internal("Failed to downcast to LargeBinaryArray".to_string())
                     })?,
             )),
-            DataType::Struct(fields) => Ok(TypedArray::Struct(
-                array.as_any().downcast_ref::<StructArray>().ok_or_else(|| {
+            DataType::Struct(fields) => {
+                let struct_arr = array.as_any().downcast_ref::<StructArray>().ok_or_else(|| {
                     CometError::Internal("Failed to downcast to StructArray".to_string())
-                })?,
-                fields.clone(),
-            )),
+                })?;
+                // Pre-downcast all struct fields once
+                let typed_fields: Vec<TypedElements> = fields
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, field)| {
+                        TypedElements::from_array(struct_arr.column(idx), field.data_type())
+                    })
+                    .collect();
+                Ok(TypedArray::Struct(struct_arr, fields.clone(), typed_fields))
+            }
             DataType::List(field) => Ok(TypedArray::List(
                 array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
                     CometError::Internal("Failed to downcast to ListArray".to_string())
@@ -217,7 +225,7 @@ impl<'a> TypedArray<'a> {
             TypedArray::LargeString(arr) => arr.is_null(row_idx),
             TypedArray::Binary(arr) => arr.is_null(row_idx),
             TypedArray::LargeBinary(arr) => arr.is_null(row_idx),
-            TypedArray::Struct(arr, _) => arr.is_null(row_idx),
+            TypedArray::Struct(arr, _, _) => arr.is_null(row_idx),
             TypedArray::List(arr, _) => arr.is_null(row_idx),
             TypedArray::LargeList(arr, _) => arr.is_null(row_idx),
             TypedArray::Map(arr, _) => arr.is_null(row_idx),
@@ -317,7 +325,9 @@ impl<'a> TypedArray<'a> {
                 buffer.extend(std::iter::repeat_n(0u8, padding));
                 Ok(len)
             }
-            TypedArray::Struct(arr, fields) => write_struct_to_buffer(buffer, arr, row_idx, fields),
+            TypedArray::Struct(arr, fields, typed_fields) => {
+                write_struct_to_buffer_typed(buffer, arr, row_idx, fields, typed_fields)
+            }
             TypedArray::List(arr, field) => write_list_to_buffer(buffer, arr, row_idx, field),
             TypedArray::LargeList(arr, field) => {
                 write_large_list_to_buffer(buffer, arr, row_idx, field)
@@ -1840,10 +1850,63 @@ fn write_array_element(buffer: &mut [u8], data_type: &DataType, value: i64, offs
 // These write directly to the output buffer to avoid intermediate allocations.
 // =============================================================================
 
+/// Writes a struct value directly to the buffer using pre-downcast typed fields.
+/// Returns the unpadded length written.
+///
+/// This version uses pre-downcast TypedElements for each field, eliminating
+/// per-row type dispatch overhead.
+#[inline]
+fn write_struct_to_buffer_typed(
+    buffer: &mut Vec<u8>,
+    _struct_array: &StructArray,
+    row_idx: usize,
+    _fields: &arrow::datatypes::Fields,
+    typed_fields: &[TypedElements],
+) -> CometResult<usize> {
+    let num_fields = typed_fields.len();
+    let nested_bitset_width = ColumnarToRowContext::calculate_bitset_width(num_fields);
+    let nested_fixed_size = nested_bitset_width + num_fields * 8;
+
+    // Remember where this struct starts in the buffer
+    let struct_start = buffer.len();
+
+    // Reserve space for fixed-width portion (zeros for null bits and field slots)
+    buffer.resize(struct_start + nested_fixed_size, 0);
+
+    // Write each field using pre-downcast types
+    for (field_idx, typed_field) in typed_fields.iter().enumerate() {
+        if typed_field.is_null_at(row_idx) {
+            // Set null bit in nested struct
+            set_null_bit(buffer, struct_start, field_idx);
+        } else {
+            let field_offset = struct_start + nested_bitset_width + field_idx * 8;
+
+            if typed_field.is_fixed_width() {
+                // Fixed-width field - use pre-downcast accessor
+                let value = typed_field.get_fixed_value(row_idx);
+                buffer[field_offset..field_offset + 8].copy_from_slice(&value.to_le_bytes());
+            } else {
+                // Variable-length field - use pre-downcast writer
+                let var_len = typed_field.write_variable_value(buffer, row_idx, struct_start)?;
+                if var_len > 0 {
+                    let padded_len = round_up_to_8(var_len);
+                    let data_offset = buffer.len() - padded_len - struct_start;
+                    let offset_and_len = ((data_offset as i64) << 32) | (var_len as i64);
+                    buffer[field_offset..field_offset + 8]
+                        .copy_from_slice(&offset_and_len.to_le_bytes());
+                }
+            }
+        }
+    }
+
+    Ok(buffer.len() - struct_start)
+}
+
 /// Writes a struct value directly to the buffer.
 /// Returns the unpadded length written.
 ///
 /// Processes each field using inline type dispatch to avoid allocation overhead.
+/// This is used for nested structs where we don't have pre-downcast fields.
 #[inline]
 fn write_struct_to_buffer(
     buffer: &mut Vec<u8>,
