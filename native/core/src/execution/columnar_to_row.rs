@@ -675,7 +675,6 @@ impl<'a> TypedElements<'a> {
     }
 
     /// Bulk copy primitive values from a range.
-    #[inline]
     fn bulk_copy_range(
         &self,
         buffer: &mut [u8],
