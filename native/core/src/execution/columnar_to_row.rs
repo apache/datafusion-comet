@@ -664,8 +664,7 @@ fn write_map_data(
                 buffer.extend(std::iter::repeat_n(0u8, padding));
 
                 let offset_and_len = ((current_offset as i64) << 32) | (len as i64);
-                buffer[slot_offset..slot_offset + 8]
-                    .copy_from_slice(&offset_and_len.to_le_bytes());
+                buffer[slot_offset..slot_offset + 8].copy_from_slice(&offset_and_len.to_le_bytes());
             }
         }
     }
@@ -795,8 +794,7 @@ mod tests {
         // [20..24]: element 1 (4 bytes for Int32)
         // ... (total 20 bytes for 5 elements, rounded up to 24 for 8-byte alignment)
 
-        let num_elements =
-            i64::from_le_bytes(result[0..8].try_into().unwrap());
+        let num_elements = i64::from_le_bytes(result[0..8].try_into().unwrap());
         assert_eq!(num_elements, 5, "should have 5 elements");
 
         let bitset_width = ColumnarToRowContext::calculate_bitset_width(5);
@@ -806,9 +804,8 @@ mod tests {
         let element_size = 4; // Int32
         for i in 0..5 {
             let slot_offset = 8 + bitset_width + i * element_size;
-            let value = i32::from_le_bytes(
-                result[slot_offset..slot_offset + 4].try_into().unwrap()
-            );
+            let value =
+                i32::from_le_bytes(result[slot_offset..slot_offset + 4].try_into().unwrap());
             assert_eq!(value, i as i32, "element {} should be {}", i, i);
         }
     }
@@ -822,8 +819,8 @@ mod tests {
         // Row 1: [0, 1]
         // Row 2: [0, 1, 2]
         let values = Int32Array::from(vec![
-            0,      // row 0
-            0, 1,   // row 1
+            0, // row 0
+            0, 1, // row 1
             0, 1, 2, // row 2
         ]);
         let offsets = arrow::buffer::OffsetBuffer::new(vec![0, 1, 3, 6].into());
@@ -834,8 +831,7 @@ mod tests {
         // Test row 1 which has elements [0, 1]
         let result = write_list_data(&list_array, 1, &list_field).expect("conversion failed");
 
-        let num_elements =
-            i64::from_le_bytes(result[0..8].try_into().unwrap());
+        let num_elements = i64::from_le_bytes(result[0..8].try_into().unwrap());
         assert_eq!(num_elements, 2, "row 1 should have 2 elements");
 
         // Int32 uses 4 bytes per element
@@ -913,8 +909,11 @@ mod tests {
         );
 
         // Read value array
-        let value_num_elements =
-            i64::from_le_bytes(result[value_array_start..value_array_start + 8].try_into().unwrap());
+        let value_num_elements = i64::from_le_bytes(
+            result[value_array_start..value_array_start + 8]
+                .try_into()
+                .unwrap(),
+        );
         assert_eq!(value_num_elements, 3, "should have 3 values");
 
         // Value array layout for Int32 (4 bytes per element):
@@ -955,8 +954,8 @@ mod tests {
             "key_0", "key_1", "key_2", // row 2
         ]);
         let values = Int32Array::from(vec![
-            0,      // row 0
-            0, 10,  // row 1
+            0, // row 0
+            0, 10, // row 1
             0, 10, 20, // row 2
         ]);
 
@@ -990,14 +989,17 @@ mod tests {
         );
 
         // Test row 1 which has 2 entries
-        let result =
-            write_map_data(&map_array, 1, &Arc::new(entries_field.clone())).expect("conversion failed");
+        let result = write_map_data(&map_array, 1, &Arc::new(entries_field.clone()))
+            .expect("conversion failed");
 
         let key_array_size = i64::from_le_bytes(result[0..8].try_into().unwrap());
         let value_array_start = (8 + key_array_size) as usize;
 
-        let value_num_elements =
-            i64::from_le_bytes(result[value_array_start..value_array_start + 8].try_into().unwrap());
+        let value_num_elements = i64::from_le_bytes(
+            result[value_array_start..value_array_start + 8]
+                .try_into()
+                .unwrap(),
+        );
         assert_eq!(value_num_elements, 2, "row 1 should have 2 values");
 
         // Int32 uses 4 bytes per element
@@ -1017,15 +1019,27 @@ mod tests {
         assert_eq!(entries_row1.len(), 2, "row 1 should have 2 entries");
 
         let entries_values = entries_row1.column(1);
-        assert_eq!(entries_values.len(), 2, "row 1 values should have 2 elements");
+        assert_eq!(
+            entries_values.len(),
+            2,
+            "row 1 values should have 2 elements"
+        );
 
         // Check the actual values from the sliced array
         let values_arr = entries_values
             .as_any()
             .downcast_ref::<Int32Array>()
             .unwrap();
-        assert_eq!(values_arr.value(0), 0, "row 1 value[0] via Arrow should be 0");
-        assert_eq!(values_arr.value(1), 10, "row 1 value[1] via Arrow should be 10");
+        assert_eq!(
+            values_arr.value(0),
+            0,
+            "row 1 value[0] via Arrow should be 0"
+        );
+        assert_eq!(
+            values_arr.value(1),
+            10,
+            "row 1 value[1] via Arrow should be 10"
+        );
     }
 
     /// Test map conversion with a sliced MapArray to simulate FFI import behavior.
@@ -1037,13 +1051,13 @@ mod tests {
 
         // Create multiple maps (same as above)
         let keys = StringArray::from(vec![
-            "key_0",         // row 0
+            "key_0", // row 0
             "key_0", "key_1", // row 1
             "key_0", "key_1", "key_2", // row 2
         ]);
         let values = Int32Array::from(vec![
-            0,         // row 0
-            0, 10,     // row 1
+            0, // row 0
+            0, 10, // row 1
             0, 10, 20, // row 2
         ]);
 
@@ -1077,10 +1091,7 @@ mod tests {
 
         // Slice the MapArray to skip row 0 - this simulates what might happen with FFI
         let sliced_map = map_array.slice(1, 2);
-        let sliced_map_array = sliced_map
-            .as_any()
-            .downcast_ref::<MapArray>()
-            .unwrap();
+        let sliced_map_array = sliced_map.as_any().downcast_ref::<MapArray>().unwrap();
 
         // Now test row 0 of the sliced array (which is row 1 of the original)
         let result = write_map_data(sliced_map_array, 0, &Arc::new(entries_field.clone()))
@@ -1089,8 +1100,11 @@ mod tests {
         let key_array_size = i64::from_le_bytes(result[0..8].try_into().unwrap());
         let value_array_start = (8 + key_array_size) as usize;
 
-        let value_num_elements =
-            i64::from_le_bytes(result[value_array_start..value_array_start + 8].try_into().unwrap());
+        let value_num_elements = i64::from_le_bytes(
+            result[value_array_start..value_array_start + 8]
+                .try_into()
+                .unwrap(),
+        );
         assert_eq!(value_num_elements, 2, "sliced row 0 should have 2 values");
 
         let value_bitset_width = ColumnarToRowContext::calculate_bitset_width(2);

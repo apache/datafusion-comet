@@ -30,11 +30,10 @@ import org.scalatest.Tag
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
-import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 /**
  * Test suite for native columnar to row conversion.
@@ -43,8 +42,6 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGener
  * data types.
  */
 class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlanHelper {
-
-  import testImplicits._
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
