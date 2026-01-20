@@ -65,7 +65,7 @@ run_comet_benchmark() {
   local benchmark=$2
 
   echo ""
-  echo ">>> Running COMET $shuffle_mode shuffle benchmark: $benchmark..."
+  echo ">>> Running COMET $shuffle_mode-shuffle benchmark: $benchmark..."
 
   $SPARK_HOME/bin/spark-submit \
     --master "$SPARK_MASTER" \
