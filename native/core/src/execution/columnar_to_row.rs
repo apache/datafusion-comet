@@ -1003,13 +1003,21 @@ impl ColumnarToRowContext {
             .map(|(arr, dt)| TypedArray::from_array(arr, dt))
             .collect::<CometResult<Vec<_>>>()?;
 
+        // Pre-compute variable-length column indices (once per batch, not per row)
+        let var_len_indices: Vec<usize> = typed_arrays
+            .iter()
+            .enumerate()
+            .filter(|(_, arr)| arr.is_variable_length())
+            .map(|(idx, _)| idx)
+            .collect();
+
         // Process each row (general path for variable-length data)
         for row_idx in 0..num_rows {
             let row_start = self.buffer.len();
             self.offsets.push(row_start as i32);
 
             // Write fixed-width portion (null bitset + field values)
-            self.write_row_typed(&typed_arrays, row_idx)?;
+            self.write_row_typed(&typed_arrays, &var_len_indices, row_idx)?;
 
             let row_end = self.buffer.len();
             self.lengths.push((row_end - row_start) as i32);
@@ -1243,7 +1251,12 @@ impl ColumnarToRowContext {
 
     /// Writes a complete row using pre-downcast TypedArrays.
     /// This avoids type dispatch overhead in the inner loop.
-    fn write_row_typed(&mut self, typed_arrays: &[TypedArray], row_idx: usize) -> CometResult<()> {
+    fn write_row_typed(
+        &mut self,
+        typed_arrays: &[TypedArray],
+        var_len_indices: &[usize],
+        row_idx: usize,
+    ) -> CometResult<()> {
         let row_start = self.buffer.len();
         let null_bitset_width = self.null_bitset_width;
         let fixed_width_size = self.fixed_width_size;
@@ -1268,17 +1281,18 @@ impl ColumnarToRowContext {
                 );
                 word |= 1i64 << bit_idx;
                 self.buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
-            } else {
-                // Write field value at the correct offset
+            } else if !typed_arr.is_variable_length() {
+                // Write fixed-width field value (skip variable-length, they're handled in pass 2)
                 let field_offset = row_start + null_bitset_width + col_idx * 8;
                 let value = typed_arr.get_fixed_value(row_idx);
                 self.buffer[field_offset..field_offset + 8].copy_from_slice(&value.to_le_bytes());
             }
         }
 
-        // Second pass: write variable-length data directly to buffer
-        for (col_idx, typed_arr) in typed_arrays.iter().enumerate() {
-            if typed_arr.is_null(row_idx) || !typed_arr.is_variable_length() {
+        // Second pass: write variable-length data (only iterate over var-len columns)
+        for &col_idx in var_len_indices {
+            let typed_arr = &typed_arrays[col_idx];
+            if typed_arr.is_null(row_idx) {
                 continue;
             }
 
