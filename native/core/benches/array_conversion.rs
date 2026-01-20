@@ -18,7 +18,10 @@
 //! Benchmarks for SparkUnsafeArray to Arrow array conversion.
 //! This specifically tests the append_to_builder function used in shuffle read path.
 
-use arrow::array::builder::{ArrayBuilder, Int32Builder, Int64Builder, Float64Builder, Date32Builder, TimestampMicrosecondBuilder};
+use arrow::array::builder::{
+    ArrayBuilder, Date32Builder, Float64Builder, Int32Builder, Int64Builder,
+    TimestampMicrosecondBuilder,
+};
 use arrow::datatypes::{DataType, TimeUnit};
 use comet::execution::shuffle::list::{append_to_builder, SparkUnsafeArray};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
@@ -48,7 +51,8 @@ fn create_spark_unsafe_array_i32(num_elements: usize, with_nulls: bool) -> Vec<u
             let word_idx = i / 64;
             let bit_idx = i % 64;
             let word_offset = 8 + word_idx * 8;
-            let current_word = i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
+            let current_word =
+                i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
             let new_word = current_word | (1i64 << bit_idx);
             buffer[word_offset..word_offset + 8].copy_from_slice(&new_word.to_le_bytes());
         }
@@ -81,7 +85,8 @@ fn create_spark_unsafe_array_i64(num_elements: usize, with_nulls: bool) -> Vec<u
             let word_idx = i / 64;
             let bit_idx = i % 64;
             let word_offset = 8 + word_idx * 8;
-            let current_word = i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
+            let current_word =
+                i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
             let new_word = current_word | (1i64 << bit_idx);
             buffer[word_offset..word_offset + 8].copy_from_slice(&new_word.to_le_bytes());
         }
@@ -114,7 +119,8 @@ fn create_spark_unsafe_array_f64(num_elements: usize, with_nulls: bool) -> Vec<u
             let word_idx = i / 64;
             let bit_idx = i % 64;
             let word_offset = 8 + word_idx * 8;
-            let current_word = i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
+            let current_word =
+                i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
             let new_word = current_word | (1i64 << bit_idx);
             buffer[word_offset..word_offset + 8].copy_from_slice(&new_word.to_le_bytes());
         }
@@ -193,7 +199,8 @@ fn benchmark_array_conversion(c: &mut Criterion) {
                     if with_nulls {
                         append_to_builder::<true>(&DataType::Float64, &mut builder, array).unwrap();
                     } else {
-                        append_to_builder::<false>(&DataType::Float64, &mut builder, array).unwrap();
+                        append_to_builder::<false>(&DataType::Float64, &mut builder, array)
+                            .unwrap();
                     }
                     builder.finish()
                 });

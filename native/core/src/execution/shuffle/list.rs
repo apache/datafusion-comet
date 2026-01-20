@@ -101,10 +101,7 @@ impl SparkUnsafeArray {
     /// For non-nullable: uses slice append for optimal performance.
     /// For nullable: uses pointer iteration with efficient null bitset reading.
     #[inline]
-    pub(crate) fn append_ints_to_builder<const NULLABLE: bool>(
-        &self,
-        builder: &mut Int32Builder,
-    ) {
+    pub(crate) fn append_ints_to_builder<const NULLABLE: bool>(&self, builder: &mut Int32Builder) {
         let num_elements = self.num_elements;
         if num_elements == 0 {
             return;
@@ -136,10 +133,7 @@ impl SparkUnsafeArray {
 
     /// Bulk append i64 values to builder.
     #[inline]
-    pub(crate) fn append_longs_to_builder<const NULLABLE: bool>(
-        &self,
-        builder: &mut Int64Builder,
-    ) {
+    pub(crate) fn append_longs_to_builder<const NULLABLE: bool>(&self, builder: &mut Int64Builder) {
         let num_elements = self.num_elements;
         if num_elements == 0 {
             return;
@@ -204,10 +198,7 @@ impl SparkUnsafeArray {
 
     /// Bulk append i8 values to builder.
     #[inline]
-    pub(crate) fn append_bytes_to_builder<const NULLABLE: bool>(
-        &self,
-        builder: &mut Int8Builder,
-    ) {
+    pub(crate) fn append_bytes_to_builder<const NULLABLE: bool>(&self, builder: &mut Int8Builder) {
         let num_elements = self.num_elements;
         if num_elements == 0 {
             return;
