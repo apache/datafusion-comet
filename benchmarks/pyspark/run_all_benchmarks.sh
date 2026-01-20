@@ -55,7 +55,7 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.comet.exec.shuffle.enabled=false \
   "$SCRIPT_DIR/run_benchmark.py" \
   --data "$DATA_PATH" \
-  --mode spark \
+  --shuffle-mode spark \
   --benchmark shuffle-hash
 
 # Helper function to run a Comet benchmark
@@ -84,7 +84,7 @@ run_comet_benchmark() {
     --conf spark.comet.cast.allowIncompatible=true \
     "$SCRIPT_DIR/run_benchmark.py" \
     --data "$DATA_PATH" \
-    --mode "$shuffle_mode" \
+    --shuffle-mode "$shuffle_mode" \
     --benchmark "$benchmark"
 }
 

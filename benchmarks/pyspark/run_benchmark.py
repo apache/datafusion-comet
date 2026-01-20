@@ -38,10 +38,10 @@ def main():
         epilog="""
 Examples:
   # Run hash partitioning shuffle benchmark in Spark mode
-  python run_benchmark.py --data /path/to/data --mode spark --benchmark shuffle-hash
+  python run_benchmark.py --data /path/to/data --shuffle-mode spark --benchmark shuffle-hash
 
   # Run round-robin shuffle benchmark in Comet native mode
-  python run_benchmark.py --data /path/to/data --mode native --benchmark shuffle-roundrobin
+  python run_benchmark.py --data /path/to/data --shuffle-mode native --benchmark shuffle-roundrobin
 
   # List all available benchmarks
   python run_benchmark.py --list-benchmarks
@@ -52,7 +52,7 @@ Examples:
         help="Path to input parquet data"
     )
     parser.add_argument(
-        "--mode", "-m",
+        "--shuffle-mode", "-m",
         choices=["spark", "jvm", "native"],
         help="Shuffle mode being tested"
     )
@@ -81,16 +81,16 @@ Examples:
             print(f"  {name:25s} - {description}")
         return 0
 
-    # Handle --print-configs (requires --benchmark and --mode)
+    # Handle --print-configs (requires --benchmark and --shuffle-mode)
     if args.print_configs:
-        if not args.mode:
-            parser.error("--mode is required when using --print-configs")
+        if not args.shuffle_mode:
+            parser.error("--shuffle-mode is required when using --print-configs")
         try:
             benchmark_cls = get_benchmark(args.benchmark)
         except KeyError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
-        configs = benchmark_cls.get_spark_configs(args.mode)
+        configs = benchmark_cls.get_spark_configs(args.shuffle_mode)
         for key, value in configs.items():
             print(f"--conf {key}={value}")
         return 0
@@ -98,8 +98,8 @@ Examples:
     # Validate required arguments
     if not args.data:
         parser.error("--data is required when running a benchmark")
-    if not args.mode:
-        parser.error("--mode is required when running a benchmark")
+    if not args.shuffle_mode:
+        parser.error("--shuffle-mode is required when running a benchmark")
 
     # Get the benchmark class
     try:
@@ -110,17 +110,17 @@ Examples:
         return 1
 
     # Get benchmark-specific configs
-    benchmark_configs = benchmark_cls.get_spark_configs(args.mode)
+    benchmark_configs = benchmark_cls.get_spark_configs(args.shuffle_mode)
 
     # Create Spark session with benchmark-specific configs
-    builder = SparkSession.builder.appName(f"{benchmark_cls.name()}-{args.mode.upper()}")
+    builder = SparkSession.builder.appName(f"{benchmark_cls.name()}-{args.shuffle_mode.upper()}")
     for key, value in benchmark_configs.items():
         builder = builder.config(key, value)
     spark = builder.getOrCreate()
 
     try:
         # Create and run the benchmark
-        benchmark = benchmark_cls(spark, args.data, args.mode)
+        benchmark = benchmark_cls(spark, args.data, args.shuffle_mode)
         results = benchmark.execute_timed()
 
         print("\nCheck Spark UI for shuffle sizes and detailed metrics")
