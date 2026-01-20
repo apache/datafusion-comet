@@ -23,13 +23,13 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.{BinaryType, BooleanType, DataTypes, StringType}
+import org.apache.spark.sql.types.{BinaryType, BooleanType, DataTypes, MapType, StringType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -102,6 +102,17 @@ trait CometExprShim extends CommonStringExprs {
         } else {
           None
         }
+
+      case expr: MapSort =>
+        val keyType = expr.base.dataType.asInstanceOf[MapType].keyType
+        if (!RowOrdering.isOrderable(keyType)) {
+          withInfo(expr, s"map_sort requires orderable key type, got: $keyType")
+          return None
+        }
+
+        val childExpr = exprToProtoInternal(expr.base, inputs, binding)
+        val mapSortScalarExpr = scalarFunctionExprToProto("map_sort", childExpr)
+        optExprWithInfo(mapSortScalarExpr, expr, expr.children: _*)
 
       case _ => None
     }
