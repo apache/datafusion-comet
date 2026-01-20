@@ -1418,21 +1418,19 @@ fn write_large_list_to_buffer(
     write_array_data_to_buffer(buffer, &values, element_field.data_type())
 }
 
-/// Bulk copy primitive array values to buffer (fast path when no nulls).
-/// Returns true if bulk copy was performed, false if fallback needed.
+/// Bulk copy primitive array values to buffer, handling nulls.
+/// Returns true if bulk copy was performed, false if element type is not supported.
+/// When there are nulls, copies values anyway (null slots contain garbage, but that's OK
+/// since they won't be read) and sets null bits separately.
 #[inline]
-fn try_bulk_copy_primitive_array(
+fn try_bulk_copy_primitive_array_with_nulls(
     buffer: &mut [u8],
     values: &ArrayRef,
     element_type: &DataType,
+    null_bitset_start: usize,
     elements_start: usize,
     num_elements: usize,
 ) -> bool {
-    // Only bulk copy if no nulls (null values would have garbage in Arrow's buffer)
-    if values.null_count() > 0 {
-        return false;
-    }
-
     macro_rules! bulk_copy {
         ($array_type:ty, $elem_size:expr) => {{
             if let Some(arr) = values.as_any().downcast_ref::<$array_type>() {
@@ -1444,6 +1442,23 @@ fn try_bulk_copy_primitive_array(
                     std::slice::from_raw_parts(values_slice.as_ptr() as *const u8, byte_len)
                 };
                 buffer[elements_start..elements_start + byte_len].copy_from_slice(src_bytes);
+
+                // Set null bits if there are any nulls
+                if arr.null_count() > 0 {
+                    for i in 0..num_elements {
+                        if arr.is_null(i) {
+                            let word_idx = i / 64;
+                            let bit_idx = i % 64;
+                            let word_offset = null_bitset_start + word_idx * 8;
+                            let mut word = i64::from_le_bytes(
+                                buffer[word_offset..word_offset + 8].try_into().unwrap(),
+                            );
+                            word |= 1i64 << bit_idx;
+                            buffer[word_offset..word_offset + 8]
+                                .copy_from_slice(&word.to_le_bytes());
+                        }
+                    }
+                }
                 return true;
             }
             false
@@ -1453,12 +1468,36 @@ fn try_bulk_copy_primitive_array(
     match element_type {
         DataType::Int8 => bulk_copy!(Int8Array, 1),
         DataType::Int16 => bulk_copy!(Int16Array, 2),
-        DataType::Int32 | DataType::Date32 => bulk_copy!(Int32Array, 4),
-        DataType::Int64 | DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            bulk_copy!(Int64Array, 8)
+        DataType::Int32 => bulk_copy!(Int32Array, 4),
+        DataType::Date32 => bulk_copy!(Date32Array, 4),
+        DataType::Int64 => bulk_copy!(Int64Array, 8),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            bulk_copy!(TimestampMicrosecondArray, 8)
         }
         DataType::Float32 => bulk_copy!(Float32Array, 4),
         DataType::Float64 => bulk_copy!(Float64Array, 8),
+        DataType::Boolean => {
+            // Boolean requires special handling - pack bits
+            if let Some(arr) = values.as_any().downcast_ref::<BooleanArray>() {
+                for i in 0..num_elements {
+                    if arr.is_null(i) {
+                        let word_idx = i / 64;
+                        let bit_idx = i % 64;
+                        let word_offset = null_bitset_start + word_idx * 8;
+                        let mut word = i64::from_le_bytes(
+                            buffer[word_offset..word_offset + 8].try_into().unwrap(),
+                        );
+                        word |= 1i64 << bit_idx;
+                        buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
+                    } else {
+                        // Write boolean as 1 byte
+                        buffer[elements_start + i] = if arr.value(i) { 1 } else { 0 };
+                    }
+                }
+                return true;
+            }
+            false
+        }
         _ => false,
     }
 }
@@ -1490,12 +1529,19 @@ fn write_array_data_to_buffer(
     let elements_total_size = round_up_to_8(num_elements * element_size);
     buffer.resize(elements_start + elements_total_size, 0);
 
-    // Fast path: bulk copy for primitive arrays without nulls
-    if try_bulk_copy_primitive_array(buffer, values, element_type, elements_start, num_elements) {
+    // Fast path: bulk copy for primitive arrays (handles nulls internally)
+    if try_bulk_copy_primitive_array_with_nulls(
+        buffer,
+        values,
+        element_type,
+        null_bitset_start,
+        elements_start,
+        num_elements,
+    ) {
         return Ok(buffer.len() - array_start);
     }
 
-    // Slow path: element-by-element processing
+    // Slow path: element-by-element processing for variable-length types
     // Set null bits
     for i in 0..num_elements {
         if values.is_null(i) {
@@ -1509,12 +1555,12 @@ fn write_array_data_to_buffer(
         }
     }
 
-    // Write element values
+    // Write element values (for types that weren't bulk copied - variable-length or unsupported fixed-width)
     for i in 0..num_elements {
         if !values.is_null(i) {
             let slot_offset = elements_start + i * element_size;
 
-            // Check if this element has variable-length data
+            // Write variable-length data and get the length
             let var_len =
                 write_nested_variable_to_buffer(buffer, element_type, values, i, array_start)?;
 
@@ -1525,7 +1571,7 @@ fn write_array_data_to_buffer(
                 let offset_and_len = ((data_offset as i64) << 32) | (var_len as i64);
                 buffer[slot_offset..slot_offset + 8].copy_from_slice(&offset_and_len.to_le_bytes());
             } else {
-                // Fixed-width element: write value directly
+                // Fixed-width element: write value directly (for types not handled by bulk copy)
                 let value = get_field_value(element_type, values, i)?;
                 write_array_element(buffer, element_type, value, slot_offset);
             }
@@ -1613,17 +1659,21 @@ fn write_array_data_to_buffer_for_map(
     let elements_total_size = round_up_to_8(num_elements * element_size);
     buffer.resize(elements_start + elements_total_size, 0);
 
-    // Fast path: bulk copy for primitive arrays
-    // For keys (check_nulls=false): always try bulk copy (keys are never null in Spark)
-    // For values (check_nulls=true): only bulk copy if no nulls
-    let can_bulk_copy = !check_nulls || array.null_count() == 0;
-    if can_bulk_copy
-        && try_bulk_copy_primitive_array(buffer, array, element_type, elements_start, num_elements)
-    {
+    // Fast path: bulk copy for primitive arrays (handles nulls internally)
+    // For keys (check_nulls=false): keys are never null in Spark, but function handles it
+    // For values (check_nulls=true): function handles null bits
+    if try_bulk_copy_primitive_array_with_nulls(
+        buffer,
+        array,
+        element_type,
+        null_bitset_start,
+        elements_start,
+        num_elements,
+    ) {
         return Ok(());
     }
 
-    // Slow path: element-by-element processing
+    // Slow path: element-by-element processing for variable-length types
     // Set null bits (only for values, keys are not nullable in Spark)
     if check_nulls {
         for i in 0..num_elements {
@@ -1643,13 +1693,13 @@ fn write_array_data_to_buffer_for_map(
     // For maps, offsets are relative to the start of the key/value array
     let array_base = elements_start - element_bitset_width - 8; // minus numElements field
 
-    // Write element values
+    // Write element values (for types that weren't bulk copied - variable-length or unsupported fixed-width)
     for i in 0..num_elements {
         let is_null = if check_nulls { array.is_null(i) } else { false };
         if !is_null {
             let slot_offset = elements_start + i * element_size;
 
-            // Check if this element has variable-length data
+            // Write variable-length data and get the length
             let var_len =
                 write_nested_variable_to_buffer(buffer, element_type, array, i, array_base)?;
 
@@ -1660,7 +1710,7 @@ fn write_array_data_to_buffer_for_map(
                 let offset_and_len = ((data_offset as i64) << 32) | (var_len as i64);
                 buffer[slot_offset..slot_offset + 8].copy_from_slice(&offset_and_len.to_le_bytes());
             } else {
-                // Fixed-width element: write value directly
+                // Fixed-width element: write value directly (for types not handled by bulk copy)
                 let value = get_field_value(element_type, array, i)?;
                 write_array_element(buffer, element_type, value, slot_offset);
             }
