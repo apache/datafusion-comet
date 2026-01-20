@@ -90,6 +90,322 @@ impl SparkUnsafeArray {
             (word & mask) != 0
         }
     }
+
+    /// Returns the null bitset pointer (starts at row_addr + 8).
+    #[inline]
+    pub(crate) fn null_bitset_ptr(&self) -> *const i64 {
+        (self.row_addr + 8) as *const i64
+    }
+
+    /// Bulk append i32 values to builder.
+    /// For non-nullable: uses slice append for optimal performance.
+    /// For nullable: uses pointer iteration with efficient null bitset reading.
+    #[inline]
+    pub(crate) fn append_ints_to_builder<const NULLABLE: bool>(
+        &self,
+        builder: &mut Int32Builder,
+    ) {
+        let num_elements = self.num_elements;
+        if num_elements == 0 {
+            return;
+        }
+
+        if NULLABLE {
+            let mut ptr = self.element_offset as *const i32;
+            let null_words = self.null_bitset_ptr();
+            for idx in 0..num_elements {
+                let word_idx = idx >> 6;
+                let bit_idx = idx & 0x3f;
+                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
+
+                if is_null {
+                    builder.append_null();
+                } else {
+                    builder.append_value(unsafe { *ptr });
+                }
+                ptr = unsafe { ptr.add(1) };
+            }
+        } else {
+            // Use slice-based append for non-nullable path (much faster)
+            let slice = unsafe {
+                std::slice::from_raw_parts(self.element_offset as *const i32, num_elements)
+            };
+            builder.append_slice(slice);
+        }
+    }
+
+    /// Bulk append i64 values to builder.
+    #[inline]
+    pub(crate) fn append_longs_to_builder<const NULLABLE: bool>(
+        &self,
+        builder: &mut Int64Builder,
+    ) {
+        let num_elements = self.num_elements;
+        if num_elements == 0 {
+            return;
+        }
+
+        if NULLABLE {
+            let mut ptr = self.element_offset as *const i64;
+            let null_words = self.null_bitset_ptr();
+            for idx in 0..num_elements {
+                let word_idx = idx >> 6;
+                let bit_idx = idx & 0x3f;
+                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
+
+                if is_null {
+                    builder.append_null();
+                } else {
+                    builder.append_value(unsafe { *ptr });
+                }
+                ptr = unsafe { ptr.add(1) };
+            }
+        } else {
+            let slice = unsafe {
+                std::slice::from_raw_parts(self.element_offset as *const i64, num_elements)
+            };
+            builder.append_slice(slice);
+        }
+    }
+
+    /// Bulk append i16 values to builder.
+    #[inline]
+    pub(crate) fn append_shorts_to_builder<const NULLABLE: bool>(
+        &self,
+        builder: &mut Int16Builder,
+    ) {
+        let num_elements = self.num_elements;
+        if num_elements == 0 {
+            return;
+        }
+
+        if NULLABLE {
+            let mut ptr = self.element_offset as *const i16;
+            let null_words = self.null_bitset_ptr();
+            for idx in 0..num_elements {
+                let word_idx = idx >> 6;
+                let bit_idx = idx & 0x3f;
+                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
+
+                if is_null {
+                    builder.append_null();
+                } else {
+                    builder.append_value(unsafe { *ptr });
+                }
+                ptr = unsafe { ptr.add(1) };
+            }
+        } else {
+            let slice = unsafe {
+                std::slice::from_raw_parts(self.element_offset as *const i16, num_elements)
+            };
+            builder.append_slice(slice);
+        }
+    }
+
+    /// Bulk append i8 values to builder.
+    #[inline]
+    pub(crate) fn append_bytes_to_builder<const NULLABLE: bool>(
+        &self,
+        builder: &mut Int8Builder,
+    ) {
+        let num_elements = self.num_elements;
+        if num_elements == 0 {
+            return;
+        }
+
+        if NULLABLE {
+            let mut ptr = self.element_offset as *const i8;
+            let null_words = self.null_bitset_ptr();
+            for idx in 0..num_elements {
+                let word_idx = idx >> 6;
+                let bit_idx = idx & 0x3f;
+                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
+
+                if is_null {
+                    builder.append_null();
+                } else {
+                    builder.append_value(unsafe { *ptr });
+                }
+                ptr = unsafe { ptr.add(1) };
+            }
+        } else {
+            let slice = unsafe {
+                std::slice::from_raw_parts(self.element_offset as *const i8, num_elements)
+            };
+            builder.append_slice(slice);
+        }
+    }
+
+    /// Bulk append f32 values to builder.
+    #[inline]
+    pub(crate) fn append_floats_to_builder<const NULLABLE: bool>(
+        &self,
+        builder: &mut Float32Builder,
+    ) {
+        let num_elements = self.num_elements;
+        if num_elements == 0 {
+            return;
+        }
+
+        if NULLABLE {
+            let mut ptr = self.element_offset as *const f32;
+            let null_words = self.null_bitset_ptr();
+            for idx in 0..num_elements {
+                let word_idx = idx >> 6;
+                let bit_idx = idx & 0x3f;
+                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
+
+                if is_null {
+                    builder.append_null();
+                } else {
+                    builder.append_value(unsafe { *ptr });
+                }
+                ptr = unsafe { ptr.add(1) };
+            }
+        } else {
+            let slice = unsafe {
+                std::slice::from_raw_parts(self.element_offset as *const f32, num_elements)
+            };
+            builder.append_slice(slice);
+        }
+    }
+
+    /// Bulk append f64 values to builder.
+    #[inline]
+    pub(crate) fn append_doubles_to_builder<const NULLABLE: bool>(
+        &self,
+        builder: &mut Float64Builder,
+    ) {
+        let num_elements = self.num_elements;
+        if num_elements == 0 {
+            return;
+        }
+
+        if NULLABLE {
+            let mut ptr = self.element_offset as *const f64;
+            let null_words = self.null_bitset_ptr();
+            for idx in 0..num_elements {
+                let word_idx = idx >> 6;
+                let bit_idx = idx & 0x3f;
+                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
+
+                if is_null {
+                    builder.append_null();
+                } else {
+                    builder.append_value(unsafe { *ptr });
+                }
+                ptr = unsafe { ptr.add(1) };
+            }
+        } else {
+            let slice = unsafe {
+                std::slice::from_raw_parts(self.element_offset as *const f64, num_elements)
+            };
+            builder.append_slice(slice);
+        }
+    }
+
+    /// Bulk append boolean values to builder using pointer iteration.
+    #[inline]
+    pub(crate) fn append_booleans_to_builder<const NULLABLE: bool>(
+        &self,
+        builder: &mut BooleanBuilder,
+    ) {
+        let num_elements = self.num_elements;
+        if num_elements == 0 {
+            return;
+        }
+
+        let mut ptr = self.element_offset as *const u8;
+
+        if NULLABLE {
+            let null_words = self.null_bitset_ptr();
+            for idx in 0..num_elements {
+                let word_idx = idx >> 6;
+                let bit_idx = idx & 0x3f;
+                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
+
+                if is_null {
+                    builder.append_null();
+                } else {
+                    builder.append_value(unsafe { *ptr != 0 });
+                }
+                ptr = unsafe { ptr.add(1) };
+            }
+        } else {
+            for _ in 0..num_elements {
+                builder.append_value(unsafe { *ptr != 0 });
+                ptr = unsafe { ptr.add(1) };
+            }
+        }
+    }
+
+    /// Bulk append timestamp values to builder.
+    #[inline]
+    pub(crate) fn append_timestamps_to_builder<const NULLABLE: bool>(
+        &self,
+        builder: &mut TimestampMicrosecondBuilder,
+    ) {
+        let num_elements = self.num_elements;
+        if num_elements == 0 {
+            return;
+        }
+
+        if NULLABLE {
+            let mut ptr = self.element_offset as *const i64;
+            let null_words = self.null_bitset_ptr();
+            for idx in 0..num_elements {
+                let word_idx = idx >> 6;
+                let bit_idx = idx & 0x3f;
+                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
+
+                if is_null {
+                    builder.append_null();
+                } else {
+                    builder.append_value(unsafe { *ptr });
+                }
+                ptr = unsafe { ptr.add(1) };
+            }
+        } else {
+            let slice = unsafe {
+                std::slice::from_raw_parts(self.element_offset as *const i64, num_elements)
+            };
+            builder.append_slice(slice);
+        }
+    }
+
+    /// Bulk append date values to builder.
+    #[inline]
+    pub(crate) fn append_dates_to_builder<const NULLABLE: bool>(
+        &self,
+        builder: &mut Date32Builder,
+    ) {
+        let num_elements = self.num_elements;
+        if num_elements == 0 {
+            return;
+        }
+
+        if NULLABLE {
+            let mut ptr = self.element_offset as *const i32;
+            let null_words = self.null_bitset_ptr();
+            for idx in 0..num_elements {
+                let word_idx = idx >> 6;
+                let bit_idx = idx & 0x3f;
+                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
+
+                if is_null {
+                    builder.append_null();
+                } else {
+                    builder.append_value(unsafe { *ptr });
+                }
+                ptr = unsafe { ptr.add(1) };
+            }
+        } else {
+            let slice = unsafe {
+                std::slice::from_raw_parts(self.element_offset as *const i32, num_elements)
+            };
+            builder.append_slice(slice);
+        }
+    }
 }
 
 pub fn append_to_builder<const NULLABLE: bool>(
@@ -112,77 +428,40 @@ pub fn append_to_builder<const NULLABLE: bool>(
 
     match data_type {
         DataType::Boolean => {
-            add_values!(
-                BooleanBuilder,
-                |builder: &mut BooleanBuilder, values: &SparkUnsafeArray, idx: usize| builder
-                    .append_value(values.get_boolean(idx)),
-                |builder: &mut BooleanBuilder| builder.append_null()
-            );
+            let builder = downcast_builder_ref!(BooleanBuilder, builder);
+            array.append_booleans_to_builder::<NULLABLE>(builder);
         }
         DataType::Int8 => {
-            add_values!(
-                Int8Builder,
-                |builder: &mut Int8Builder, values: &SparkUnsafeArray, idx: usize| builder
-                    .append_value(values.get_byte(idx)),
-                |builder: &mut Int8Builder| builder.append_null()
-            );
+            let builder = downcast_builder_ref!(Int8Builder, builder);
+            array.append_bytes_to_builder::<NULLABLE>(builder);
         }
         DataType::Int16 => {
-            add_values!(
-                Int16Builder,
-                |builder: &mut Int16Builder, values: &SparkUnsafeArray, idx: usize| builder
-                    .append_value(values.get_short(idx)),
-                |builder: &mut Int16Builder| builder.append_null()
-            );
+            let builder = downcast_builder_ref!(Int16Builder, builder);
+            array.append_shorts_to_builder::<NULLABLE>(builder);
         }
         DataType::Int32 => {
-            add_values!(
-                Int32Builder,
-                |builder: &mut Int32Builder, values: &SparkUnsafeArray, idx: usize| builder
-                    .append_value(values.get_int(idx)),
-                |builder: &mut Int32Builder| builder.append_null()
-            );
+            let builder = downcast_builder_ref!(Int32Builder, builder);
+            array.append_ints_to_builder::<NULLABLE>(builder);
         }
         DataType::Int64 => {
-            add_values!(
-                Int64Builder,
-                |builder: &mut Int64Builder, values: &SparkUnsafeArray, idx: usize| builder
-                    .append_value(values.get_long(idx)),
-                |builder: &mut Int64Builder| builder.append_null()
-            );
+            let builder = downcast_builder_ref!(Int64Builder, builder);
+            array.append_longs_to_builder::<NULLABLE>(builder);
         }
         DataType::Float32 => {
-            add_values!(
-                Float32Builder,
-                |builder: &mut Float32Builder, values: &SparkUnsafeArray, idx: usize| builder
-                    .append_value(values.get_float(idx)),
-                |builder: &mut Float32Builder| builder.append_null()
-            );
+            let builder = downcast_builder_ref!(Float32Builder, builder);
+            array.append_floats_to_builder::<NULLABLE>(builder);
         }
         DataType::Float64 => {
-            add_values!(
-                Float64Builder,
-                |builder: &mut Float64Builder, values: &SparkUnsafeArray, idx: usize| builder
-                    .append_value(values.get_double(idx)),
-                |builder: &mut Float64Builder| builder.append_null()
-            );
+            let builder = downcast_builder_ref!(Float64Builder, builder);
+            array.append_doubles_to_builder::<NULLABLE>(builder);
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            add_values!(
-                TimestampMicrosecondBuilder,
-                |builder: &mut TimestampMicrosecondBuilder,
-                 values: &SparkUnsafeArray,
-                 idx: usize| builder.append_value(values.get_timestamp(idx)),
-                |builder: &mut TimestampMicrosecondBuilder| builder.append_null()
-            );
+            let builder = downcast_builder_ref!(TimestampMicrosecondBuilder, builder);
+            array.append_timestamps_to_builder::<NULLABLE>(builder);
         }
         DataType::Date32 => {
-            add_values!(
-                Date32Builder,
-                |builder: &mut Date32Builder, values: &SparkUnsafeArray, idx: usize| builder
-                    .append_value(values.get_date(idx)),
-                |builder: &mut Date32Builder| builder.append_null()
-            );
+            let builder = downcast_builder_ref!(Date32Builder, builder);
+            array.append_dates_to_builder::<NULLABLE>(builder);
         }
         DataType::Binary => {
             add_values!(
