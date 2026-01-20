@@ -262,39 +262,30 @@ fn get_field_value(data_type: &DataType, array: &ArrayRef, row_idx: usize) -> Co
             Ok(arr.value(row_idx) as i64)
         }
         DataType::Int16 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<Int16Array>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Int16Array for type {:?}",
-                        actual_type
-                    ))
-                })?;
+            let arr = array.as_any().downcast_ref::<Int16Array>().ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to downcast to Int16Array for type {:?}",
+                    actual_type
+                ))
+            })?;
             Ok(arr.value(row_idx) as i64)
         }
         DataType::Int32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Int32Array for type {:?}",
-                        actual_type
-                    ))
-                })?;
+            let arr = array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to downcast to Int32Array for type {:?}",
+                    actual_type
+                ))
+            })?;
             Ok(arr.value(row_idx) as i64)
         }
         DataType::Int64 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Int64Array for type {:?}",
-                        actual_type
-                    ))
-                })?;
+            let arr = array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to downcast to Int64Array for type {:?}",
+                    actual_type
+                ))
+            })?;
             Ok(arr.value(row_idx))
         }
         DataType::Float32 => {
@@ -597,12 +588,15 @@ fn get_dictionary_value_with_key<K: ArrowDictionaryKeyType>(
     // Extract the value based on the value type
     match value_type {
         DataType::Utf8 => {
-            let string_values = values.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
-                CometError::Internal(format!(
-                    "Failed to downcast dictionary values to StringArray, actual type: {:?}",
-                    values.data_type()
-                ))
-            })?;
+            let string_values = values
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast dictionary values to StringArray, actual type: {:?}",
+                        values.data_type()
+                    ))
+                })?;
             Ok(Some(string_values.value(key_idx).as_bytes().to_vec()))
         }
         DataType::LargeUtf8 => {
@@ -1507,8 +1501,7 @@ mod tests {
         let list_array = LargeListArray::new(list_field.clone(), offsets, Arc::new(values), None);
 
         // Convert the list for row 0
-        let result =
-            write_large_list_data(&list_array, 0, &list_field).expect("conversion failed");
+        let result = write_large_list_data(&list_array, 0, &list_field).expect("conversion failed");
 
         // UnsafeArrayData format for Int32:
         // [0..8]: numElements = 5
