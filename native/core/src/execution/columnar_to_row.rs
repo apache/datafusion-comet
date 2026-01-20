@@ -36,8 +36,12 @@
 //! ```
 
 use crate::errors::{CometError, CometResult};
+use arrow::array::types::{
+    ArrowDictionaryKeyType, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type, UInt32Type,
+    UInt64Type, UInt8Type,
+};
 use arrow::array::*;
-use arrow::datatypes::{DataType, TimeUnit};
+use arrow::datatypes::{ArrowNativeType, DataType, TimeUnit};
 
 /// Maximum digits for decimal that can fit in a long (8 bytes).
 const MAX_LONG_DIGITS: u8 = 18;
@@ -362,7 +366,8 @@ fn get_field_value(data_type: &DataType, array: &ArrayRef, row_idx: usize) -> Co
         | DataType::Struct(_)
         | DataType::List(_)
         | DataType::LargeList(_)
-        | DataType::Map(_, _) => Ok(0i64),
+        | DataType::Map(_, _)
+        | DataType::Dictionary(_, _) => Ok(0i64),
         _ => {
             // Check if the schema type is a known type that we should handle
             match data_type {
@@ -387,7 +392,8 @@ fn get_field_value(data_type: &DataType, array: &ArrayRef, row_idx: usize) -> Co
                 | DataType::Struct(_)
                 | DataType::List(_)
                 | DataType::LargeList(_)
-                | DataType::Map(_, _) => Ok(0i64),
+                | DataType::Map(_, _)
+                | DataType::Dictionary(_, _) => Ok(0i64),
                 _ => Err(CometError::Internal(format!(
                     "Unsupported data type for columnar to row conversion: schema={:?}, actual={:?}",
                     data_type, actual_type
@@ -510,6 +516,10 @@ fn get_variable_length_data(
             })?;
             Ok(Some(write_map_data(map_array, row_idx, field)?))
         }
+        // Handle Dictionary-encoded arrays by extracting the actual value
+        DataType::Dictionary(key_type, value_type) => {
+            get_dictionary_value(array, row_idx, key_type, value_type)
+        }
         // For types not in the match, check if the schema type expects variable-length
         _ => {
             match data_type {
@@ -533,6 +543,108 @@ fn get_variable_length_data(
                 _ => Ok(None),
             }
         }
+    }
+}
+
+/// Gets the value from a dictionary-encoded array.
+fn get_dictionary_value(
+    array: &ArrayRef,
+    row_idx: usize,
+    key_type: &DataType,
+    value_type: &DataType,
+) -> CometResult<Option<Vec<u8>>> {
+    // Handle different key types (Int8, Int16, Int32, Int64 are common)
+    match key_type {
+        DataType::Int8 => get_dictionary_value_with_key::<Int8Type>(array, row_idx, value_type),
+        DataType::Int16 => get_dictionary_value_with_key::<Int16Type>(array, row_idx, value_type),
+        DataType::Int32 => get_dictionary_value_with_key::<Int32Type>(array, row_idx, value_type),
+        DataType::Int64 => get_dictionary_value_with_key::<Int64Type>(array, row_idx, value_type),
+        DataType::UInt8 => get_dictionary_value_with_key::<UInt8Type>(array, row_idx, value_type),
+        DataType::UInt16 => get_dictionary_value_with_key::<UInt16Type>(array, row_idx, value_type),
+        DataType::UInt32 => get_dictionary_value_with_key::<UInt32Type>(array, row_idx, value_type),
+        DataType::UInt64 => get_dictionary_value_with_key::<UInt64Type>(array, row_idx, value_type),
+        _ => Err(CometError::Internal(format!(
+            "Unsupported dictionary key type: {:?}",
+            key_type
+        ))),
+    }
+}
+
+/// Gets the value from a dictionary array with a specific key type.
+fn get_dictionary_value_with_key<K: ArrowDictionaryKeyType>(
+    array: &ArrayRef,
+    row_idx: usize,
+    value_type: &DataType,
+) -> CometResult<Option<Vec<u8>>> {
+    let dict_array = array
+        .as_any()
+        .downcast_ref::<DictionaryArray<K>>()
+        .ok_or_else(|| {
+            CometError::Internal(format!(
+                "Failed to downcast to DictionaryArray<{:?}>",
+                std::any::type_name::<K>()
+            ))
+        })?;
+
+    // Get the values array (the dictionary)
+    let values = dict_array.values();
+
+    // Get the key for this row (index into the dictionary)
+    let key_idx = dict_array.keys().value(row_idx).to_usize().ok_or_else(|| {
+        CometError::Internal("Dictionary key index out of usize range".to_string())
+    })?;
+
+    // Extract the value based on the value type
+    match value_type {
+        DataType::Utf8 => {
+            let string_values = values.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to downcast dictionary values to StringArray, actual type: {:?}",
+                    values.data_type()
+                ))
+            })?;
+            Ok(Some(string_values.value(key_idx).as_bytes().to_vec()))
+        }
+        DataType::LargeUtf8 => {
+            let string_values = values
+                .as_any()
+                .downcast_ref::<LargeStringArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast dictionary values to LargeStringArray, actual type: {:?}",
+                        values.data_type()
+                    ))
+                })?;
+            Ok(Some(string_values.value(key_idx).as_bytes().to_vec()))
+        }
+        DataType::Binary => {
+            let binary_values = values
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast dictionary values to BinaryArray, actual type: {:?}",
+                        values.data_type()
+                    ))
+                })?;
+            Ok(Some(binary_values.value(key_idx).to_vec()))
+        }
+        DataType::LargeBinary => {
+            let binary_values = values
+                .as_any()
+                .downcast_ref::<LargeBinaryArray>()
+                .ok_or_else(|| {
+                    CometError::Internal(format!(
+                        "Failed to downcast dictionary values to LargeBinaryArray, actual type: {:?}",
+                        values.data_type()
+                    ))
+                })?;
+            Ok(Some(binary_values.value(key_idx).to_vec()))
+        }
+        _ => Err(CometError::Internal(format!(
+            "Unsupported dictionary value type for variable-length data: {:?}",
+            value_type
+        ))),
     }
 }
 
@@ -1444,5 +1556,61 @@ mod tests {
         // Verify the result
         let num_elements = i64::from_le_bytes(result[0..8].try_into().unwrap());
         assert_eq!(num_elements, 3, "should have 3 elements");
+    }
+
+    #[test]
+    fn test_dictionary_encoded_string_array() {
+        // Create a dictionary-encoded string array
+        // This simulates what Spark/Parquet might send through FFI for optimized string columns
+        let keys = Int32Array::from(vec![0, 1, 2, 0, 1]); // indices into dictionary
+        let values = StringArray::from(vec!["hello", "world", "test"]);
+
+        let dict_array: DictionaryArray<Int32Type> =
+            DictionaryArray::try_new(keys, Arc::new(values)).expect("failed to create dict array");
+        let array_ref: ArrayRef = Arc::new(dict_array);
+
+        // Test that we can extract values correctly even when schema says Utf8
+        let schema_type = DataType::Utf8;
+
+        // Row 0 should be "hello" (key=0)
+        let result = get_variable_length_data(&schema_type, &array_ref, 0)
+            .expect("conversion failed")
+            .expect("should have data");
+        assert_eq!(result, b"hello", "row 0 should be 'hello'");
+
+        // Row 1 should be "world" (key=1)
+        let result = get_variable_length_data(&schema_type, &array_ref, 1)
+            .expect("conversion failed")
+            .expect("should have data");
+        assert_eq!(result, b"world", "row 1 should be 'world'");
+
+        // Row 2 should be "test" (key=2)
+        let result = get_variable_length_data(&schema_type, &array_ref, 2)
+            .expect("conversion failed")
+            .expect("should have data");
+        assert_eq!(result, b"test", "row 2 should be 'test'");
+
+        // Row 3 should be "hello" again (key=0)
+        let result = get_variable_length_data(&schema_type, &array_ref, 3)
+            .expect("conversion failed")
+            .expect("should have data");
+        assert_eq!(result, b"hello", "row 3 should be 'hello'");
+    }
+
+    #[test]
+    fn test_get_field_value_with_dictionary() {
+        // Test that get_field_value returns 0 (placeholder) for dictionary types
+        let keys = Int32Array::from(vec![0, 1]);
+        let values = StringArray::from(vec!["a", "b"]);
+
+        let dict_array: DictionaryArray<Int32Type> =
+            DictionaryArray::try_new(keys, Arc::new(values)).expect("failed to create dict array");
+        let array_ref: ArrayRef = Arc::new(dict_array);
+
+        let schema_type = DataType::Utf8;
+
+        // Should return 0 as placeholder for variable-length type
+        let result = get_field_value(&schema_type, &array_ref, 0).expect("should not fail");
+        assert_eq!(result, 0, "dictionary type should return 0 placeholder");
     }
 }
