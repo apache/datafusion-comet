@@ -47,6 +47,297 @@ use std::sync::Arc;
 /// Maximum digits for decimal that can fit in a long (8 bytes).
 const MAX_LONG_DIGITS: u8 = 18;
 
+/// Pre-downcast array reference to avoid type dispatch in inner loops.
+/// This enum holds references to concrete array types, allowing direct access
+/// without repeated downcast_ref calls.
+enum TypedArray<'a> {
+    Boolean(&'a BooleanArray),
+    Int8(&'a Int8Array),
+    Int16(&'a Int16Array),
+    Int32(&'a Int32Array),
+    Int64(&'a Int64Array),
+    Float32(&'a Float32Array),
+    Float64(&'a Float64Array),
+    Date32(&'a Date32Array),
+    TimestampMicro(&'a TimestampMicrosecondArray),
+    Decimal128(&'a Decimal128Array, u8), // array + precision
+    String(&'a StringArray),
+    LargeString(&'a LargeStringArray),
+    Binary(&'a BinaryArray),
+    LargeBinary(&'a LargeBinaryArray),
+    Struct(&'a StructArray, arrow::datatypes::Fields),
+    List(&'a ListArray, arrow::datatypes::FieldRef),
+    LargeList(&'a LargeListArray, arrow::datatypes::FieldRef),
+    Map(&'a MapArray, arrow::datatypes::FieldRef),
+    Dictionary(&'a ArrayRef, DataType), // fallback for dictionary types
+}
+
+impl<'a> TypedArray<'a> {
+    /// Pre-downcast an ArrayRef to a TypedArray.
+    fn from_array(array: &'a ArrayRef, schema_type: &DataType) -> CometResult<Self> {
+        let actual_type = array.data_type();
+        match actual_type {
+            DataType::Boolean => Ok(TypedArray::Boolean(
+                array.as_any().downcast_ref::<BooleanArray>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to BooleanArray".to_string())
+                })?,
+            )),
+            DataType::Int8 => Ok(TypedArray::Int8(
+                array.as_any().downcast_ref::<Int8Array>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to Int8Array".to_string())
+                })?,
+            )),
+            DataType::Int16 => Ok(TypedArray::Int16(
+                array.as_any().downcast_ref::<Int16Array>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to Int16Array".to_string())
+                })?,
+            )),
+            DataType::Int32 => Ok(TypedArray::Int32(
+                array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to Int32Array".to_string())
+                })?,
+            )),
+            DataType::Int64 => Ok(TypedArray::Int64(
+                array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to Int64Array".to_string())
+                })?,
+            )),
+            DataType::Float32 => Ok(TypedArray::Float32(
+                array.as_any().downcast_ref::<Float32Array>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to Float32Array".to_string())
+                })?,
+            )),
+            DataType::Float64 => Ok(TypedArray::Float64(
+                array.as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to Float64Array".to_string())
+                })?,
+            )),
+            DataType::Date32 => Ok(TypedArray::Date32(
+                array.as_any().downcast_ref::<Date32Array>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to Date32Array".to_string())
+                })?,
+            )),
+            DataType::Timestamp(TimeUnit::Microsecond, _) => Ok(TypedArray::TimestampMicro(
+                array
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .ok_or_else(|| {
+                        CometError::Internal(
+                            "Failed to downcast to TimestampMicrosecondArray".to_string(),
+                        )
+                    })?,
+            )),
+            DataType::Decimal128(p, _) => Ok(TypedArray::Decimal128(
+                array
+                    .as_any()
+                    .downcast_ref::<Decimal128Array>()
+                    .ok_or_else(|| {
+                        CometError::Internal("Failed to downcast to Decimal128Array".to_string())
+                    })?,
+                *p,
+            )),
+            DataType::Utf8 => Ok(TypedArray::String(
+                array.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to StringArray".to_string())
+                })?,
+            )),
+            DataType::LargeUtf8 => Ok(TypedArray::LargeString(
+                array
+                    .as_any()
+                    .downcast_ref::<LargeStringArray>()
+                    .ok_or_else(|| {
+                        CometError::Internal("Failed to downcast to LargeStringArray".to_string())
+                    })?,
+            )),
+            DataType::Binary => Ok(TypedArray::Binary(
+                array.as_any().downcast_ref::<BinaryArray>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to BinaryArray".to_string())
+                })?,
+            )),
+            DataType::LargeBinary => Ok(TypedArray::LargeBinary(
+                array
+                    .as_any()
+                    .downcast_ref::<LargeBinaryArray>()
+                    .ok_or_else(|| {
+                        CometError::Internal("Failed to downcast to LargeBinaryArray".to_string())
+                    })?,
+            )),
+            DataType::Struct(fields) => Ok(TypedArray::Struct(
+                array.as_any().downcast_ref::<StructArray>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to StructArray".to_string())
+                })?,
+                fields.clone(),
+            )),
+            DataType::List(field) => Ok(TypedArray::List(
+                array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to ListArray".to_string())
+                })?,
+                Arc::clone(field),
+            )),
+            DataType::LargeList(field) => Ok(TypedArray::LargeList(
+                array
+                    .as_any()
+                    .downcast_ref::<LargeListArray>()
+                    .ok_or_else(|| {
+                        CometError::Internal("Failed to downcast to LargeListArray".to_string())
+                    })?,
+                Arc::clone(field),
+            )),
+            DataType::Map(field, _) => Ok(TypedArray::Map(
+                array.as_any().downcast_ref::<MapArray>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to MapArray".to_string())
+                })?,
+                Arc::clone(field),
+            )),
+            DataType::Dictionary(_, _) => {
+                Ok(TypedArray::Dictionary(array, schema_type.clone()))
+            }
+            _ => Err(CometError::Internal(format!(
+                "Unsupported data type for pre-downcast: {:?}",
+                actual_type
+            ))),
+        }
+    }
+
+    /// Check if the value at the given index is null.
+    #[inline]
+    fn is_null(&self, row_idx: usize) -> bool {
+        match self {
+            TypedArray::Boolean(arr) => arr.is_null(row_idx),
+            TypedArray::Int8(arr) => arr.is_null(row_idx),
+            TypedArray::Int16(arr) => arr.is_null(row_idx),
+            TypedArray::Int32(arr) => arr.is_null(row_idx),
+            TypedArray::Int64(arr) => arr.is_null(row_idx),
+            TypedArray::Float32(arr) => arr.is_null(row_idx),
+            TypedArray::Float64(arr) => arr.is_null(row_idx),
+            TypedArray::Date32(arr) => arr.is_null(row_idx),
+            TypedArray::TimestampMicro(arr) => arr.is_null(row_idx),
+            TypedArray::Decimal128(arr, _) => arr.is_null(row_idx),
+            TypedArray::String(arr) => arr.is_null(row_idx),
+            TypedArray::LargeString(arr) => arr.is_null(row_idx),
+            TypedArray::Binary(arr) => arr.is_null(row_idx),
+            TypedArray::LargeBinary(arr) => arr.is_null(row_idx),
+            TypedArray::Struct(arr, _) => arr.is_null(row_idx),
+            TypedArray::List(arr, _) => arr.is_null(row_idx),
+            TypedArray::LargeList(arr, _) => arr.is_null(row_idx),
+            TypedArray::Map(arr, _) => arr.is_null(row_idx),
+            TypedArray::Dictionary(arr, _) => arr.is_null(row_idx),
+        }
+    }
+
+    /// Get the fixed-width value as i64 (for types that fit in 8 bytes).
+    #[inline]
+    fn get_fixed_value(&self, row_idx: usize) -> i64 {
+        match self {
+            TypedArray::Boolean(arr) => {
+                if arr.value(row_idx) {
+                    1i64
+                } else {
+                    0i64
+                }
+            }
+            TypedArray::Int8(arr) => arr.value(row_idx) as i64,
+            TypedArray::Int16(arr) => arr.value(row_idx) as i64,
+            TypedArray::Int32(arr) => arr.value(row_idx) as i64,
+            TypedArray::Int64(arr) => arr.value(row_idx),
+            TypedArray::Float32(arr) => arr.value(row_idx).to_bits() as i64,
+            TypedArray::Float64(arr) => arr.value(row_idx).to_bits() as i64,
+            TypedArray::Date32(arr) => arr.value(row_idx) as i64,
+            TypedArray::TimestampMicro(arr) => arr.value(row_idx),
+            TypedArray::Decimal128(arr, precision) => {
+                if *precision <= MAX_LONG_DIGITS {
+                    arr.value(row_idx) as i64
+                } else {
+                    0 // Variable-length decimal, handled elsewhere
+                }
+            }
+            // Variable-length types return 0, actual value written separately
+            _ => 0,
+        }
+    }
+
+    /// Check if this is a variable-length type.
+    #[inline]
+    fn is_variable_length(&self) -> bool {
+        match self {
+            TypedArray::Boolean(_)
+            | TypedArray::Int8(_)
+            | TypedArray::Int16(_)
+            | TypedArray::Int32(_)
+            | TypedArray::Int64(_)
+            | TypedArray::Float32(_)
+            | TypedArray::Float64(_)
+            | TypedArray::Date32(_)
+            | TypedArray::TimestampMicro(_) => false,
+            TypedArray::Decimal128(_, precision) => *precision > MAX_LONG_DIGITS,
+            _ => true,
+        }
+    }
+
+    /// Write variable-length data to buffer. Returns actual length (0 if not variable-length).
+    fn write_variable_to_buffer(&self, buffer: &mut Vec<u8>, row_idx: usize) -> CometResult<usize> {
+        match self {
+            TypedArray::String(arr) => {
+                let bytes = arr.value(row_idx).as_bytes();
+                let len = bytes.len();
+                buffer.extend_from_slice(bytes);
+                let padding = round_up_to_8(len) - len;
+                buffer.extend(std::iter::repeat_n(0u8, padding));
+                Ok(len)
+            }
+            TypedArray::LargeString(arr) => {
+                let bytes = arr.value(row_idx).as_bytes();
+                let len = bytes.len();
+                buffer.extend_from_slice(bytes);
+                let padding = round_up_to_8(len) - len;
+                buffer.extend(std::iter::repeat_n(0u8, padding));
+                Ok(len)
+            }
+            TypedArray::Binary(arr) => {
+                let bytes = arr.value(row_idx);
+                let len = bytes.len();
+                buffer.extend_from_slice(bytes);
+                let padding = round_up_to_8(len) - len;
+                buffer.extend(std::iter::repeat_n(0u8, padding));
+                Ok(len)
+            }
+            TypedArray::LargeBinary(arr) => {
+                let bytes = arr.value(row_idx);
+                let len = bytes.len();
+                buffer.extend_from_slice(bytes);
+                let padding = round_up_to_8(len) - len;
+                buffer.extend(std::iter::repeat_n(0u8, padding));
+                Ok(len)
+            }
+            TypedArray::Decimal128(arr, precision) if *precision > MAX_LONG_DIGITS => {
+                let bytes = i128_to_spark_decimal_bytes(arr.value(row_idx));
+                let len = bytes.len();
+                buffer.extend_from_slice(&bytes);
+                let padding = round_up_to_8(len) - len;
+                buffer.extend(std::iter::repeat_n(0u8, padding));
+                Ok(len)
+            }
+            TypedArray::Struct(arr, fields) => write_struct_to_buffer(buffer, arr, row_idx, fields),
+            TypedArray::List(arr, field) => write_list_to_buffer(buffer, arr, row_idx, field),
+            TypedArray::LargeList(arr, field) => {
+                write_large_list_to_buffer(buffer, arr, row_idx, field)
+            }
+            TypedArray::Map(arr, field) => write_map_to_buffer(buffer, arr, row_idx, field),
+            TypedArray::Dictionary(arr, schema_type) => {
+                if let DataType::Dictionary(key_type, value_type) = schema_type {
+                    write_dictionary_to_buffer(buffer, arr, row_idx, key_type.as_ref(), value_type.as_ref())
+                } else {
+                    Err(CometError::Internal(format!(
+                        "Expected Dictionary type but got {:?}",
+                        schema_type
+                    )))
+                }
+            }
+            _ => Ok(0), // Fixed-width types
+        }
+    }
+}
+
 /// Check if a data type is fixed-width for UnsafeRow purposes.
 /// Fixed-width types are stored directly in the 8-byte field slot.
 #[inline]
@@ -184,13 +475,20 @@ impl ColumnarToRowContext {
             return self.convert_fixed_width(arrays, num_rows);
         }
 
+        // Pre-downcast all arrays to avoid type dispatch in inner loop
+        let typed_arrays: Vec<TypedArray> = arrays
+            .iter()
+            .zip(self.schema.iter())
+            .map(|(arr, dt)| TypedArray::from_array(arr, dt))
+            .collect::<CometResult<Vec<_>>>()?;
+
         // Process each row (general path for variable-length data)
         for row_idx in 0..num_rows {
             let row_start = self.buffer.len();
             self.offsets.push(row_start as i32);
 
             // Write fixed-width portion (null bitset + field values)
-            self.write_row(arrays, row_idx)?;
+            self.write_row_typed(&typed_arrays, row_idx)?;
 
             let row_end = self.buffer.len();
             self.lengths.push((row_end - row_start) as i32);
@@ -422,9 +720,9 @@ impl ColumnarToRowContext {
         Ok(())
     }
 
-    /// Writes a complete row including fixed-width and variable-length portions.
-    /// Optimized to write directly to the buffer without intermediate allocations.
-    fn write_row(&mut self, arrays: &[ArrayRef], row_idx: usize) -> CometResult<()> {
+    /// Writes a complete row using pre-downcast TypedArrays.
+    /// This avoids type dispatch overhead in the inner loop.
+    fn write_row_typed(&mut self, typed_arrays: &[TypedArray], row_idx: usize) -> CometResult<()> {
         let row_start = self.buffer.len();
         let null_bitset_width = self.null_bitset_width;
         let fixed_width_size = self.fixed_width_size;
@@ -433,8 +731,8 @@ impl ColumnarToRowContext {
         self.buffer.resize(row_start + fixed_width_size, 0);
 
         // First pass: write null bits and fixed-width values
-        for (col_idx, array) in arrays.iter().enumerate() {
-            let is_null = array.is_null(row_idx);
+        for (col_idx, typed_arr) in typed_arrays.iter().enumerate() {
+            let is_null = typed_arr.is_null(row_idx);
 
             if is_null {
                 // Set null bit
@@ -452,19 +750,19 @@ impl ColumnarToRowContext {
             } else {
                 // Write field value at the correct offset
                 let field_offset = row_start + null_bitset_width + col_idx * 8;
-                let value = get_field_value(&self.schema[col_idx], array, row_idx)?;
+                let value = typed_arr.get_fixed_value(row_idx);
                 self.buffer[field_offset..field_offset + 8].copy_from_slice(&value.to_le_bytes());
             }
         }
 
         // Second pass: write variable-length data directly to buffer
-        for (col_idx, array) in arrays.iter().enumerate() {
-            if array.is_null(row_idx) {
+        for (col_idx, typed_arr) in typed_arrays.iter().enumerate() {
+            if typed_arr.is_null(row_idx) || !typed_arr.is_variable_length() {
                 continue;
             }
 
-            // Write variable-length data directly to buffer, returns actual length (0 if not variable-length)
-            let actual_len = write_variable_length_to_buffer(&mut self.buffer, array, row_idx)?;
+            // Write variable-length data directly to buffer
+            let actual_len = typed_arr.write_variable_to_buffer(&mut self.buffer, row_idx)?;
             if actual_len > 0 {
                 // Calculate offset: buffer grew by padded_len, but we need offset to start of data
                 let padded_len = Self::round_up_to_8(actual_len);
