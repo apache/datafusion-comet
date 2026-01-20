@@ -19,8 +19,7 @@
 //! This specifically tests the append_to_builder function used in shuffle read path.
 
 use arrow::array::builder::{
-    ArrayBuilder, Date32Builder, Float64Builder, Int32Builder, Int64Builder,
-    TimestampMicrosecondBuilder,
+    Date32Builder, Float64Builder, Int32Builder, Int64Builder, TimestampMicrosecondBuilder,
 };
 use arrow::datatypes::{DataType, TimeUnit};
 use comet::execution::shuffle::list::{append_to_builder, SparkUnsafeArray};
@@ -35,7 +34,7 @@ const NUM_ELEMENTS: usize = 10000;
 /// - element data: 4 bytes per element (i32)
 fn create_spark_unsafe_array_i32(num_elements: usize, with_nulls: bool) -> Vec<u8> {
     // Header size: 8 (num_elements) + ceil(num_elements/64) * 8 (null bitset)
-    let null_bitset_words = (num_elements + 63) / 64;
+    let null_bitset_words = num_elements.div_ceil(64);
     let header_size = 8 + null_bitset_words * 8;
     let data_size = num_elements * 4; // i32 = 4 bytes
     let total_size = header_size + data_size;
@@ -69,7 +68,7 @@ fn create_spark_unsafe_array_i32(num_elements: usize, with_nulls: bool) -> Vec<u
 
 /// Create a SparkUnsafeArray in memory with i64 elements.
 fn create_spark_unsafe_array_i64(num_elements: usize, with_nulls: bool) -> Vec<u8> {
-    let null_bitset_words = (num_elements + 63) / 64;
+    let null_bitset_words = num_elements.div_ceil(64);
     let header_size = 8 + null_bitset_words * 8;
     let data_size = num_elements * 8; // i64 = 8 bytes
     let total_size = header_size + data_size;
@@ -103,7 +102,7 @@ fn create_spark_unsafe_array_i64(num_elements: usize, with_nulls: bool) -> Vec<u
 
 /// Create a SparkUnsafeArray in memory with f64 elements.
 fn create_spark_unsafe_array_f64(num_elements: usize, with_nulls: bool) -> Vec<u8> {
-    let null_bitset_words = (num_elements + 63) / 64;
+    let null_bitset_words = num_elements.div_ceil(64);
     let header_size = 8 + null_bitset_words * 8;
     let data_size = num_elements * 8; // f64 = 8 bytes
     let total_size = header_size + data_size;
