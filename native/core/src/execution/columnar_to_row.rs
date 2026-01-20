@@ -35,6 +35,7 @@
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 
+use std::sync::Arc;
 use crate::errors::{CometError, CometResult};
 use arrow::array::types::{
     ArrowDictionaryKeyType, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type, UInt32Type,
@@ -697,7 +698,7 @@ fn get_element_size(data_type: &DataType) -> usize {
 }
 
 /// Writes a primitive value with the correct size for UnsafeArrayData.
-fn write_array_element(buffer: &mut Vec<u8>, data_type: &DataType, value: i64, offset: usize) {
+fn write_array_element(buffer: &mut [u8], data_type: &DataType, value: i64, offset: usize) {
     match data_type {
         DataType::Boolean => {
             buffer[offset] = if value != 0 { 1 } else { 0 };
@@ -921,8 +922,8 @@ fn write_map_data(
     // Get the key and value columns from the entries StructArray.
     // entries.column() returns &ArrayRef, so we clone to get owned ArrayRef
     // for easier manipulation.
-    let keys = entries.column(0).clone();
-    let values = entries.column(1).clone();
+    let keys = Arc::clone(entries.column(0));
+    let values = Arc::clone(entries.column(1));
 
     // Check if the column lengths match. If they don't, we may have an FFI issue
     // where the StructArray's columns weren't properly sliced.
