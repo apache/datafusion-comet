@@ -189,7 +189,6 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Abs.enabled` | Enable Comet acceleration for `Abs` | true |
 | `spark.comet.expression.Acos.enabled` | Enable Comet acceleration for `Acos` | true |
 | `spark.comet.expression.Add.enabled` | Enable Comet acceleration for `Add` | true |
-| `spark.comet.expression.AesEncrypt.enabled` | Enable Comet acceleration for `AesEncrypt` | true |
 | `spark.comet.expression.Alias.enabled` | Enable Comet acceleration for `Alias` | true |
 | `spark.comet.expression.And.enabled` | Enable Comet acceleration for `And` | true |
 | `spark.comet.expression.ArrayAppend.enabled` | Enable Comet acceleration for `ArrayAppend` | true |
