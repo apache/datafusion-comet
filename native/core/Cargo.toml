@@ -131,3 +131,7 @@ harness = false
 [[bench]]
 name = "parquet_decode"
 harness = false
+
+[[bench]]
+name = "struct_conversion"
+harness = false
