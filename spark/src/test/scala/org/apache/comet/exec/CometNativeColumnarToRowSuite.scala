@@ -429,6 +429,50 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
     }
   }
 
+  test("fuzz test with generateNestedSchema") {
+    val random = new Random(42)
+
+    // Use only primitive types supported by native C2R (excludes TimestampNTZType)
+    val supportedPrimitiveTypes: Seq[DataType] = Seq(
+      DataTypes.BooleanType,
+      DataTypes.ByteType,
+      DataTypes.ShortType,
+      DataTypes.IntegerType,
+      DataTypes.LongType,
+      DataTypes.FloatType,
+      DataTypes.DoubleType,
+      DataTypes.createDecimalType(10, 2),
+      DataTypes.DateType,
+      DataTypes.TimestampType,
+      DataTypes.StringType,
+      DataTypes.BinaryType)
+
+    val schemaGenOptions = SchemaGenOptions(
+      generateArray = true,
+      generateStruct = true,
+      generateMap = true,
+      primitiveTypes = supportedPrimitiveTypes)
+    val dataGenOptions =
+      DataGenOptions(generateNegativeZero = false, generateNaN = false, generateInfinity = false)
+
+    // Test with multiple random deeply nested schemas
+    for (iteration <- 1 to 3) {
+      val schema = FuzzDataGenerator.generateNestedSchema(
+        random,
+        numCols = 5,
+        minDepth = 1,
+        maxDepth = 3,
+        options = schemaGenOptions)
+
+      val df = FuzzDataGenerator.generateDataFrame(random, spark, schema, 100, dataGenOptions)
+
+      withParquetDataFrame(df) { parquetDf =>
+        assertNativeC2RPresent(parquetDf)
+        checkSparkAnswer(parquetDf)
+      }
+    }
+  }
+
   /**
    * Helper to create a parquet table from a DataFrame and run a function with it.
    */
