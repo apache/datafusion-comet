@@ -31,7 +31,7 @@ import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCom
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
+import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
@@ -65,10 +65,6 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
 
             if (cmd.partitionColumns.nonEmpty || cmd.staticPartitions.nonEmpty) {
               return Unsupported(Some("Partitioned writes are not supported"))
-            }
-
-            if (cmd.query.output.exists(attr => DataTypeSupport.isComplexType(attr.dataType))) {
-              return Unsupported(Some("Complex types are not supported"))
             }
 
             val codec = parseCompressionCodec(cmd)
