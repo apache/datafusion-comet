@@ -338,6 +338,402 @@ impl<'a> TypedArray<'a> {
     }
 }
 
+/// Pre-downcast element array for list/array types.
+/// This allows direct access to element values without per-row allocation.
+enum TypedElements<'a> {
+    Boolean(&'a BooleanArray),
+    Int8(&'a Int8Array),
+    Int16(&'a Int16Array),
+    Int32(&'a Int32Array),
+    Int64(&'a Int64Array),
+    Float32(&'a Float32Array),
+    Float64(&'a Float64Array),
+    Date32(&'a Date32Array),
+    TimestampMicro(&'a TimestampMicrosecondArray),
+    Decimal128(&'a Decimal128Array, u8),
+    String(&'a StringArray),
+    LargeString(&'a LargeStringArray),
+    Binary(&'a BinaryArray),
+    LargeBinary(&'a LargeBinaryArray),
+    // For nested types, fall back to ArrayRef
+    Other(&'a ArrayRef, DataType),
+}
+
+impl<'a> TypedElements<'a> {
+    /// Create from an ArrayRef and element type.
+    fn from_array(array: &'a ArrayRef, element_type: &DataType) -> Self {
+        match element_type {
+            DataType::Boolean => {
+                if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
+                    return TypedElements::Boolean(arr);
+                }
+            }
+            DataType::Int8 => {
+                if let Some(arr) = array.as_any().downcast_ref::<Int8Array>() {
+                    return TypedElements::Int8(arr);
+                }
+            }
+            DataType::Int16 => {
+                if let Some(arr) = array.as_any().downcast_ref::<Int16Array>() {
+                    return TypedElements::Int16(arr);
+                }
+            }
+            DataType::Int32 => {
+                if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
+                    return TypedElements::Int32(arr);
+                }
+            }
+            DataType::Int64 => {
+                if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
+                    return TypedElements::Int64(arr);
+                }
+            }
+            DataType::Float32 => {
+                if let Some(arr) = array.as_any().downcast_ref::<Float32Array>() {
+                    return TypedElements::Float32(arr);
+                }
+            }
+            DataType::Float64 => {
+                if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
+                    return TypedElements::Float64(arr);
+                }
+            }
+            DataType::Date32 => {
+                if let Some(arr) = array.as_any().downcast_ref::<Date32Array>() {
+                    return TypedElements::Date32(arr);
+                }
+            }
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                if let Some(arr) = array.as_any().downcast_ref::<TimestampMicrosecondArray>() {
+                    return TypedElements::TimestampMicro(arr);
+                }
+            }
+            DataType::Decimal128(p, _) => {
+                if let Some(arr) = array.as_any().downcast_ref::<Decimal128Array>() {
+                    return TypedElements::Decimal128(arr, *p);
+                }
+            }
+            DataType::Utf8 => {
+                if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
+                    return TypedElements::String(arr);
+                }
+            }
+            DataType::LargeUtf8 => {
+                if let Some(arr) = array.as_any().downcast_ref::<LargeStringArray>() {
+                    return TypedElements::LargeString(arr);
+                }
+            }
+            DataType::Binary => {
+                if let Some(arr) = array.as_any().downcast_ref::<BinaryArray>() {
+                    return TypedElements::Binary(arr);
+                }
+            }
+            DataType::LargeBinary => {
+                if let Some(arr) = array.as_any().downcast_ref::<LargeBinaryArray>() {
+                    return TypedElements::LargeBinary(arr);
+                }
+            }
+            _ => {}
+        }
+        TypedElements::Other(array, element_type.clone())
+    }
+
+    /// Get element size for UnsafeArrayData format.
+    fn element_size(&self) -> usize {
+        match self {
+            TypedElements::Boolean(_) => 1,
+            TypedElements::Int8(_) => 1,
+            TypedElements::Int16(_) => 2,
+            TypedElements::Int32(_) | TypedElements::Date32(_) | TypedElements::Float32(_) => 4,
+            TypedElements::Int64(_)
+            | TypedElements::TimestampMicro(_)
+            | TypedElements::Float64(_) => 8,
+            TypedElements::Decimal128(_, p) if *p <= MAX_LONG_DIGITS => 8,
+            _ => 8, // Variable-length uses 8 bytes for offset+length
+        }
+    }
+
+    /// Check if this is a fixed-width primitive type that supports bulk copy.
+    fn supports_bulk_copy(&self) -> bool {
+        matches!(
+            self,
+            TypedElements::Int8(_)
+                | TypedElements::Int16(_)
+                | TypedElements::Int32(_)
+                | TypedElements::Int64(_)
+                | TypedElements::Float32(_)
+                | TypedElements::Float64(_)
+                | TypedElements::Date32(_)
+                | TypedElements::TimestampMicro(_)
+        )
+    }
+
+    /// Write a range of elements to buffer in UnsafeArrayData format.
+    /// Returns the total bytes written (including header).
+    fn write_range_to_buffer(
+        &self,
+        buffer: &mut Vec<u8>,
+        start_idx: usize,
+        num_elements: usize,
+    ) -> CometResult<usize> {
+        let element_size = self.element_size();
+        let array_start = buffer.len();
+        let element_bitset_width = ColumnarToRowContext::calculate_bitset_width(num_elements);
+
+        // Write number of elements
+        buffer.extend_from_slice(&(num_elements as i64).to_le_bytes());
+
+        // Reserve space for null bitset
+        let null_bitset_start = buffer.len();
+        buffer.resize(null_bitset_start + element_bitset_width, 0);
+
+        // Reserve space for element values
+        let elements_start = buffer.len();
+        let elements_total_size = round_up_to_8(num_elements * element_size);
+        buffer.resize(elements_start + elements_total_size, 0);
+
+        // Try bulk copy for primitive types
+        if self.supports_bulk_copy() {
+            self.bulk_copy_range(buffer, null_bitset_start, elements_start, start_idx, num_elements);
+            return Ok(buffer.len() - array_start);
+        }
+
+        // Handle other types element by element
+        self.write_elements_slow(buffer, array_start, null_bitset_start, elements_start, element_size, start_idx, num_elements)
+    }
+
+    /// Bulk copy primitive values from a range.
+    #[inline]
+    fn bulk_copy_range(
+        &self,
+        buffer: &mut [u8],
+        null_bitset_start: usize,
+        elements_start: usize,
+        start_idx: usize,
+        num_elements: usize,
+    ) {
+        macro_rules! bulk_copy_range {
+            ($arr:expr, $elem_size:expr) => {{
+                let values_slice = $arr.values();
+                let byte_len = num_elements * $elem_size;
+                let src_start = start_idx * $elem_size;
+                let src_bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        (values_slice.as_ptr() as *const u8).add(src_start),
+                        byte_len,
+                    )
+                };
+                buffer[elements_start..elements_start + byte_len].copy_from_slice(src_bytes);
+
+                // Set null bits
+                if $arr.null_count() > 0 {
+                    for i in 0..num_elements {
+                        if $arr.is_null(start_idx + i) {
+                            let word_idx = i / 64;
+                            let bit_idx = i % 64;
+                            let word_offset = null_bitset_start + word_idx * 8;
+                            let mut word = i64::from_le_bytes(
+                                buffer[word_offset..word_offset + 8].try_into().unwrap(),
+                            );
+                            word |= 1i64 << bit_idx;
+                            buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
+                        }
+                    }
+                }
+            }};
+        }
+
+        match self {
+            TypedElements::Int8(arr) => bulk_copy_range!(arr, 1),
+            TypedElements::Int16(arr) => bulk_copy_range!(arr, 2),
+            TypedElements::Int32(arr) => bulk_copy_range!(arr, 4),
+            TypedElements::Int64(arr) => bulk_copy_range!(arr, 8),
+            TypedElements::Float32(arr) => bulk_copy_range!(arr, 4),
+            TypedElements::Float64(arr) => bulk_copy_range!(arr, 8),
+            TypedElements::Date32(arr) => bulk_copy_range!(arr, 4),
+            TypedElements::TimestampMicro(arr) => bulk_copy_range!(arr, 8),
+            _ => {} // Should not reach here due to supports_bulk_copy check
+        }
+    }
+
+    /// Slow path for non-bulk-copyable types.
+    fn write_elements_slow(
+        &self,
+        buffer: &mut Vec<u8>,
+        array_start: usize,
+        null_bitset_start: usize,
+        elements_start: usize,
+        element_size: usize,
+        start_idx: usize,
+        num_elements: usize,
+    ) -> CometResult<usize> {
+        match self {
+            TypedElements::Boolean(arr) => {
+                for i in 0..num_elements {
+                    let src_idx = start_idx + i;
+                    if arr.is_null(src_idx) {
+                        set_null_bit(buffer, null_bitset_start, i);
+                    } else {
+                        buffer[elements_start + i] = if arr.value(src_idx) { 1 } else { 0 };
+                    }
+                }
+            }
+            TypedElements::Decimal128(arr, precision) if *precision <= MAX_LONG_DIGITS => {
+                for i in 0..num_elements {
+                    let src_idx = start_idx + i;
+                    if arr.is_null(src_idx) {
+                        set_null_bit(buffer, null_bitset_start, i);
+                    } else {
+                        let slot_offset = elements_start + i * 8;
+                        let value = arr.value(src_idx) as i64;
+                        buffer[slot_offset..slot_offset + 8].copy_from_slice(&value.to_le_bytes());
+                    }
+                }
+            }
+            TypedElements::Decimal128(arr, _) => {
+                // Large decimal - variable length
+                for i in 0..num_elements {
+                    let src_idx = start_idx + i;
+                    if arr.is_null(src_idx) {
+                        set_null_bit(buffer, null_bitset_start, i);
+                    } else {
+                        let bytes = i128_to_spark_decimal_bytes(arr.value(src_idx));
+                        let len = bytes.len();
+                        buffer.extend_from_slice(&bytes);
+                        let padding = round_up_to_8(len) - len;
+                        buffer.extend(std::iter::repeat_n(0u8, padding));
+
+                        let data_offset = buffer.len() - round_up_to_8(len) - array_start;
+                        let offset_and_len = ((data_offset as i64) << 32) | (len as i64);
+                        let slot_offset = elements_start + i * 8;
+                        buffer[slot_offset..slot_offset + 8]
+                            .copy_from_slice(&offset_and_len.to_le_bytes());
+                    }
+                }
+            }
+            TypedElements::String(arr) => {
+                for i in 0..num_elements {
+                    let src_idx = start_idx + i;
+                    if arr.is_null(src_idx) {
+                        set_null_bit(buffer, null_bitset_start, i);
+                    } else {
+                        let bytes = arr.value(src_idx).as_bytes();
+                        let len = bytes.len();
+                        buffer.extend_from_slice(bytes);
+                        let padding = round_up_to_8(len) - len;
+                        buffer.extend(std::iter::repeat_n(0u8, padding));
+
+                        let data_offset = buffer.len() - round_up_to_8(len) - array_start;
+                        let offset_and_len = ((data_offset as i64) << 32) | (len as i64);
+                        let slot_offset = elements_start + i * 8;
+                        buffer[slot_offset..slot_offset + 8]
+                            .copy_from_slice(&offset_and_len.to_le_bytes());
+                    }
+                }
+            }
+            TypedElements::LargeString(arr) => {
+                for i in 0..num_elements {
+                    let src_idx = start_idx + i;
+                    if arr.is_null(src_idx) {
+                        set_null_bit(buffer, null_bitset_start, i);
+                    } else {
+                        let bytes = arr.value(src_idx).as_bytes();
+                        let len = bytes.len();
+                        buffer.extend_from_slice(bytes);
+                        let padding = round_up_to_8(len) - len;
+                        buffer.extend(std::iter::repeat_n(0u8, padding));
+
+                        let data_offset = buffer.len() - round_up_to_8(len) - array_start;
+                        let offset_and_len = ((data_offset as i64) << 32) | (len as i64);
+                        let slot_offset = elements_start + i * 8;
+                        buffer[slot_offset..slot_offset + 8]
+                            .copy_from_slice(&offset_and_len.to_le_bytes());
+                    }
+                }
+            }
+            TypedElements::Binary(arr) => {
+                for i in 0..num_elements {
+                    let src_idx = start_idx + i;
+                    if arr.is_null(src_idx) {
+                        set_null_bit(buffer, null_bitset_start, i);
+                    } else {
+                        let bytes = arr.value(src_idx);
+                        let len = bytes.len();
+                        buffer.extend_from_slice(bytes);
+                        let padding = round_up_to_8(len) - len;
+                        buffer.extend(std::iter::repeat_n(0u8, padding));
+
+                        let data_offset = buffer.len() - round_up_to_8(len) - array_start;
+                        let offset_and_len = ((data_offset as i64) << 32) | (len as i64);
+                        let slot_offset = elements_start + i * 8;
+                        buffer[slot_offset..slot_offset + 8]
+                            .copy_from_slice(&offset_and_len.to_le_bytes());
+                    }
+                }
+            }
+            TypedElements::LargeBinary(arr) => {
+                for i in 0..num_elements {
+                    let src_idx = start_idx + i;
+                    if arr.is_null(src_idx) {
+                        set_null_bit(buffer, null_bitset_start, i);
+                    } else {
+                        let bytes = arr.value(src_idx);
+                        let len = bytes.len();
+                        buffer.extend_from_slice(bytes);
+                        let padding = round_up_to_8(len) - len;
+                        buffer.extend(std::iter::repeat_n(0u8, padding));
+
+                        let data_offset = buffer.len() - round_up_to_8(len) - array_start;
+                        let offset_and_len = ((data_offset as i64) << 32) | (len as i64);
+                        let slot_offset = elements_start + i * 8;
+                        buffer[slot_offset..slot_offset + 8]
+                            .copy_from_slice(&offset_and_len.to_le_bytes());
+                    }
+                }
+            }
+            TypedElements::Other(arr, element_type) => {
+                // Fall back to old method for nested types
+                for i in 0..num_elements {
+                    let src_idx = start_idx + i;
+                    if arr.is_null(src_idx) {
+                        set_null_bit(buffer, null_bitset_start, i);
+                    } else {
+                        let slot_offset = elements_start + i * element_size;
+                        let var_len =
+                            write_nested_variable_to_buffer(buffer, element_type, arr, src_idx, array_start)?;
+
+                        if var_len > 0 {
+                            let padded_len = round_up_to_8(var_len);
+                            let data_offset = buffer.len() - padded_len - array_start;
+                            let offset_and_len = ((data_offset as i64) << 32) | (var_len as i64);
+                            buffer[slot_offset..slot_offset + 8]
+                                .copy_from_slice(&offset_and_len.to_le_bytes());
+                        } else {
+                            let value = get_field_value(element_type, arr, src_idx)?;
+                            write_array_element(buffer, element_type, value, slot_offset);
+                        }
+                    }
+                }
+            }
+            _ => {
+                // Should not reach here - all cases covered above
+            }
+        }
+        Ok(buffer.len() - array_start)
+    }
+}
+
+/// Helper to set a null bit in the buffer.
+#[inline]
+fn set_null_bit(buffer: &mut [u8], null_bitset_start: usize, idx: usize) {
+    let word_idx = idx / 64;
+    let bit_idx = idx % 64;
+    let word_offset = null_bitset_start + word_idx * 8;
+    let mut word = i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
+    word |= 1i64 << bit_idx;
+    buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
+}
+
 /// Check if a data type is fixed-width for UnsafeRow purposes.
 /// Fixed-width types are stored directly in the 8-byte field slot.
 #[inline]
@@ -1394,6 +1790,8 @@ fn write_struct_to_buffer(
 
 /// Writes a list value directly to the buffer in UnsafeArrayData format.
 /// Returns the unpadded length written.
+///
+/// This uses offsets directly to avoid per-row ArrayRef allocation.
 #[inline]
 fn write_list_to_buffer(
     buffer: &mut Vec<u8>,
@@ -1401,12 +1799,25 @@ fn write_list_to_buffer(
     row_idx: usize,
     element_field: &arrow::datatypes::FieldRef,
 ) -> CometResult<usize> {
-    let values = list_array.value(row_idx);
-    write_array_data_to_buffer(buffer, &values, element_field.data_type())
+    // Get offsets directly to avoid creating a sliced ArrayRef
+    let offsets = list_array.value_offsets();
+    let start_offset = offsets[row_idx] as usize;
+    let end_offset = offsets[row_idx + 1] as usize;
+    let num_elements = end_offset - start_offset;
+
+    // Pre-downcast the element array once
+    let element_array = list_array.values();
+    let element_type = element_field.data_type();
+    let typed_elements = TypedElements::from_array(element_array, element_type);
+
+    // Write the range of elements
+    typed_elements.write_range_to_buffer(buffer, start_offset, num_elements)
 }
 
 /// Writes a large list value directly to the buffer in UnsafeArrayData format.
 /// Returns the unpadded length written.
+///
+/// This uses offsets directly to avoid per-row ArrayRef allocation.
 #[inline]
 fn write_large_list_to_buffer(
     buffer: &mut Vec<u8>,
@@ -1414,8 +1825,19 @@ fn write_large_list_to_buffer(
     row_idx: usize,
     element_field: &arrow::datatypes::FieldRef,
 ) -> CometResult<usize> {
-    let values = list_array.value(row_idx);
-    write_array_data_to_buffer(buffer, &values, element_field.data_type())
+    // Get offsets directly to avoid creating a sliced ArrayRef
+    let offsets = list_array.value_offsets();
+    let start_offset = offsets[row_idx] as usize;
+    let end_offset = offsets[row_idx + 1] as usize;
+    let num_elements = end_offset - start_offset;
+
+    // Pre-downcast the element array once
+    let element_array = list_array.values();
+    let element_type = element_field.data_type();
+    let typed_elements = TypedElements::from_array(element_array, element_type);
+
+    // Write the range of elements
+    typed_elements.write_range_to_buffer(buffer, start_offset, num_elements)
 }
 
 /// Bulk copy primitive array values to buffer, handling nulls.
@@ -1583,6 +2005,8 @@ fn write_array_data_to_buffer(
 
 /// Writes a map value directly to the buffer in UnsafeMapData format.
 /// Returns the unpadded length written.
+///
+/// This uses offsets directly to avoid per-row ArrayRef allocation.
 fn write_map_to_buffer(
     buffer: &mut Vec<u8>,
     map_array: &MapArray,
@@ -1593,20 +2017,16 @@ fn write_map_to_buffer(
     // [key array size: 8 bytes][key array data][value array data]
     let map_start = buffer.len();
 
-    let entries = map_array.value(row_idx);
-    let num_entries = entries.len();
+    // Get offsets directly to avoid creating a sliced ArrayRef
+    let offsets = map_array.value_offsets();
+    let start_offset = offsets[row_idx] as usize;
+    let end_offset = offsets[row_idx + 1] as usize;
+    let num_entries = end_offset - start_offset;
 
-    let keys = Arc::clone(entries.column(0));
-    let values = Arc::clone(entries.column(1));
-
-    if keys.len() != num_entries || values.len() != num_entries {
-        return Err(CometError::Internal(format!(
-            "Map entries column length mismatch: entries.len()={}, keys.len()={}, values.len()={}",
-            num_entries,
-            keys.len(),
-            values.len()
-        )));
-    }
+    // Get keys and values from the underlying entries struct
+    let entries_array = map_array.entries();
+    let keys = entries_array.column(0);
+    let values = entries_array.column(1);
 
     let (key_type, value_type) = if let DataType::Struct(fields) = entries_field.data_type() {
         (fields[0].data_type().clone(), fields[1].data_type().clone())
@@ -1617,19 +2037,22 @@ fn write_map_to_buffer(
         )));
     };
 
+    // Pre-downcast keys and values once
+    let typed_keys = TypedElements::from_array(keys, &key_type);
+    let typed_values = TypedElements::from_array(values, &value_type);
+
     // Placeholder for key array size
     let key_size_offset = buffer.len();
     buffer.extend_from_slice(&0i64.to_le_bytes());
 
-    // Write key array directly
+    // Write key array using range
     let key_array_start = buffer.len();
-    write_array_data_to_buffer_for_map(buffer, &keys, &key_type, key_array_start, false)?;
+    typed_keys.write_range_to_buffer(buffer, start_offset, num_entries)?;
     let key_array_size = (buffer.len() - key_array_start) as i64;
     buffer[key_size_offset..key_size_offset + 8].copy_from_slice(&key_array_size.to_le_bytes());
 
-    // Write value array directly
-    let value_array_start = buffer.len();
-    write_array_data_to_buffer_for_map(buffer, &values, &value_type, value_array_start, true)?;
+    // Write value array using range
+    typed_values.write_range_to_buffer(buffer, start_offset, num_entries)?;
 
     Ok(buffer.len() - map_start)
 }
