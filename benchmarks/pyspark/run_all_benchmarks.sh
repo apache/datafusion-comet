@@ -90,15 +90,19 @@ run_comet_benchmark() {
 
 # Run Comet JVM shuffle with native writes
 run_comet_benchmark jvm shuffle-hash-native-write
+run_comet_benchmark jvm shuffle-roundrobin-native-write
 
 # Run Comet JVM shuffle with Spark writes
 run_comet_benchmark jvm shuffle-hash-spark-write
+run_comet_benchmark jvm shuffle-roundrobin-spark-write
 
 # Run Comet Native shuffle with native writes
 run_comet_benchmark native shuffle-hash-native-write
+run_comet_benchmark native shuffle-roundrobin-native-write
 
 # Run Comet Native shuffle with Spark writes
 run_comet_benchmark native shuffle-hash-spark-write
+run_comet_benchmark native shuffle-roundrobin-spark-write
 
 echo ""
 echo "========================================"
