@@ -765,7 +765,7 @@ impl MultiPartitionShuffleRepartitioner {
     }
 
     fn spill(&mut self) -> Result<()> {
-        log::debug!(
+        log::info!(
             "ShuffleRepartitioner spilling shuffle data of {} to disk while inserting ({} time(s) so far)",
             self.used(),
             self.spill_count()

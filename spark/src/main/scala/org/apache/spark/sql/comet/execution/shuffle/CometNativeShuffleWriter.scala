@@ -132,6 +132,14 @@ class CometNativeShuffleWriter[K, V](
     metricsReporter.incRecordsWritten(metricsOutputRows.value)
     metricsReporter.incWriteTime(metricsWriteTime.value)
 
+    // Report spill metrics to Spark's task metrics so they appear in
+    // Spark UI task summaries (not just SQL metrics)
+    val spilledBytes = nativeSQLMetrics.get("spilled_bytes").map(_.value).getOrElse(0L)
+    if (spilledBytes > 0) {
+      context.taskMetrics().incMemoryBytesSpilled(spilledBytes)
+      context.taskMetrics().incDiskBytesSpilled(spilledBytes)
+    }
+
     // commit
     shuffleBlockResolver.writeMetadataFileAndCommit(
       shuffleId,

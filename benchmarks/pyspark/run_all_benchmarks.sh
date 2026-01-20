@@ -25,7 +25,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_PATH="${1:-/tmp/shuffle-benchmark-data}"
-COMET_JAR="${COMET_JAR:-$SCRIPT_DIR/../spark/target/comet-spark-spark3.5_2.12-0.13.0-SNAPSHOT.jar}"
+COMET_JAR="${COMET_JAR:-$SCRIPT_DIR/../../spark/target/comet-spark-spark3.5_2.12-0.13.0-SNAPSHOT.jar}"
 SPARK_MASTER="${SPARK_MASTER:-local[*]}"
 EXECUTOR_MEMORY="${EXECUTOR_MEMORY:-16g}"
 EVENT_LOG_DIR="${EVENT_LOG_DIR:-/tmp/spark-events}"
@@ -71,8 +71,10 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.memory.offHeap.enabled=true \
   --conf spark.memory.offHeap.size=16g \
   --conf spark.comet.enabled=true \
-  --conf spark.comet.exec.enabled=true \
-  --conf spark.comet.exec.shuffle.enabled=true \
+  --conf spark.comet.operator.DataWritingCommandExec.allowIncompatible=true \
+  --conf spark.comet.parquet.write.enabled=true \
+  --conf spark.comet.logFallbackReasons.enabled=true \
+  --conf spark.comet.explainFallback.enabled=true \
   --conf spark.comet.shuffle.mode=jvm \
   --conf spark.comet.exec.shuffle.mode=jvm \
   --conf spark.comet.exec.replaceSortMergeJoin=true \
@@ -97,8 +99,10 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.memory.offHeap.enabled=true \
   --conf spark.memory.offHeap.size=16g \
   --conf spark.comet.enabled=true \
-  --conf spark.comet.exec.enabled=true \
-  --conf spark.comet.exec.shuffle.enabled=true \
+  --conf spark.comet.operator.DataWritingCommandExec.allowIncompatible=true \
+  --conf spark.comet.parquet.write.enabled=true \
+  --conf spark.comet.logFallbackReasons.enabled=true \
+  --conf spark.comet.explainFallback.enabled=true \
   --conf spark.comet.exec.shuffle.mode=native \
   --conf spark.comet.exec.replaceSortMergeJoin=true \
   --conf spark.comet.native.shuffle.partitioning.roundrobin.enabled=true \

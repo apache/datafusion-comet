@@ -126,20 +126,7 @@ case class CometIcebergNativeScanExec(
 
   override lazy val metrics: Map[String, SQLMetric] = {
     val baseMetrics = Map(
-      "output_rows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
-      "time_elapsed_opening" -> SQLMetrics.createNanoTimingMetric(
-        sparkContext,
-        "Wall clock time elapsed for file opening"),
-      "time_elapsed_scanning_until_data" -> SQLMetrics.createNanoTimingMetric(
-        sparkContext,
-        "Wall clock time elapsed for file scanning + " +
-          "first record batch of decompression + decoding"),
-      "time_elapsed_scanning_total" -> SQLMetrics.createNanoTimingMetric(
-        sparkContext,
-        "Total elapsed wall clock time for scanning + record batch decompression / decoding"),
-      "time_elapsed_processing" -> SQLMetrics.createNanoTimingMetric(
-        sparkContext,
-        "Wall clock time elapsed for data decompression + decoding"))
+      "output_rows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
     // Create IMMUTABLE metrics with captured values AND types
     // these won't be affected by accumulator merges

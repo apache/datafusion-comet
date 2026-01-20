@@ -236,6 +236,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.CreateArray.enabled` | Enable Comet acceleration for `CreateArray` | true |
 | `spark.comet.expression.CreateNamedStruct.enabled` | Enable Comet acceleration for `CreateNamedStruct` | true |
 | `spark.comet.expression.DateAdd.enabled` | Enable Comet acceleration for `DateAdd` | true |
+| `spark.comet.expression.DateFormatClass.enabled` | Enable Comet acceleration for `DateFormatClass` | true |
 | `spark.comet.expression.DateSub.enabled` | Enable Comet acceleration for `DateSub` | true |
 | `spark.comet.expression.DayOfMonth.enabled` | Enable Comet acceleration for `DayOfMonth` | true |
 | `spark.comet.expression.DayOfWeek.enabled` | Enable Comet acceleration for `DayOfWeek` | true |
@@ -335,6 +336,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.TruncTimestamp.enabled` | Enable Comet acceleration for `TruncTimestamp` | true |
 | `spark.comet.expression.UnaryMinus.enabled` | Enable Comet acceleration for `UnaryMinus` | true |
 | `spark.comet.expression.Unhex.enabled` | Enable Comet acceleration for `Unhex` | true |
+| `spark.comet.expression.UnixDate.enabled` | Enable Comet acceleration for `UnixDate` | true |
 | `spark.comet.expression.UnscaledValue.enabled` | Enable Comet acceleration for `UnscaledValue` | true |
 | `spark.comet.expression.Upper.enabled` | Enable Comet acceleration for `Upper` | true |
 | `spark.comet.expression.WeekDay.enabled` | Enable Comet acceleration for `WeekDay` | true |
