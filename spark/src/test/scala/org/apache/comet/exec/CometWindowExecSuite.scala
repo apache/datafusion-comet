@@ -423,7 +423,7 @@ class CometWindowExecSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         """
         SELECT a, b, c,
-          COUNT(*) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as cnt
+          COUNT(*) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as cnt
         FROM window_test
         """,
         "Partition expressions must be a subset of order expressions for native window")
@@ -445,7 +445,7 @@ class CometWindowExecSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         """
         SELECT a, b, c,
-          SUM(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) as sum_c
+          SUM(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) as sum_c
         FROM window_test
         """,
         "Partition expressions must be a subset of order expressions for native window")
@@ -467,7 +467,7 @@ class CometWindowExecSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         """
         SELECT a, b, c,
-          AVG(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) as avg_c
+          AVG(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) as avg_c
         FROM window_test
         """,
         "Partition expressions must be a subset of order expressions for native window")
@@ -489,7 +489,7 @@ class CometWindowExecSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         """
         SELECT a, b, c,
-          SUM(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) as sum_c
+          SUM(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) as sum_c
         FROM window_test
         """,
         "Partition expressions must be a subset of order expressions for native window")
@@ -511,7 +511,7 @@ class CometWindowExecSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         """
         SELECT a, b, c,
-          COUNT(*) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN CURRENT ROW AND 2 FOLLOWING) as cnt
+          COUNT(*) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN CURRENT ROW AND 2 FOLLOWING) as cnt
         FROM window_test
         """,
         "Partition expressions must be a subset of order expressions for native window")
@@ -533,7 +533,7 @@ class CometWindowExecSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         """
         SELECT a, b, c,
-          MAX(c) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as max_c
+          MAX(c) OVER (PARTITION BY a ORDER BY b, c ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as max_c
         FROM window_test
         """,
         "Partition expressions must be a subset of order expressions for native window")
@@ -882,7 +882,7 @@ class CometWindowExecSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         """
         SELECT a, b, c,
-          SUM(c) OVER (PARTITION BY a ORDER BY b DESC) as sum_c_desc
+          SUM(c) OVER (PARTITION BY a ORDER BY b DESC, c DESC) as sum_c_desc
         FROM window_test
         """,
         "Partition expressions must be a subset of order expressions for native window")
@@ -904,7 +904,7 @@ class CometWindowExecSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         """
         SELECT a, b, d, c,
-          SUM(c) OVER (PARTITION BY a, b ORDER BY d) as sum_c
+          SUM(c) OVER (PARTITION BY a, b ORDER BY d, c) as sum_c
         FROM window_test
         """,
         "Partition expressions must be a subset of order expressions for native window")
@@ -948,7 +948,7 @@ class CometWindowExecSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         """
         SELECT a, b, c,
-          SUM(c) OVER (PARTITION BY a ORDER BY b RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) as sum_c
+          SUM(c) OVER (PARTITION BY a ORDER BY b, c RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) as sum_c
         FROM window_test
         """,
         "Partition expressions must be a subset of order expressions for native window")
@@ -970,7 +970,7 @@ class CometWindowExecSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         """
         SELECT a, b, c,
-          SUM(c) OVER (PARTITION BY a ORDER BY b RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as sum_c
+          SUM(c) OVER (PARTITION BY a ORDER BY b, c RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as sum_c
         FROM window_test
         """,
         "Partition expressions must be a subset of order expressions for native window")
