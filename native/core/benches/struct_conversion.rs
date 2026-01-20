@@ -26,7 +26,6 @@ use comet::execution::shuffle::row::{
 };
 use comet::execution::shuffle::CompressionCodec;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use std::sync::Arc;
 use tempfile::Builder;
 
 const BATCH_SIZE: usize = 5000;
@@ -103,7 +102,7 @@ fn benchmark_struct_conversion(c: &mut Criterion) {
             // Create row data
             let rows: Vec<RowData> = (0..num_rows).map(|_| RowData::new(num_fields)).collect();
 
-            let mut spark_rows: Vec<SparkUnsafeRow> = rows
+            let spark_rows: Vec<SparkUnsafeRow> = rows
                 .iter()
                 .map(|row_data| {
                     let mut spark_row = SparkUnsafeRow::new_with_num_fields(1);
@@ -114,14 +113,9 @@ fn benchmark_struct_conversion(c: &mut Criterion) {
                 })
                 .collect();
 
-            let mut row_addresses: Vec<i64> = spark_rows
-                .iter()
-                .map(|row| row.get_row_addr())
-                .collect();
-            let mut row_sizes: Vec<i32> = spark_rows
-                .iter()
-                .map(|row| row.get_row_size())
-                .collect();
+            let mut row_addresses: Vec<i64> =
+                spark_rows.iter().map(|row| row.get_row_addr()).collect();
+            let mut row_sizes: Vec<i32> = spark_rows.iter().map(|row| row.get_row_size()).collect();
 
             let row_address_ptr = row_addresses.as_mut_ptr();
             let row_size_ptr = row_sizes.as_mut_ptr();
