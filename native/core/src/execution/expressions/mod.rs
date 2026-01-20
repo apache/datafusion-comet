@@ -22,6 +22,7 @@ pub mod bitwise;
 pub mod comparison;
 pub mod logical;
 pub mod nullcheck;
+pub mod strings;
 pub mod subquery;
 
 pub use datafusion_comet_spark_expr::EvalMode;

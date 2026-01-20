@@ -27,11 +27,17 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   pull_request:
     paths-ignore:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -57,11 +63,9 @@ jobs:
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.13"
 
-            # TODO fails with OOM
-            # https://github.com/apache/datafusion-comet/issues/1949
-#          - name: "Spark 4.0, JDK 17, Scala 2.13"
-#            java_version: "17"
-#            maven_opts: "-Pspark-4.0 -Pscala-2.13"
+          - name: "Spark 4.0, JDK 17, Scala 2.13"
+            java_version: "17"
+            maven_opts: "-Pspark-4.0 -Pscala-2.13"
 
         suite:
           - name: "fuzz"
@@ -81,6 +85,7 @@ jobs:
               org.apache.comet.exec.CometAsyncShuffleSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
               org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
+              org.apache.spark.shuffle.sort.SpillSorterSuite
           - name: "parquet"
             value: |
               org.apache.comet.parquet.CometParquetWriterSuite
@@ -119,6 +124,7 @@ jobs:
             value: |
               org.apache.comet.CometExpressionSuite
               org.apache.comet.CometExpressionCoverageSuite
+              org.apache.comet.CometHashExpressionSuite
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
               org.apache.comet.CometCastSuite
@@ -126,12 +132,14 @@ jobs:
               org.apache.comet.CometStringExpressionSuite
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
+              org.apache.comet.CometJsonExpressionSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
           - name: "sql"
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite
+
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
@@ -144,6 +152,14 @@ jobs:
           jdk-version: ${{ matrix.profile.java_version }}
           jdk-architecture: aarch64
           protoc-architecture: aarch_64
+      - name: Set thread thresholds envs for spark test on macOS
+        # see: https://github.com/apache/datafusion-comet/issues/2965
+        shell: bash
+        run: |
+          echo "SPARK_TEST_SQL_SHUFFLE_EXCHANGE_MAX_THREAD_THRESHOLD=256" >> $GITHUB_ENV
+          echo "SPARK_TEST_SQL_RESULT_QUERY_STAGE_MAX_THREAD_THRESHOLD=256" >> $GITHUB_ENV
+          echo "SPARK_TEST_HIVE_SHUFFLE_EXCHANGE_MAX_THREAD_THRESHOLD=48" >> $GITHUB_ENV
+          echo "SPARK_TEST_HIVE_RESULT_QUERY_STAGE_MAX_THREAD_THRESHOLD=48" >> $GITHUB_ENV
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:

@@ -137,6 +137,8 @@ struct ExecutionContext {
     pub metrics_update_interval: Option<Duration>,
     // The last update time of metrics
     pub metrics_last_update_time: Instant,
+    /// Counter to avoid checking time on every poll iteration (reduces syscalls)
+    pub poll_count_since_metrics_check: u32,
     /// The time it took to create the native plan and configure the context
     pub plan_creation_time: Duration,
     /// DataFusion SessionContext
@@ -173,6 +175,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     memory_limit: jlong,
     memory_limit_per_task: jlong,
     task_attempt_id: jlong,
+    task_cpus: jlong,
     key_unwrapper_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
@@ -240,6 +243,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 memory_pool,
                 local_dirs_vec,
                 max_temp_directory_size,
+                task_cpus as usize,
             )?;
 
             let plan_creation_time = start.elapsed();
@@ -273,6 +277,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 metrics,
                 metrics_update_interval,
                 metrics_last_update_time: Instant::now(),
+                poll_count_since_metrics_check: 0,
                 plan_creation_time,
                 session_ctx: Arc::new(session),
                 debug_native,
@@ -292,6 +297,7 @@ fn prepare_datafusion_session_context(
     memory_pool: Arc<dyn MemoryPool>,
     local_dirs: Vec<String>,
     max_temp_directory_size: u64,
+    task_cpus: usize,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
     let disk_manager = DiskManagerBuilder::default()
@@ -304,6 +310,10 @@ fn prepare_datafusion_session_context(
     // can be configured in Comet Spark JVM using Spark --conf parameters
     // e.g: spark-shell --conf spark.datafusion.sql_parser.parse_float_as_decimal=true
     let session_config = SessionConfig::new()
+        .with_target_partitions(task_cpus)
+        // This DataFusion context is within the scope of an executing Spark Task. We want to set
+        // its internal parallelism to the number of CPUs allocated to Spark Tasks. This can be
+        // modified by changing spark.task.cpus in the Spark config.
         .with_batch_size(batch_size)
         // DataFusion partial aggregates can emit duplicate rows so we disable the
         // skip partial aggregation feature because this is not compatible with Spark's
@@ -505,60 +515,81 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 pull_input_batches(exec_context)?;
             }
 
-            loop {
-                // Polling the stream.
-                let next_item = exec_context.stream.as_mut().unwrap().next();
-                let poll_output = get_runtime().block_on(async { poll!(next_item) });
+            // Enter the runtime once for the entire polling loop to avoid repeated
+            // Runtime::enter() overhead
+            get_runtime().block_on(async {
+                loop {
+                    // Polling the stream.
+                    let next_item = exec_context.stream.as_mut().unwrap().next();
+                    let poll_output = poll!(next_item);
 
-                // update metrics at interval
-                if let Some(interval) = exec_context.metrics_update_interval {
-                    let now = Instant::now();
-                    if now - exec_context.metrics_last_update_time >= interval {
-                        update_metrics(&mut env, exec_context)?;
-                        exec_context.metrics_last_update_time = now;
-                    }
-                }
-
-                match poll_output {
-                    Poll::Ready(Some(output)) => {
-                        // prepare output for FFI transfer
-                        return prepare_output(
-                            &mut env,
-                            array_addrs,
-                            schema_addrs,
-                            output?,
-                            exec_context.debug_native,
-                        );
-                    }
-                    Poll::Ready(None) => {
-                        // Reaches EOF of output.
-                        if exec_context.explain_native {
-                            if let Some(plan) = &exec_context.root_op {
-                                let formatted_plan_str = DisplayableExecutionPlan::with_metrics(
-                                    plan.native_plan.as_ref(),
-                                )
-                                .indent(true);
-                                info!(
-                                    "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
-                                \n plan creation took {:?}:\
-                                \n{formatted_plan_str:}",
-                                    plan.plan_id, stage_id, partition, exec_context.plan_creation_time
-                                );
+                    // update metrics at interval
+                    // Only check time every 100 polls to reduce syscall overhead
+                    if let Some(interval) = exec_context.metrics_update_interval {
+                        exec_context.poll_count_since_metrics_check += 1;
+                        if exec_context.poll_count_since_metrics_check >= 100 {
+                            let now = Instant::now();
+                            if now - exec_context.metrics_last_update_time >= interval {
+                                update_metrics(&mut env, exec_context)?;
+                                exec_context.metrics_last_update_time = now;
                             }
+                            exec_context.poll_count_since_metrics_check = 0;
                         }
-                        return Ok(-1);
                     }
-                    // A poll pending means there are more than one blocking operators,
-                    // we don't need go back-forth between JVM/Native. Just keeping polling.
-                    Poll::Pending => {
-                        // Pull input batches
-                        pull_input_batches(exec_context)?;
 
-                        // Output not ready yet
-                        continue;
+                    match poll_output {
+                        Poll::Ready(Some(output)) => {
+                            // prepare output for FFI transfer
+                            return prepare_output(
+                                &mut env,
+                                array_addrs,
+                                schema_addrs,
+                                output?,
+                                exec_context.debug_native,
+                            );
+                        }
+                        Poll::Ready(None) => {
+                            // Reaches EOF of output.
+                            if exec_context.explain_native {
+                                if let Some(plan) = &exec_context.root_op {
+                                    let formatted_plan_str = DisplayableExecutionPlan::with_metrics(
+                                        plan.native_plan.as_ref(),
+                                    )
+                                    .indent(true);
+                                    info!(
+                                        "Comet native query plan with metrics (Plan #{} Stage {} Partition {}):\
+                                    \n plan creation took {:?}:\
+                                    \n{formatted_plan_str:}",
+                                        plan.plan_id, stage_id, partition, exec_context.plan_creation_time
+                                    );
+                                }
+                            }
+                            return Ok(-1);
+                        }
+                        // A poll pending means the stream is not ready yet.
+                        Poll::Pending => {
+                            if exec_context.scans.is_empty() {
+                                // Pure async I/O (e.g., IcebergScanExec, DataSourceExec)
+                                // Yield to let the executor drive I/O instead of busy-polling
+                                tokio::task::yield_now().await;
+                            } else {
+                                // Has ScanExec operators
+                                // Busy-poll to pull batches from JVM
+                                // TODO: Investigate if JNI calls are safe without block_in_place.
+                                // block_in_place prevents Tokio from migrating this task to another thread,
+                                // which is necessary because JNI env is thread-local. If we can guarantee
+                                // thread safety another way, we could remove this wrapper for better perf.
+                                tokio::task::block_in_place(|| {
+                                    pull_input_batches(exec_context)
+                                })?;
+                            }
+
+                            // Output not ready yet
+                            continue;
+                        }
                     }
                 }
-            }
+            })
         })
     })
 }

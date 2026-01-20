@@ -27,11 +27,17 @@ on:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   pull_request:
     paths-ignore:
       - "doc/**"
       - "docs/**"
       - "**.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
   # manual trigger
   # https://docs.github.com/en/actions/managing-workflow-runs/manually-running-a-workflow
   workflow_dispatch:
@@ -116,6 +122,7 @@ jobs:
               org.apache.comet.exec.CometAsyncShuffleSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
               org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
+              org.apache.spark.shuffle.sort.SpillSorterSuite
           - name: "parquet"
             value: |
               org.apache.comet.parquet.CometParquetWriterSuite
@@ -154,6 +161,7 @@ jobs:
             value: |
               org.apache.comet.CometExpressionSuite
               org.apache.comet.CometExpressionCoverageSuite
+              org.apache.comet.CometHashExpressionSuite
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
               org.apache.comet.CometCastSuite
@@ -161,6 +169,7 @@ jobs:
               org.apache.comet.CometStringExpressionSuite
               org.apache.comet.CometBitwiseExpressionSuite
               org.apache.comet.CometMapExpressionSuite
+              org.apache.comet.CometJsonExpressionSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
