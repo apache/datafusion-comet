@@ -62,6 +62,8 @@ pub struct IcebergScanExec {
     file_task_groups: Vec<Vec<iceberg::scan::FileScanTask>>,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
+    /// Optional master key ID for encrypted Iceberg table
+    table_master_key: Option<String>,
 }
 
 impl IcebergScanExec {
@@ -70,6 +72,7 @@ impl IcebergScanExec {
         schema: SchemaRef,
         catalog_properties: HashMap<String, String>,
         file_task_groups: Vec<Vec<iceberg::scan::FileScanTask>>,
+        table_master_key: Option<String>,
     ) -> Result<Self, ExecutionError> {
         let output_schema = schema;
         let num_partitions = file_task_groups.len();
@@ -84,6 +87,7 @@ impl IcebergScanExec {
             catalog_properties,
             file_task_groups,
             metrics,
+            table_master_key,
         })
     }
 
@@ -166,6 +170,7 @@ impl IcebergScanExec {
 
         let task_stream = futures::stream::iter(tasks.into_iter().map(Ok)).boxed();
 
+        // TODO: pass table master key to Iceberg Rust ArrowReaderBuilder
         let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io)
             .with_batch_size(batch_size)
             .with_data_file_concurrency_limit(context.session_config().target_partitions())
