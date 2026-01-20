@@ -207,7 +207,20 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
         w.child
 
       case op: DataWritingCommandExec =>
-        convertToComet(op, CometDataWritingCommand).getOrElse(op)
+        // Get the actual data source child that will feed data to the native writer
+        val dataSourceChild = op.child match {
+          case writeFiles: WriteFilesExec => writeFiles.child
+          case other => other
+        }
+        // Only convert to native write if the data source produces Arrow data.
+        // If it's a Spark scan (not CometNativeExec), the native writer will fail at runtime
+        // because it expects Arrow arrays but will receive OnHeapColumnVector.
+        if (dataSourceChild.isInstanceOf[CometNativeExec]) {
+          convertToComet(op, CometDataWritingCommand).getOrElse(op)
+        } else {
+          withInfo(op, "Cannot perform native write because input is not in Arrow format")
+          op
+        }
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
