@@ -468,6 +468,121 @@ impl<'a> TypedElements<'a> {
         )
     }
 
+    /// Check if value at given index is null.
+    #[inline]
+    fn is_null_at(&self, idx: usize) -> bool {
+        match self {
+            TypedElements::Boolean(arr) => arr.is_null(idx),
+            TypedElements::Int8(arr) => arr.is_null(idx),
+            TypedElements::Int16(arr) => arr.is_null(idx),
+            TypedElements::Int32(arr) => arr.is_null(idx),
+            TypedElements::Int64(arr) => arr.is_null(idx),
+            TypedElements::Float32(arr) => arr.is_null(idx),
+            TypedElements::Float64(arr) => arr.is_null(idx),
+            TypedElements::Date32(arr) => arr.is_null(idx),
+            TypedElements::TimestampMicro(arr) => arr.is_null(idx),
+            TypedElements::Decimal128(arr, _) => arr.is_null(idx),
+            TypedElements::String(arr) => arr.is_null(idx),
+            TypedElements::LargeString(arr) => arr.is_null(idx),
+            TypedElements::Binary(arr) => arr.is_null(idx),
+            TypedElements::LargeBinary(arr) => arr.is_null(idx),
+            TypedElements::Other(arr, _) => arr.is_null(idx),
+        }
+    }
+
+    /// Check if this is a fixed-width type (value fits in 8-byte slot).
+    #[inline]
+    fn is_fixed_width(&self) -> bool {
+        match self {
+            TypedElements::Boolean(_)
+            | TypedElements::Int8(_)
+            | TypedElements::Int16(_)
+            | TypedElements::Int32(_)
+            | TypedElements::Int64(_)
+            | TypedElements::Float32(_)
+            | TypedElements::Float64(_)
+            | TypedElements::Date32(_)
+            | TypedElements::TimestampMicro(_) => true,
+            TypedElements::Decimal128(_, p) => *p <= MAX_LONG_DIGITS,
+            _ => false,
+        }
+    }
+
+    /// Get fixed-width value as i64 for the 8-byte field slot.
+    #[inline]
+    fn get_fixed_value(&self, idx: usize) -> i64 {
+        match self {
+            TypedElements::Boolean(arr) => {
+                if arr.value(idx) { 1 } else { 0 }
+            }
+            TypedElements::Int8(arr) => arr.value(idx) as i64,
+            TypedElements::Int16(arr) => arr.value(idx) as i64,
+            TypedElements::Int32(arr) => arr.value(idx) as i64,
+            TypedElements::Int64(arr) => arr.value(idx),
+            TypedElements::Float32(arr) => (arr.value(idx).to_bits() as i32) as i64,
+            TypedElements::Float64(arr) => arr.value(idx).to_bits() as i64,
+            TypedElements::Date32(arr) => arr.value(idx) as i64,
+            TypedElements::TimestampMicro(arr) => arr.value(idx),
+            TypedElements::Decimal128(arr, _) => arr.value(idx) as i64,
+            _ => 0, // Should not be called for variable-length types
+        }
+    }
+
+    /// Write variable-length data to buffer. Returns length written (0 for fixed-width).
+    fn write_variable_value(
+        &self,
+        buffer: &mut Vec<u8>,
+        idx: usize,
+        base_offset: usize,
+    ) -> CometResult<usize> {
+        match self {
+            TypedElements::String(arr) => {
+                let bytes = arr.value(idx).as_bytes();
+                let len = bytes.len();
+                buffer.extend_from_slice(bytes);
+                let padding = round_up_to_8(len) - len;
+                buffer.extend(std::iter::repeat_n(0u8, padding));
+                Ok(len)
+            }
+            TypedElements::LargeString(arr) => {
+                let bytes = arr.value(idx).as_bytes();
+                let len = bytes.len();
+                buffer.extend_from_slice(bytes);
+                let padding = round_up_to_8(len) - len;
+                buffer.extend(std::iter::repeat_n(0u8, padding));
+                Ok(len)
+            }
+            TypedElements::Binary(arr) => {
+                let bytes = arr.value(idx);
+                let len = bytes.len();
+                buffer.extend_from_slice(bytes);
+                let padding = round_up_to_8(len) - len;
+                buffer.extend(std::iter::repeat_n(0u8, padding));
+                Ok(len)
+            }
+            TypedElements::LargeBinary(arr) => {
+                let bytes = arr.value(idx);
+                let len = bytes.len();
+                buffer.extend_from_slice(bytes);
+                let padding = round_up_to_8(len) - len;
+                buffer.extend(std::iter::repeat_n(0u8, padding));
+                Ok(len)
+            }
+            TypedElements::Decimal128(arr, precision) if *precision > MAX_LONG_DIGITS => {
+                let bytes = i128_to_spark_decimal_bytes(arr.value(idx));
+                let len = bytes.len();
+                buffer.extend_from_slice(&bytes);
+                let padding = round_up_to_8(len) - len;
+                buffer.extend(std::iter::repeat_n(0u8, padding));
+                Ok(len)
+            }
+            TypedElements::Other(arr, element_type) => {
+                write_nested_variable_to_buffer(buffer, element_type, arr, idx, base_offset)
+            }
+            _ => Ok(0), // Fixed-width types
+        }
+    }
+
     /// Write a range of elements to buffer in UnsafeArrayData format.
     /// Returns the total bytes written (including header).
     fn write_range_to_buffer(
@@ -1727,6 +1842,8 @@ fn write_array_element(buffer: &mut [u8], data_type: &DataType, value: i64, offs
 
 /// Writes a struct value directly to the buffer.
 /// Returns the unpadded length written.
+///
+/// Processes each field using inline type dispatch to avoid allocation overhead.
 #[inline]
 fn write_struct_to_buffer(
     buffer: &mut Vec<u8>,
@@ -1744,43 +1861,79 @@ fn write_struct_to_buffer(
     // Reserve space for fixed-width portion (zeros for null bits and field slots)
     buffer.resize(struct_start + nested_fixed_size, 0);
 
-    // Write each field of the struct
+    // Write each field with inline type handling (no allocation)
     for (field_idx, field) in fields.iter().enumerate() {
         let column = struct_array.column(field_idx);
-        let is_null = column.is_null(row_idx);
+        let data_type = field.data_type();
 
-        if is_null {
+        if column.is_null(row_idx) {
             // Set null bit in nested struct
-            let word_idx = field_idx / 64;
-            let bit_idx = field_idx % 64;
-            let word_offset = struct_start + word_idx * 8;
-            let mut word =
-                i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
-            word |= 1i64 << bit_idx;
-            buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
+            set_null_bit(buffer, struct_start, field_idx);
         } else {
             let field_offset = struct_start + nested_bitset_width + field_idx * 8;
 
-            // Check if this field has variable-length data
-            let var_len = write_nested_variable_to_buffer(
-                buffer,
-                field.data_type(),
-                column,
-                row_idx,
-                struct_start,
-            )?;
+            // Inline type dispatch for fixed-width types (most common case)
+            let value = match data_type {
+                DataType::Boolean => {
+                    let arr = column.as_any().downcast_ref::<BooleanArray>().unwrap();
+                    Some(if arr.value(row_idx) { 1i64 } else { 0i64 })
+                }
+                DataType::Int8 => {
+                    let arr = column.as_any().downcast_ref::<Int8Array>().unwrap();
+                    Some(arr.value(row_idx) as i64)
+                }
+                DataType::Int16 => {
+                    let arr = column.as_any().downcast_ref::<Int16Array>().unwrap();
+                    Some(arr.value(row_idx) as i64)
+                }
+                DataType::Int32 => {
+                    let arr = column.as_any().downcast_ref::<Int32Array>().unwrap();
+                    Some(arr.value(row_idx) as i64)
+                }
+                DataType::Int64 => {
+                    let arr = column.as_any().downcast_ref::<Int64Array>().unwrap();
+                    Some(arr.value(row_idx))
+                }
+                DataType::Float32 => {
+                    let arr = column.as_any().downcast_ref::<Float32Array>().unwrap();
+                    Some((arr.value(row_idx).to_bits() as i32) as i64)
+                }
+                DataType::Float64 => {
+                    let arr = column.as_any().downcast_ref::<Float64Array>().unwrap();
+                    Some(arr.value(row_idx).to_bits() as i64)
+                }
+                DataType::Date32 => {
+                    let arr = column.as_any().downcast_ref::<Date32Array>().unwrap();
+                    Some(arr.value(row_idx) as i64)
+                }
+                DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                    let arr = column
+                        .as_any()
+                        .downcast_ref::<TimestampMicrosecondArray>()
+                        .unwrap();
+                    Some(arr.value(row_idx))
+                }
+                DataType::Decimal128(p, _) if *p <= MAX_LONG_DIGITS => {
+                    let arr = column.as_any().downcast_ref::<Decimal128Array>().unwrap();
+                    Some(arr.value(row_idx) as i64)
+                }
+                _ => None, // Variable-length type
+            };
 
-            if var_len > 0 {
-                // Variable-length field: compute offset relative to struct start
-                let padded_len = round_up_to_8(var_len);
-                let data_offset = buffer.len() - padded_len - struct_start;
-                let offset_and_len = ((data_offset as i64) << 32) | (var_len as i64);
-                buffer[field_offset..field_offset + 8]
-                    .copy_from_slice(&offset_and_len.to_le_bytes());
+            if let Some(v) = value {
+                // Fixed-width field
+                buffer[field_offset..field_offset + 8].copy_from_slice(&v.to_le_bytes());
             } else {
-                // Fixed-width field: write value directly
-                let value = get_field_value(field.data_type(), column, row_idx)?;
-                buffer[field_offset..field_offset + 8].copy_from_slice(&value.to_le_bytes());
+                // Variable-length field
+                let var_len =
+                    write_nested_variable_to_buffer(buffer, data_type, column, row_idx, struct_start)?;
+                if var_len > 0 {
+                    let padded_len = round_up_to_8(var_len);
+                    let data_offset = buffer.len() - padded_len - struct_start;
+                    let offset_and_len = ((data_offset as i64) << 32) | (var_len as i64);
+                    buffer[field_offset..field_offset + 8]
+                        .copy_from_slice(&offset_and_len.to_le_bytes());
+                }
             }
         }
     }
