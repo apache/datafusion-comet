@@ -1120,6 +1120,51 @@ fn write_large_list_to_buffer(
     write_array_data_to_buffer(buffer, &values, element_field.data_type())
 }
 
+/// Bulk copy primitive array values to buffer (fast path when no nulls).
+/// Returns true if bulk copy was performed, false if fallback needed.
+#[inline]
+fn try_bulk_copy_primitive_array(
+    buffer: &mut [u8],
+    values: &ArrayRef,
+    element_type: &DataType,
+    elements_start: usize,
+    num_elements: usize,
+) -> bool {
+    // Only bulk copy if no nulls (null values would have garbage in Arrow's buffer)
+    if values.null_count() > 0 {
+        return false;
+    }
+
+    macro_rules! bulk_copy {
+        ($array_type:ty, $elem_size:expr) => {{
+            if let Some(arr) = values.as_any().downcast_ref::<$array_type>() {
+                let values_slice = arr.values();
+                let byte_len = num_elements * $elem_size;
+                // SAFETY: We're reinterpreting the primitive array as bytes.
+                // The slice has at least num_elements items, so byte_len bytes are valid.
+                let src_bytes = unsafe {
+                    std::slice::from_raw_parts(values_slice.as_ptr() as *const u8, byte_len)
+                };
+                buffer[elements_start..elements_start + byte_len].copy_from_slice(src_bytes);
+                return true;
+            }
+            false
+        }};
+    }
+
+    match element_type {
+        DataType::Int8 => bulk_copy!(Int8Array, 1),
+        DataType::Int16 => bulk_copy!(Int16Array, 2),
+        DataType::Int32 | DataType::Date32 => bulk_copy!(Int32Array, 4),
+        DataType::Int64 | DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            bulk_copy!(Int64Array, 8)
+        }
+        DataType::Float32 => bulk_copy!(Float32Array, 4),
+        DataType::Float64 => bulk_copy!(Float64Array, 8),
+        _ => false,
+    }
+}
+
 /// Common implementation for writing array data to buffer.
 /// Handles both List and LargeList array element data.
 fn write_array_data_to_buffer(
@@ -1138,10 +1183,21 @@ fn write_array_data_to_buffer(
     // Write number of elements
     buffer.extend_from_slice(&(num_elements as i64).to_le_bytes());
 
-    // Reserve space for null bitset
+    // Reserve space for null bitset (all zeros = no nulls)
     let null_bitset_start = buffer.len();
     buffer.resize(null_bitset_start + element_bitset_width, 0);
 
+    // Reserve space for element values
+    let elements_start = buffer.len();
+    let elements_total_size = round_up_to_8(num_elements * element_size);
+    buffer.resize(elements_start + elements_total_size, 0);
+
+    // Fast path: bulk copy for primitive arrays without nulls
+    if try_bulk_copy_primitive_array(buffer, values, element_type, elements_start, num_elements) {
+        return Ok(buffer.len() - array_start);
+    }
+
+    // Slow path: element-by-element processing
     // Set null bits
     for i in 0..num_elements {
         if values.is_null(i) {
@@ -1154,11 +1210,6 @@ fn write_array_data_to_buffer(
             buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
         }
     }
-
-    // Reserve space for element values
-    let elements_start = buffer.len();
-    let elements_total_size = round_up_to_8(num_elements * element_size);
-    buffer.resize(elements_start + elements_total_size, 0);
 
     // Write element values
     for i in 0..num_elements {
@@ -1245,7 +1296,7 @@ fn write_array_data_to_buffer_for_map(
     buffer: &mut Vec<u8>,
     array: &ArrayRef,
     element_type: &DataType,
-    array_base: usize,
+    _array_base: usize,
     check_nulls: bool,
 ) -> CometResult<()> {
     let num_elements = array.len();
@@ -1255,10 +1306,26 @@ fn write_array_data_to_buffer_for_map(
     // Write number of elements
     buffer.extend_from_slice(&(num_elements as i64).to_le_bytes());
 
-    // Reserve space for null bitset
+    // Reserve space for null bitset (all zeros = no nulls)
     let null_bitset_start = buffer.len();
     buffer.resize(null_bitset_start + element_bitset_width, 0);
 
+    // Reserve space for element values
+    let elements_start = buffer.len();
+    let elements_total_size = round_up_to_8(num_elements * element_size);
+    buffer.resize(elements_start + elements_total_size, 0);
+
+    // Fast path: bulk copy for primitive arrays
+    // For keys (check_nulls=false): always try bulk copy (keys are never null in Spark)
+    // For values (check_nulls=true): only bulk copy if no nulls
+    let can_bulk_copy = !check_nulls || array.null_count() == 0;
+    if can_bulk_copy
+        && try_bulk_copy_primitive_array(buffer, array, element_type, elements_start, num_elements)
+    {
+        return Ok(());
+    }
+
+    // Slow path: element-by-element processing
     // Set null bits (only for values, keys are not nullable in Spark)
     if check_nulls {
         for i in 0..num_elements {
@@ -1274,10 +1341,9 @@ fn write_array_data_to_buffer_for_map(
         }
     }
 
-    // Reserve space for element values
-    let elements_start = buffer.len();
-    let elements_total_size = round_up_to_8(num_elements * element_size);
-    buffer.resize(elements_start + elements_total_size, 0);
+    // Compute array_base for variable-length offset calculation
+    // For maps, offsets are relative to the start of the key/value array
+    let array_base = elements_start - element_bitset_width - 8; // minus numElements field
 
     // Write element values
     for i in 0..num_elements {
@@ -1655,10 +1721,12 @@ mod tests {
         let offsets = arrow::buffer::OffsetBuffer::new(vec![0, 5].into());
 
         let list_field = Arc::new(Field::new("item", DataType::Int32, true));
-        let list_array = ListArray::new(list_field.clone(), offsets, Arc::new(values), None);
+        let list_array = ListArray::new(Arc::clone(&list_field), offsets, Arc::new(values), None);
 
-        // Convert the list for row 0
-        let result = write_list_data(&list_array, 0, &list_field).expect("conversion failed");
+        // Convert the list for row 0 using the new direct-write function
+        let mut buffer = Vec::new();
+        write_list_to_buffer(&mut buffer, &list_array, 0, &list_field).expect("conversion failed");
+        let result = &buffer;
 
         // UnsafeArrayData format for Int32:
         // [0..8]: numElements = 5
@@ -1699,10 +1767,12 @@ mod tests {
         let offsets = arrow::buffer::OffsetBuffer::new(vec![0, 1, 3, 6].into());
 
         let list_field = Arc::new(Field::new("item", DataType::Int32, true));
-        let list_array = ListArray::new(list_field.clone(), offsets, Arc::new(values), None);
+        let list_array = ListArray::new(Arc::clone(&list_field), offsets, Arc::new(values), None);
 
         // Test row 1 which has elements [0, 1]
-        let result = write_list_data(&list_array, 1, &list_field).expect("conversion failed");
+        let mut buffer = Vec::new();
+        write_list_to_buffer(&mut buffer, &list_array, 1, &list_field).expect("conversion failed");
+        let result = &buffer;
 
         let num_elements = i64::from_le_bytes(result[0..8].try_into().unwrap());
         assert_eq!(num_elements, 2, "row 1 should have 2 elements");
@@ -1764,8 +1834,10 @@ mod tests {
         );
 
         // Convert the map for row 0
-        let result =
-            write_map_data(&map_array, 0, &Arc::new(entries_field)).expect("conversion failed");
+        let mut buffer = Vec::new();
+        write_map_to_buffer(&mut buffer, &map_array, 0, &Arc::new(entries_field))
+            .expect("conversion failed");
+        let result = &buffer;
 
         // Verify the structure:
         // - [0..8]: key array size
@@ -1862,8 +1934,10 @@ mod tests {
         );
 
         // Test row 1 which has 2 entries
-        let result = write_map_data(&map_array, 1, &Arc::new(entries_field.clone()))
+        let mut buffer = Vec::new();
+        write_map_to_buffer(&mut buffer, &map_array, 1, &Arc::new(entries_field.clone()))
             .expect("conversion failed");
+        let result = &buffer;
 
         let key_array_size = i64::from_le_bytes(result[0..8].try_into().unwrap());
         let value_array_start = (8 + key_array_size) as usize;
@@ -1967,8 +2041,15 @@ mod tests {
         let sliced_map_array = sliced_map.as_any().downcast_ref::<MapArray>().unwrap();
 
         // Now test row 0 of the sliced array (which is row 1 of the original)
-        let result = write_map_data(sliced_map_array, 0, &Arc::new(entries_field.clone()))
-            .expect("conversion failed");
+        let mut buffer = Vec::new();
+        write_map_to_buffer(
+            &mut buffer,
+            sliced_map_array,
+            0,
+            &Arc::new(entries_field.clone()),
+        )
+        .expect("conversion failed");
+        let result = &buffer;
 
         let key_array_size = i64::from_le_bytes(result[0..8].try_into().unwrap());
         let value_array_start = (8 + key_array_size) as usize;
@@ -2001,10 +2082,14 @@ mod tests {
         let offsets = arrow::buffer::OffsetBuffer::new(vec![0i64, 5].into());
 
         let list_field = Arc::new(Field::new("item", DataType::Int32, true));
-        let list_array = LargeListArray::new(list_field.clone(), offsets, Arc::new(values), None);
+        let list_array =
+            LargeListArray::new(Arc::clone(&list_field), offsets, Arc::new(values), None);
 
         // Convert the list for row 0
-        let result = write_large_list_data(&list_array, 0, &list_field).expect("conversion failed");
+        let mut buffer = Vec::new();
+        write_large_list_to_buffer(&mut buffer, &list_array, 0, &list_field)
+            .expect("conversion failed");
+        let result = &buffer;
 
         // UnsafeArrayData format for Int32:
         // [0..8]: numElements = 5
