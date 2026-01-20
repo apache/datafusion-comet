@@ -100,7 +100,6 @@ impl SparkUnsafeArray {
     /// Bulk append i32 values to builder.
     /// For non-nullable: uses slice append for optimal performance.
     /// For nullable: uses pointer iteration with efficient null bitset reading.
-    #[inline]
     pub(crate) fn append_ints_to_builder<const NULLABLE: bool>(&self, builder: &mut Int32Builder) {
         let num_elements = self.num_elements;
         if num_elements == 0 {
@@ -132,7 +131,6 @@ impl SparkUnsafeArray {
     }
 
     /// Bulk append i64 values to builder.
-    #[inline]
     pub(crate) fn append_longs_to_builder<const NULLABLE: bool>(&self, builder: &mut Int64Builder) {
         let num_elements = self.num_elements;
         if num_elements == 0 {
@@ -163,7 +161,6 @@ impl SparkUnsafeArray {
     }
 
     /// Bulk append i16 values to builder.
-    #[inline]
     pub(crate) fn append_shorts_to_builder<const NULLABLE: bool>(
         &self,
         builder: &mut Int16Builder,
@@ -197,7 +194,6 @@ impl SparkUnsafeArray {
     }
 
     /// Bulk append i8 values to builder.
-    #[inline]
     pub(crate) fn append_bytes_to_builder<const NULLABLE: bool>(&self, builder: &mut Int8Builder) {
         let num_elements = self.num_elements;
         if num_elements == 0 {
@@ -228,7 +224,6 @@ impl SparkUnsafeArray {
     }
 
     /// Bulk append f32 values to builder.
-    #[inline]
     pub(crate) fn append_floats_to_builder<const NULLABLE: bool>(
         &self,
         builder: &mut Float32Builder,
@@ -262,7 +257,6 @@ impl SparkUnsafeArray {
     }
 
     /// Bulk append f64 values to builder.
-    #[inline]
     pub(crate) fn append_doubles_to_builder<const NULLABLE: bool>(
         &self,
         builder: &mut Float64Builder,
@@ -296,7 +290,6 @@ impl SparkUnsafeArray {
     }
 
     /// Bulk append boolean values to builder using pointer iteration.
-    #[inline]
     pub(crate) fn append_booleans_to_builder<const NULLABLE: bool>(
         &self,
         builder: &mut BooleanBuilder,
@@ -331,7 +324,6 @@ impl SparkUnsafeArray {
     }
 
     /// Bulk append timestamp values to builder.
-    #[inline]
     pub(crate) fn append_timestamps_to_builder<const NULLABLE: bool>(
         &self,
         builder: &mut TimestampMicrosecondBuilder,
@@ -365,7 +357,6 @@ impl SparkUnsafeArray {
     }
 
     /// Bulk append date values to builder.
-    #[inline]
     pub(crate) fn append_dates_to_builder<const NULLABLE: bool>(
         &self,
         builder: &mut Date32Builder,
