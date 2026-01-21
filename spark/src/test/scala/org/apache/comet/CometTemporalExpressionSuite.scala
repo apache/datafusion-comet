@@ -206,6 +206,19 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     checkSparkAnswerAndOperator(
       "SELECT year, month, day, make_date(year, month, day) FROM tbl ORDER BY year, month, day")
 
+    // Fuzzing with nullable integer columns
+    val r2 = new Random(42)
+    val nullableSchema = StructType(
+      Seq(
+        StructField("year", DataTypes.IntegerType, true),
+        StructField("month", DataTypes.IntegerType, true),
+        StructField("day", DataTypes.IntegerType, true)))
+    val nullableDf =
+      FuzzDataGenerator.generateDataFrame(r2, spark, nullableSchema, 1000, DataGenOptions())
+    nullableDf.createOrReplaceTempView("nullable_tbl")
+    checkSparkAnswerAndOperator(
+      "SELECT year, month, day, make_date(year, month, day) FROM nullable_tbl ORDER BY year, month, day")
+
     // Disable constant folding to ensure literal expressions are executed by Comet
     withSQLConf(
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
@@ -213,12 +226,60 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       // Test with literal values
       checkSparkAnswerAndOperator("SELECT make_date(2023, 12, 25)")
       checkSparkAnswerAndOperator("SELECT make_date(1970, 1, 1)")
-      checkSparkAnswerAndOperator("SELECT make_date(2000, 2, 29)") // Leap year
 
       // Test null handling
       checkSparkAnswerAndOperator("SELECT make_date(NULL, 1, 1)")
       checkSparkAnswerAndOperator("SELECT make_date(2023, NULL, 1)")
       checkSparkAnswerAndOperator("SELECT make_date(2023, 1, NULL)")
+
+      // Leap year edge cases
+      // 2000 WAS a leap year (divisible by 400)
+      checkSparkAnswerAndOperator("SELECT make_date(2000, 2, 29)")
+      // 2004 was a leap year (divisible by 4, not by 100)
+      checkSparkAnswerAndOperator("SELECT make_date(2004, 2, 29)")
+      // 2023 is NOT a leap year - Feb 29 should return NULL
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 2, 29)")
+      // 1900 was NOT a leap year (divisible by 100 but not 400) - Feb 29 should return NULL
+      checkSparkAnswerAndOperator("SELECT make_date(1900, 2, 29)")
+      // 2100 will NOT be a leap year (divisible by 100 but not 400)
+      checkSparkAnswerAndOperator("SELECT make_date(2100, 2, 29)")
+
+      // Invalid date handling - should return NULL
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 2, 30)") // Feb 30 never exists
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 2, 31)") // Feb 31 never exists
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 4, 31)") // April has 30 days
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 6, 31)") // June has 30 days
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 9, 31)") // September has 30 days
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 11, 31)") // November has 30 days
+
+      // Boundary values - invalid month/day values should return NULL
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 0, 15)") // Month 0
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 13, 15)") // Month 13
+      checkSparkAnswerAndOperator("SELECT make_date(2023, -1, 15)") // Negative month
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 6, 0)") // Day 0
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 6, 32)") // Day 32
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 6, -1)") // Negative day
+
+      // Extreme years
+      checkSparkAnswerAndOperator("SELECT make_date(1, 1, 1)") // Year 1
+      checkSparkAnswerAndOperator("SELECT make_date(9999, 12, 31)") // Far future
+      checkSparkAnswerAndOperator("SELECT make_date(0, 1, 1)") // Year 0
+      checkSparkAnswerAndOperator("SELECT make_date(-1, 1, 1)") // Negative year
+
+      // Month boundaries - last day of each month
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 1, 31)") // Jan 31
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 3, 31)") // Mar 31
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 4, 30)") // Apr 30
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 5, 31)") // May 31
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 6, 30)") // Jun 30
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 7, 31)") // Jul 31
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 8, 31)") // Aug 31
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 9, 30)") // Sep 30
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 10, 31)") // Oct 31
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 11, 30)") // Nov 30
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 12, 31)") // Dec 31
+      checkSparkAnswerAndOperator("SELECT make_date(2024, 2, 29)") // Leap year Feb 29
+      checkSparkAnswerAndOperator("SELECT make_date(2023, 2, 28)") // Non-leap year Feb 28
     }
   }
 
@@ -435,5 +496,4 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     // Test null handling
     checkSparkAnswerAndOperator("SELECT unix_date(NULL)")
   }
->>>>>>> apache/main
 }
