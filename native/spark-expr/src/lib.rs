@@ -29,6 +29,7 @@ pub use static_invoke::*;
 mod struct_funcs;
 pub use struct_funcs::{CreateNamedStruct, GetStructField};
 
+mod csv_funcs;
 mod json_funcs;
 pub mod test_common;
 pub mod timezone;
