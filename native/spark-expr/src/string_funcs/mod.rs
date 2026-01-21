@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod starts_ends_with;
 mod string_space;
 mod substring;
 
+pub use starts_ends_with::{EndsWithExpr, StartsWithExpr};
 pub use string_space::SparkStringSpace;
 pub use substring::SubstringExpr;

@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, InitCap, Length, Like, Literal, Lower, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, EndsWith, Expression, InitCap, Length, Like, Literal, Lower, RegExpReplace, RLike, StartsWith, StringLPad, StringRepeat, StringRPad, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
@@ -284,5 +284,34 @@ trait CommonStringExprs {
         withInfo(expr, "Comet only supports decoding with 'utf-8'.")
         None
     }
+  }
+}
+
+object CometStartsWith extends CometExpressionSerde[StartsWith] {
+
+  override def convert(
+      expr: StartsWith,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    createBinaryExpr(
+      expr,
+      expr.left,
+      expr.right,
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setStartsWith(binaryExpr))
+  }
+}
+
+object CometEndsWith extends CometExpressionSerde[EndsWith] {
+
+  override def convert(expr: EndsWith, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    createBinaryExpr(
+      expr,
+      expr.left,
+      expr.right,
+      inputs,
+      binding,
+      (builder, binaryExpr) => builder.setEndsWith(binaryExpr))
   }
 }
