@@ -1152,9 +1152,22 @@ impl PhysicalPlanner {
                     ))),
                 }?;
 
+                // Coalesce small batches before shuffle to reduce per-batch overhead
+                // and improve vectorization efficiency.
+                let batch_size = self
+                    .session_ctx
+                    .state()
+                    .config_options()
+                    .execution
+                    .batch_size;
+                let coalesced_input: Arc<dyn ExecutionPlan> = Arc::new(CoalesceBatchesExec::new(
+                    Arc::clone(&child.native_plan),
+                    batch_size,
+                ));
+
                 let write_buffer_size = writer.write_buffer_size as usize;
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
-                    Arc::clone(&child.native_plan),
+                    coalesced_input,
                     partitioning,
                     codec,
                     writer.output_data_file.clone(),
@@ -1165,10 +1178,11 @@ impl PhysicalPlanner {
 
                 Ok((
                     scans,
-                    Arc::new(SparkPlan::new(
+                    Arc::new(SparkPlan::new_with_additional(
                         spark_plan.plan_id,
                         shuffle_writer,
                         vec![Arc::clone(&child)],
+                        vec![],
                     )),
                 ))
             }

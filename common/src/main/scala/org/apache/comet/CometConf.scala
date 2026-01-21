@@ -558,6 +558,27 @@ object CometConf extends ShimCometConf {
     .intConf
     .createWithDefault(8192)
 
+  val COMET_SHUFFLE_RESIZE_BATCHES_INPUT: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.resizeBatches.input")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "If true, combine small columnar batches together before sending to shuffle. " +
+          "This helps reduce per-batch overhead and improves vectorization efficiency. " +
+          "The target batch size is controlled by spark.comet.batchSize.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_SHUFFLE_RESIZE_BATCHES_OUTPUT: ConfigEntry[Boolean] =
+    conf("spark.comet.shuffle.resizeBatches.output")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "If true, combine small columnar batches together after shuffle read. " +
+          "This helps downstream operators process data more efficiently by ensuring " +
+          "batches are close to the target batch size. " +
+          "The target batch size is controlled by spark.comet.batchSize.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_PARQUET_ENABLE_DIRECT_BUFFER: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.enable.directBuffer")
       .category(CATEGORY_PARQUET)
