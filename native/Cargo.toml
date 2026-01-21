@@ -54,7 +54,7 @@ object_store = { version = "0.12.3", features = ["gcp", "azure", "aws", "http"] 
 url = "2.2"
 aws-config = "1.8.10"
 aws-credential-types = "1.2.9"
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "16906c1" }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "ee21563" }
 
 [profile.release]
 debug = true
