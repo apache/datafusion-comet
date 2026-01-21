@@ -181,7 +181,6 @@ class CometDirectNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlan
 
       // First shuffle reads from scan, second reads from previous shuffle output
       // Only the first shuffle should use direct native execution
-      val shuffles = findShuffleExchanges(df)
       // AQE might combine some shuffles, so just verify results are correct
       checkSparkAnswer(df)
     }
@@ -213,7 +212,6 @@ class CometDirectNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlan
           |""".stripMargin)
         .repartition(10, col("doubled"))
 
-      val shuffles = findShuffleExchanges(df)
       // Note: Native shuffle might fall back depending on expression support
       // Just verify correctness - the optimization is best-effort
       checkSparkAnswer(df)
