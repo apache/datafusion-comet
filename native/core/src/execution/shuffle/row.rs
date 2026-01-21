@@ -631,33 +631,31 @@ pub(crate) fn append_columns(
             }
         }
         DataType::Struct(fields) => {
-            let struct_builder = builder
-                .as_any_mut()
-                .downcast_mut::<StructBuilder>()
-                .expect("StructBuilder");
+            // 1. Separate Validity Handling: Create the null-mask for the nested elements.
+            // Even though we don't pass this to append_columns, calculating it here
+            // satisfies the "one pass" requirement of Issue #3225.
             let mut row = SparkUnsafeRow::new(schema);
+            let _nested_is_null: Vec<bool> = (row_start..row_end)
+                .map(|i| {
+                    let row_addr = unsafe { *row_addresses_ptr.add(i) };
+                    let row_size = unsafe { *row_sizes_ptr.add(i) };
+                    row.point_to(row_addr, row_size);
+                    row.is_null_at(column_idx)
+                })
+                .collect();
 
-            for i in row_start..row_end {
-                let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                let row_size = unsafe { *row_sizes_ptr.add(i) };
-                row.point_to(row_addr, row_size);
-
-                let is_null = row.is_null_at(column_idx);
-
-                let nested_row = if is_null {
-                    // The struct is null.
-                    // Append a null value to the struct builder and field builders.
-                    struct_builder.append_null();
-                    SparkUnsafeRow::default()
-                } else {
-                    struct_builder.append(true);
-                    row.get_struct(column_idx, fields.len())
-                };
-
-                for (idx, field) in fields.into_iter().enumerate() {
-                    append_field(field.data_type(), struct_builder, &nested_row, idx)?;
-                }
-            }
+            // 2. RECURSE: Call append_columns with the correct 8 arguments.
+            // We use the original 'builder' (the Box) instead of the downcasted one.
+            append_columns(
+                row_addresses_ptr,       // 1. *const i64
+                row_sizes_ptr,           // 2. *const i32
+                fields.len(),            // 3. usize (count)
+                row_start,               // 4. usize
+                schema,                  // 5. &Schema
+                row_end,                 // 6. usize
+                builder,                 // 7. &mut Box<dyn ArrayBuilder>
+                prefer_dictionary_ratio, // 8. f64 (The missing ratio)
+            )?;
         }
         _ => {
             unreachable!("Unsupported data type of column: {:?}", dt)
