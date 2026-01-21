@@ -151,7 +151,7 @@ fn split_array(
     }
 
     let values_array = Arc::new(GenericStringArray::<i32>::from(values)) as ArrayRef;
-    let field = Arc::new(Field::new("item", DataType::Utf8, true));
+    let field = Arc::new(Field::new("item", DataType::Utf8, false));
     let nulls = arrow::buffer::NullBuffer::new(null_buffer_builder.finish());
     let list_array = ListArray::new(
         field,
@@ -188,7 +188,7 @@ fn split_large_string_array(
     }
 
     let values_array = Arc::new(GenericStringArray::<i32>::from(values)) as ArrayRef;
-    let field = Arc::new(Field::new("item", DataType::Utf8, true));
+    let field = Arc::new(Field::new("item", DataType::Utf8, false));
     let nulls = arrow::buffer::NullBuffer::new(null_buffer_builder.finish());
     let list_array = ListArray::new(
         field,

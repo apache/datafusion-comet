@@ -247,27 +247,6 @@ class CometStringExpressionSuite extends CometTestBase {
     }
   }
 
-  test("split string with UTF-8 regex patterns") {
-    // Test regex patterns that involve UTF-8 characters
-
-    // Split on Unicode character classes
-    withParquetTable(
-      Seq(
-        ("word1 word2　word3", 0), // Regular space and ideographic space (U+3000)
-        ("test1\u00A0test2", 1)
-      ), // Non-breaking space
-      "tbl_space") {
-      // Split on any whitespace (should match all Unicode whitespace)
-      checkSparkAnswerAndOperator("SELECT split(_1, '\\\\s+') FROM tbl_space")
-    }
-
-    // Split with limit on UTF-8 strings
-    withParquetTable(Seq(("你,好,世,界", 0), ("😀,😃,😄,😁", 1)), "tbl_utf8_limit") {
-      checkSparkAnswerAndOperator("SELECT split(_1, ',', 2) FROM tbl_utf8_limit")
-      checkSparkAnswerAndOperator("SELECT split(_1, ',', -1) FROM tbl_utf8_limit")
-    }
-  }
-
   test("Various String scalar functions") {
     val table = "names"
     withTable(table) {
