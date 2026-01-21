@@ -85,8 +85,9 @@ message Expr {
     Rand randn = 62;
     EmptyExpr spark_partition_id = 63;
     EmptyExpr monotonically_increasing_id = 64;
-    FromJson from_json = 89;
-    ToCsv to_csv = 90;
+    UnixTimestamp unix_timestamp = 65;
+    FromJson from_json = 66;
+    ToCsv to_csv = 67;
   }
 }
 
@@ -317,6 +318,11 @@ message Minute {
 }
 
 message Second {
+  Expr child = 1;
+  string timezone = 2;
+}
+
+message UnixTimestamp {
   Expr child = 1;
   string timezone = 2;
 }

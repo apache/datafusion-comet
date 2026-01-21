@@ -56,7 +56,6 @@ pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain};
 
 mod conditional_funcs;
 mod conversion_funcs;
-mod csv_funcs;
 mod math_funcs;
 mod nondetermenistic_funcs;
 
@@ -71,7 +70,10 @@ pub use comet_scalar_funcs::{
     register_all_comet_functions,
 };
 pub use csv_funcs::*;
-pub use datetime_funcs::{SparkDateTrunc, SparkHour, SparkMinute, SparkSecond, TimestampTruncExpr};
+pub use datetime_funcs::{
+    SparkDateDiff, SparkDateTrunc, SparkHour, SparkMinute, SparkSecond, SparkUnixTimestamp,
+    TimestampTruncExpr,
+};
 pub use error::{SparkError, SparkResult};
 pub use hash_funcs::*;
 pub use json_funcs::{FromJson, ToJson};
