@@ -182,6 +182,32 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
   }
 
+  test("last_day") {
+    val r = new Random(42)
+    val schema = StructType(Seq(StructField("c0", DataTypes.DateType, true)))
+    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
+    df.createOrReplaceTempView("tbl")
+
+    // Basic test with random dates
+    checkSparkAnswerAndOperator("SELECT c0, last_day(c0) FROM tbl ORDER BY c0")
+
+    // Disable constant folding to ensure literal expressions are executed by Comet
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      // Test with literal dates - various months
+      checkSparkAnswerAndOperator(
+        "SELECT last_day(DATE('2024-01-15')), last_day(DATE('2024-02-15')), last_day(DATE('2024-12-01'))")
+
+      // Test leap year handling (February)
+      checkSparkAnswerAndOperator(
+        "SELECT last_day(DATE('2024-02-01')), last_day(DATE('2023-02-01'))")
+
+      // Test null handling
+      checkSparkAnswerAndOperator("SELECT last_day(NULL)")
+    }
+  }
+
   test("datediff") {
     val r = new Random(42)
     val schema = StructType(
