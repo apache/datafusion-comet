@@ -319,6 +319,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_SHUFFLE_DIRECT_NATIVE_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.directNative.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "When enabled, the native shuffle writer will directly execute the child native plan " +
+          "instead of reading intermediate batches via JNI. This optimization avoids the " +
+          "JNI round-trip for single-source native plans (e.g., Scan -> Filter -> Project). " +
+          "This is an experimental feature and is disabled by default.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SHUFFLE_MODE: ConfigEntry[String] = conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.mode")
     .category(CATEGORY_SHUFFLE)
     .doc(
