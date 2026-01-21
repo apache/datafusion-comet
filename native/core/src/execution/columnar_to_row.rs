@@ -138,9 +138,10 @@ impl<'a> TypedArray<'a> {
                     .as_any()
                     .downcast_ref::<TimestampMicrosecondArray>()
                     .ok_or_else(|| {
-                        CometError::Internal(
-                            "Failed to downcast to TimestampMicrosecondArray".to_string(),
-                        )
+                        CometError::Internal(format!(
+                            "Failed to downcast to TimestampMicrosecondArray, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?,
             )),
             DataType::Decimal128(p, _) => Ok(TypedArray::Decimal128(
