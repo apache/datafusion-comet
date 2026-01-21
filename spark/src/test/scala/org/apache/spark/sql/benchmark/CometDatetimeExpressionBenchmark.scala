@@ -79,9 +79,9 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
           dir,
           spark.sql(s"select timestamp_micros(cast(value/100000 as integer)) as ts FROM $tbl"))
         withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timeZone) {
-          runWithComet(s"Unix Timestamp from Timestamp ($timeZone)", values) {
-            spark.sql("select unix_timestamp(ts) from parquetV1Table").noop()
-          }
+          val name = s"Unix Timestamp from Timestamp ($timeZone)"
+          val query = "select unix_timestamp(ts) from parquetV1Table"
+          runExpressionBenchmark(name, values, query)
         }
       }
     }
@@ -95,9 +95,9 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
           spark.sql(
             s"select cast(timestamp_micros(cast(value/100000 as integer)) as date) as dt FROM $tbl"))
         withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timeZone) {
-          runWithComet(s"Unix Timestamp from Date ($timeZone)", values) {
-            spark.sql("select unix_timestamp(dt) from parquetV1Table").noop()
-          }
+          val name = s"Unix Timestamp from Date ($timeZone)"
+          val query = "select unix_timestamp(dt) from parquetV1Table"
+          runExpressionBenchmark(name, values, query)
         }
       }
     }

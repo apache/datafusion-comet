@@ -70,8 +70,7 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
-    SumInteger,
+    BloomFilterAgg, BloomFilterMightContain, EvalMode, SumInteger,
 };
 use iceberg::expr::Bind;
 
