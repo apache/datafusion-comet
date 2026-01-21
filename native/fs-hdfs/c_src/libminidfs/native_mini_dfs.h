@@ -29,7 +29,7 @@ struct hdfsBuilder;
 /**
 * <div rustbindgen replaces="MiniDfsCluster"></div>
 */
-struct NativeMiniDfsCluster; 
+struct NativeMiniDfsCluster;
 
 /**
  * <div rustbindgen replaces="MiniDfsConf"></div>
@@ -111,13 +111,13 @@ void nmdFree(struct NativeMiniDfsCluster* cl);
  *
  * @return          the port, or a negative error code
  */
-int nmdGetNameNodePort(const struct NativeMiniDfsCluster *cl); 
+int nmdGetNameNodePort(const struct NativeMiniDfsCluster *cl);
 
 /**
  * Get the http address that's in use by the given (non-HA) nativeMiniDfs
  *
  * @param cl        The initialized NativeMiniDfsCluster
- * @param port      Used to capture the http port of the NameNode 
+ * @param port      Used to capture the http port of the NameNode
  *                  of the NativeMiniDfsCluster
  * @param hostName  Used to capture the http hostname of the NameNode
  *                  of the NativeMiniDfsCluster
