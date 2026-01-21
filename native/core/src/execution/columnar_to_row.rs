@@ -78,7 +78,7 @@ enum TypedArray<'a> {
 
 impl<'a> TypedArray<'a> {
     /// Pre-downcast an ArrayRef to a TypedArray.
-    fn from_array(array: &'a ArrayRef, schema_type: &DataType) -> CometResult<Self> {
+    fn from_array(array: &'a ArrayRef, _schema_type: &DataType) -> CometResult<Self> {
         let actual_type = array.data_type();
         match actual_type {
             DataType::Boolean => Ok(TypedArray::Boolean(
@@ -223,7 +223,7 @@ impl<'a> TypedArray<'a> {
                 })?,
                 Arc::clone(field),
             )),
-            DataType::Dictionary(_, _) => Ok(TypedArray::Dictionary(array, schema_type.clone())),
+            DataType::Dictionary(_, _) => Ok(TypedArray::Dictionary(array, actual_type.clone())),
             _ => Err(CometError::Internal(format!(
                 "Unsupported data type for pre-downcast: {:?}",
                 actual_type
