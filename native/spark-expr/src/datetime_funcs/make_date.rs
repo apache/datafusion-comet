@@ -68,8 +68,10 @@ fn make_date(year: i32, month: i32, day: i32) -> Option<i32> {
     }
 
     // Try to create a valid date
-    NaiveDate::from_ymd_opt(year, month as u32, day as u32)
-        .map(|date| date.signed_duration_since(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()).num_days() as i32)
+    NaiveDate::from_ymd_opt(year, month as u32, day as u32).map(|date| {
+        date.signed_duration_since(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap())
+            .num_days() as i32
+    })
 }
 
 impl ScalarUDFImpl for SparkMakeDate {
@@ -102,17 +104,26 @@ impl ScalarUDFImpl for SparkMakeDate {
         let month_arr = cast_to_int32(&month_arr)?;
         let day_arr = cast_to_int32(&day_arr)?;
 
-        let year_array = year_arr.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
-            DataFusionError::Execution("make_date: failed to cast year to Int32".to_string())
-        })?;
+        let year_array = year_arr
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Execution("make_date: failed to cast year to Int32".to_string())
+            })?;
 
-        let month_array = month_arr.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
-            DataFusionError::Execution("make_date: failed to cast month to Int32".to_string())
-        })?;
+        let month_array = month_arr
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Execution("make_date: failed to cast month to Int32".to_string())
+            })?;
 
-        let day_array = day_arr.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
-            DataFusionError::Execution("make_date: failed to cast day to Int32".to_string())
-        })?;
+        let day_array = day_arr
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Execution("make_date: failed to cast day to Int32".to_string())
+            })?;
 
         let len = year_array.len();
         let mut builder = Date32Array::builder(len);
@@ -151,7 +162,7 @@ mod tests {
         // Leap years - just verify they return Some (valid dates)
         assert!(make_date(2000, 2, 29).is_some()); // 2000 is a leap year
         assert!(make_date(2004, 2, 29).is_some()); // 2004 is a leap year
-        // Regular date
+                                                   // Regular date
         assert!(make_date(2023, 6, 15).is_some());
     }
 
@@ -191,7 +202,10 @@ mod tests {
         assert!(make_date(1, 1, 1).is_some(), "Year 1 should be valid");
 
         // Maximum valid date in Spark: 9999-12-31
-        assert!(make_date(9999, 12, 31).is_some(), "Year 9999 should be valid");
+        assert!(
+            make_date(9999, 12, 31).is_some(),
+            "Year 9999 should be valid"
+        );
 
         // Year 0 - In Proleptic Gregorian calendar, year 0 = 1 BCE
         // Spark returns NULL for year 0 in make_date
@@ -205,6 +219,9 @@ mod tests {
         // chrono supports negative years (BCE dates)
         let negative_year_result = make_date(-1, 1, 1);
         // chrono allows negative years
-        assert!(negative_year_result.is_some(), "chrono allows negative years");
+        assert!(
+            negative_year_result.is_some(),
+            "chrono allows negative years"
+        );
     }
 }
