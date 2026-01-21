@@ -297,6 +297,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.RegExpReplace.enabled` | Enable Comet acceleration for `RegExpReplace` | true |
 | `spark.comet.expression.Remainder.enabled` | Enable Comet acceleration for `Remainder` | true |
 | `spark.comet.expression.Reverse.enabled` | Enable Comet acceleration for `Reverse` | true |
+| `spark.comet.expression.Right.enabled` | Enable Comet acceleration for `Right` | true |
 | `spark.comet.expression.Round.enabled` | Enable Comet acceleration for `Round` | true |
 | `spark.comet.expression.ScalarSubquery.enabled` | Enable Comet acceleration for `ScalarSubquery` | true |
 | `spark.comet.expression.Second.enabled` | Enable Comet acceleration for `Second` | true |
