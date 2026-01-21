@@ -487,6 +487,70 @@ such as Spark.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">clean</span></code>: clean up the workspace</p></li>
 </ul>
 </section>
+<section id="common-build-and-test-pitfalls">
+<h2>Common Build and Test Pitfalls<a class="headerlink" href="#common-build-and-test-pitfalls" title="Link to this heading">#</a></h2>
+<section id="native-code-must-be-built-first">
+<h3>Native Code Must Be Built First<a class="headerlink" href="#native-code-must-be-built-first" title="Link to this heading">#</a></h3>
+<p>The native Rust code must be compiled before running JVM tests. If you skip this step, tests will
+fail because they cannot find the native library. Always run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">core</span></code> (or <code class="docutils literal notranslate"><span class="pre">cd</span> <span class="pre">native</span> <span class="pre">&amp;&amp;</span> <span class="pre">cargo</span> <span class="pre">build</span></code>)
+before running Maven tests.</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Correct order</span>
+make<span class="w"> </span>core<span class="w">                    </span><span class="c1"># Build native code first</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;...&quot;</span><span class="w">   </span><span class="c1"># Then run JVM tests</span>
+</pre></div>
+</div>
+</section>
+<section id="debug-vs-release-mode">
+<h3>Debug vs Release Mode<a class="headerlink" href="#debug-vs-release-mode" title="Link to this heading">#</a></h3>
+<p>There is no need to use release mode (<code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release</span></code>) during normal development. Debug builds
+are faster to compile and provide better error messages. Only use release mode when:</p>
+<ul class="simple">
+<li><p>Running benchmarks</p></li>
+<li><p>Testing performance</p></li>
+<li><p>Creating a release build for deployment</p></li>
+</ul>
+<p>For regular development and testing, use <code class="docutils literal notranslate"><span class="pre">make</span></code> or <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">core</span></code> which build in debug mode.</p>
+</section>
+<section id="running-rust-tests">
+<h3>Running Rust Tests<a class="headerlink" href="#running-rust-tests" title="Link to this heading">#</a></h3>
+<p>When running Rust tests directly with <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">test</span></code>, the JVM library (<code class="docutils literal notranslate"><span class="pre">libjvm.so</span></code>) must be on
+your library path. Set the <code class="docutils literal notranslate"><span class="pre">LD_LIBRARY_PATH</span></code> environment variable to include your JDK’s <code class="docutils literal notranslate"><span class="pre">lib/server</span></code>
+directory:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Find your libjvm.so location (example for typical JDK installation)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span><span class="nv">$JAVA_HOME</span>/lib/server:<span class="nv">$LD_LIBRARY_PATH</span>
+
+<span class="c1"># Now you can run Rust tests</span>
+<span class="nb">cd</span><span class="w"> </span>native<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cargo<span class="w"> </span><span class="nb">test</span>
+</pre></div>
+</div>
+<p>Alternatively, use <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">test-rust</span></code> which handles the JVM compilation dependency automatically.</p>
+</section>
+<section id="avoid-using-pl-to-select-modules">
+<h3>Avoid Using <code class="docutils literal notranslate"><span class="pre">-pl</span></code> to Select Modules<a class="headerlink" href="#avoid-using-pl-to-select-modules" title="Link to this heading">#</a></h3>
+<p>When running Maven tests, avoid using <code class="docutils literal notranslate"><span class="pre">-pl</span> <span class="pre">spark</span></code> to select only the spark module. This can cause
+Maven to pick up the <code class="docutils literal notranslate"><span class="pre">common</span></code> module from your local Maven repository instead of using the current
+codebase, leading to inconsistent test results:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Avoid this - may use stale common module from local repo</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-pl<span class="w"> </span>spark<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;...&quot;</span>
+
+<span class="c1"># Do this instead - builds and tests with current code</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;...&quot;</span>
+</pre></div>
+</div>
+</section>
+<section id="use-wildcardsuites-for-running-tests">
+<h3>Use <code class="docutils literal notranslate"><span class="pre">wildcardSuites</span></code> for Running Tests<a class="headerlink" href="#use-wildcardsuites-for-running-tests" title="Link to this heading">#</a></h3>
+<p>When running specific test suites, use <code class="docutils literal notranslate"><span class="pre">wildcardSuites</span></code> instead of <code class="docutils literal notranslate"><span class="pre">suites</span></code> for more flexible
+matching. The <code class="docutils literal notranslate"><span class="pre">wildcardSuites</span></code> parameter allows partial matching of suite names:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run all suites containing &quot;CometCast&quot;</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-DwildcardSuites<span class="o">=</span><span class="s2">&quot;CometCast&quot;</span>
+
+<span class="c1"># Run specific suite with filter</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometCastSuite valid&quot;</span>
+</pre></div>
+</div>
+</section>
+</section>
 <section id="development-environment">
 <h2>Development Environment<a class="headerlink" href="#development-environment" title="Link to this heading">#</a></h2>
 <p>Comet is a multi-language project with native code written in Rust and JVM code written in Java and Scala.
@@ -583,14 +647,55 @@ It is possible to debug both native and JVM code concurrently as described in th
 </section>
 <section id="submitting-a-pull-request">
 <h2>Submitting a Pull Request<a class="headerlink" href="#submitting-a-pull-request" title="Link to this heading">#</a></h2>
+<p>Before submitting a pull request, follow this checklist to ensure your changes are ready:</p>
+<section id="format-your-code">
+<h3>1. Format Your Code<a class="headerlink" href="#format-your-code" title="Link to this heading">#</a></h3>
 <p>Comet uses <code class="docutils literal notranslate"><span class="pre">cargo</span> <span class="pre">fmt</span></code>, <a class="reference external" href="https://github.com/scalacenter/scalafix">Scalafix</a> and <a class="reference external" href="https://github.com/diffplug/spotless/tree/main/plugin-maven">Spotless</a> to
-automatically format the code. Before submitting a pull request, you can simply run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">format</span></code> to format the code.</p>
-<p>Additionally, it’s strongly recommended to run Clippy locally to catch potential issues before the CI/CD pipeline does. You can run the same Clippy checks used in CI/CD with:</p>
+automatically format the code. Run the following command to format all code:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>format
+</pre></div>
+</div>
+</section>
+<section id="build-and-verify">
+<h3>2. Build and Verify<a class="headerlink" href="#build-and-verify" title="Link to this heading">#</a></h3>
+<p>After formatting, run a full build to ensure everything compiles correctly and generated
+documentation is up to date:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>make
+</pre></div>
+</div>
+<p>This builds both native and JVM code. Fix any compilation errors before proceeding.</p>
+</section>
+<section id="run-clippy-recommended">
+<h3>3. Run Clippy (Recommended)<a class="headerlink" href="#run-clippy-recommended" title="Link to this heading">#</a></h3>
+<p>It’s strongly recommended to run Clippy locally to catch potential issues before the CI/CD pipeline does. You can run the same Clippy checks used in CI/CD with:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>native
 cargo<span class="w"> </span>clippy<span class="w"> </span>--color<span class="o">=</span>never<span class="w"> </span>--all-targets<span class="w"> </span>--workspace<span class="w"> </span>--<span class="w"> </span>-D<span class="w"> </span>warnings
 </pre></div>
 </div>
 <p>Make sure to resolve any Clippy warnings before submitting your pull request, as the CI/CD pipeline will fail if warnings are present.</p>
+</section>
+<section id="run-tests">
+<h3>4. Run Tests<a class="headerlink" href="#run-tests" title="Link to this heading">#</a></h3>
+<p>Run the relevant tests for your changes:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run all tests</span>
+make<span class="w"> </span><span class="nb">test</span>
+
+<span class="c1"># Or run only Rust tests</span>
+make<span class="w"> </span>test-rust
+
+<span class="c1"># Or run only JVM tests (native must be built first)</span>
+make<span class="w"> </span>test-jvm
+</pre></div>
+</div>
+</section>
+<section id="pre-pr-summary">
+<h3>Pre-PR Summary<a class="headerlink" href="#pre-pr-summary" title="Link to this heading">#</a></h3>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>format<span class="w">   </span><span class="c1"># Format code</span>
+make<span class="w">          </span><span class="c1"># Build everything and update generated docs</span>
+make<span class="w"> </span><span class="nb">test</span><span class="w">     </span><span class="c1"># Run tests (optional but recommended)</span>
+</pre></div>
+</div>
+</section>
 </section>
 <section id="how-to-format-md-document">
 <h2>How to format <code class="docutils literal notranslate"><span class="pre">.md</span></code> document<a class="headerlink" href="#how-to-format-md-document" title="Link to this heading">#</a></h2>
