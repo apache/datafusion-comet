@@ -1,5 +1,5 @@
 == Physical Plan ==
-* CometColumnarToRow (43)
+CometNativeColumnarToRow (43)
 +- CometSort (42)
    +- CometExchange (41)
       +- CometHashAggregate (40)
@@ -242,14 +242,14 @@ Arguments: rangepartitioning(Returns_Loss#31 DESC NULLS LAST, 5), ENSURE_REQUIRE
 Input [4]: [Call_Center#28, Call_Center_Name#29, Manager#30, Returns_Loss#31]
 Arguments: [Call_Center#28, Call_Center_Name#29, Manager#30, Returns_Loss#31], [Returns_Loss#31 DESC NULLS LAST]
 
-(43) CometColumnarToRow [codegen id : 1]
+(43) CometNativeColumnarToRow
 Input [4]: [Call_Center#28, Call_Center_Name#29, Manager#30, Returns_Loss#31]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 4 Hosting Expression = cr_returned_date_sk#9 IN dynamicpruning#10
 BroadcastExchange (48)
-+- * CometColumnarToRow (47)
++- CometNativeColumnarToRow (47)
    +- CometProject (46)
       +- CometFilter (45)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (44)
@@ -270,7 +270,7 @@ Condition : ((((isnotnull(d_year#12) AND isnotnull(d_moy#13)) AND (d_year#12 = 1
 Input [3]: [d_date_sk#11, d_year#12, d_moy#13]
 Arguments: [d_date_sk#11], [d_date_sk#11]
 
-(47) CometColumnarToRow [codegen id : 1]
+(47) CometNativeColumnarToRow
 Input [1]: [d_date_sk#11]
 
 (48) BroadcastExchange

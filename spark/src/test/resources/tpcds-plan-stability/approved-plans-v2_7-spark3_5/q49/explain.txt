@@ -1,5 +1,5 @@
 == Physical Plan ==
-* CometColumnarToRow (78)
+CometNativeColumnarToRow (78)
 +- CometTakeOrderedAndProject (77)
    +- CometHashAggregate (76)
       +- CometColumnarExchange (75)
@@ -10,7 +10,7 @@
                :     +- Window (24)
                :        +- * Sort (23)
                :           +- Window (22)
-               :              +- * CometColumnarToRow (21)
+               :              +- CometNativeColumnarToRow (21)
                :                 +- CometSort (20)
                :                    +- CometExchange (19)
                :                       +- CometHashAggregate (18)
@@ -36,7 +36,7 @@
                :     +- Window (47)
                :        +- * Sort (46)
                :           +- Window (45)
-               :              +- * CometColumnarToRow (44)
+               :              +- CometNativeColumnarToRow (44)
                :                 +- CometSort (43)
                :                    +- CometExchange (42)
                :                       +- CometHashAggregate (41)
@@ -59,7 +59,7 @@
                      +- Window (70)
                         +- * Sort (69)
                            +- Window (68)
-                              +- * CometColumnarToRow (67)
+                              +- CometNativeColumnarToRow (67)
                                  +- CometSort (66)
                                     +- CometExchange (65)
                                        +- CometHashAggregate (64)
@@ -173,14 +173,14 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 Input [3]: [item#22, return_ratio#23, currency_ratio#24]
 Arguments: [item#22, return_ratio#23, currency_ratio#24], [return_ratio#23 ASC NULLS FIRST]
 
-(21) CometColumnarToRow [codegen id : 1]
+(21) CometNativeColumnarToRow
 Input [3]: [item#22, return_ratio#23, currency_ratio#24]
 
 (22) Window
 Input [3]: [item#22, return_ratio#23, currency_ratio#24]
 Arguments: [rank(return_ratio#23) windowspecdefinition(return_ratio#23 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS return_rank#25], [return_ratio#23 ASC NULLS FIRST]
 
-(23) Sort [codegen id : 2]
+(23) Sort [codegen id : 1]
 Input [4]: [item#22, return_ratio#23, currency_ratio#24, return_rank#25]
 Arguments: [currency_ratio#24 ASC NULLS FIRST], false, 0
 
@@ -188,11 +188,11 @@ Arguments: [currency_ratio#24 ASC NULLS FIRST], false, 0
 Input [4]: [item#22, return_ratio#23, currency_ratio#24, return_rank#25]
 Arguments: [rank(currency_ratio#24) windowspecdefinition(currency_ratio#24 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS currency_rank#26], [currency_ratio#24 ASC NULLS FIRST]
 
-(25) Filter [codegen id : 3]
+(25) Filter [codegen id : 2]
 Input [5]: [item#22, return_ratio#23, currency_ratio#24, return_rank#25, currency_rank#26]
 Condition : ((return_rank#25 <= 10) OR (currency_rank#26 <= 10))
 
-(26) Project [codegen id : 3]
+(26) Project [codegen id : 2]
 Output [5]: [web AS channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26]
 Input [5]: [item#22, return_ratio#23, currency_ratio#24, return_rank#25, currency_rank#26]
 
@@ -274,14 +274,14 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 Input [3]: [item#47, return_ratio#48, currency_ratio#49]
 Arguments: [item#47, return_ratio#48, currency_ratio#49], [return_ratio#48 ASC NULLS FIRST]
 
-(44) CometColumnarToRow [codegen id : 4]
+(44) CometNativeColumnarToRow
 Input [3]: [item#47, return_ratio#48, currency_ratio#49]
 
 (45) Window
 Input [3]: [item#47, return_ratio#48, currency_ratio#49]
 Arguments: [rank(return_ratio#48) windowspecdefinition(return_ratio#48 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS return_rank#50], [return_ratio#48 ASC NULLS FIRST]
 
-(46) Sort [codegen id : 5]
+(46) Sort [codegen id : 3]
 Input [4]: [item#47, return_ratio#48, currency_ratio#49, return_rank#50]
 Arguments: [currency_ratio#49 ASC NULLS FIRST], false, 0
 
@@ -289,11 +289,11 @@ Arguments: [currency_ratio#49 ASC NULLS FIRST], false, 0
 Input [4]: [item#47, return_ratio#48, currency_ratio#49, return_rank#50]
 Arguments: [rank(currency_ratio#49) windowspecdefinition(currency_ratio#49 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS currency_rank#51], [currency_ratio#49 ASC NULLS FIRST]
 
-(48) Filter [codegen id : 6]
+(48) Filter [codegen id : 4]
 Input [5]: [item#47, return_ratio#48, currency_ratio#49, return_rank#50, currency_rank#51]
 Condition : ((return_rank#50 <= 10) OR (currency_rank#51 <= 10))
 
-(49) Project [codegen id : 6]
+(49) Project [codegen id : 4]
 Output [5]: [catalog AS channel#52, item#47, return_ratio#48, return_rank#50, currency_rank#51]
 Input [5]: [item#47, return_ratio#48, currency_ratio#49, return_rank#50, currency_rank#51]
 
@@ -375,14 +375,14 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
 Input [3]: [item#72, return_ratio#73, currency_ratio#74]
 Arguments: [item#72, return_ratio#73, currency_ratio#74], [return_ratio#73 ASC NULLS FIRST]
 
-(67) CometColumnarToRow [codegen id : 7]
+(67) CometNativeColumnarToRow
 Input [3]: [item#72, return_ratio#73, currency_ratio#74]
 
 (68) Window
 Input [3]: [item#72, return_ratio#73, currency_ratio#74]
 Arguments: [rank(return_ratio#73) windowspecdefinition(return_ratio#73 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS return_rank#75], [return_ratio#73 ASC NULLS FIRST]
 
-(69) Sort [codegen id : 8]
+(69) Sort [codegen id : 5]
 Input [4]: [item#72, return_ratio#73, currency_ratio#74, return_rank#75]
 Arguments: [currency_ratio#74 ASC NULLS FIRST], false, 0
 
@@ -390,17 +390,17 @@ Arguments: [currency_ratio#74 ASC NULLS FIRST], false, 0
 Input [4]: [item#72, return_ratio#73, currency_ratio#74, return_rank#75]
 Arguments: [rank(currency_ratio#74) windowspecdefinition(currency_ratio#74 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS currency_rank#76], [currency_ratio#74 ASC NULLS FIRST]
 
-(71) Filter [codegen id : 9]
+(71) Filter [codegen id : 6]
 Input [5]: [item#72, return_ratio#73, currency_ratio#74, return_rank#75, currency_rank#76]
 Condition : ((return_rank#75 <= 10) OR (currency_rank#76 <= 10))
 
-(72) Project [codegen id : 9]
+(72) Project [codegen id : 6]
 Output [5]: [store AS channel#77, item#72, return_ratio#73, return_rank#75, currency_rank#76]
 Input [5]: [item#72, return_ratio#73, currency_ratio#74, return_rank#75, currency_rank#76]
 
 (73) Union
 
-(74) HashAggregate [codegen id : 10]
+(74) HashAggregate [codegen id : 7]
 Input [5]: [channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26]
 Keys [5]: [channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26]
 Functions: []
@@ -420,14 +420,14 @@ Functions: []
 Input [5]: [channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#27 ASC NULLS FIRST,return_rank#25 ASC NULLS FIRST,currency_rank#26 ASC NULLS FIRST,item#22 ASC NULLS FIRST], output=[channel#27,item#22,return_ratio#23,return_rank#25,currency_rank#26]), [channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26], 100, 0, [channel#27 ASC NULLS FIRST, return_rank#25 ASC NULLS FIRST, currency_rank#26 ASC NULLS FIRST, item#22 ASC NULLS FIRST], [channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26]
 
-(78) CometColumnarToRow [codegen id : 11]
+(78) CometNativeColumnarToRow
 Input [5]: [channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#6 IN dynamicpruning#7
 BroadcastExchange (83)
-+- * CometColumnarToRow (82)
++- CometNativeColumnarToRow (82)
    +- CometProject (81)
       +- CometFilter (80)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (79)
@@ -448,7 +448,7 @@ Condition : ((((isnotnull(d_year#14) AND isnotnull(d_moy#15)) AND (d_year#14 = 2
 Input [3]: [d_date_sk#13, d_year#14, d_moy#15]
 Arguments: [d_date_sk#13], [d_date_sk#13]
 
-(82) CometColumnarToRow [codegen id : 1]
+(82) CometNativeColumnarToRow
 Input [1]: [d_date_sk#13]
 
 (83) BroadcastExchange

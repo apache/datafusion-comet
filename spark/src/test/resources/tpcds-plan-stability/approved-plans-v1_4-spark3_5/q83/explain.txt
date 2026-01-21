@@ -1,5 +1,5 @@
 == Physical Plan ==
-* CometColumnarToRow (49)
+CometNativeColumnarToRow (49)
 +- CometTakeOrderedAndProject (48)
    +- CometProject (47)
       +- CometBroadcastHashJoin (46)
@@ -270,14 +270,14 @@ Arguments: [item_id#22, sr_item_qty#23, sr_dev#34, cr_item_qty#21, cr_dev#35, wr
 Input [8]: [item_id#22, sr_item_qty#23, sr_dev#34, cr_item_qty#21, cr_dev#35, wr_item_qty#33, wr_dev#36, average#37]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[item_id#22 ASC NULLS FIRST,sr_item_qty#23 ASC NULLS FIRST], output=[item_id#22,sr_item_qty#23,sr_dev#34,cr_item_qty#21,cr_dev#35,wr_item_qty#33,wr_dev#36,average#37]), [item_id#22, sr_item_qty#23, sr_dev#34, cr_item_qty#21, cr_dev#35, wr_item_qty#33, wr_dev#36, average#37], 100, 0, [item_id#22 ASC NULLS FIRST, sr_item_qty#23 ASC NULLS FIRST], [item_id#22, sr_item_qty#23, sr_dev#34, cr_item_qty#21, cr_dev#35, wr_item_qty#33, wr_dev#36, average#37]
 
-(49) CometColumnarToRow [codegen id : 1]
+(49) CometNativeColumnarToRow
 Input [8]: [item_id#22, sr_item_qty#23, sr_dev#34, cr_item_qty#21, cr_dev#35, wr_item_qty#33, wr_dev#36, average#37]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = sr_returned_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (63)
-+- * CometColumnarToRow (62)
++- CometNativeColumnarToRow (62)
    +- CometProject (61)
       +- CometBroadcastHashJoin (60)
          :- CometFilter (51)
@@ -349,7 +349,7 @@ Arguments: [d_date#9], [d_date#10], LeftSemi, BuildRight
 Input [2]: [d_date_sk#8, d_date#9]
 Arguments: [d_date_sk#8], [d_date_sk#8]
 
-(62) CometColumnarToRow [codegen id : 1]
+(62) CometNativeColumnarToRow
 Input [1]: [d_date_sk#8]
 
 (63) BroadcastExchange

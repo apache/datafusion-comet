@@ -1,4 +1,4 @@
-CometColumnarToRow
+CometNativeColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometHashAggregate
       +- CometExchange
@@ -19,7 +19,7 @@ CometColumnarToRow
                   :        :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.inventory
                   :        :                    +- SubqueryBroadcast
                   :        :                       +- BroadcastExchange
-                  :        :                          +- CometColumnarToRow
+                  :        :                          +- CometNativeColumnarToRow
                   :        :                             +- CometProject
                   :        :                                +- CometFilter
                   :        :                                   +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim

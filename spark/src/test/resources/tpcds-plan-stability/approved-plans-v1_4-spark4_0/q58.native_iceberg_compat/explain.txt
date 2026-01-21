@@ -1,5 +1,5 @@
 == Physical Plan ==
-* CometColumnarToRow (52)
+CometNativeColumnarToRow (52)
 +- CometTakeOrderedAndProject (51)
    +- CometProject (50)
       +- CometBroadcastHashJoin (49)
@@ -285,14 +285,14 @@ Arguments: [item_id#12, ss_item_rev#13, ss_dev#34, cs_item_rev#23, cs_dev#35, ws
 Input [8]: [item_id#12, ss_item_rev#13, ss_dev#34, cs_item_rev#23, cs_dev#35, ws_item_rev#33, ws_dev#36, average#37]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[item_id#12 ASC NULLS FIRST,ss_item_rev#13 ASC NULLS FIRST], output=[item_id#12,ss_item_rev#13,ss_dev#34,cs_item_rev#23,cs_dev#35,ws_item_rev#33,ws_dev#36,average#37]), [item_id#12, ss_item_rev#13, ss_dev#34, cs_item_rev#23, cs_dev#35, ws_item_rev#33, ws_dev#36, average#37], 100, 0, [item_id#12 ASC NULLS FIRST, ss_item_rev#13 ASC NULLS FIRST], [item_id#12, ss_item_rev#13, ss_dev#34, cs_item_rev#23, cs_dev#35, ws_item_rev#33, ws_dev#36, average#37]
 
-(52) CometColumnarToRow [codegen id : 1]
+(52) CometNativeColumnarToRow
 Input [8]: [item_id#12, ss_item_rev#13, ss_dev#34, cs_item_rev#23, cs_dev#35, ws_item_rev#33, ws_dev#36, average#37]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (62)
-+- * CometColumnarToRow (61)
++- CometNativeColumnarToRow (61)
    +- CometProject (60)
       +- CometBroadcastHashJoin (59)
          :- CometFilter (54)
@@ -342,7 +342,7 @@ Arguments: [d_date#9], [d_date#10], LeftSemi, BuildRight
 Input [2]: [d_date_sk#8, d_date#9]
 Arguments: [d_date_sk#8], [d_date_sk#8]
 
-(61) CometColumnarToRow [codegen id : 1]
+(61) CometNativeColumnarToRow
 Input [1]: [d_date_sk#8]
 
 (62) BroadcastExchange
@@ -352,7 +352,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 Subquery:2 Hosting operator id = 56 Hosting Expression = ReusedSubquery Subquery scalar-subquery#39, [id=#40]
 
 Subquery:3 Hosting operator id = 55 Hosting Expression = Subquery scalar-subquery#39, [id=#40]
-* CometColumnarToRow (66)
+CometNativeColumnarToRow (66)
 +- CometProject (65)
    +- CometFilter (64)
       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (63)
@@ -373,7 +373,7 @@ Condition : (isnotnull(d_date#41) AND (d_date#41 = 2000-01-03))
 Input [2]: [d_date#41, d_week_seq#42]
 Arguments: [d_week_seq#42], [d_week_seq#42]
 
-(66) CometColumnarToRow [codegen id : 1]
+(66) CometNativeColumnarToRow
 Input [1]: [d_week_seq#42]
 
 Subquery:4 Hosting operator id = 21 Hosting Expression = cs_sold_date_sk#16 IN dynamicpruning#4
