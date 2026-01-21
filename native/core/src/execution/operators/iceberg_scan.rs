@@ -62,6 +62,7 @@ pub struct IcebergScanExec {
     file_task_groups: Vec<Vec<iceberg::scan::FileScanTask>>,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
+    #[allow(dead_code)]
     /// Optional master key ID for encrypted Iceberg table
     table_master_key: Option<String>,
 }
