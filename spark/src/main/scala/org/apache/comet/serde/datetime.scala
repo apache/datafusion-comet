@@ -21,8 +21,8 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, WeekDay, WeekOfYear, Year}
-import org.apache.spark.sql.types.{DateType, IntegerType, StringType}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -249,6 +249,58 @@ object CometSecond extends CometExpressionSerde[Second] {
           .build())
     } else {
       withInfo(expr, expr.child)
+      None
+    }
+  }
+}
+
+object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
+
+  private def isSupportedInputType(expr: UnixTimestamp): Boolean = {
+    // Note: TimestampNTZType is not supported because Comet incorrectly applies
+    // timezone conversion to TimestampNTZ values. TimestampNTZ stores local time
+    // without timezone, so no conversion should be applied.
+    expr.children.head.dataType match {
+      case TimestampType | DateType => true
+      case _ => false
+    }
+  }
+
+  override def getSupportLevel(expr: UnixTimestamp): SupportLevel = {
+    if (isSupportedInputType(expr)) {
+      Compatible()
+    } else {
+      val inputType = expr.children.head.dataType
+      Unsupported(Some(s"unix_timestamp does not support input type: $inputType"))
+    }
+  }
+
+  override def convert(
+      expr: UnixTimestamp,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    if (!isSupportedInputType(expr)) {
+      val inputType = expr.children.head.dataType
+      withInfo(expr, s"unix_timestamp does not support input type: $inputType")
+      return None
+    }
+
+    val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
+
+    if (childExpr.isDefined) {
+      val builder = ExprOuterClass.UnixTimestamp.newBuilder()
+      builder.setChild(childExpr.get)
+
+      val timeZone = expr.timeZoneId.getOrElse("UTC")
+      builder.setTimezone(timeZone)
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setUnixTimestamp(builder)
+          .build())
+    } else {
+      withInfo(expr, expr.children.head)
       None
     }
   }
