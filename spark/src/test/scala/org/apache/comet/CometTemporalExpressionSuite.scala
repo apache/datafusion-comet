@@ -206,7 +206,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     checkSparkAnswerAndOperator(
       "SELECT year, month, day, make_date(year, month, day) FROM tbl ORDER BY year, month, day")
 
-    // Fuzzing with nullable integer columns
+    // Fuzzing with nullable integer columns - tests arbitrary values including invalid dates
     val r2 = new Random(42)
     val nullableSchema = StructType(
       Seq(

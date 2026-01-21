@@ -70,8 +70,8 @@ pub use comet_scalar_funcs::{
     register_all_comet_functions,
 };
 pub use datetime_funcs::{
-    SparkDateDiff, SparkDateTrunc, SparkHour, SparkMinute, SparkSecond, SparkUnixTimestamp,
-    TimestampTruncExpr,
+    SparkDateDiff, SparkDateTrunc, SparkHour, SparkMakeDate, SparkMinute, SparkSecond,
+    SparkUnixTimestamp, TimestampTruncExpr,
 };
 pub use error::{SparkError, SparkResult};
 pub use hash_funcs::*;
