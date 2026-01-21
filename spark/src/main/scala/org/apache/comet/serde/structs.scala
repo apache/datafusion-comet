@@ -252,7 +252,8 @@ object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
           s"The schema ${expr.inputSchema} is not supported because " +
             s"it includes a incompatible data types: $incompatibleDataTypes"))
     }
-    Compatible()
+    // https://github.com/apache/datafusion-comet/issues/3232
+    Incompatible()
   }
 
   override def convert(
