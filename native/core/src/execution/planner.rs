@@ -70,8 +70,7 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
-    SumInteger,
+    BloomFilterAgg, BloomFilterMightContain, EvalMode, SumInteger,
 };
 use iceberg::expr::Bind;
 
@@ -126,8 +125,7 @@ use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncre
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RandExpr,
-    RandnExpr, SparkCastOptions, Stddev, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn,
-    Variance,
+    RandnExpr, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -374,65 +372,6 @@ impl PhysicalPlanner {
                     datatype,
                     SparkCastOptions::new(eval_mode, &expr.timezone, expr.allow_incompat),
                 )))
-            }
-            ExprStruct::Hour(expr) => {
-                let child =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let timezone = expr.timezone.clone();
-                let args = vec![child];
-                let comet_hour = Arc::new(ScalarUDF::new_from_impl(SparkHour::new(timezone)));
-                let field_ref = Arc::new(Field::new("hour", DataType::Int32, true));
-                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
-                    "hour",
-                    comet_hour,
-                    args,
-                    field_ref,
-                    Arc::new(ConfigOptions::default()),
-                );
-
-                Ok(Arc::new(expr))
-            }
-            ExprStruct::Minute(expr) => {
-                let child =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let timezone = expr.timezone.clone();
-                let args = vec![child];
-                let comet_minute = Arc::new(ScalarUDF::new_from_impl(SparkMinute::new(timezone)));
-                let field_ref = Arc::new(Field::new("minute", DataType::Int32, true));
-                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
-                    "minute",
-                    comet_minute,
-                    args,
-                    field_ref,
-                    Arc::new(ConfigOptions::default()),
-                );
-
-                Ok(Arc::new(expr))
-            }
-            ExprStruct::Second(expr) => {
-                let child =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let timezone = expr.timezone.clone();
-                let args = vec![child];
-                let comet_second = Arc::new(ScalarUDF::new_from_impl(SparkSecond::new(timezone)));
-                let field_ref = Arc::new(Field::new("second", DataType::Int32, true));
-                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
-                    "second",
-                    comet_second,
-                    args,
-                    field_ref,
-                    Arc::new(ConfigOptions::default()),
-                );
-
-                Ok(Arc::new(expr))
-            }
-            ExprStruct::TruncTimestamp(expr) => {
-                let child =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let format = self.create_expr(expr.format.as_ref().unwrap(), input_schema)?;
-                let timezone = expr.timezone.clone();
-
-                Ok(Arc::new(TimestampTruncExpr::new(child, format, timezone)))
             }
             ExprStruct::CheckOverflow(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -1248,6 +1187,12 @@ impl PhysicalPlanner {
                     ))),
                 }?;
 
+                let object_store_options: HashMap<String, String> = writer
+                    .object_store_options
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+
                 let parquet_writer = Arc::new(ParquetWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     writer.output_path.clone(),
@@ -1261,6 +1206,7 @@ impl PhysicalPlanner {
                     codec,
                     self.partition,
                     writer.column_names.clone(),
+                    object_store_options,
                 )?);
 
                 Ok((
@@ -2887,6 +2833,7 @@ fn parse_file_scan_tasks(
                 partition,
                 partition_spec,
                 name_mapping,
+                case_sensitive: false,
             })
         })
         .collect();
