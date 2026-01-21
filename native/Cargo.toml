@@ -34,10 +34,10 @@ edition = "2021"
 rust-version = "1.88"
 
 [workspace.dependencies]
-arrow = { version = "57.0.0", features = ["prettyprint", "ffi", "chrono-tz"] }
+arrow = { version = "57.2.0", features = ["prettyprint", "ffi", "chrono-tz"] }
 async-trait = { version = "0.1" }
 bytes = { version = "1.10.0" }
-parquet = { version = "57.0.0", default-features = false, features = ["experimental"] }
+parquet = { version = "57.2.0", default-features = false, features = ["experimental"] }
 datafusion = { version = "51.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
 datafusion-datasource = { version = "51.0.0" }
 datafusion-spark = { version = "51.0.0" }
@@ -54,7 +54,7 @@ object_store = { version = "0.12.3", features = ["gcp", "azure", "aws", "http"] 
 url = "2.2"
 aws-config = "1.8.10"
 aws-credential-types = "1.2.9"
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "16906c1" }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "ee21563" }
 
 [profile.release]
 debug = true

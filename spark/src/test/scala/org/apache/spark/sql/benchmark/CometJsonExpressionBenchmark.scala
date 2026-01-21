@@ -19,8 +19,7 @@
 
 package org.apache.spark.sql.benchmark
 
-import org.apache.spark.benchmark.Benchmark
-import org.apache.spark.sql.catalyst.expressions.JsonToStructs
+import org.apache.spark.sql.catalyst.expressions.{JsonToStructs, StructsToJson}
 
 import org.apache.comet.CometConf
 
@@ -54,8 +53,6 @@ object CometJsonExpressionBenchmark extends CometBenchmarkBase {
    * Generic method to run a JSON expression benchmark with the given configuration.
    */
   def runJsonExprBenchmark(config: JsonExprConfig, values: Int): Unit = {
-    val benchmark = new Benchmark(config.name, values, output = output)
-
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         // Generate data with specified JSON patterns
@@ -109,6 +106,44 @@ object CometJsonExpressionBenchmark extends CometBenchmarkBase {
               FROM $tbl
             """)
 
+          case "to_json - simple primitives" =>
+            spark.sql(
+              s"""SELECT named_struct("a", CAST(value AS INT), "b", concat("str_", CAST(value AS STRING))) AS json_struct FROM $tbl""")
+
+          case "to_json - all primitive types" =>
+            spark.sql(s"""
+              SELECT named_struct(
+                "i32", CAST(value % 1000 AS INT),
+                "i64", CAST(value * 1000000000L AS LONG),
+                "f32", CAST(value * 1.5 AS FLOAT),
+                "f64", CAST(value * 2.5 AS DOUBLE),
+                "bool", CASE WHEN value % 2 = 0 THEN true ELSE false END,
+                "str", concat("value_", CAST(value AS STRING))
+              ) AS json_struct FROM $tbl
+            """)
+
+          case "to_json - with nulls" =>
+            spark.sql(s"""
+              SELECT
+                CASE
+                  WHEN value % 10 = 0 THEN CAST(NULL AS STRUCT<a: INT, b: STRING>)
+                  WHEN value % 5 = 0 THEN named_struct("a", CAST(NULL AS INT), "b", "test")
+                  WHEN value % 3 = 0 THEN named_struct("a", CAST(123 AS INT), "b", CAST(NULL AS STRING))
+                  ELSE named_struct("a", CAST(value AS INT), "b", concat("str_", CAST(value AS STRING)))
+                END AS json_struct
+              FROM $tbl
+            """)
+
+          case "to_json - nested struct" =>
+            spark.sql(s"""
+              SELECT named_struct(
+                "outer", named_struct(
+                  "inner_a", CAST(value AS INT),
+                  "inner_b", concat("nested_", CAST(value AS STRING))
+                )
+              ) AS json_struct FROM $tbl
+            """)
+
           case _ =>
             spark.sql(s"""
               SELECT
@@ -119,37 +154,19 @@ object CometJsonExpressionBenchmark extends CometBenchmarkBase {
 
         prepareTable(dir, jsonData)
 
-        benchmark.addCase("SQL Parquet - Spark") { _ =>
-          spark.sql(config.query).noop()
-        }
+        val extraConfigs = Map(
+          CometConf.getExprAllowIncompatConfigKey(classOf[JsonToStructs]) -> "true",
+          CometConf.getExprAllowIncompatConfigKey(
+            classOf[StructsToJson]) -> "true") ++ config.extraCometConfigs
 
-        benchmark.addCase("SQL Parquet - Comet (Scan)") { _ =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
-            spark.sql(config.query).noop()
-          }
-        }
-
-        benchmark.addCase("SQL Parquet - Comet (Scan, Exec)") { _ =>
-          val baseConfigs =
-            Map(
-              CometConf.COMET_ENABLED.key -> "true",
-              CometConf.COMET_EXEC_ENABLED.key -> "true",
-              CometConf.getExprAllowIncompatConfigKey(classOf[JsonToStructs]) -> "true",
-              "spark.sql.optimizer.constantFolding.enabled" -> "false")
-          val allConfigs = baseConfigs ++ config.extraCometConfigs
-
-          withSQLConf(allConfigs.toSeq: _*) {
-            spark.sql(config.query).noop()
-          }
-        }
-
-        benchmark.run()
+        runExpressionBenchmark(config.name, values, config.query, extraConfigs)
       }
     }
   }
 
   // Configuration for all JSON expression benchmarks
   private val jsonExpressions = List(
+    // from_json tests
     JsonExprConfig(
       "from_json - simple primitives",
       "a INT, b STRING",
@@ -169,7 +186,25 @@ object CometJsonExpressionBenchmark extends CometBenchmarkBase {
     JsonExprConfig(
       "from_json - field access",
       "a INT, b STRING",
-      "SELECT from_json(json_str, 'a INT, b STRING').a FROM parquetV1Table"))
+      "SELECT from_json(json_str, 'a INT, b STRING').a FROM parquetV1Table"),
+
+    // to_json tests
+    JsonExprConfig(
+      "to_json - simple primitives",
+      "a INT, b STRING",
+      "SELECT to_json(json_struct) FROM parquetV1Table"),
+    JsonExprConfig(
+      "to_json - all primitive types",
+      "i32 INT, i64 BIGINT, f32 FLOAT, f64 DOUBLE, bool BOOLEAN, str STRING",
+      "SELECT to_json(json_struct) FROM parquetV1Table"),
+    JsonExprConfig(
+      "to_json - with nulls",
+      "a INT, b STRING",
+      "SELECT to_json(json_struct) FROM parquetV1Table"),
+    JsonExprConfig(
+      "to_json - nested struct",
+      "outer STRUCT<inner_a: INT, inner_b: STRING>",
+      "SELECT to_json(json_struct) FROM parquetV1Table"))
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024

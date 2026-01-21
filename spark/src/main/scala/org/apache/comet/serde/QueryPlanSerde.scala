@@ -63,7 +63,8 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[CreateArray] -> CometCreateArray,
     classOf[ElementAt] -> CometElementAt,
     classOf[Flatten] -> CometFlatten,
-    classOf[GetArrayItem] -> CometGetArrayItem)
+    classOf[GetArrayItem] -> CometGetArrayItem,
+    classOf[Size] -> CometSize)
 
   private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[CaseWhen] -> CometCaseWhen, classOf[If] -> CometIf)
@@ -184,7 +185,10 @@ object QueryPlanSerde extends Logging with CometExprShim {
 
   private val temporalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[DateAdd] -> CometDateAdd,
+    classOf[DateDiff] -> CometDateDiff,
+    classOf[DateFormatClass] -> CometDateFormat,
     classOf[DateSub] -> CometDateSub,
+    classOf[UnixDate] -> CometUnixDate,
     classOf[FromUnixTime] -> CometFromUnixTime,
     classOf[Hour] -> CometHour,
     classOf[Minute] -> CometMinute,

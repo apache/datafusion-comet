@@ -21,7 +21,8 @@
 
 mod error;
 
-mod kernels;
+pub mod kernels;
+pub use kernels::temporal::date_trunc_dyn;
 mod static_invoke;
 pub use static_invoke::*;
 
@@ -69,7 +70,8 @@ pub use comet_scalar_funcs::{
     register_all_comet_functions,
 };
 pub use datetime_funcs::{
-    SparkDateTrunc, SparkHour, SparkMinute, SparkSecond, SparkUnixTimestamp, TimestampTruncExpr,
+    SparkDateDiff, SparkDateTrunc, SparkHour, SparkMinute, SparkSecond, SparkUnixTimestamp,
+    TimestampTruncExpr,
 };
 pub use error::{SparkError, SparkResult};
 pub use hash_funcs::*;
