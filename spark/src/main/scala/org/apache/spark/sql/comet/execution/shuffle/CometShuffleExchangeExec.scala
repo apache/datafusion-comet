@@ -36,6 +36,7 @@ import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.comet.{CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometSinkPlaceHolder}
 import org.apache.spark.sql.execution._
+import org.apache.spark.sql.execution.ScalarSubquery
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
@@ -122,7 +123,16 @@ case class CometShuffleExchangeExec(
               // Only optimize single-source native scan case for now
               // JVM scan wrappers (CometScanExec, CometBatchScanExec) still need JNI input,
               // so we don't optimize those yet
-              if (inputSources.size == 1) {
+              // Check if the plan contains subqueries (e.g., bloom filters with might_contain).
+              // Subqueries are registered with the parent execution context ID, but direct
+              // native shuffle creates a new execution context, so subquery lookup would fail.
+              val containsSubquery = nativeChild.exists { p =>
+                p.expressions.exists(_.exists(_.isInstanceOf[ScalarSubquery]))
+              }
+              if (containsSubquery) {
+                // Fall back to avoid subquery lookup failures
+                None
+              } else if (inputSources.size == 1) {
                 inputSources.head match {
                   case scan: CometNativeScanExec =>
                     // Fully native scan - no JNI input needed, native code reads files directly
