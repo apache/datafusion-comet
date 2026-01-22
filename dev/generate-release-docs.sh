@@ -41,11 +41,11 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${PROJECT_ROOT}"
 
-echo "Compiling ..."
-./mvnw -q compile -DskipTests -am
+echo "Compiling spark module..."
+./mvnw -q compile -pl spark -DskipTests -am
 
 echo "Generating documentation content..."
-./mvnw -q exec:java \
+./mvnw -q exec:java -pl spark \
   -Dexec.mainClass=org.apache.comet.GenerateDocs \
   -Dexec.arguments="${PROJECT_ROOT}/docs/source/user-guide/latest/" \
   -Dexec.classpathScope=compile
