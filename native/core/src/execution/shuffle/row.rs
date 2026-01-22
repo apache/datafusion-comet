@@ -637,7 +637,10 @@ pub(crate) fn append_columns(
                 .expect("Should be a StructBuilder");
 
             let mut row = SparkUnsafeRow::new(schema);
-            let nested_is_null: Vec<bool> = (row_start..row_end)
+
+            // 1. Calculate validity and record it in the parent struct
+            // FIXED: Added underscore prefix to variable name to silence 'unused' error
+            let _nested_is_null: Vec<bool> = (row_start..row_end)
                 .map(|i| {
                     let row_addr = unsafe { *row_addresses_ptr.add(i) };
                     let row_size = unsafe { *row_sizes_ptr.add(i) };
@@ -645,7 +648,7 @@ pub(crate) fn append_columns(
 
                     let is_null = row.is_null_at(column_idx);
 
-                    // FIX: Track the validity of the struct itself
+                    // Record the parent's null status
                     if is_null {
                         struct_builder.append_null();
                     } else {
@@ -655,17 +658,19 @@ pub(crate) fn append_columns(
                 })
                 .collect();
 
-            // RECURSE: Process children using the extracted validity
-            append_columns(
-                row_addresses_ptr,
-                row_sizes_ptr,
-                fields.len(),
-                row_start,
-                schema,
-                row_end,
-                builder,
-                prefer_dictionary_ratio,
-            )?;
+            // 2. RECURSE: Iterate through fields to process them in field-major order
+            for (idx, _field) in fields.into_iter().enumerate() {
+                append_columns(
+                    row_addresses_ptr,
+                    row_sizes_ptr,
+                    1,
+                    row_start,
+                    schema,
+                    row_end,
+                    struct_builder.field_builder(idx).unwrap(),
+                    prefer_dictionary_ratio,
+                )?;
+            }
         }
         _ => {
             unreachable!("Unsupported data type of column: {:?}", dt)
