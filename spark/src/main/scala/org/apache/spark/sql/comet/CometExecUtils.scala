@@ -53,9 +53,13 @@ object CometExecUtils {
       limit: Int,
       offset: Int = 0): RDD[ColumnarBatch] = {
     val numParts = childPlan.getNumPartitions
+    val numOutputCols = outputAttribute.length
+    // Serialize the plan once and broadcast to all executors to avoid repeated serialization
+    val serializedPlan = CometExec.serializePlan(
+      CometExecUtils.getLimitNativePlan(outputAttribute, limit, offset).get)
+    val broadcastPlan = childPlan.sparkContext.broadcast(serializedPlan)
     childPlan.mapPartitionsWithIndexInternal { case (idx, iter) =>
-      val limitOp = CometExecUtils.getLimitNativePlan(outputAttribute, limit, offset).get
-      CometExec.getCometIterator(Seq(iter), outputAttribute.length, limitOp, numParts, idx)
+      CometExec.getCometIterator(Seq(iter), numOutputCols, broadcastPlan.value, numParts, idx)
     }
   }
 

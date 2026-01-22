@@ -114,6 +114,20 @@ object CometExec {
 
   def newIterId: Long = curId.getAndIncrement()
 
+  /**
+   * Serializes a native plan operator to a byte array. This method should be called once outside
+   * of partition iteration, and the resulting bytes can be reused across all partitions to avoid
+   * repeated serialization overhead.
+   */
+  def serializePlan(nativePlan: Operator): Array[Byte] = {
+    val size = nativePlan.getSerializedSize
+    val bytes = new Array[Byte](size)
+    val codedOutput = CodedOutputStream.newInstance(bytes)
+    nativePlan.writeTo(codedOutput)
+    codedOutput.checkNoSpaceLeft()
+    bytes
+  }
+
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
       numOutputCols: Int,
@@ -131,6 +145,28 @@ object CometExec {
       encryptedFilePaths = Seq.empty)
   }
 
+  /**
+   * Creates a CometExecIterator from pre-serialized plan bytes. Use this overload when the same
+   * plan is used across multiple partitions to avoid serializing the plan repeatedly.
+   */
+  def getCometIterator(
+      inputs: Seq[Iterator[ColumnarBatch]],
+      numOutputCols: Int,
+      serializedPlan: Array[Byte],
+      numParts: Int,
+      partitionIdx: Int): CometExecIterator = {
+    new CometExecIterator(
+      newIterId,
+      inputs,
+      numOutputCols,
+      serializedPlan,
+      CometMetricNode(Map.empty),
+      numParts,
+      partitionIdx,
+      broadcastedHadoopConfForEncryption = None,
+      encryptedFilePaths = Seq.empty)
+  }
+
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
       numOutputCols: Int,
@@ -140,11 +176,7 @@ object CometExec {
       partitionIdx: Int,
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
       encryptedFilePaths: Seq[String]): CometExecIterator = {
-    val size = nativePlan.getSerializedSize
-    val bytes = new Array[Byte](size)
-    val codedOutput = CodedOutputStream.newInstance(bytes)
-    nativePlan.writeTo(codedOutput)
-    codedOutput.checkNoSpaceLeft()
+    val bytes = serializePlan(nativePlan)
     new CometExecIterator(
       newIterId,
       inputs,

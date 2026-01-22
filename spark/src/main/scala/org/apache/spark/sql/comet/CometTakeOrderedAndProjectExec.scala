@@ -133,12 +133,20 @@ case class CometTakeOrderedAndProjectExec(
           CometExecUtils.getNativeLimitRDD(childRDD, child.output, limit)
         } else {
           val numParts = childRDD.getNumPartitions
+          val numOutputCols = child.output.length
+          // Serialize the plan once and broadcast to avoid repeated serialization
+          val serializedTopK = CometExec.serializePlan(
+            CometExecUtils
+              .getTopKNativePlan(child.output, sortOrder, child, limit)
+              .get)
+          val broadcastTopK = sparkContext.broadcast(serializedTopK)
           childRDD.mapPartitionsWithIndexInternal { case (idx, iter) =>
-            val topK =
-              CometExecUtils
-                .getTopKNativePlan(child.output, sortOrder, child, limit)
-                .get
-            CometExec.getCometIterator(Seq(iter), child.output.length, topK, numParts, idx)
+            CometExec.getCometIterator(
+              Seq(iter),
+              numOutputCols,
+              broadcastTopK.value,
+              numParts,
+              idx)
           }
         }
 
