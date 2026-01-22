@@ -191,7 +191,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withSQLConf(CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.key -> "true") {
+        withSQLConf(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT__CHECK.key -> "true") {
           withParquetTable(path.toString, "tbl") {
             checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
           }
@@ -207,7 +207,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq(true).foreach { safetyCheck =>
         {
           withSQLConf(
-            CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.key -> safetyCheck.toString) {
+            CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT__CHECK.key -> safetyCheck.toString) {
             withTempDir { dir =>
               val path = new Path(dir.toURI.toString, "testuint.parquet")
               makeParquetFileAllPrimitiveTypes(

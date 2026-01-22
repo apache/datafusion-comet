@@ -1904,7 +1904,7 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       val rows = 1000
       withSQLConf(
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT,
-        CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.key -> "true") {
+        CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT__CHECK.key -> "true") {
         makeParquetFileAllPrimitiveTypes(
           path,
           dictionaryEnabled = false,

@@ -715,7 +715,7 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK: ConfigEntry[Boolean] =
+  val COMET_PARQUET_UNSIGNED_SMALL_INT__CHECK: ConfigEntry[Boolean] =
     conf("spark.comet.scan.unsignedSmallIntSafetyCheck")
       .category(CATEGORY_SCAN)
       .doc(

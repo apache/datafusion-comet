@@ -682,9 +682,9 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
     dt match {
       case ShortType
           if scanImpl != CometConf.SCAN_NATIVE_COMET &&
-            CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.get() =>
+            CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT__CHECK.get() =>
         fallbackReasons += s"$scanImpl scan may not handle unsigned UINT_8 correctly for $dt. " +
-          s"Set ${CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.key}=false to allow " +
+          s"Set ${CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT__CHECK.key}=false to allow " +
           "native execution if your data does not contain unsigned small integers. " +
           CometConf.COMPAT_GUIDE
         false
