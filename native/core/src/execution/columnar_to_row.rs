@@ -41,6 +41,7 @@ use arrow::array::types::{
     UInt64Type, UInt8Type,
 };
 use arrow::array::*;
+use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{ArrowNativeType, DataType, TimeUnit};
 use std::sync::Arc;
 
@@ -51,7 +52,7 @@ const MAX_LONG_DIGITS: u8 = 18;
 /// This enum holds references to concrete array types, allowing direct access
 /// without repeated downcast_ref calls.
 enum TypedArray<'a> {
-    Null(&'a NullArray),
+    Null,
     Boolean(&'a BooleanArray),
     Int8(&'a Int8Array),
     Int16(&'a Int16Array),
@@ -82,37 +83,58 @@ impl<'a> TypedArray<'a> {
     fn from_array(array: &'a ArrayRef, _schema_type: &DataType) -> CometResult<Self> {
         let actual_type = array.data_type();
         match actual_type {
-            DataType::Null => Ok(TypedArray::Null(
-                array.as_any().downcast_ref::<NullArray>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to NullArray".to_string())
-                })?,
-            )),
+            DataType::Null => {
+                // Verify the array is actually a NullArray, but we don't need to store the reference
+                // since all values are null by definition
+                if array.as_any().downcast_ref::<NullArray>().is_none() {
+                    return Err(CometError::Internal(format!(
+                        "Failed to downcast to NullArray, actual type: {:?}",
+                        array.data_type()
+                    )));
+                }
+                Ok(TypedArray::Null)
+            }
             DataType::Boolean => Ok(TypedArray::Boolean(
                 array
                     .as_any()
                     .downcast_ref::<BooleanArray>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to BooleanArray".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to BooleanArray, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?,
             )),
             DataType::Int8 => Ok(TypedArray::Int8(
                 array.as_any().downcast_ref::<Int8Array>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to Int8Array".to_string())
+                    CometError::Internal(format!(
+                        "Failed to downcast to Int8Array, actual type: {:?}",
+                        array.data_type()
+                    ))
                 })?,
             )),
             DataType::Int16 => Ok(TypedArray::Int16(
                 array.as_any().downcast_ref::<Int16Array>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to Int16Array".to_string())
+                    CometError::Internal(format!(
+                        "Failed to downcast to Int16Array, actual type: {:?}",
+                        array.data_type()
+                    ))
                 })?,
             )),
             DataType::Int32 => Ok(TypedArray::Int32(
                 array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to Int32Array".to_string())
+                    CometError::Internal(format!(
+                        "Failed to downcast to Int32Array, actual type: {:?}",
+                        array.data_type()
+                    ))
                 })?,
             )),
             DataType::Int64 => Ok(TypedArray::Int64(
                 array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to Int64Array".to_string())
+                    CometError::Internal(format!(
+                        "Failed to downcast to Int64Array, actual type: {:?}",
+                        array.data_type()
+                    ))
                 })?,
             )),
             DataType::Float32 => Ok(TypedArray::Float32(
@@ -120,7 +142,10 @@ impl<'a> TypedArray<'a> {
                     .as_any()
                     .downcast_ref::<Float32Array>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to Float32Array".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to Float32Array, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?,
             )),
             DataType::Float64 => Ok(TypedArray::Float64(
@@ -128,7 +153,10 @@ impl<'a> TypedArray<'a> {
                     .as_any()
                     .downcast_ref::<Float64Array>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to Float64Array".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to Float64Array, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?,
             )),
             DataType::Date32 => Ok(TypedArray::Date32(
@@ -136,7 +164,10 @@ impl<'a> TypedArray<'a> {
                     .as_any()
                     .downcast_ref::<Date32Array>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to Date32Array".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to Date32Array, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?,
             )),
             DataType::Timestamp(TimeUnit::Microsecond, _) => Ok(TypedArray::TimestampMicro(
@@ -155,7 +186,10 @@ impl<'a> TypedArray<'a> {
                     .as_any()
                     .downcast_ref::<Decimal128Array>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to Decimal128Array".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to Decimal128Array, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?,
                 *p,
             )),
@@ -164,7 +198,10 @@ impl<'a> TypedArray<'a> {
                     .as_any()
                     .downcast_ref::<StringArray>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to StringArray".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to StringArray, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?,
             )),
             DataType::LargeUtf8 => Ok(TypedArray::LargeString(
@@ -172,7 +209,10 @@ impl<'a> TypedArray<'a> {
                     .as_any()
                     .downcast_ref::<LargeStringArray>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to LargeStringArray".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to LargeStringArray, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?,
             )),
             DataType::Binary => Ok(TypedArray::Binary(
@@ -180,7 +220,10 @@ impl<'a> TypedArray<'a> {
                     .as_any()
                     .downcast_ref::<BinaryArray>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to BinaryArray".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to BinaryArray, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?,
             )),
             DataType::LargeBinary => Ok(TypedArray::LargeBinary(
@@ -188,7 +231,10 @@ impl<'a> TypedArray<'a> {
                     .as_any()
                     .downcast_ref::<LargeBinaryArray>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to LargeBinaryArray".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to LargeBinaryArray, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?,
             )),
             DataType::Struct(fields) => {
@@ -196,7 +242,10 @@ impl<'a> TypedArray<'a> {
                     .as_any()
                     .downcast_ref::<StructArray>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to StructArray".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to StructArray, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?;
                 // Pre-downcast all struct fields once
                 let typed_fields: Vec<TypedElements> = fields
@@ -210,7 +259,10 @@ impl<'a> TypedArray<'a> {
             }
             DataType::List(field) => Ok(TypedArray::List(
                 array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to ListArray".to_string())
+                    CometError::Internal(format!(
+                        "Failed to downcast to ListArray, actual type: {:?}",
+                        array.data_type()
+                    ))
                 })?,
                 Arc::clone(field),
             )),
@@ -219,13 +271,19 @@ impl<'a> TypedArray<'a> {
                     .as_any()
                     .downcast_ref::<LargeListArray>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to LargeListArray".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to LargeListArray, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?,
                 Arc::clone(field),
             )),
             DataType::Map(field, _) => Ok(TypedArray::Map(
                 array.as_any().downcast_ref::<MapArray>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to MapArray".to_string())
+                    CometError::Internal(format!(
+                        "Failed to downcast to MapArray, actual type: {:?}",
+                        array.data_type()
+                    ))
                 })?,
                 Arc::clone(field),
             )),
@@ -241,7 +299,7 @@ impl<'a> TypedArray<'a> {
     #[inline]
     fn is_null(&self, row_idx: usize) -> bool {
         match self {
-            TypedArray::Null(_) => true, // Null type is always null
+            TypedArray::Null => true, // Null type is always null
             TypedArray::Boolean(arr) => arr.is_null(row_idx),
             TypedArray::Int8(arr) => arr.is_null(row_idx),
             TypedArray::Int16(arr) => arr.is_null(row_idx),
@@ -299,7 +357,7 @@ impl<'a> TypedArray<'a> {
     #[inline]
     fn is_variable_length(&self) -> bool {
         match self {
-            TypedArray::Null(_)
+            TypedArray::Null
             | TypedArray::Boolean(_)
             | TypedArray::Int8(_)
             | TypedArray::Int16(_)
@@ -1044,6 +1102,16 @@ impl ColumnarToRowContext {
             )));
         }
 
+        // Unpack any dictionary arrays to their underlying value type
+        // This is needed because Parquet may return dictionary-encoded arrays
+        // even when the schema expects a specific type like Decimal128
+        let arrays: Vec<ArrayRef> = arrays
+            .iter()
+            .zip(self.schema.iter())
+            .map(|(arr, schema_type)| Self::maybe_unpack_dictionary(arr, schema_type))
+            .collect::<CometResult<Vec<_>>>()?;
+        let arrays = arrays.as_slice();
+
         // Clear previous data
         self.buffer.clear();
         self.offsets.clear();
@@ -1086,6 +1154,31 @@ impl ColumnarToRowContext {
         }
 
         Ok((self.buffer.as_ptr(), &self.offsets, &self.lengths))
+    }
+
+    /// Unpacks a dictionary array to its underlying value type if needed.
+    /// This handles the case where Parquet returns dictionary-encoded arrays
+    /// but the schema expects a non-dictionary type.
+    fn maybe_unpack_dictionary(array: &ArrayRef, schema_type: &DataType) -> CometResult<ArrayRef> {
+        match array.data_type() {
+            DataType::Dictionary(_, value_type) => {
+                // Only unpack if the schema type is not a dictionary
+                if !matches!(schema_type, DataType::Dictionary(_, _)) {
+                    let options = CastOptions::default();
+                    cast_with_options(array, value_type.as_ref(), &options).map_err(|e| {
+                        CometError::Internal(format!(
+                            "Failed to unpack dictionary array from {:?} to {:?}: {}",
+                            array.data_type(),
+                            value_type,
+                            e
+                        ))
+                    })
+                } else {
+                    Ok(Arc::clone(array))
+                }
+            }
+            _ => Ok(Arc::clone(array)),
+        }
     }
 
     /// Fast path for schemas with only fixed-width columns.
@@ -1166,7 +1259,10 @@ impl ColumnarToRowContext {
                     .as_any()
                     .downcast_ref::<BooleanArray>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to BooleanArray".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to BooleanArray, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?;
                 for row_idx in 0..num_rows {
                     if !arr.is_null(row_idx) {
@@ -1177,7 +1273,10 @@ impl ColumnarToRowContext {
             }
             DataType::Int8 => {
                 let arr = array.as_any().downcast_ref::<Int8Array>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to Int8Array".to_string())
+                    CometError::Internal(format!(
+                        "Failed to downcast to Int8Array, actual type: {:?}",
+                        array.data_type()
+                    ))
                 })?;
                 for row_idx in 0..num_rows {
                     if !arr.is_null(row_idx) {
@@ -1189,7 +1288,10 @@ impl ColumnarToRowContext {
             }
             DataType::Int16 => {
                 let arr = array.as_any().downcast_ref::<Int16Array>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to Int16Array".to_string())
+                    CometError::Internal(format!(
+                        "Failed to downcast to Int16Array, actual type: {:?}",
+                        array.data_type()
+                    ))
                 })?;
                 for row_idx in 0..num_rows {
                     if !arr.is_null(row_idx) {
@@ -1201,7 +1303,10 @@ impl ColumnarToRowContext {
             }
             DataType::Int32 => {
                 let arr = array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to Int32Array".to_string())
+                    CometError::Internal(format!(
+                        "Failed to downcast to Int32Array, actual type: {:?}",
+                        array.data_type()
+                    ))
                 })?;
                 for row_idx in 0..num_rows {
                     if !arr.is_null(row_idx) {
@@ -1213,7 +1318,10 @@ impl ColumnarToRowContext {
             }
             DataType::Int64 => {
                 let arr = array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to Int64Array".to_string())
+                    CometError::Internal(format!(
+                        "Failed to downcast to Int64Array, actual type: {:?}",
+                        array.data_type()
+                    ))
                 })?;
                 for row_idx in 0..num_rows {
                     if !arr.is_null(row_idx) {
@@ -1228,7 +1336,10 @@ impl ColumnarToRowContext {
                     .as_any()
                     .downcast_ref::<Float32Array>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to Float32Array".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to Float32Array, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?;
                 for row_idx in 0..num_rows {
                     if !arr.is_null(row_idx) {
@@ -1243,7 +1354,10 @@ impl ColumnarToRowContext {
                     .as_any()
                     .downcast_ref::<Float64Array>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to Float64Array".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to Float64Array, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?;
                 for row_idx in 0..num_rows {
                     if !arr.is_null(row_idx) {
@@ -1258,7 +1372,10 @@ impl ColumnarToRowContext {
                     .as_any()
                     .downcast_ref::<Date32Array>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to Date32Array".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to Date32Array, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?;
                 for row_idx in 0..num_rows {
                     if !arr.is_null(row_idx) {
@@ -1273,9 +1390,10 @@ impl ColumnarToRowContext {
                     .as_any()
                     .downcast_ref::<TimestampMicrosecondArray>()
                     .ok_or_else(|| {
-                        CometError::Internal(
-                            "Failed to downcast to TimestampMicrosecondArray".to_string(),
-                        )
+                        CometError::Internal(format!(
+                            "Failed to downcast to TimestampMicrosecondArray, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?;
                 for row_idx in 0..num_rows {
                     if !arr.is_null(row_idx) {
@@ -1290,7 +1408,10 @@ impl ColumnarToRowContext {
                     .as_any()
                     .downcast_ref::<Decimal128Array>()
                     .ok_or_else(|| {
-                        CometError::Internal("Failed to downcast to Decimal128Array".to_string())
+                        CometError::Internal(format!(
+                            "Failed to downcast to Decimal128Array, actual type: {:?}",
+                            array.data_type()
+                        ))
                     })?;
                 for row_idx in 0..num_rows {
                     if !arr.is_null(row_idx) {
