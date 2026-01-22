@@ -21,8 +21,9 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, InitCap, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, If, InitCap, IsNull, Length, Like, Literal, Lower, RegExpReplace, Right, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -120,10 +121,15 @@ object CometRight extends CometExpressionSerde[Right] {
       case Literal(lenValue, _) =>
         val lenInt = lenValue.asInstanceOf[Int]
         if (lenInt <= 0) {
-          val literalBuilder = LiteralOuterClass.Literal.newBuilder()
-          literalBuilder.setIsNull(false)
-          literalBuilder.setStringVal("")
-          Some(ExprOuterClass.Expr.newBuilder().setLiteral(literalBuilder).build())
+          // Match Spark's behavior: If(IsNull(str), NULL, "")
+          // This ensures NULL propagation: RIGHT(NULL, 0) -> NULL, RIGHT("hello", 0) -> ""
+          val isNullExpr = IsNull(expr.str)
+          val nullLiteral = Literal.create(null, StringType)
+          val emptyStringLiteral = Literal(UTF8String.EMPTY_UTF8, StringType)
+          val ifExpr = If(isNullExpr, nullLiteral, emptyStringLiteral)
+
+          // Serialize the If expression using existing infrastructure
+          exprToProtoInternal(ifExpr, inputs, binding)
         } else {
           exprToProtoInternal(expr.str, inputs, binding) match {
             case Some(strExpr) =>

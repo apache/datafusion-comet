@@ -552,6 +552,31 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("RIGHT function NULL handling") {
+    // Test NULL propagation with len = 0 (critical edge case)
+    withParquetTable((0 until 5).map(i => (s"test$i", i)), "null_tbl") {
+      checkSparkAnswerAndOperator("SELECT RIGHT(CAST(NULL AS STRING), 0) FROM null_tbl LIMIT 1")
+      checkSparkAnswerAndOperator("SELECT RIGHT(CAST(NULL AS STRING), -1) FROM null_tbl LIMIT 1")
+      checkSparkAnswerAndOperator("SELECT RIGHT(CAST(NULL AS STRING), -5) FROM null_tbl LIMIT 1")
+    }
+
+    // Test non-NULL strings with len <= 0 (should return empty string)
+    withParquetTable((0 until 5).map(i => (s"test$i", i)), "edge_tbl") {
+      checkSparkAnswerAndOperator("SELECT _1, RIGHT(_1, 0) FROM edge_tbl")
+      checkSparkAnswerAndOperator("SELECT _1, RIGHT(_1, -1) FROM edge_tbl")
+    }
+
+    // Test mixed NULL and non-NULL values with a table
+    val table = "right_null_edge"
+    withTable(table) {
+      sql(s"create table $table(str string) using parquet")
+      sql(s"insert into $table values('hello'), (NULL), (''), ('world')")
+      checkSparkAnswerAndOperator(s"SELECT str, RIGHT(str, 0) FROM $table")
+      checkSparkAnswerAndOperator(s"SELECT str, RIGHT(str, -1) FROM $table")
+      checkSparkAnswerAndOperator(s"SELECT str, RIGHT(str, 2) FROM $table")
+    }
+  }
+
   test("hour, minute, second") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
