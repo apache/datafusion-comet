@@ -2348,88 +2348,86 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
     }
 
     // validate and parse mantissa and exponent
-    match parse_decimal_str(trimmed) {
-        Ok((mantissa, exponent)) => {
-            // Special case: zero always fits regardless of scale
-            if mantissa == 0 {
-                return Ok(Some(0));
-            }
+    let (mantissa, exponent) = parse_decimal_str(
+        trimmed,
+        "STRING",
+        &format!("DECIMAL({},{})", precision, scale),
+    )?;
 
-            // Convert to target scale
-            let target_scale = scale as i32;
-            let scale_adjustment = target_scale - exponent;
+    //  return early when mantissa is 0
+    if mantissa == 0 {
+        return Ok(Some(0));
+    }
 
-            let scaled_value = if scale_adjustment >= 0 {
-                // Need to multiply (increase scale) but return None if scale is too high to fit i128
-                if scale_adjustment > 38 {
-                    return Ok(None);
-                }
-                mantissa.checked_mul(10_i128.pow(scale_adjustment as u32))
+    // scale adjustment
+    let target_scale = scale as i32;
+    let scale_adjustment = target_scale - exponent;
+
+    let scaled_value = if scale_adjustment >= 0 {
+        // Need to multiply (increase scale) but return None if scale is too high to fit i128
+        if scale_adjustment > 38 {
+            return Ok(None);
+        }
+        mantissa.checked_mul(10_i128.pow(scale_adjustment as u32))
+    } else {
+        // Need to divide (decrease scale)
+        let abs_scale_adjustment = (-scale_adjustment) as u32;
+        if abs_scale_adjustment > 38 {
+            return Ok(Some(0));
+        }
+
+        let divisor = 10_i128.pow(abs_scale_adjustment);
+        let quotient_opt = mantissa.checked_div(divisor);
+        // Check if divisor is 0
+        if quotient_opt.is_none() {
+            return Ok(None);
+        }
+        let quotient = quotient_opt.unwrap();
+        let remainder = mantissa % divisor;
+
+        // Round half up: if abs(remainder) >= divisor/2, round away from zero
+        let half_divisor = divisor / 2;
+        let rounded = if remainder.abs() >= half_divisor {
+            if mantissa >= 0 {
+                quotient + 1
             } else {
-                // Need to multiply (increase scale) but return None if scale is too high to fit i128
-                let abs_scale_adjustment = (-scale_adjustment) as u32;
-                if abs_scale_adjustment > 38 {
-                    return Ok(Some(0));
-                }
+                quotient - 1
+            }
+        } else {
+            quotient
+        };
+        Some(rounded)
+    };
 
-                let divisor = 10_i128.pow(abs_scale_adjustment);
-                let quotient_opt = mantissa.checked_div(divisor);
-                // Check if divisor is 0
-                if quotient_opt.is_none() {
-                    return Ok(None);
-                }
-                let quotient = quotient_opt.unwrap();
-                let remainder = mantissa % divisor;
-
-                // Round half up: if abs(remainder) >= divisor/2, round away from zero
-                let half_divisor = divisor / 2;
-                let rounded = if remainder.abs() >= half_divisor {
-                    if mantissa >= 0 {
-                        quotient + 1
-                    } else {
-                        quotient - 1
-                    }
-                } else {
-                    quotient
-                };
-                Some(rounded)
-            };
-
-            match scaled_value {
-                Some(value) => {
-                    if is_validate_decimal_precision(value, precision) {
-                        Ok(Some(value))
-                    } else {
-                        // Value parsed successfully but exceeds target precision
-                        Err(SparkError::NumericValueOutOfRange {
-                            value: trimmed.to_string(),
-                            precision,
-                            scale,
-                        })
-                    }
-                }
-                None => {
-                    // Overflow while scaling . Throw error and let caller handle it based on EVAL mode
-                    Err(SparkError::NumericValueOutOfRange {
-                        value: trimmed.to_string(),
-                        precision,
-                        scale,
-                    })
-                }
+    match scaled_value {
+        Some(value) => {
+            if is_validate_decimal_precision(value, precision) {
+                Ok(Some(value))
+            } else {
+                // Value ok but exceeds precision mentioned . THrow error
+                Err(SparkError::NumericValueOutOfRange {
+                    value: trimmed.to_string(),
+                    precision,
+                    scale,
+                })
             }
         }
-        Err(e) => {
-            // raise malformed input
-            Err(SparkError::Internal(e))
+        None => {
+            // Overflow when scaling raise exception
+            Err(SparkError::NumericValueOutOfRange {
+                value: trimmed.to_string(),
+                precision,
+                scale,
+            })
         }
     }
 }
 
 /// Parse a decimal string into mantissa and scale
 /// e.g., "123.45" -> (12345, 2), "-0.001" -> (-1, 3)
-fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
+fn parse_decimal_str(s: &str, from_type: &str, to_type: &str) -> SparkResult<(i128, i32)> {
     if s.is_empty() {
-        return Err("Empty string".to_string());
+        return Err(invalid_value(s, from_type, to_type));
     }
 
     let (mantissa_str, exponent) = if let Some(e_pos) = s.find(|c| ['e', 'E'].contains(&c)) {
@@ -2438,7 +2436,7 @@ fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
         // Parse exponent
         let exp: i32 = exponent_part
             .parse()
-            .map_err(|e| format!("Invalid exponent: {}", e))?;
+            .map_err(|_| invalid_value(s, from_type, to_type))?;
 
         (mantissa_part, exp)
     } else {
@@ -2453,13 +2451,13 @@ fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
     };
 
     if mantissa_str.starts_with('+') || mantissa_str.starts_with('-') {
-        return Err("Invalid sign format".to_string());
+        return Err(invalid_value(s, from_type, to_type));
     }
 
     let (integral_part, fractional_part) = match mantissa_str.find('.') {
         Some(dot_pos) => {
             if mantissa_str[dot_pos + 1..].contains('.') {
-                return Err("Multiple decimal points".to_string());
+                return Err(invalid_value(s, from_type, to_type));
             }
             (&mantissa_str[..dot_pos], &mantissa_str[dot_pos + 1..])
         }
@@ -2467,15 +2465,15 @@ fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
     };
 
     if integral_part.is_empty() && fractional_part.is_empty() {
-        return Err("No digits found".to_string());
+        return Err(invalid_value(s, from_type, to_type));
     }
 
     if !integral_part.is_empty() && !integral_part.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Invalid integral part".to_string());
+        return Err(invalid_value(s, from_type, to_type));
     }
 
     if !fractional_part.is_empty() && !fractional_part.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("Invalid fractional part".to_string());
+        return Err(invalid_value(s, from_type, to_type));
     }
 
     // Parse integral part
@@ -2485,7 +2483,7 @@ fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
     } else {
         integral_part
             .parse()
-            .map_err(|_| "Invalid integral part".to_string())?
+            .map_err(|_| invalid_value(s, from_type, to_type))?
     };
 
     // Parse fractional part
@@ -2495,14 +2493,14 @@ fn parse_decimal_str(s: &str) -> Result<(i128, i32), String> {
     } else {
         fractional_part
             .parse()
-            .map_err(|_| "Invalid fractional part".to_string())?
+            .map_err(|_| invalid_value(s, from_type, to_type))?
     };
 
     // Combine: value = integral * 10^fractional_scale + fractional
     let mantissa = integral_value
         .checked_mul(10_i128.pow(fractional_scale as u32))
         .and_then(|v| v.checked_add(fractional_value))
-        .ok_or("Overflow in mantissa calculation")?;
+        .ok_or_else(|| invalid_value(s, from_type, to_type))?;
 
     let final_mantissa = if negative { -mantissa } else { mantissa };
     // final scale = fractional_scale - exponent
