@@ -149,20 +149,31 @@ public class IcebergApiVerificationTest extends AbstractApiTest {
   }
 
   @Test
-  public void testAnnotatedConstructorsArePublic() {
-    List<String> nonPublicConstructors = new ArrayList<>();
+  public void testAnnotatedConstructorsAreAccessible() {
+    List<String> inaccessibleConstructors = new ArrayList<>();
 
     for (Class<?> clazz : ICEBERG_API_CLASSES) {
       for (Constructor<?> constructor : clazz.getDeclaredConstructors()) {
-        if (hasIcebergApiAnnotation(constructor) && !isPublic(constructor)) {
-          nonPublicConstructors.add(
-              clazz.getSimpleName() + "(" + Arrays.toString(constructor.getParameterTypes()) + ")");
+        if (hasIcebergApiAnnotation(constructor)) {
+          // Constructors must be either public, or protected for abstract classes (for subclassing)
+          boolean isAccessible =
+              isPublic(constructor)
+                  || (Modifier.isProtected(constructor.getModifiers())
+                      && Modifier.isAbstract(clazz.getModifiers()));
+          if (!isAccessible) {
+            inaccessibleConstructors.add(
+                clazz.getSimpleName()
+                    + "("
+                    + Arrays.toString(constructor.getParameterTypes())
+                    + ")");
+          }
         }
       }
     }
 
-    assertThat(nonPublicConstructors)
-        .as("@IcebergApi annotated constructors that are not public")
+    assertThat(inaccessibleConstructors)
+        .as(
+            "@IcebergApi annotated constructors that are not accessible (public or protected for abstract classes)")
         .isEmpty();
   }
 

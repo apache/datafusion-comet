@@ -57,12 +57,13 @@ public class CometVectorApiTest extends AbstractApiTest {
   }
 
   @Test
-  public void testPublicConstructorExists() throws NoSuchMethodException {
+  public void testProtectedConstructorExists() throws NoSuchMethodException {
+    // Constructor is protected since CometVector is abstract and meant to be subclassed
     Constructor<?> constructor =
         CometVector.class.getDeclaredConstructor(DataType.class, boolean.class);
     assertThat(constructor).isNotNull();
     assertThat(hasIcebergApiAnnotation(constructor)).isTrue();
-    assertThat(Modifier.isPublic(constructor.getModifiers())).isTrue();
+    assertThat(Modifier.isProtected(constructor.getModifiers())).isTrue();
   }
 
   @Test
