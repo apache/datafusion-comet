@@ -57,11 +57,11 @@ object CometMapExpressionBenchmark extends CometBenchmarkBase {
           prepareTable(
             dir,
             spark.sql(
-              s"SELECT " +
-                s"(value + 0) AS C1, " +
-                s"(value + 10) AS C2, " +
-                s"(value + 20) AS C3, " +
-                s"(value + 30) AS C4, " +
+              "SELECT " +
+                "(value + 0) AS C1, " +
+                "(value + 10) AS C2, " +
+                "(value + 20) AS C3, " +
+                "(value + 30) AS C4, " +
                 s"(value + 40) AS C5 FROM $tbl"))
 
           val extraConfigs = Map(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true")
