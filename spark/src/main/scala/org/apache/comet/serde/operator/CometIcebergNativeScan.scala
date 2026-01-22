@@ -71,14 +71,138 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Converts an Iceberg partition value to JSON format expected by iceberg-rust.
-   *
-   * iceberg-rust's Literal::try_from_json() expects specific formats for certain types:
-   *   - Timestamps: ISO string format "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
-   *   - Dates: ISO string format "YYYY-MM-DD"
-   *   - Decimals: String representation
-   *
-   * See: iceberg-rust/crates/iceberg/src/spec/values/literal.rs
+   * Converts an Iceberg partition value to protobuf format. Protobuf is less verbose than JSON.
+   * The following types are also serialized as integer values instead of as strings - Timestamps,
+   * Dates, Decimals, FieldIDs
+   */
+  private def partitionValueToProto(
+      fieldId: Int,
+      fieldTypeStr: String,
+      value: Any): OperatorOuterClass.PartitionValue = {
+    val builder = OperatorOuterClass.PartitionValue.newBuilder()
+    builder.setFieldId(fieldId)
+
+    if (value == null) {
+      builder.setIsNull(true)
+    } else {
+      builder.setIsNull(false)
+      fieldTypeStr match {
+        case t if t.startsWith("timestamp") =>
+          val micros = value match {
+            case l: java.lang.Long => l.longValue()
+            case i: java.lang.Integer => i.longValue()
+            case _ => value.toString.toLong
+          }
+          if (t.contains("tz")) {
+            builder.setTimestampTzVal(micros)
+          } else {
+            builder.setTimestampVal(micros)
+          }
+
+        case "date" =>
+          val days = value.asInstanceOf[java.lang.Integer].intValue()
+          builder.setDateVal(days)
+
+        case d if d.startsWith("decimal(") =>
+          // Serialize as unscaled BigInteger bytes
+          val bigDecimal = value match {
+            case bd: java.math.BigDecimal => bd
+            case _ => new java.math.BigDecimal(value.toString)
+          }
+          val unscaledBytes = bigDecimal.unscaledValue().toByteArray
+          builder.setDecimalVal(com.google.protobuf.ByteString.copyFrom(unscaledBytes))
+
+        case "string" =>
+          builder.setStringVal(value.toString)
+
+        case "int" =>
+          val intVal = value match {
+            case i: java.lang.Integer => i.intValue()
+            case l: java.lang.Long => l.intValue()
+            case _ => value.toString.toInt
+          }
+          builder.setIntVal(intVal)
+
+        case "long" =>
+          val longVal = value match {
+            case l: java.lang.Long => l.longValue()
+            case i: java.lang.Integer => i.longValue()
+            case _ => value.toString.toLong
+          }
+          builder.setLongVal(longVal)
+
+        case "float" =>
+          val floatVal = value match {
+            case f: java.lang.Float => f.floatValue()
+            case d: java.lang.Double => d.floatValue()
+            case _ => value.toString.toFloat
+          }
+          builder.setFloatVal(floatVal)
+
+        case "double" =>
+          val doubleVal = value match {
+            case d: java.lang.Double => d.doubleValue()
+            case f: java.lang.Float => f.doubleValue()
+            case _ => value.toString.toDouble
+          }
+          builder.setDoubleVal(doubleVal)
+
+        case "boolean" =>
+          val boolVal = value match {
+            case b: java.lang.Boolean => b.booleanValue()
+            case _ => value.toString.toBoolean
+          }
+          builder.setBoolVal(boolVal)
+
+        case "uuid" =>
+          // UUID as bytes (16 bytes) or string
+          val uuidBytes = value match {
+            case uuid: java.util.UUID =>
+              val bb = java.nio.ByteBuffer.wrap(new Array[Byte](16))
+              bb.putLong(uuid.getMostSignificantBits)
+              bb.putLong(uuid.getLeastSignificantBits)
+              bb.array()
+            case _ =>
+              // Parse UUID string and convert to bytes
+              val uuid = java.util.UUID.fromString(value.toString)
+              val bb = java.nio.ByteBuffer.wrap(new Array[Byte](16))
+              bb.putLong(uuid.getMostSignificantBits)
+              bb.putLong(uuid.getLeastSignificantBits)
+              bb.array()
+          }
+          builder.setUuidVal(com.google.protobuf.ByteString.copyFrom(uuidBytes))
+
+        case t if t.startsWith("fixed[") || t.startsWith("binary") =>
+          val bytes = value match {
+            case bytes: Array[Byte] => bytes
+            case _ => value.toString.getBytes("UTF-8")
+          }
+          if (t.startsWith("fixed")) {
+            builder.setFixedVal(com.google.protobuf.ByteString.copyFrom(bytes))
+          } else {
+            builder.setBinaryVal(com.google.protobuf.ByteString.copyFrom(bytes))
+          }
+
+        // Fallback: infer type from Java type ?
+        case _ =>
+          value match {
+            case s: String => builder.setStringVal(s)
+            case i: java.lang.Integer => builder.setIntVal(i.intValue())
+            case l: java.lang.Long => builder.setLongVal(l.longValue())
+            case d: java.lang.Double => builder.setDoubleVal(d.doubleValue())
+            case f: java.lang.Float => builder.setFloatVal(f.floatValue())
+            case b: java.lang.Boolean => builder.setBoolVal(b.booleanValue())
+            case other => builder.setStringVal(other.toString)
+          }
+      }
+    }
+
+    builder.build()
+  }
+
+  /**
+   * Legacy JSON serialization function - removed in favor of protobuf. Kept as reference for
+   * conversion logic.
    */
   private def partitionValueToJson(fieldTypeStr: String, value: Any): JValue = {
     fieldTypeStr match {
@@ -375,18 +499,17 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             }
           }
 
-          // Serialize partition data to JSON for iceberg-rust's constants_map.
-          // The native execution engine uses partition_data_json +
-          // partition_type_json to build a constants_map, which is the primary
-          // mechanism for providing partition values to identity-transformed
-          // partition columns. Non-identity transforms (bucket, truncate, days,
-          // etc.) read values from data files.
+          // Serialize partition data to protobuf for native execution.
+          // The native execution engine uses partition_data protobuf messages to
+          // build a constants_map, which provides partition values to identity-
+          // transformed partition columns. Non-identity transforms (bucket, truncate,
+          // days, etc.) read values from data files.
           //
-          // IMPORTANT: Use the same field IDs as partition_type_json (partition field IDs,
-          // not source field IDs) so that JSON deserialization matches correctly.
+          // IMPORTANT: Use partition field IDs (not source field IDs) to match
+          // the schema.
 
           // Filter out fields with unknown type (same as partition type filtering)
-          val partitionDataMap: Map[String, JValue] =
+          val partitionValues: Seq[OperatorOuterClass.PartitionValue] =
             fields.asScala.zipWithIndex.flatMap { case (field, idx) =>
               val fieldTypeStr = getFieldType(field)
 
@@ -402,23 +525,25 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   partitionData.getClass.getMethod("get", classOf[Int], classOf[Class[_]])
                 val value = getMethod.invoke(partitionData, Integer.valueOf(idx), classOf[Object])
 
-                val jsonValue = if (value == null) {
-                  JNull
-                } else {
-                  partitionValueToJson(fieldTypeStr, value)
-                }
-                Some(fieldId.toString -> jsonValue)
+                Some(partitionValueToProto(fieldId, fieldTypeStr, value))
               }
-            }.toMap
+            }.toSeq
 
           // Only serialize partition data if we have non-unknown fields
-          if (partitionDataMap.nonEmpty) {
-            val partitionJson = compact(render(JObject(partitionDataMap.toList)))
+          if (partitionValues.nonEmpty) {
+            val partitionDataProto = OperatorOuterClass.PartitionData
+              .newBuilder()
+              .addAllValues(partitionValues.asJava)
+              .build()
+
+            // Deduplicate by protobuf bytes (use Base64 string as key)
+            val partitionDataBytes = partitionDataProto.toByteArray
+            val partitionDataKey = java.util.Base64.getEncoder.encodeToString(partitionDataBytes)
 
             val partitionDataIdx = partitionDataToPoolIndex.getOrElseUpdate(
-              partitionJson, {
+              partitionDataKey, {
                 val idx = partitionDataToPoolIndex.size
-                icebergScanBuilder.addPartitionDataPool(partitionJson)
+                icebergScanBuilder.addPartitionDataPool(partitionDataProto)
                 idx
               })
             taskBuilder.setPartitionDataIdx(partitionDataIdx)
@@ -637,7 +762,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val partitionSpecToPoolIndex = mutable.HashMap[String, Int]()
     val nameMappingToPoolIndex = mutable.HashMap[String, Int]()
     val projectFieldIdsToPoolIndex = mutable.HashMap[Seq[Int], Int]()
-    val partitionDataToPoolIndex = mutable.HashMap[String, Int]()
+    val partitionDataToPoolIndex = mutable.HashMap[String, Int]() // Base64 bytes -> pool index
     val deleteFilesToPoolIndex =
       mutable.HashMap[Seq[OperatorOuterClass.IcebergDeleteFile], Int]()
     val residualToPoolIndex = mutable.HashMap[Option[Expr], Int]()
@@ -1056,7 +1181,17 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       }
     }
 
+    // Calculate partition data pool size in bytes (protobuf format)
+    val partitionDataPoolBytes = icebergScanBuilder.getPartitionDataPoolList.asScala
+      .map(_.getSerializedSize)
+      .sum
+
     logInfo(s"IcebergScan: $totalTasks tasks, ${allPoolSizes.size} pools ($avgDedup% avg dedup)")
+    if (partitionDataToPoolIndex.nonEmpty) {
+      logInfo(
+        s"  Partition data pool: ${partitionDataToPoolIndex.size} unique values, " +
+          s"$partitionDataPoolBytes bytes (protobuf)")
+    }
 
     builder.clearChildren()
     Some(builder.setIcebergScan(icebergScanBuilder).build())
