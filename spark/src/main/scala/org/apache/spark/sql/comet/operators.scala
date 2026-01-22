@@ -113,6 +113,19 @@ object CometExec {
 
   def newIterId: Long = curId.getAndIncrement()
 
+  /**
+   * Serialize a native plan to bytes. Use this method to serialize the plan once before calling
+   * getCometIterator for each partition, avoiding repeated serialization.
+   */
+  def serializeNativePlan(nativePlan: Operator): Array[Byte] = {
+    val size = nativePlan.getSerializedSize
+    val bytes = new Array[Byte](size)
+    val codedOutput = CodedOutputStream.newInstance(bytes)
+    nativePlan.writeTo(codedOutput)
+    codedOutput.checkNoSpaceLeft()
+    bytes
+  }
+
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
       numOutputCols: Int,
@@ -130,6 +143,28 @@ object CometExec {
       encryptedFilePaths = Seq.empty)
   }
 
+  /**
+   * Create a CometExecIterator with a pre-serialized native plan. Use this overload when
+   * executing the same plan across multiple partitions to avoid serializing the plan repeatedly.
+   */
+  def getCometIterator(
+      inputs: Seq[Iterator[ColumnarBatch]],
+      numOutputCols: Int,
+      serializedPlan: Array[Byte],
+      numParts: Int,
+      partitionIdx: Int): CometExecIterator = {
+    new CometExecIterator(
+      newIterId,
+      inputs,
+      numOutputCols,
+      serializedPlan,
+      CometMetricNode(Map.empty),
+      numParts,
+      partitionIdx,
+      broadcastedHadoopConfForEncryption = None,
+      encryptedFilePaths = Seq.empty)
+  }
+
   def getCometIterator(
       inputs: Seq[Iterator[ColumnarBatch]],
       numOutputCols: Int,
@@ -139,11 +174,7 @@ object CometExec {
       partitionIdx: Int,
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
       encryptedFilePaths: Seq[String]): CometExecIterator = {
-    val size = nativePlan.getSerializedSize
-    val bytes = new Array[Byte](size)
-    val codedOutput = CodedOutputStream.newInstance(bytes)
-    nativePlan.writeTo(codedOutput)
-    codedOutput.checkNoSpaceLeft()
+    val bytes = serializeNativePlan(nativePlan)
     new CometExecIterator(
       newIterId,
       inputs,
