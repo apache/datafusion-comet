@@ -187,13 +187,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("basic data type support") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
-          withParquetTable(path.toString, "tbl") {
-            checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
+    // this test requires native_comet scan due to unsigned u8/u16 issue
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+            withParquetTable(path.toString, "tbl") {
+              checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
+            }
           }
         }
       }
@@ -201,27 +204,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("uint data type support") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
-        withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "testuint.parquet")
-          makeParquetFileAllPrimitiveTypes(
-            path,
-            dictionaryEnabled = dictionaryEnabled,
-            Byte.MinValue,
-            Byte.MaxValue)
-          withParquetTable(path.toString, "tbl") {
-            val qry = "select _9 from tbl order by _11"
-            if (usingDataSourceExec(conf)) {
-              // need to convert the values to unsigned values
-              val expected = (Byte.MinValue to Byte.MaxValue)
-                .map(v => {
-                  if (v < 0) Byte.MaxValue.toShort - v else v
-                })
-                .toDF("a")
-              checkAnswer(sql(qry), expected)
-            } else {
-              checkSparkAnswerAndOperator(qry)
+    // this test requires native_comet scan due to unsigned u8/u16 issue
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true") {
+          withTempDir { dir =>
+            val path = new Path(dir.toURI.toString, "testuint.parquet")
+            makeParquetFileAllPrimitiveTypes(
+              path,
+              dictionaryEnabled = dictionaryEnabled,
+              Byte.MinValue,
+              Byte.MaxValue)
+            withParquetTable(path.toString, "tbl") {
+              val qry = "select _9 from tbl order by _11"
+              if (usingDataSourceExec(conf)) {
+                // need to convert the values to unsigned values
+                val expected = (Byte.MinValue to Byte.MaxValue)
+                  .map(v => {
+                    if (v < 0) Byte.MaxValue.toShort - v else v
+                  })
+                  .toDF("a")
+                checkAnswer(sql(qry), expected)
+              } else {
+                checkSparkAnswerAndOperator(qry)
+              }
             }
           }
         }
