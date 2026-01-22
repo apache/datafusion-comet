@@ -2350,6 +2350,11 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
     // validate and parse mantissa and exponent
     match parse_decimal_str(trimmed) {
         Ok((mantissa, exponent)) => {
+            // Special case: zero always fits regardless of scale
+            if mantissa == 0 {
+                return Ok(Some(0));
+            }
+
             // Convert to target scale
             let target_scale = scale as i32;
             let scale_adjustment = target_scale - exponent;
@@ -2392,20 +2397,31 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
 
             match scaled_value {
                 Some(value) => {
-                    // Check if it fits target precision
                     if is_validate_decimal_precision(value, precision) {
                         Ok(Some(value))
                     } else {
-                        Ok(None)
+                        // Value parsed successfully but exceeds target precision
+                        Err(SparkError::NumericValueOutOfRange {
+                            value: trimmed.to_string(),
+                            precision,
+                            scale,
+                        })
                     }
                 }
                 None => {
-                    // Overflow while scaling
-                    Ok(None)
+                    // Overflow while scaling . Throw error and let caller handle it based on EVAL mode
+                    Err(SparkError::NumericValueOutOfRange {
+                        value: trimmed.to_string(),
+                        precision,
+                        scale,
+                    })
                 }
             }
         }
-        Err(_) => Ok(None),
+        Err(e) => {
+            // raise malformed input
+            Err(SparkError::Internal(e))
+        }
     }
 }
 
