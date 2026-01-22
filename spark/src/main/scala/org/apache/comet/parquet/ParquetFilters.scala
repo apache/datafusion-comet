@@ -43,6 +43,8 @@ import org.apache.spark.sql.sources
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.unsafe.types.UTF8String
 
+import com.google.protobuf.CodedOutputStream
+
 import org.apache.comet.parquet.SourceFilterSerde.{createBinaryExpr, createNameExpr, createUnaryExpr, createValueExpr}
 import org.apache.comet.serde.ExprOuterClass
 import org.apache.comet.serde.QueryPlanSerde.scalarFunctionExprToProto
@@ -885,10 +887,12 @@ class ParquetFilters(
 
   def createNativeFilters(predicates: Seq[sources.Filter]): Option[Array[Byte]] = {
     predicates.reduceOption(sources.And).flatMap(createNativeFilter).map { expr =>
-      val outputStream = new ByteArrayOutputStream()
-      expr.writeTo(outputStream)
-      outputStream.close()
-      outputStream.toByteArray
+      val size = expr.getSerializedSize
+      val bytes = new Array[Byte](size)
+      val codedOutput = CodedOutputStream.newInstance(bytes)
+      expr.writeTo(codedOutput)
+      codedOutput.checkNoSpaceLeft()
+      bytes
     }
   }
 
