@@ -41,8 +41,8 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${PROJECT_ROOT}"
 
-echo "Compiling spark module..."
-./mvnw -q compile -pl spark -DskipTests -am
+echo "Compiling common and spark modules..."
+./mvnw -q compile -pl common,spark -DskipTests
 
 echo "Generating documentation content..."
 ./mvnw -q exec:java -pl spark \
