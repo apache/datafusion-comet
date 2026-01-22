@@ -1108,7 +1108,7 @@ impl ColumnarToRowContext {
         let arrays: Vec<ArrayRef> = arrays
             .iter()
             .zip(self.schema.iter())
-            .map(|(arr, schema_type)| Self::maybe_unpack_dictionary(arr, schema_type))
+            .map(|(arr, schema_type)| Self::maybe_cast_to_schema_type(arr, schema_type))
             .collect::<CometResult<Vec<_>>>()?;
         let arrays = arrays.as_slice();
 
@@ -1156,26 +1156,46 @@ impl ColumnarToRowContext {
         Ok((self.buffer.as_ptr(), &self.offsets, &self.lengths))
     }
 
-    /// Unpacks a dictionary array to its underlying value type if needed.
-    /// This handles the case where Parquet returns dictionary-encoded arrays
-    /// but the schema expects a non-dictionary type.
-    fn maybe_unpack_dictionary(array: &ArrayRef, schema_type: &DataType) -> CometResult<ArrayRef> {
-        match array.data_type() {
+    /// Casts an array to match the expected schema type if needed.
+    /// This handles cases where:
+    /// 1. Parquet returns dictionary-encoded arrays but the schema expects a non-dictionary type
+    /// 2. Parquet returns NullArray when all values are null, but the schema expects a typed array
+    fn maybe_cast_to_schema_type(
+        array: &ArrayRef,
+        schema_type: &DataType,
+    ) -> CometResult<ArrayRef> {
+        let actual_type = array.data_type();
+
+        // If types already match, no cast needed
+        if actual_type == schema_type {
+            return Ok(Arc::clone(array));
+        }
+
+        match actual_type {
             DataType::Dictionary(_, value_type) => {
-                // Only unpack if the schema type is not a dictionary
+                // Unpack dictionary if the schema type is not a dictionary
                 if !matches!(schema_type, DataType::Dictionary(_, _)) {
                     let options = CastOptions::default();
                     cast_with_options(array, value_type.as_ref(), &options).map_err(|e| {
                         CometError::Internal(format!(
                             "Failed to unpack dictionary array from {:?} to {:?}: {}",
-                            array.data_type(),
-                            value_type,
-                            e
+                            actual_type, value_type, e
                         ))
                     })
                 } else {
                     Ok(Arc::clone(array))
                 }
+            }
+            DataType::Null => {
+                // Cast NullArray to the expected schema type
+                // This happens when all values in a column are null
+                let options = CastOptions::default();
+                cast_with_options(array, schema_type, &options).map_err(|e| {
+                    CometError::Internal(format!(
+                        "Failed to cast NullArray to {:?}: {}",
+                        schema_type, e
+                    ))
+                })
             }
             _ => Ok(Arc::clone(array)),
         }
