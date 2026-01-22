@@ -720,7 +720,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast StringType to DecimalType(2,2)") {
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
       println("testing with simple input")
-      val values = Seq("       3").toDF("a")
+      val values = gen.generateStrings(dataSize, numericPattern, 12).toDF("a")
       Seq(true, false).foreach(ansiEnabled =>
         castTest(values, DataTypes.createDecimalType(2, 2), testAnsi = ansiEnabled))
     }
@@ -735,15 +735,21 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("cast StringType to DecimalType(38,10) high precision") {
+  test("cast StringType to DecimalType(38,10) high precision - check 0 mantissa") {
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      // TODO fix for Spark 4.0.0
-      assume(!isSpark40Plus)
       val values = Seq("0e31").toDF("a")
       Seq(true, false).foreach(ansiEnabled =>
         castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
     }
-  } 
+  }
+
+  test("cast StringType to DecimalType(38,10) high precision") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+      val values = gen.generateStrings(dataSize, numericPattern, 38).toDF("a")
+      Seq(true, false).foreach(ansiEnabled =>
+        castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
+    }
+  }
 
   test("cast StringType to DecimalType(38,10) high precision - 0 mantissa") {
     withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
