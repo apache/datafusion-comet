@@ -685,7 +685,7 @@ case class CometScanTypeChecker(scanImpl: String) extends DataTypeSupport with C
             CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.get() =>
         fallbackReasons += s"$scanImpl scan may not handle unsigned UINT_8 correctly for $dt. " +
           s"Set ${CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.key}=false to allow " +
-          s"native execution if your data does not contain unsigned small integers. " +
+          "native execution if your data does not contain unsigned small integers. " +
           CometConf.COMPAT_GUIDE
         false
       case _: StructType | _: ArrayType | _: MapType if scanImpl == CometConf.SCAN_NATIVE_COMET =>
