@@ -62,7 +62,7 @@ public abstract class CometVector extends ColumnVector {
   }
 
   @IcebergApi
-  protected CometVector(DataType type, boolean useDecimal128) {
+  public CometVector(DataType type, boolean useDecimal128) {
     super(type);
     this.useDecimal128 = useDecimal128;
   }
