@@ -25,13 +25,13 @@ on:
   push:
     paths:
       - "common/src/main/java/org/apache/comet/**"
-      - "iceberg-public-api/**"
+      - "iceberg-api/**"
       - "pom.xml"
       - ".github/workflows/pr_iceberg_api_tests.yml"
   pull_request:
     paths:
       - "common/src/main/java/org/apache/comet/**"
-      - "iceberg-public-api/**"
+      - "iceberg-api/**"
       - "pom.xml"
       - ".github/workflows/pr_iceberg_api_tests.yml"
   workflow_dispatch:

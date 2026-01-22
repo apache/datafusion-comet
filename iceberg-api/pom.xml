@@ -30,9 +30,9 @@ under the License.
     <relativePath>../pom.xml</relativePath>
   </parent>
 
-  <artifactId>comet-iceberg-public-api-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <name>comet-iceberg-public-api</name>
-  <description>Tests for Comet's public API used by Apache Iceberg</description>
+  <artifactId>comet-iceberg-api-spark${spark.version.short}_${scala.binary.version}</artifactId>
+  <name>comet-iceberg-api</name>
+  <description>Comet's public API for Apache Iceberg integration</description>
 
   <properties>
     <!-- Skip install/deploy - this is a test-only module -->
