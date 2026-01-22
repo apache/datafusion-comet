@@ -26,6 +26,9 @@ native Parquet reader for vectorized reads in Spark.
 **Important**: Changes to these APIs may break Iceberg's Comet integration. Contributors should
 exercise caution when modifying these classes and consider backward compatibility.
 
+All classes and methods documented here are marked with the `@IcebergApi` annotation
+(`org.apache.comet.IcebergApi`) to make them easily identifiable in the source code.
+
 ## Overview
 
 Iceberg uses Comet's Parquet reading infrastructure to accelerate table scans. The integration

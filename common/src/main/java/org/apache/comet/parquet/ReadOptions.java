@@ -19,6 +19,8 @@
 
 package org.apache.comet.parquet;
 
+import org.apache.comet.IcebergApi;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,6 +35,7 @@ import org.apache.comet.CometConf;
  *
  * <p>TODO: merge this with {@link org.apache.parquet.HadoopReadOptions} once PARQUET-2203 is done.
  */
+@IcebergApi
 public class ReadOptions {
   private static final Logger LOG = LoggerFactory.getLogger(ReadOptions.class);
 
@@ -86,10 +89,12 @@ public class ReadOptions {
     return adjustReadRangeSkew;
   }
 
+  @IcebergApi
   public static Builder builder(Configuration conf) {
     return new Builder(conf);
   }
 
+  @IcebergApi
   public static class Builder {
     private final Configuration conf;
 
@@ -134,6 +139,7 @@ public class ReadOptions {
       return this;
     }
 
+    @IcebergApi
     public ReadOptions build() {
       return new ReadOptions(
           parallelIOEnabled,
