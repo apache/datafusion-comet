@@ -166,7 +166,6 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           case SCAN_AUTO =>
             // TODO add support for native_datafusion in the future
             nativeIcebergCompatScan(session, scanExec, r, hadoopConf)
-              .orElse(nativeCometScan(session, scanExec, r, hadoopConf))
               .getOrElse(scanExec)
           case SCAN_NATIVE_DATAFUSION =>
             nativeDataFusionScan(session, scanExec, r, hadoopConf).getOrElse(scanExec)
