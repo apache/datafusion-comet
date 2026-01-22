@@ -29,6 +29,7 @@ Arrow FFI <ffi>
 JVM Shuffle <jvm_shuffle>
 Native Shuffle <native_shuffle>
 Parquet Scans <parquet_scans>
+Iceberg Public API <iceberg_public_api>
 Development Guide <development>
 Debugging Guide <debugging>
 Benchmarking Guide <benchmarking>
