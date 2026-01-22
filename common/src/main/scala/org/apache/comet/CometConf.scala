@@ -715,13 +715,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_SCAN_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
-    conf("spark.comet.scan.allowIncompatible")
+  val COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.unsignedSmallIntSafetyCheck")
       .category(CATEGORY_SCAN)
-      .doc("Some Comet scan implementations are not currently fully compatible with Spark for " +
-        s"all datatypes. Set this config to true to allow them anyway. $COMPAT_GUIDE.")
+      .doc(
+        "Parquet files may contain unsigned 8-bit integers (UINT_8) which Spark maps to " +
+          "ShortType. When this config is true (default), Comet falls back to Spark for " +
+          "ShortType columns because we cannot distinguish signed INT16 (safe) from unsigned " +
+          "UINT_8 (may produce different results). Set to false to allow native execution of " +
+          "ShortType columns if you know your data does not contain unsigned UINT_8 columns " +
+          s"from improperly encoded Parquet files. $COMPAT_GUIDE.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_EXEC_STRICT_FLOATING_POINT: ConfigEntry[Boolean] =
     conf("spark.comet.exec.strictFloatingPoint")

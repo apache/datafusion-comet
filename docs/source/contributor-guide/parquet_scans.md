@@ -42,12 +42,13 @@ implementation:
 
 The `native_datafusion` and `native_iceberg_compat` scans share the following limitations:
 
-- When reading Parquet files written by systems other than Spark that contain columns with the logical types `UINT_8`
-  or `UINT_16`, Comet will produce different results than Spark because Spark does not preserve or understand these
-  logical types. Arrow-based readers, such as DataFusion and Comet do respect these types and read the data as unsigned
-  rather than signed. By default, Comet will fall back to `native_comet` when scanning Parquet files containing `byte` or `short`
-  types (regardless of the logical type). This behavior can be disabled by setting
-  `spark.comet.scan.allowIncompatible=true`.
+- When reading Parquet files written by systems other than Spark that contain columns with the logical type `UINT_8`
+  (unsigned 8-bit integers), Comet may produce different results than Spark. Spark maps `UINT_8` to `ShortType`, but
+  Comet's Arrow-based readers respect the unsigned type and read the data as unsigned rather than signed. Since Comet
+  cannot distinguish `ShortType` columns that came from `UINT_8` versus signed `INT16`, by default Comet falls back to
+  `native_comet` when scanning Parquet files containing `ShortType` columns. This behavior can be disabled by setting
+  `spark.comet.scan.unsignedSmallIntSafetyCheck=false`. Note that `ByteType` columns are always safe because they can
+  only come from signed `INT8`, where truncation preserves the signed value.
 - No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
 
 The `native_datafusion` scan has some additional limitations:

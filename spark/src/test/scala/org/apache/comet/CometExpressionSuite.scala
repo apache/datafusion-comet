@@ -191,7 +191,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
+        withSQLConf(CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.key -> "true") {
           withParquetTable(path.toString, "tbl") {
             checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
           }
@@ -203,10 +203,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("uint data type support") {
     Seq(true, false).foreach { dictionaryEnabled =>
       // TODO: Once the question of what to get back from uint_8, uint_16 types is resolved,
-      // we can also update this test to check for COMET_SCAN_ALLOW_INCOMPATIBLE=true
-      Seq(false).foreach { allowIncompatible =>
+      // we can also update this test to check for COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK=false
+      Seq(true).foreach { safetyCheck =>
         {
-          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> allowIncompatible.toString) {
+          withSQLConf(
+            CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.key -> safetyCheck.toString) {
             withTempDir { dir =>
               val path = new Path(dir.toURI.toString, "testuint.parquet")
               makeParquetFileAllPrimitiveTypes(
@@ -217,7 +218,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               withParquetTable(path.toString, "tbl") {
                 val qry = "select _9 from tbl order by _11"
                 if (usingDataSourceExec(conf)) {
-                  if (!allowIncompatible) {
+                  if (safetyCheck) {
                     checkSparkAnswerAndOperator(qry)
                   } else {
                     // need to convert the values to unsigned values
