@@ -19,14 +19,14 @@
 
 package org.apache.comet.parquet;
 
-import org.apache.comet.IcebergApi;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Method;
 
 import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.SeekableInputStream;
+
+import org.apache.comet.IcebergApi;
 
 /**
  * Wraps an Object that possibly implements the methods of a Parquet InputFile (but is not a Parquet

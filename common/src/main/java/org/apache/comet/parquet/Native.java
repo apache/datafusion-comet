@@ -19,11 +19,10 @@
 
 package org.apache.comet.parquet;
 
-import org.apache.comet.IcebergApi;
-
 import java.nio.ByteBuffer;
 import java.util.Map;
 
+import org.apache.comet.IcebergApi;
 import org.apache.comet.NativeBase;
 
 public final class Native extends NativeBase {

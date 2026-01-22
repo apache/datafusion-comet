@@ -19,8 +19,6 @@
 
 package org.apache.comet.parquet;
 
-import org.apache.comet.IcebergApi;
-
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -30,6 +28,8 @@ import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.page.PageReadStore;
 import org.apache.parquet.column.page.PageReader;
 import org.apache.parquet.internal.filter2.columnindex.RowRanges;
+
+import org.apache.comet.IcebergApi;
 
 @IcebergApi
 public class RowGroupReader implements PageReadStore {

@@ -29,9 +29,9 @@ import java.lang.annotation.Target;
  * Indicates that the annotated element is part of the public API used by Apache Iceberg.
  *
  * <p>This annotation marks classes, methods, constructors, and fields that form the contract
- * between Comet and Iceberg. Changes to these APIs may break Iceberg's Comet integration,
- * so contributors should exercise caution and consider backward compatibility when modifying
- * annotated elements.
+ * between Comet and Iceberg. Changes to these APIs may break Iceberg's Comet integration, so
+ * contributors should exercise caution and consider backward compatibility when modifying annotated
+ * elements.
  *
  * <p>The Iceberg integration uses Comet's native Parquet reader for accelerated vectorized reads.
  * See the contributor guide documentation for details on how Iceberg uses these APIs.

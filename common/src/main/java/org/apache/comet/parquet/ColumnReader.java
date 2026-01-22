@@ -19,8 +19,6 @@
 
 package org.apache.comet.parquet;
 
-import org.apache.comet.IcebergApi;
-
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
@@ -46,6 +44,7 @@ import org.apache.spark.sql.types.DataType;
 
 import org.apache.comet.CometConf;
 import org.apache.comet.CometSchemaImporter;
+import org.apache.comet.IcebergApi;
 import org.apache.comet.vector.CometDecodedVector;
 import org.apache.comet.vector.CometDictionary;
 import org.apache.comet.vector.CometDictionaryVector;

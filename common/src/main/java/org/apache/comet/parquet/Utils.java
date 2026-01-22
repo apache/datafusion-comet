@@ -19,8 +19,6 @@
 
 package org.apache.comet.parquet;
 
-import org.apache.comet.IcebergApi;
-
 import java.util.HashMap;
 import java.util.Map;
 
@@ -32,6 +30,7 @@ import org.apache.parquet.schema.Types;
 import org.apache.spark.sql.types.*;
 
 import org.apache.comet.CometSchemaImporter;
+import org.apache.comet.IcebergApi;
 
 public class Utils {
 

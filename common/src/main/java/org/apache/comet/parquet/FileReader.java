@@ -19,8 +19,6 @@
 
 package org.apache.comet.parquet;
 
-import org.apache.comet.IcebergApi;
-
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
@@ -91,6 +89,8 @@ import org.apache.parquet.io.SeekableInputStream;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.spark.sql.execution.metric.SQLMetric;
+
+import org.apache.comet.IcebergApi;
 
 import static org.apache.parquet.hadoop.ParquetFileWriter.EFMAGIC;
 import static org.apache.parquet.hadoop.ParquetFileWriter.MAGIC;

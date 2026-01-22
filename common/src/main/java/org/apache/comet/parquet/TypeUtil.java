@@ -19,8 +19,6 @@
 
 package org.apache.comet.parquet;
 
-import org.apache.comet.IcebergApi;
-
 import java.util.Arrays;
 
 import org.apache.parquet.column.ColumnDescriptor;
@@ -32,6 +30,7 @@ import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.*;
 
 import org.apache.comet.CometConf;
+import org.apache.comet.IcebergApi;
 
 import static org.apache.comet.parquet.Utils.descriptorToParquetColumnSpec;
 

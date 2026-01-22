@@ -19,8 +19,6 @@
 
 package org.apache.comet.parquet;
 
-import org.apache.comet.IcebergApi;
-
 import java.io.Closeable;
 import java.io.IOException;
 import java.net.URI;
@@ -67,6 +65,7 @@ import org.apache.spark.util.AccumulatorV2;
 
 import org.apache.comet.CometConf;
 import org.apache.comet.CometSchemaImporter;
+import org.apache.comet.IcebergApi;
 import org.apache.comet.shims.ShimBatchReader;
 import org.apache.comet.shims.ShimFileFormat;
 import org.apache.comet.vector.CometVector;

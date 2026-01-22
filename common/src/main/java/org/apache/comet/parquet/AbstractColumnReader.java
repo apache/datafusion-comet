@@ -19,8 +19,6 @@
 
 package org.apache.comet.parquet;
 
-import org.apache.comet.IcebergApi;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,6 +28,7 @@ import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.TimestampNTZType$;
 
 import org.apache.comet.CometConf;
+import org.apache.comet.IcebergApi;
 import org.apache.comet.vector.CometVector;
 
 /** Base class for Comet Parquet column reader implementations. */
@@ -64,8 +63,7 @@ public abstract class AbstractColumnReader implements AutoCloseable {
   protected int batchSize;
 
   /** A pointer to the native implementation of ColumnReader. */
-  @IcebergApi
-  protected long nativeHandle;
+  @IcebergApi protected long nativeHandle;
 
   AbstractColumnReader(
       DataType type,

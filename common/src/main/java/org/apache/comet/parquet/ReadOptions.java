@@ -19,8 +19,6 @@
 
 package org.apache.comet.parquet;
 
-import org.apache.comet.IcebergApi;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,6 +27,7 @@ import org.apache.spark.SparkEnv;
 import org.apache.spark.launcher.SparkLauncher;
 
 import org.apache.comet.CometConf;
+import org.apache.comet.IcebergApi;
 
 /**
  * Comet specific Parquet related read options.

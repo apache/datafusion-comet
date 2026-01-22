@@ -19,8 +19,6 @@
 
 package org.apache.comet.vector;
 
-import org.apache.comet.IcebergApi;
-
 import java.math.BigDecimal;
 import java.math.BigInteger;
 
@@ -40,6 +38,8 @@ import org.apache.spark.sql.vectorized.ColumnarArray;
 import org.apache.spark.sql.vectorized.ColumnarMap;
 import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.types.UTF8String;
+
+import org.apache.comet.IcebergApi;
 
 /** Base class for all Comet column vector implementations. */
 @IcebergApi

@@ -19,9 +19,9 @@
 
 package org.apache.comet.parquet;
 
-import org.apache.comet.IcebergApi;
-
 import java.util.Map;
+
+import org.apache.comet.IcebergApi;
 
 /**
  * Parquet ColumnSpec encapsulates the information withing a Parquet ColumnDescriptor. Utility

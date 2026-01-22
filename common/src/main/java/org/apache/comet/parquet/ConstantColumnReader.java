@@ -19,8 +19,6 @@
 
 package org.apache.comet.parquet;
 
-import org.apache.comet.IcebergApi;
-
 import java.math.BigInteger;
 
 import org.apache.parquet.column.ColumnDescriptor;
@@ -28,6 +26,8 @@ import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns;
 import org.apache.spark.sql.types.*;
 import org.apache.spark.unsafe.types.UTF8String;
+
+import org.apache.comet.IcebergApi;
 
 /**
  * A column reader that always return constant vectors. Used for reading partition columns, for
