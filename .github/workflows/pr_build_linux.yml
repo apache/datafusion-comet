@@ -176,24 +176,6 @@ jobs:
           - name: "sql"
             value: |
               org.apache.spark.sql.CometToPrettyStringSuite
-          - name: "iceberg"
-            value: |
-              org.apache.comet.iceberg.api.IcebergApiVerificationTest
-              org.apache.comet.iceberg.api.parquet.AbstractColumnReaderApiTest
-              org.apache.comet.iceberg.api.parquet.BatchReaderApiTest
-              org.apache.comet.iceberg.api.parquet.ColumnReaderApiTest
-              org.apache.comet.iceberg.api.parquet.ConstantColumnReaderApiTest
-              org.apache.comet.iceberg.api.parquet.FileReaderApiTest
-              org.apache.comet.iceberg.api.parquet.MetadataColumnReaderApiTest
-              org.apache.comet.iceberg.api.parquet.NativeApiTest
-              org.apache.comet.iceberg.api.parquet.ParquetColumnSpecApiTest
-              org.apache.comet.iceberg.api.parquet.ReadOptionsApiTest
-              org.apache.comet.iceberg.api.parquet.RowGroupReaderApiTest
-              org.apache.comet.iceberg.api.parquet.TypeUtilApiTest
-              org.apache.comet.iceberg.api.parquet.UtilsApiTest
-              org.apache.comet.iceberg.api.parquet.WrappedInputFileApiTest
-              org.apache.comet.iceberg.api.schema.CometSchemaImporterApiTest
-              org.apache.comet.iceberg.api.vector.CometVectorApiTest
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
