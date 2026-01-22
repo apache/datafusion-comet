@@ -209,10 +209,9 @@ impl SchemaMapper for SchemaMapping {
                     // If this field only exists in the table, and not in the file, then we need to
                     // populate a default value for it.
                     || {
-                        if self.default_values.is_some() {
+                        if let Some(default_values) = &self.default_values {
                             // We have a map of default values, see if this field is in there.
-                            if let Some(value) =
-                                self.default_values.as_ref().unwrap().get(&field_idx)
+                            if let Some(value) = default_values.get(&field_idx)
                             // Default value exists, construct a column from it.
                             {
                                 let cv = if field.data_type() == &value.data_type() {
