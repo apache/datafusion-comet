@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import scala.util.Random
 
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Literal}
+import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Average, BitAndAgg, BitOrAgg, BitXorAgg, Count, Max, Min, Sum}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
