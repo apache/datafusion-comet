@@ -2647,9 +2647,9 @@ fn partition_value_to_literal(
         Some(Value::LongVal(v)) => iceberg::spec::Literal::long(*v),
         Some(Value::DateVal(v)) => {
             // Convert i64 to i32 for date (days since epoch)
-            let days = (*v).try_into().map_err(|_| {
-                GeneralError(format!("Date value out of range: {}", v))
-            })?;
+            let days = (*v)
+                .try_into()
+                .map_err(|_| GeneralError(format!("Date value out of range: {}", v)))?;
             iceberg::spec::Literal::date(days)
         }
         Some(Value::TimestampVal(v)) => iceberg::spec::Literal::timestamp(*v),
@@ -2695,9 +2695,8 @@ fn partition_value_to_literal(
                     bytes.len()
                 )));
             }
-            let uuid = uuid::Uuid::from_slice(bytes).map_err(|e| {
-                GeneralError(format!("Failed to parse UUID: {}", e))
-            })?;
+            let uuid = uuid::Uuid::from_slice(bytes)
+                .map_err(|e| GeneralError(format!("Failed to parse UUID: {}", e)))?;
             iceberg::spec::Literal::uuid(uuid)
         }
         Some(Value::FixedVal(bytes)) => iceberg::spec::Literal::fixed(bytes.to_vec()),
