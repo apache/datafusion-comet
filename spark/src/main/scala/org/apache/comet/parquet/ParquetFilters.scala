@@ -19,7 +19,6 @@
 
 package org.apache.comet.parquet
 
-import java.io.ByteArrayOutputStream
 import java.lang.{Boolean => JBoolean, Byte => JByte, Double => JDouble, Float => JFloat, Long => JLong, Short => JShort}
 import java.math.{BigDecimal => JBigDecimal}
 import java.sql.{Date, Timestamp}
