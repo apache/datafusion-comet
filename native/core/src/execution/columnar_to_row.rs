@@ -51,6 +51,7 @@ const MAX_LONG_DIGITS: u8 = 18;
 /// This enum holds references to concrete array types, allowing direct access
 /// without repeated downcast_ref calls.
 enum TypedArray<'a> {
+    Null(&'a NullArray),
     Boolean(&'a BooleanArray),
     Int8(&'a Int8Array),
     Int16(&'a Int16Array),
@@ -81,6 +82,11 @@ impl<'a> TypedArray<'a> {
     fn from_array(array: &'a ArrayRef, _schema_type: &DataType) -> CometResult<Self> {
         let actual_type = array.data_type();
         match actual_type {
+            DataType::Null => Ok(TypedArray::Null(
+                array.as_any().downcast_ref::<NullArray>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to NullArray".to_string())
+                })?,
+            )),
             DataType::Boolean => Ok(TypedArray::Boolean(
                 array
                     .as_any()
@@ -235,6 +241,7 @@ impl<'a> TypedArray<'a> {
     #[inline]
     fn is_null(&self, row_idx: usize) -> bool {
         match self {
+            TypedArray::Null(_) => true, // Null type is always null
             TypedArray::Boolean(arr) => arr.is_null(row_idx),
             TypedArray::Int8(arr) => arr.is_null(row_idx),
             TypedArray::Int16(arr) => arr.is_null(row_idx),
@@ -292,7 +299,8 @@ impl<'a> TypedArray<'a> {
     #[inline]
     fn is_variable_length(&self) -> bool {
         match self {
-            TypedArray::Boolean(_)
+            TypedArray::Null(_)
+            | TypedArray::Boolean(_)
             | TypedArray::Int8(_)
             | TypedArray::Int16(_)
             | TypedArray::Int32(_)
