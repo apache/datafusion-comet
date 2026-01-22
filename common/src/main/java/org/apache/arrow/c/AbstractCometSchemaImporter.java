@@ -19,6 +19,8 @@
 
 package org.apache.arrow.c;
 
+import org.apache.comet.IcebergApi;
+
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.types.pojo.Field;
@@ -67,6 +69,7 @@ public abstract class AbstractCometSchemaImporter {
     return vector;
   }
 
+  @IcebergApi
   public void close() {
     provider.close();
   }

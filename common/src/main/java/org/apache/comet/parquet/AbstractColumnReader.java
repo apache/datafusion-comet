@@ -64,6 +64,7 @@ public abstract class AbstractColumnReader implements AutoCloseable {
   protected int batchSize;
 
   /** A pointer to the native implementation of ColumnReader. */
+  @IcebergApi
   protected long nativeHandle;
 
   AbstractColumnReader(

@@ -131,6 +131,9 @@ public Map<String, String> getLogicalTypeParams()
 Base class for column readers.
 
 ```java
+// Protected field accessed by Iceberg subclasses
+protected long nativeHandle
+
 // Methods used by Iceberg
 public void setBatchSize(int batchSize)
 public void close()
@@ -240,6 +243,17 @@ Imports and converts schemas between Arrow and Spark formats.
 // Constructor
 public CometSchemaImporter(RootAllocator allocator)
 
+// Methods used by Iceberg (inherited from AbstractCometSchemaImporter)
+public void close()
+```
+
+## Package: `org.apache.arrow.c`
+
+### AbstractCometSchemaImporter
+
+Base class for `CometSchemaImporter`.
+
+```java
 // Methods used by Iceberg
 public void close()
 ```
