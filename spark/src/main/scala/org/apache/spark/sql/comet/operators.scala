@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import java.io.ByteArrayOutputStream
 import java.util.Locale
 
 import scala.collection.mutable
@@ -50,6 +49,7 @@ import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import com.google.common.base.Objects
+import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
@@ -139,10 +139,11 @@ object CometExec {
       partitionIdx: Int,
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
       encryptedFilePaths: Seq[String]): CometExecIterator = {
-    val outputStream = new ByteArrayOutputStream()
-    nativePlan.writeTo(outputStream)
-    outputStream.close()
-    val bytes = outputStream.toByteArray
+    val size = nativePlan.getSerializedSize
+    val bytes = new Array[Byte](size)
+    val codedOutput = CodedOutputStream.newInstance(bytes)
+    nativePlan.writeTo(codedOutput)
+    codedOutput.checkNoSpaceLeft()
     new CometExecIterator(
       newIterId,
       inputs,
@@ -414,10 +415,12 @@ abstract class CometNativeExec extends CometExec {
   def convertBlock(): CometNativeExec = {
     def transform(arg: Any): AnyRef = arg match {
       case serializedPlan: SerializedPlan if serializedPlan.isEmpty =>
-        val out = new ByteArrayOutputStream()
-        nativeOp.writeTo(out)
-        out.close()
-        SerializedPlan(Some(out.toByteArray))
+        val size = nativeOp.getSerializedSize
+        val bytes = new Array[Byte](size)
+        val codedOutput = CodedOutputStream.newInstance(bytes)
+        nativeOp.writeTo(codedOutput)
+        codedOutput.checkNoSpaceLeft()
+        SerializedPlan(Some(bytes))
       case other: AnyRef => other
       case null => null
     }
