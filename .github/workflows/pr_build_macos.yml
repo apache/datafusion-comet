@@ -47,7 +47,48 @@ env:
 
 jobs:
 
+  # Build native library once and share with all test jobs
+  build-native:
+    name: Build Native Library (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-macos-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+          jdk-architecture: aarch64
+          protoc-architecture: aarch_64
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-
+
+      - name: Build native library (CI profile)
+        run: |
+          cd native
+          # CI profile: same overflow behavior as release, but faster compilation
+          # (no LTO, parallel codegen)
+          cargo build --profile ci
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-lib-macos
+          path: native/target/ci/libcomet.dylib
+          retention-days: 1
+
   macos-aarch64-test:
+    needs: build-native
     strategy:
       matrix:
         os: [macos-14]
@@ -97,6 +138,9 @@ jobs:
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
               org.apache.comet.CometIcebergNativeSuite
+          - name: "csv"
+            value: |
+              org.apache.comet.csv.CometCsvNativeReadSuite
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
@@ -145,13 +189,33 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-macos-builder
         with:
-          rust-version: ${{env.RUST_VERSION}}
+          rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ matrix.profile.java_version }}
           jdk-architecture: aarch64
           protoc-architecture: aarch_64
+
+      - name: Download native library
+        uses: actions/download-artifact@v4
+        with:
+          name: native-lib-macos
+          # Download to release/ since Maven's -Prelease expects libcomet.dylib there
+          path: native/target/release/
+
+      # Restore cargo registry cache (for any cargo commands that might run)
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('native/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
       - name: Set thread thresholds envs for spark test on macOS
         # see: https://github.com/apache/datafusion-comet/issues/2965
         shell: bash
@@ -160,9 +224,11 @@ jobs:
           echo "SPARK_TEST_SQL_RESULT_QUERY_STAGE_MAX_THREAD_THRESHOLD=256" >> $GITHUB_ENV
           echo "SPARK_TEST_HIVE_SHUFFLE_EXCHANGE_MAX_THREAD_THRESHOLD=48" >> $GITHUB_ENV
           echo "SPARK_TEST_HIVE_RESULT_QUERY_STAGE_MAX_THREAD_THRESHOLD=48" >> $GITHUB_ENV
+
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
           artifact_name: ${{ matrix.os }}-${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
           suites: ${{ matrix.suite.name == 'sql' && matrix.profile.name == 'Spark 3.4, JDK 11, Scala 2.12' && '' || matrix.suite.value }}
           maven_opts: ${{ matrix.profile.maven_opts }}
+          skip-native-build: true
