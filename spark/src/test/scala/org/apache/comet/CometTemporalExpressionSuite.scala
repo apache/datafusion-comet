@@ -177,14 +177,20 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("date_format - timestamp_ntz input") {
-    val r = new Random(42)
-    val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
-    val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
-    ntzDF.createOrReplaceTempView("ntz_tbl")
-    val supportedFormats = CometDateFormat.supportedFormats.keys.toSeq.filterNot(_.contains("'"))
-    for (format <- supportedFormats) {
-      checkSparkAnswerAndOperator(
-        s"SELECT ts_ntz, date_format(ts_ntz, '$format') from ntz_tbl order by ts_ntz")
+    // Comet's date_format with timestamp_ntz is only compatible with UTC timezone because
+    // the cast from timestamp_ntz to timestamp interprets the value as UTC, not the session
+    // timezone. For non-UTC timezones, Comet falls back to Spark.
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      val r = new Random(42)
+      val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
+      val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
+      ntzDF.createOrReplaceTempView("ntz_tbl")
+      val supportedFormats =
+        CometDateFormat.supportedFormats.keys.toSeq.filterNot(_.contains("'"))
+      for (format <- supportedFormats) {
+        checkSparkAnswerAndOperator(
+          s"SELECT ts_ntz, date_format(ts_ntz, '$format') from ntz_tbl order by ts_ntz")
+      }
     }
   }
 
