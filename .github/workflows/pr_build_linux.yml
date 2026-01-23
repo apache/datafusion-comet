@@ -47,8 +47,23 @@ env:
 
 jobs:
 
+  # Fast lint check - gates all other jobs
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check Rust formatting
+        run: |
+          rustup component add rustfmt
+          cd native && cargo fmt --all -- --check
+
   # Build native library once and share with all test jobs
   build-native:
+    needs: lint
     name: Build Native Library
     runs-on: ubuntu-latest
     container:
@@ -62,8 +77,8 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: 17  # JDK only needed for common module proto generation
 
-      - name: Cache Cargo
-        uses: actions/cache@v4
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
@@ -87,15 +102,21 @@ jobs:
           path: native/target/ci/libcomet.so
           retention-days: 1
 
+      - name: Save Cargo cache
+        uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+
   # Run Rust tests (runs in parallel with build-native, uses debug builds)
   linux-test-rust:
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-        java_version: [11, 17]
-      fail-fast: false
-    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-rust
-    runs-on: ${{ matrix.os }}
+    needs: lint
+    name: ubuntu-latest/rust-test
+    runs-on: ubuntu-latest
     container:
       image: amd64/rust
     steps:
@@ -105,21 +126,32 @@ jobs:
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: ${{ matrix.java_version }}
+          jdk-version: 17
 
-      - name: Cache Cargo
-        uses: actions/cache@v4
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-debug-java${{ matrix.java_version }}-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          # Note: Java version intentionally excluded - Rust target is JDK-independent
+          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-debug-java${{ matrix.java_version }}-
+            ${{ runner.os }}-cargo-debug-
 
       - name: Rust test steps
         uses: ./.github/actions/rust-test
+
+      - name: Save Cargo cache
+        uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
 
   linux-test:
     needs: build-native
