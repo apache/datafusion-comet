@@ -62,7 +62,7 @@ public FileReader(
 // Methods used by Iceberg
 public void setRequestedSchemaFromSpecs(List<ParquetColumnSpec> specs)
 public RowGroupReader readNextRowGroup() throws IOException
-public void skipNextRowGroup()
+public boolean skipNextRowGroup()
 public void close() throws IOException
 ```
 
@@ -94,7 +94,7 @@ Wrapper that adapts Iceberg's `InputFile` interface to Comet's file reading infr
 
 ```java
 // Constructor
-public WrappedInputFile(org.apache.iceberg.io.InputFile inputFile)
+public WrappedInputFile(Object inputFile)
 ```
 
 ### ParquetColumnSpec
@@ -223,13 +223,14 @@ General utility methods.
 
 ```java
 // Methods used by Iceberg
-public static AbstractColumnReader getColumnReader(
-    DataType sparkType,
-    ColumnDescriptor descriptor,
+public static ColumnReader getColumnReader(
+    DataType type,
+    ParquetColumnSpec columnSpec,
     CometSchemaImporter importer,
     int batchSize,
     boolean useDecimal128,
-    boolean isConstant
+    boolean useLazyMaterialization,
+    boolean useLegacyTimestamp
 )
 ```
 
@@ -308,7 +309,7 @@ Arrow's base vector interface (shaded). Used as return type in `CometVector.getV
 1. Iceberg creates a `WrappedInputFile` from its `InputFile`
 2. Creates `ReadOptions` via builder pattern
 3. Instantiates `FileReader` with the wrapped input file
-4. Converts Parquet `ColumnDescriptor`s to `ParquetColumnSpec`s using `CometTypeUtils`
+4. Converts Parquet `ColumnDescriptor`s to `ParquetColumnSpec`s using `TypeUtil`
 5. Calls `setRequestedSchemaFromSpecs()` to specify which columns to read
 6. Iterates through row groups via `readNextRowGroup()` and `skipNextRowGroup()`
 
@@ -316,7 +317,7 @@ Arrow's base vector interface (shaded). Used as return type in `CometVector.getV
 
 1. Creates `CometSchemaImporter` with a `RootAllocator`
 2. Uses `Utils.getColumnReader()` to create appropriate column readers
-3. Calls `reset()` and `setPageReader()` for each row group
+3. Calls `Native.resetBatch()` and `setPageReader()` for each row group
 4. Uses `BatchReader` to coordinate reading batches across all columns
 5. Retrieves results via `delegate().currentBatch()`
 

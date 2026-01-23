@@ -56,28 +56,24 @@ public class AbstractColumnReaderApiTest extends AbstractApiTest {
   @Test
   public void testSetBatchSizeMethodExists() throws NoSuchMethodException {
     Method method = AbstractColumnReader.class.getMethod("setBatchSize", int.class);
-    assertThat(method).isNotNull();
     assertThat(hasIcebergApiAnnotation(method)).isTrue();
   }
 
   @Test
   public void testCloseMethodExists() throws NoSuchMethodException {
     Method method = AbstractColumnReader.class.getMethod("close");
-    assertThat(method).isNotNull();
     assertThat(hasIcebergApiAnnotation(method)).isTrue();
   }
 
   @Test
   public void testReadBatchMethodExists() throws NoSuchMethodException {
     Method method = AbstractColumnReader.class.getMethod("readBatch", int.class);
-    assertThat(method).isNotNull();
     assertThat(Modifier.isAbstract(method.getModifiers())).isTrue();
   }
 
   @Test
   public void testCurrentBatchMethodExists() throws NoSuchMethodException {
     Method method = AbstractColumnReader.class.getMethod("currentBatch");
-    assertThat(method).isNotNull();
     assertThat(Modifier.isAbstract(method.getModifiers())).isTrue();
     assertThat(method.getReturnType().getSimpleName()).isEqualTo("CometVector");
   }
@@ -85,7 +81,6 @@ public class AbstractColumnReaderApiTest extends AbstractApiTest {
   @Test
   public void testNativeHandleFieldExists() throws NoSuchFieldException {
     Field field = AbstractColumnReader.class.getDeclaredField("nativeHandle");
-    assertThat(field).isNotNull();
     assertThat(hasIcebergApiAnnotation(field)).isTrue();
     assertThat(Modifier.isProtected(field.getModifiers())).isTrue();
   }

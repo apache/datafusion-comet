@@ -530,6 +530,7 @@ public class BatchReader extends RecordReader<Void, ColumnarBatch> implements Cl
     return true;
   }
 
+  @IcebergApi
   @Override
   public void close() throws IOException {
     if (columnReaders != null) {

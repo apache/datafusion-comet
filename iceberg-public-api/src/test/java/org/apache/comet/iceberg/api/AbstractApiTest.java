@@ -49,7 +49,9 @@ public abstract class AbstractApiTest {
   @After
   public void tearDown() throws IOException {
     if (tempDir != null && Files.exists(tempDir)) {
-      Files.walk(tempDir).sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+      try (var stream = Files.walk(tempDir)) {
+        stream.sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+      }
     }
   }
 

@@ -148,6 +148,7 @@ public class ReadOptions {
           adjustReadRangeSkew);
     }
 
+    @IcebergApi
     public Builder(Configuration conf) {
       this.conf = conf;
       this.parallelIOEnabled =

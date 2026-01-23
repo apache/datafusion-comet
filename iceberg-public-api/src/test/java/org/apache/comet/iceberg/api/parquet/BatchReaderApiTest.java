@@ -48,21 +48,18 @@ public class BatchReaderApiTest extends AbstractApiTest {
   @Test
   public void testConstructorWithColumnReadersExists() throws NoSuchMethodException {
     Constructor<?> constructor = BatchReader.class.getConstructor(AbstractColumnReader[].class);
-    assertThat(constructor).isNotNull();
     assertThat(hasIcebergApiAnnotation(constructor)).isTrue();
   }
 
   @Test
   public void testSetSparkSchemaMethodExists() throws NoSuchMethodException {
     Method method = BatchReader.class.getMethod("setSparkSchema", StructType.class);
-    assertThat(method).isNotNull();
     assertThat(hasIcebergApiAnnotation(method)).isTrue();
   }
 
   @Test
   public void testGetColumnReadersMethodExists() throws NoSuchMethodException {
     Method method = BatchReader.class.getMethod("getColumnReaders");
-    assertThat(method).isNotNull();
     assertThat(hasIcebergApiAnnotation(method)).isTrue();
     assertThat(method.getReturnType()).isEqualTo(AbstractColumnReader[].class);
   }
@@ -70,7 +67,6 @@ public class BatchReaderApiTest extends AbstractApiTest {
   @Test
   public void testNextBatchWithSizeMethodExists() throws NoSuchMethodException {
     Method method = BatchReader.class.getMethod("nextBatch", int.class);
-    assertThat(method).isNotNull();
     assertThat(hasIcebergApiAnnotation(method)).isTrue();
     assertThat(method.getReturnType()).isEqualTo(boolean.class);
   }
@@ -78,14 +74,13 @@ public class BatchReaderApiTest extends AbstractApiTest {
   @Test
   public void testCurrentBatchMethodExists() throws NoSuchMethodException {
     Method method = BatchReader.class.getMethod("currentBatch");
-    assertThat(method).isNotNull();
     assertThat(method.getReturnType().getSimpleName()).isEqualTo("ColumnarBatch");
   }
 
   @Test
   public void testCloseMethodExists() throws NoSuchMethodException {
     Method method = BatchReader.class.getMethod("close");
-    assertThat(method).isNotNull();
+    assertThat(hasIcebergApiAnnotation(method)).isTrue();
   }
 
   @Test
