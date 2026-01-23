@@ -1208,14 +1208,14 @@ impl ColumnarToRowContext {
         }
 
         match actual_type {
-            DataType::Dictionary(_, value_type) => {
+            DataType::Dictionary(_, _) => {
                 // Unpack dictionary if the schema type is not a dictionary
                 if !matches!(schema_type, DataType::Dictionary(_, _)) {
                     let options = CastOptions::default();
-                    cast_with_options(array, value_type.as_ref(), &options).map_err(|e| {
+                    cast_with_options(array, schema_type, &options).map_err(|e| {
                         CometError::Internal(format!(
                             "Failed to unpack dictionary array from {:?} to {:?}: {}",
-                            actual_type, value_type, e
+                            actual_type, schema_type, e
                         ))
                     })
                 } else {
@@ -2969,6 +2969,55 @@ mod tests {
 
             let row1 = std::slice::from_raw_parts(ptr.add(offsets[1] as usize), lengths[1] as usize);
             assert_eq!(&row1[16..19], &[4u8, 5, 6]);
+        }
+    }
+
+    #[test]
+    fn test_convert_dictionary_decimal_array() {
+        // Test that dictionary-encoded decimals are correctly unpacked and converted
+        // This tests the fix for casting to schema_type instead of value_type
+        use arrow::datatypes::Int8Type;
+
+        // Create a dictionary array with Decimal128 values
+        // Values: [-0.01, -0.02, -0.03] represented as [-1, -2, -3] with scale 2
+        let values = Decimal128Array::from(vec![-1i128, -2, -3])
+            .with_precision_and_scale(5, 2)
+            .unwrap();
+
+        // Keys: [0, 1, 2, 0, 1, 2] - each value appears twice
+        let keys = Int8Array::from(vec![0i8, 1, 2, 0, 1, 2]);
+
+        let dict_array: ArrayRef = Arc::new(
+            DictionaryArray::<Int8Type>::try_new(keys, Arc::new(values)).unwrap(),
+        );
+
+        // Schema expects Decimal128(5, 2) - not a dictionary type
+        let schema = vec![DataType::Decimal128(5, 2)];
+        let mut ctx = ColumnarToRowContext::new(schema, 100);
+
+        let arrays = vec![dict_array];
+        let (ptr, offsets, lengths) = ctx.convert(&arrays, 6).unwrap();
+
+        assert!(!ptr.is_null());
+        assert_eq!(offsets.len(), 6);
+        assert_eq!(lengths.len(), 6);
+
+        // Verify the decimal values are correct (not doubled or otherwise corrupted)
+        // Fixed-width decimal is stored directly in the 8-byte field slot
+        unsafe {
+            for (i, expected) in [-1i64, -2, -3, -1, -2, -3].iter().enumerate() {
+                let row = std::slice::from_raw_parts(
+                    ptr.add(offsets[i] as usize),
+                    lengths[i] as usize,
+                );
+                // Field value starts at offset 8 (after null bitset)
+                let value = i64::from_le_bytes(row[8..16].try_into().unwrap());
+                assert_eq!(
+                    value, *expected,
+                    "Row {} should have value {}, got {}",
+                    i, expected, value
+                );
+            }
         }
     }
 }
