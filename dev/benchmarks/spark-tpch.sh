@@ -42,4 +42,5 @@ $SPARK_HOME/bin/spark-submit \
     --data $TPCH_DATA \
     --queries $TPCH_QUERIES \
     --output . \
-    --iterations 1
+    --iterations 1 \
+    --format parquet

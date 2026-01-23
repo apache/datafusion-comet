@@ -27,9 +27,8 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, Literal, PlanExpre
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.FileSourceScanExec
-import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
+import org.apache.spark.sql.execution.datasources.PartitionedFile
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{StructField, StructType}
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
@@ -144,12 +143,13 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
       var firstPartition: Option[PartitionedFile] = None
       val filePartitions = scan.getFilePartitions()
-      filePartitions.foreach { partition =>
+      val filePartitionsProto = filePartitions.map { partition =>
         if (firstPartition.isEmpty) {
           firstPartition = partition.files.headOption
         }
-        partition2Proto(partition, nativeScanBuilder, scan.relation.partitionSchema)
+        partition2Proto(partition, scan.relation.partitionSchema)
       }
+      nativeScanBuilder.addAllFilePartitions(filePartitionsProto.asJava)
 
       val partitionSchema = schema2Proto(scan.relation.partitionSchema.fields)
       val requiredSchema = schema2Proto(scan.requiredSchema.fields)
@@ -201,50 +201,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       None
     }
 
-  }
-
-  private def schema2Proto(
-      fields: Array[StructField]): Array[OperatorOuterClass.SparkStructField] = {
-    val fieldBuilder = OperatorOuterClass.SparkStructField.newBuilder()
-    fields.map(field => {
-      fieldBuilder.setName(field.name)
-      fieldBuilder.setDataType(serializeDataType(field.dataType).get)
-      fieldBuilder.setNullable(field.nullable)
-      fieldBuilder.build()
-    })
-  }
-
-  private def partition2Proto(
-      partition: FilePartition,
-      nativeScanBuilder: OperatorOuterClass.NativeScan.Builder,
-      partitionSchema: StructType): Unit = {
-    val partitionBuilder = OperatorOuterClass.SparkFilePartition.newBuilder()
-    partition.files.foreach(file => {
-      // Process the partition values
-      val partitionValues = file.partitionValues
-      assert(partitionValues.numFields == partitionSchema.length)
-      val partitionVals =
-        partitionValues.toSeq(partitionSchema).zipWithIndex.map { case (value, i) =>
-          val attr = partitionSchema(i)
-          val valueProto = exprToProto(Literal(value, attr.dataType), Seq.empty)
-          // In `CometScanRule`, we have already checked that all partition values are
-          // supported. So, we can safely use `get` here.
-          assert(
-            valueProto.isDefined,
-            s"Unsupported partition value: $value, type: ${attr.dataType}")
-          valueProto.get
-        }
-
-      val fileBuilder = OperatorOuterClass.SparkPartitionedFile.newBuilder()
-      partitionVals.foreach(fileBuilder.addPartitionValues)
-      fileBuilder
-        .setFilePath(file.filePath.toString)
-        .setStart(file.start)
-        .setLength(file.length)
-        .setFileSize(file.fileSize)
-      partitionBuilder.addPartitionedFile(fileBuilder.build())
-    })
-    nativeScanBuilder.addFilePartitions(partitionBuilder.build())
   }
 
   override def createExec(nativeOp: Operator, op: CometScanExec): CometNativeExec = {
