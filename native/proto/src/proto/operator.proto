@@ -51,6 +51,7 @@ message Operator {
     IcebergScan iceberg_scan = 112;
     ParquetWriter parquet_writer = 113;
     Explode explode = 114;
+    CsvScan csv_scan = 115;
   }
 }
 
@@ -108,6 +109,25 @@ message NativeScan {
   // the map.
   map<string, string> object_store_options = 13;
   bool encryption_enabled = 14;
+}
+
+message CsvScan {
+  repeated SparkStructField data_schema = 1;
+  repeated SparkStructField partition_schema = 2;
+  repeated int32 projection_vector = 3;
+  repeated SparkFilePartition file_partitions = 4;
+  map<string, string> object_store_options = 5;
+  CsvOptions csv_options = 6;
+}
+
+message CsvOptions {
+  bool has_header = 1;
+  string delimiter = 2;
+  string quote = 3;
+  string escape = 4;
+  optional string comment = 5;
+  string terminator = 7;
+  bool truncated_rows = 8;
 }
 
 message IcebergScan {

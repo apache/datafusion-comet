@@ -36,6 +36,7 @@ import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -250,6 +251,47 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           val cometScan = CometParquetScan(session, scanExec.scan.asInstanceOf[ParquetScan])
           CometBatchScanExec(
             scanExec.copy(scan = cometScan),
+            runtimeFilters = scanExec.runtimeFilters)
+        } else {
+          withInfos(scanExec, fallbackReasons.toSet)
+        }
+
+      case scan: CSVScan if COMET_CSV_V2_NATIVE_ENABLED.get() =>
+        val fallbackReasons = new ListBuffer[String]()
+        val schemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
+        if (!schemaSupported) {
+          fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
+        }
+        val partitionSchemaSupported =
+          CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema, fallbackReasons)
+        if (!partitionSchemaSupported) {
+          fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
+        }
+        val corruptedRecordsColumnName =
+          SQLConf.get.getConf(SQLConf.COLUMN_NAME_OF_CORRUPT_RECORD)
+        val containsCorruptedRecordsColumn =
+          !scan.readDataSchema.fieldNames.contains(corruptedRecordsColumnName)
+        if (!containsCorruptedRecordsColumn) {
+          fallbackReasons += "Comet doesn't support the processing of corrupted records"
+        }
+        val isInferSchemaEnabled = scan.options.getBoolean("inferSchema", false)
+        if (isInferSchemaEnabled) {
+          fallbackReasons += "Comet doesn't support inferSchema=true option"
+        }
+        val delimiter =
+          Option(scan.options.get("delimiter"))
+            .orElse(Option(scan.options.get("sep")))
+            .getOrElse(",")
+        val isSingleCharacterDelimiter = delimiter.length == 1
+        if (!isSingleCharacterDelimiter) {
+          fallbackReasons +=
+            s"Comet supports only single-character delimiters, but got: '$delimiter'"
+        }
+        if (schemaSupported && partitionSchemaSupported && containsCorruptedRecordsColumn
+          && !isInferSchemaEnabled && isSingleCharacterDelimiter) {
+          CometBatchScanExec(
+            scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters)
         } else {
           withInfos(scanExec, fallbackReasons.toSet)
