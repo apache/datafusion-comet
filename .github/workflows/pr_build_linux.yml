@@ -46,8 +46,48 @@ env:
   RUST_VERSION: stable
 
 jobs:
-  
-  # Run Rust tests once per JDK version
+
+  # Build native library once and share with all test jobs
+  build-native:
+    name: Build Native Library
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17  # JDK only needed for common module proto generation
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-
+
+      - name: Build native library (CI profile)
+        run: |
+          cd native
+          # CI profile: same overflow behavior as release, but faster compilation
+          # (no LTO, parallel codegen)
+          cargo build --profile ci
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-lib-linux
+          path: native/target/ci/libcomet.so
+          retention-days: 1
+
+  # Run Rust tests (runs in parallel with build-native, uses debug builds)
   linux-test-rust:
     strategy:
       matrix:
@@ -60,15 +100,29 @@ jobs:
       image: amd64/rust
     steps:
       - uses: actions/checkout@v6
+
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
-          rust-version: ${{env.RUST_VERSION}}
+          rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ matrix.java_version }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-debug-
+
       - name: Rust test steps
         uses: ./.github/actions/rust-test
-  
+
   linux-test:
+    needs: build-native
     strategy:
       matrix:
         os: [ubuntu-latest]
@@ -186,11 +240,31 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
-          rust-version: ${{env.RUST_VERSION}}
+          rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ matrix.profile.java_version }}
+
+      - name: Download native library
+        uses: actions/download-artifact@v4
+        with:
+          name: native-lib-linux
+          # Download to release/ since Maven's -Prelease expects libcomet.so there
+          path: native/target/release/
+
+      # Restore cargo registry cache (for any cargo commands that might run)
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('native/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
@@ -199,3 +273,4 @@ jobs:
           maven_opts: ${{ matrix.profile.maven_opts }}
           scan_impl: ${{ matrix.profile.scan_impl }}
           upload-test-reports: true
+          skip-native-build: true
