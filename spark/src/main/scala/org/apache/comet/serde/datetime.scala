@@ -257,11 +257,9 @@ object CometSecond extends CometExpressionSerde[Second] {
 object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
 
   private def isSupportedInputType(expr: UnixTimestamp): Boolean = {
-    // Note: TimestampNTZType is not supported because Comet incorrectly applies
-    // timezone conversion to TimestampNTZ values. TimestampNTZ stores local time
-    // without timezone, so no conversion should be applied.
     expr.children.head.dataType match {
       case TimestampType | DateType => true
+      case dt if dt.typeName == "timestamp_ntz" => true
       case _ => false
     }
   }

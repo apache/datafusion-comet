@@ -58,6 +58,22 @@ Expressions that are not 100% Spark-compatible will fall back to Spark by defaul
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
 the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
 
+## Date and Time Functions
+
+Comet's native implementation of date and time functions may produce different results than Spark for dates
+far in the future (approximately beyond year 2100). This is because Comet uses the chrono-tz library for
+timezone calculations, which has limited support for Daylight Saving Time (DST) rules beyond the IANA
+time zone database's explicit transitions.
+
+For dates within a reasonable range (approximately 1970-2100), Comet's date and time functions are compatible
+with Spark. For dates beyond this range, functions that involve timezone-aware calculations (such as
+`date_trunc` with timezone-aware timestamps) may produce results with incorrect DST offsets.
+
+If you need to process dates far in the future with accurate timezone handling, consider:
+
+- Using timezone-naive types (`timestamp_ntz`) when timezone conversion is not required
+- Falling back to Spark for these specific operations
+
 ## Regular Expressions
 
 Comet uses the Rust regexp crate for evaluating regular expressions, and this has different behavior from Java's
@@ -88,20 +104,21 @@ Cast operations in Comet fall into three levels of support:
 
 <!--BEGIN:CAST_LEGACY_TABLE-->
 <!-- prettier-ignore-start -->
-| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
-| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
-| byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
-| date | N/A | U | U | - | U | U | U | U | U | U | C | U |
-| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
-| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U |
-| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U |
-| integer | U | C | C | N/A | C | C | C | - | C | C | C | U |
-| long | U | C | C | N/A | C | C | C | C | - | C | C | U |
-| short | U | C | C | N/A | C | C | C | C | C | - | C | U |
-| string | C | C | C | C | I | C | C | C | C | C | - | I |
-| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
+| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp | timestamp_ntz |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A | N/A |
+| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U | N/A |
+| byte | U | C | - | N/A | C | C | C | C | C | C | C | U | N/A |
+| date | N/A | U | U | - | U | U | U | U | U | U | C | U | U |
+| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U | N/A |
+| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U | N/A |
+| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U | N/A |
+| integer | U | C | C | N/A | C | C | C | - | C | C | C | U | N/A |
+| long | U | C | C | N/A | C | C | C | C | - | C | C | U | N/A |
+| short | U | C | C | N/A | C | C | C | C | C | - | C | U | N/A |
+| string | C | C | C | C | I | C | C | C | C | C | - | I | U |
+| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - | U |
+| timestamp_ntz | N/A | N/A | N/A | C | N/A | N/A | N/A | N/A | N/A | N/A | C | C | - |
 <!-- prettier-ignore-end -->
 
 **Notes:**
@@ -123,20 +140,21 @@ Cast operations in Comet fall into three levels of support:
 
 <!--BEGIN:CAST_TRY_TABLE-->
 <!-- prettier-ignore-start -->
-| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
-| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
-| byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
-| date | N/A | U | U | - | U | U | U | U | U | U | C | U |
-| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
-| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U |
-| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U |
-| integer | U | C | C | N/A | C | C | C | - | C | C | C | U |
-| long | U | C | C | N/A | C | C | C | C | - | C | C | U |
-| short | U | C | C | N/A | C | C | C | C | C | - | C | U |
-| string | C | C | C | C | I | C | C | C | C | C | - | I |
-| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
+| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp | timestamp_ntz |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A | N/A |
+| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U | N/A |
+| byte | U | C | - | N/A | C | C | C | C | C | C | C | U | N/A |
+| date | N/A | U | U | - | U | U | U | U | U | U | C | U | U |
+| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U | N/A |
+| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U | N/A |
+| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U | N/A |
+| integer | U | C | C | N/A | C | C | C | - | C | C | C | U | N/A |
+| long | U | C | C | N/A | C | C | C | C | - | C | C | U | N/A |
+| short | U | C | C | N/A | C | C | C | C | C | - | C | U | N/A |
+| string | C | C | C | C | I | C | C | C | C | C | - | I | U |
+| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - | U |
+| timestamp_ntz | N/A | N/A | N/A | C | N/A | N/A | N/A | N/A | N/A | N/A | C | C | - |
 <!-- prettier-ignore-end -->
 
 **Notes:**
@@ -158,20 +176,21 @@ Cast operations in Comet fall into three levels of support:
 
 <!--BEGIN:CAST_ANSI_TABLE-->
 <!-- prettier-ignore-start -->
-| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A |
-| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U |
-| byte | U | C | - | N/A | C | C | C | C | C | C | C | U |
-| date | N/A | U | U | - | U | U | U | U | U | U | C | U |
-| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U |
-| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U |
-| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U |
-| integer | U | C | C | N/A | C | C | C | - | C | C | C | U |
-| long | U | C | C | N/A | C | C | C | C | - | C | C | U |
-| short | U | C | C | N/A | C | C | C | C | C | - | C | U |
-| string | C | C | C | C | I | C | C | C | C | C | - | I |
-| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - |
+| | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp | timestamp_ntz |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| binary | - | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | C | N/A | N/A |
+| boolean | N/A | - | C | N/A | U | C | C | C | C | C | C | U | N/A |
+| byte | U | C | - | N/A | C | C | C | C | C | C | C | U | N/A |
+| date | N/A | U | U | - | U | U | U | U | U | U | C | U | U |
+| decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | U | N/A |
+| double | N/A | C | C | N/A | I | - | C | C | C | C | C | U | N/A |
+| float | N/A | C | C | N/A | I | C | - | C | C | C | C | U | N/A |
+| integer | U | C | C | N/A | C | C | C | - | C | C | C | U | N/A |
+| long | U | C | C | N/A | C | C | C | C | - | C | C | U | N/A |
+| short | U | C | C | N/A | C | C | C | C | C | - | C | U | N/A |
+| string | C | C | C | C | I | C | C | C | C | C | - | I | U |
+| timestamp | N/A | U | U | C | U | U | U | U | C | U | C | - | U |
+| timestamp_ntz | N/A | N/A | N/A | C | N/A | N/A | N/A | N/A | N/A | N/A | C | C | - |
 <!-- prettier-ignore-end -->
 
 **Notes:**
