@@ -1,0 +1,36 @@
+TakeOrderedAndProject
++- HashAggregate
+   +- CometColumnarToRow
+      +- CometColumnarExchange
+         +- HashAggregate
+            +- Expand
+               +- Project
+                  +- BroadcastNestedLoopJoin
+                     :- Project
+                     :  +- BroadcastHashJoin
+                     :     :- Project
+                     :     :  +- BroadcastHashJoin
+                     :     :     :- Filter
+                     :     :     :  +- ColumnarToRow
+                     :     :     :     +-  Scan parquet spark_catalog.default.inventory [COMET: Native DataFusion scan does not support subqueries/dynamic pruning]
+                     :     :     :           +- SubqueryBroadcast
+                     :     :     :              +- BroadcastExchange
+                     :     :     :                 +- CometColumnarToRow
+                     :     :     :                    +- CometProject
+                     :     :     :                       +- CometFilter
+                     :     :     :                          +- CometNativeScan parquet spark_catalog.default.date_dim
+                     :     :     +- BroadcastExchange
+                     :     :        +- CometColumnarToRow
+                     :     :           +- CometProject
+                     :     :              +- CometFilter
+                     :     :                 +- CometNativeScan parquet spark_catalog.default.date_dim
+                     :     +- BroadcastExchange
+                     :        +- CometColumnarToRow
+                     :           +- CometProject
+                     :              +- CometFilter
+                     :                 +- CometNativeScan parquet spark_catalog.default.item
+                     +- BroadcastExchange
+                        +- CometColumnarToRow
+                           +- CometNativeScan parquet spark_catalog.default.warehouse
+
+Comet accelerated 11 out of 28 eligible operators (39%). Final plan contains 6 transitions between Spark and Comet.

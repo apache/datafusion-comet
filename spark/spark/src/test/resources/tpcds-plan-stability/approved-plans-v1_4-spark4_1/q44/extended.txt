@@ -1,0 +1,65 @@
+CometColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometProject
+      +- CometBroadcastHashJoin
+         :- CometProject
+         :  +- CometBroadcastHashJoin
+         :     :- CometProject
+         :     :  +- CometSortMergeJoin
+         :     :     :- CometSort
+         :     :     :  +- CometColumnarExchange
+         :     :     :     +- Project
+         :     :     :        +- Filter
+         :     :     :           +- Window
+         :     :     :              +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+         :     :     :                 +- CometColumnarToRow
+         :     :     :                    +- CometSort
+         :     :     :                       +- CometColumnarExchange
+         :     :     :                          +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+         :     :     :                             +- CometColumnarToRow
+         :     :     :                                +- CometSort
+         :     :     :                                   +- CometFilter
+         :     :     :                                      :  +- Subquery
+         :     :     :                                      :     +- CometColumnarToRow
+         :     :     :                                      :        +- CometHashAggregate
+         :     :     :                                      :           +- CometExchange
+         :     :     :                                      :              +- CometHashAggregate
+         :     :     :                                      :                 +- CometProject
+         :     :     :                                      :                    +- CometFilter
+         :     :     :                                      :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+         :     :     :                                      +- CometHashAggregate
+         :     :     :                                         +- CometExchange
+         :     :     :                                            +- CometHashAggregate
+         :     :     :                                               +- CometProject
+         :     :     :                                                  +- CometFilter
+         :     :     :                                                     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+         :     :     +- CometSort
+         :     :        +- CometColumnarExchange
+         :     :           +- Project
+         :     :              +- Filter
+         :     :                 +- Window
+         :     :                    +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+         :     :                       +- CometColumnarToRow
+         :     :                          +- CometSort
+         :     :                             +- CometColumnarExchange
+         :     :                                +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+         :     :                                   +- CometColumnarToRow
+         :     :                                      +- CometSort
+         :     :                                         +- CometFilter
+         :     :                                            :  +- ReusedSubquery
+         :     :                                            +- CometHashAggregate
+         :     :                                               +- CometExchange
+         :     :                                                  +- CometHashAggregate
+         :     :                                                     +- CometProject
+         :     :                                                        +- CometFilter
+         :     :                                                           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
+         :     +- CometBroadcastExchange
+         :        +- CometProject
+         :           +- CometFilter
+         :              +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+         +- CometBroadcastExchange
+            +- CometProject
+               +- CometFilter
+                  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item
+
+Comet accelerated 45 out of 57 eligible operators (78%). Final plan contains 6 transitions between Spark and Comet.
