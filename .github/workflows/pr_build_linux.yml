@@ -134,6 +134,7 @@ jobs:
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.CometDeltaNativeSuite
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
