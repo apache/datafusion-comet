@@ -88,80 +88,73 @@ abstract class ParquetReadSuite extends CometTestBase {
   test("unsupported Spark types") {
     // TODO this test is not correctly implemented for scan implementations other than SCAN_NATIVE_COMET
     // https://github.com/apache/datafusion-comet/issues/2188
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
-      // for native iceberg compat, CometScanExec supports some types that native_comet does not.
-      // note that native_datafusion does not use CometScanExec so we need not include that in
-      // the check
-      val isDataFusionScan = usingDataSourceExec(conf)
-      Seq(
-        NullType -> false,
-        BooleanType -> true,
-        ByteType -> true,
-        ShortType -> true,
-        IntegerType -> true,
-        LongType -> true,
-        FloatType -> true,
-        DoubleType -> true,
-        BinaryType -> true,
-        StringType -> true,
-        // Timestamp here arbitrary for picking a concrete data type to from ArrayType
-        // Any other type works
-        ArrayType(TimestampType) -> isDataFusionScan,
-        StructType(
-          Seq(
-            StructField("f1", DecimalType.SYSTEM_DEFAULT),
-            StructField("f2", StringType))) -> isDataFusionScan,
-        MapType(keyType = LongType, valueType = DateType) -> isDataFusionScan,
-        StructType(
-          Seq(StructField("f1", ByteType), StructField("f2", StringType))) -> isDataFusionScan,
-        MapType(keyType = IntegerType, valueType = BinaryType) -> isDataFusionScan)
-        .foreach { case (dt, expected) =>
-          val fallbackReasons = new ListBuffer[String]()
-          // TODO CometScanTypeChecker should only be used for ParquetReadSuiteV1Suite
-          assert(
-            CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
-              .isTypeSupported(dt, "", fallbackReasons) == expected)
-          // usingDataFusionParquetExec does not support CometBatchScanExec yet
-          // TODO CometBatchScanExec should only be used for ParquetReadSuiteV2Suite
-          if (!isDataFusionScan) {
-            assert(CometBatchScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
-          }
+    // for native iceberg compat, CometScanExec supports some types that native_comet does not.
+    // note that native_datafusion does not use CometScanExec so we need not include that in
+    // the check
+    val isDataFusionScan = usingDataSourceExec(conf)
+    Seq(
+      NullType -> false,
+      BooleanType -> true,
+      ByteType -> true,
+      ShortType -> true,
+      IntegerType -> true,
+      LongType -> true,
+      FloatType -> true,
+      DoubleType -> true,
+      BinaryType -> true,
+      StringType -> true,
+      // Timestamp here arbitrary for picking a concrete data type to from ArrayType
+      // Any other type works
+      ArrayType(TimestampType) -> isDataFusionScan,
+      StructType(
+        Seq(
+          StructField("f1", DecimalType.SYSTEM_DEFAULT),
+          StructField("f2", StringType))) -> isDataFusionScan,
+      MapType(keyType = LongType, valueType = DateType) -> isDataFusionScan,
+      StructType(
+        Seq(StructField("f1", ByteType), StructField("f2", StringType))) -> isDataFusionScan,
+      MapType(keyType = IntegerType, valueType = BinaryType) -> isDataFusionScan)
+      .foreach { case (dt, expected) =>
+        val fallbackReasons = new ListBuffer[String]()
+        // TODO CometScanTypeChecker should only be used for ParquetReadSuiteV1Suite
+        assert(
+          CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
+            .isTypeSupported(dt, "", fallbackReasons) == expected)
+        // usingDataFusionParquetExec does not support CometBatchScanExec yet
+        // TODO CometBatchScanExec should only be used for ParquetReadSuiteV2Suite
+        if (!isDataFusionScan) {
+          assert(CometBatchScanExec.isTypeSupported(dt, "", fallbackReasons) == expected)
         }
-    }
+      }
   }
 
   test("unsupported Spark schema") {
     // TODO this test is not correctly implemented for scan implementations other than SCAN_NATIVE_COMET
     // https://github.com/apache/datafusion-comet/issues/2188
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
-      val schemaDDLs =
-        Seq(
-          "f1 int, f2 boolean",
-          "f1 int, f2 array<int>",
-          "f1 map<long, string>, f2 array<double>")
-          .map(s => StructType.fromDDL(s))
+    val schemaDDLs =
+      Seq("f1 int, f2 boolean", "f1 int, f2 array<int>", "f1 map<long, string>, f2 array<double>")
+        .map(s => StructType.fromDDL(s))
 
-      // Arrays support for iceberg compat native and for Parquet V1
-      val cometScanExecSupported =
-        if (usingDataSourceExec(conf) && this.isInstanceOf[ParquetReadV1Suite])
-          Seq(true, true, true)
-        else Seq(true, false, false)
+    // Arrays support for iceberg compat native and for Parquet V1
+    val cometScanExecSupported =
+      if (usingDataSourceExec(conf) && this.isInstanceOf[ParquetReadV1Suite])
+        Seq(true, true, true)
+      else Seq(true, false, false)
 
-      val cometBatchScanExecSupported = Seq(true, false, false)
-      val fallbackReasons = new ListBuffer[String]()
+    val cometBatchScanExecSupported = Seq(true, false, false)
+    val fallbackReasons = new ListBuffer[String]()
 
-      // TODO CometScanTypeChecker should only be used for ParquetReadSuiteV1Suite
-      schemaDDLs.zip(cometScanExecSupported).foreach { case (schema, expected) =>
-        assert(
-          CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
-            .isSchemaSupported(StructType(schema), fallbackReasons) == expected)
-      }
+    // TODO CometScanTypeChecker should only be used for ParquetReadSuiteV1Suite
+    schemaDDLs.zip(cometScanExecSupported).foreach { case (schema, expected) =>
+      assert(
+        CometScanTypeChecker(CometConf.COMET_NATIVE_SCAN_IMPL.get())
+          .isSchemaSupported(StructType(schema), fallbackReasons) == expected)
+    }
 
-      // TODO CometBatchScanExec should only be used for ParquetReadSuiteV2Suite
-      schemaDDLs.zip(cometBatchScanExecSupported).foreach { case (schema, expected) =>
-        assert(
-          CometBatchScanExec.isSchemaSupported(StructType(schema), fallbackReasons) == expected)
-      }
+    // TODO CometBatchScanExec should only be used for ParquetReadSuiteV2Suite
+    schemaDDLs.zip(cometBatchScanExecSupported).foreach { case (schema, expected) =>
+      assert(
+        CometBatchScanExec.isSchemaSupported(StructType(schema), fallbackReasons) == expected)
     }
   }
 
@@ -438,42 +431,40 @@ abstract class ParquetReadSuite extends CometTestBase {
       expected
     }
 
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
-      Seq(64, 128, 256, 512, 1024, 4096, 5000).foreach { pageSize =>
-        withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "part-r-0.parquet")
-          val expected = makeRawParquetFile(path, dictionaryEnabled = false, 10000, pageSize)
-          readParquetFile(path.toString) { df =>
-            checkAnswer(
-              df,
-              expected.map {
-                case None =>
-                  Row(null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null)
-                case Some(i) =>
-                  val flba_field = Array.fill(3)(i % 10 + 48) // char '0' is 48 in ascii
-                  Row(
-                    i % 2 == 0,
-                    i.toByte,
-                    i.toShort,
-                    i,
-                    i.toLong,
-                    i.toFloat,
-                    i.toDouble,
-                    i.toString * 48,
-                    (-i).toByte,
-                    (-i).toShort,
-                    java.lang.Integer.toUnsignedLong(-i),
-                    new BigDecimal(UnsignedLong.fromLongBits((-i).toLong).bigIntegerValue()),
-                    i.toString,
-                    flba_field)
-              })
-          }
-          readParquetFile(path.toString) { df =>
-            assert(
-              df.filter("_8 IS NOT NULL AND _4 % 256 == 255").count() ==
-                expected.flatten.count(_ % 256 == 255))
-          }
+    Seq(64, 128, 256, 512, 1024, 4096, 5000).foreach { pageSize =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+        val expected = makeRawParquetFile(path, dictionaryEnabled = false, 10000, pageSize)
+        readParquetFile(path.toString) { df =>
+          checkAnswer(
+            df,
+            expected.map {
+              case None =>
+                Row(null, null, null, null, null, null, null, null, null, null, null, null, null,
+                  null)
+              case Some(i) =>
+                val flba_field = Array.fill(3)(i % 10 + 48) // char '0' is 48 in ascii
+                Row(
+                  i % 2 == 0,
+                  i.toByte,
+                  i.toShort,
+                  i,
+                  i.toLong,
+                  i.toFloat,
+                  i.toDouble,
+                  i.toString * 48,
+                  (-i).toByte,
+                  (-i).toShort,
+                  java.lang.Integer.toUnsignedLong(-i),
+                  new BigDecimal(UnsignedLong.fromLongBits((-i).toLong).bigIntegerValue()),
+                  i.toString,
+                  flba_field)
+            })
+        }
+        readParquetFile(path.toString) { df =>
+          assert(
+            df.filter("_8 IS NOT NULL AND _4 % 256 == 255").count() ==
+              expected.flatten.count(_ % 256 == 255))
         }
       }
     }
@@ -1366,34 +1357,32 @@ abstract class ParquetReadSuite extends CometTestBase {
     withParquetTable((0 until 10000).map(i => (i, i.toDouble)), "tbl") {
       // TODO need to implement metrics for SCAN_NATIVE_ICEBERG_COMPAT
       // https://github.com/apache/datafusion-comet/issues/1882
-      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
-        val df = sql("SELECT * FROM tbl WHERE _1 > 0")
-        val scans = df.queryExecution.executedPlan collect {
-          case s: CometScanExec => s
-          case s: CometBatchScanExec => s
-          case s: CometNativeScanExec => s
-        }
-        assert(scans.size == 1, s"Expect one scan node but found ${scans.size}")
-        val metrics = scans.head.metrics
+      val df = sql("SELECT * FROM tbl WHERE _1 > 0")
+      val scans = df.queryExecution.executedPlan collect {
+        case s: CometScanExec => s
+        case s: CometBatchScanExec => s
+        case s: CometNativeScanExec => s
+      }
+      assert(scans.size == 1, s"Expect one scan node but found ${scans.size}")
+      val metrics = scans.head.metrics
 
-        val metricNames = scans.head match {
-          case _: CometNativeScanExec => cometNativeScanMetricNames
-          case s: CometScanExec if s.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
-            cometNativeScanMetricNames
-          case _ => cometScanMetricNames
-        }
+      val metricNames = scans.head match {
+        case _: CometNativeScanExec => cometNativeScanMetricNames
+        case s: CometScanExec if s.scanImpl == CometConf.SCAN_NATIVE_ICEBERG_COMPAT =>
+          cometNativeScanMetricNames
+        case _ => cometScanMetricNames
+      }
 
-        metricNames.foreach { metricName =>
-          assert(metrics.contains(metricName), s"metric $metricName was not found")
-        }
+      metricNames.foreach { metricName =>
+        assert(metrics.contains(metricName), s"metric $metricName was not found")
+      }
 
-        df.collect()
+      df.collect()
 
-        metricNames.foreach { metricName =>
-          assert(
-            metrics(metricName).value > 0,
-            s"Expect metric value for $metricName to be positive")
-        }
+      metricNames.foreach { metricName =>
+        assert(
+          metrics(metricName).value > 0,
+          s"Expect metric value for $metricName to be positive")
       }
     }
   }
@@ -2017,12 +2006,9 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
 class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
-    super.test(testName, testTags: _*)(
-      withSQLConf(
-        SQLConf.USE_V1_SOURCE_LIST.key -> "",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
-        testFun
-      })(pos)
+    super.test(testName, testTags: _*)(withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+      testFun
+    })(pos)
   }
 
   override def checkParquetScan[T <: Product: ClassTag: TypeTag](

@@ -40,7 +40,6 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
   test("reading ancient dates before 1582") {
     Seq(true, false).foreach { exceptionOnRebase =>
       withSQLConf(
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
         CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key ->
           exceptionOnRebase.toString) {
         Seq("2_4_5", "2_4_6", "3_2_0").foreach { sparkVersion =>
@@ -66,7 +65,6 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
     assume(!usingDataSourceExec(conf))
     Seq(true, false).foreach { exceptionOnRebase =>
       withSQLConf(
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
         CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key ->
           exceptionOnRebase.toString) {
         Seq("2_4_5", "2_4_6", "3_2_0").foreach { sparkVersion =>
@@ -93,7 +91,6 @@ abstract class ParquetDatetimeRebaseSuite extends CometTestBase {
     assume(!usingDataSourceExec(conf))
     Seq(true, false).foreach { exceptionOnRebase =>
       withSQLConf(
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET,
         CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key ->
           exceptionOnRebase.toString) {
         Seq("2_4_5", "2_4_6", "3_2_0").foreach { sparkVersion =>
@@ -150,13 +147,8 @@ class ParquetDatetimeRebaseV1Suite extends ParquetDatetimeRebaseSuite {
 class ParquetDatetimeRebaseV2Suite extends ParquetDatetimeRebaseSuite {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
-    // Datasource V2 is not supported by the native (datafusion based) readers so force
-    // the scan impl back to 'native_comet'
-    super.test(testName, testTags: _*)(
-      withSQLConf(
-        SQLConf.USE_V1_SOURCE_LIST.key -> "",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
-        testFun
-      })(pos)
+    super.test(testName, testTags: _*)(withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+      testFun
+    })(pos)
   }
 }
