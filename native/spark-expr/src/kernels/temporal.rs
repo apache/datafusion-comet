@@ -17,7 +17,9 @@
 
 //! temporal kernels
 
-use chrono::{DateTime, Datelike, Duration, LocalResult, NaiveDate, Offset, TimeZone, Timelike, Utc};
+use chrono::{
+    DateTime, Datelike, Duration, LocalResult, NaiveDate, Offset, TimeZone, Timelike, Utc,
+};
 
 use std::sync::Arc;
 
