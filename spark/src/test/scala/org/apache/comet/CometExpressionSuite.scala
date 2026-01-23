@@ -187,11 +187,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("basic data type support") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "false") {
+    // this test requires native_comet scan due to unsigned u8/u16 issue
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           withParquetTable(path.toString, "tbl") {
             checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
           }
@@ -200,40 +201,55 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("uint data type support") {
+  test("basic data type support - excluding u8/u16") {
+    // variant that skips _9 (UINT_8) and _10 (UINT_16) for default scan impl
     Seq(true, false).foreach { dictionaryEnabled =>
-      // TODO: Once the question of what to get back from uint_8, uint_16 types is resolved,
-      // we can also update this test to check for COMET_SCAN_ALLOW_INCOMPATIBLE=true
-      Seq(false).foreach { allowIncompatible =>
-        {
-          withSQLConf(CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> allowIncompatible.toString) {
-            withTempDir { dir =>
-              val path = new Path(dir.toURI.toString, "testuint.parquet")
-              makeParquetFileAllPrimitiveTypes(
-                path,
-                dictionaryEnabled = dictionaryEnabled,
-                Byte.MinValue,
-                Byte.MaxValue)
-              withParquetTable(path.toString, "tbl") {
-                val qry = "select _9 from tbl order by _11"
-                if (usingDataSourceExec(conf)) {
-                  if (!allowIncompatible) {
-                    checkSparkAnswerAndOperator(qry)
-                  } else {
-                    // need to convert the values to unsigned values
-                    val expected = (Byte.MinValue to Byte.MaxValue)
-                      .map(v => {
-                        if (v < 0) Byte.MaxValue.toShort - v else v
-                      })
-                      .toDF("a")
-                    checkAnswer(sql(qry), expected)
-                  }
-                } else {
-                  checkSparkAnswerAndOperator(qry)
-                }
-              }
-            }
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          // select all columns except _9 (UINT_8) and _10 (UINT_16)
+          checkSparkAnswerAndOperator(
+            """select _1, _2, _3, _4, _5, _6, _7, _8, _11, _12, _13, _14, _15, _16, _17,
+              |_18, _19, _20, _21, _id FROM tbl WHERE _2 > 100""".stripMargin)
+        }
+      }
+    }
+  }
+
+  test("uint data type support") {
+    // this test requires native_comet scan due to unsigned u8/u16 issue
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "testuint.parquet")
+          makeParquetFileAllPrimitiveTypes(
+            path,
+            dictionaryEnabled = dictionaryEnabled,
+            Byte.MinValue,
+            Byte.MaxValue)
+          withParquetTable(path.toString, "tbl") {
+            val qry = "select _9 from tbl order by _11"
+            checkSparkAnswerAndOperator(qry)
           }
+        }
+      }
+    }
+  }
+
+  test("uint data type support - excluding u8/u16") {
+    // variant that tests UINT_32 and UINT_64, skipping _9 (UINT_8) and _10 (UINT_16)
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "testuint.parquet")
+        makeParquetFileAllPrimitiveTypes(
+          path,
+          dictionaryEnabled = dictionaryEnabled,
+          Byte.MinValue,
+          Byte.MaxValue)
+        withParquetTable(path.toString, "tbl") {
+          // test UINT_32 (_11) and UINT_64 (_12) only
+          checkSparkAnswerAndOperator("select _11, _12 from tbl order by _11")
         }
       }
     }
