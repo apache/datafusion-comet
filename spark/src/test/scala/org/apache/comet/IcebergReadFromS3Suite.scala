@@ -166,7 +166,9 @@ class IcebergReadFromS3Suite extends CometS3TestBase {
   test("large scale partitioned table - 100 partitions with many files") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
-    withSQLConf("spark.sql.files.maxRecordsPerFile" -> "50") {
+    withSQLConf(
+      "spark.sql.files.maxRecordsPerFile" -> "50",
+      "spark.sql.adaptive.enabled" -> "false") {
       spark.sql("""
         CREATE TABLE s3_catalog.db.large_partitioned_test (
           id INT,
@@ -190,11 +192,11 @@ class IcebergReadFromS3Suite extends CometS3TestBase {
       checkIcebergNativeScan(
         "SELECT * FROM s3_catalog.db.large_partitioned_test WHERE id < 10 ORDER BY id")
       checkIcebergNativeScan(
-        "SELECT COUNT(*) FROM s3_catalog.db.large_partitioned_test WHERE partition_id = 0")
+        "SELECT SUM(id) FROM s3_catalog.db.large_partitioned_test WHERE partition_id = 0")
       checkIcebergNativeScan(
-        "SELECT COUNT(*) FROM s3_catalog.db.large_partitioned_test WHERE partition_id IN (0, 50, 99)")
+        "SELECT SUM(id) FROM s3_catalog.db.large_partitioned_test WHERE partition_id IN (0, 50, 99)")
 
-      spark.sql("DROP TABLE s3_catalog.db.large_partitioned_test")
+      spark.sql("DROP TABLE s3_catalog.db.large_partitioned_test PURGE")
     }
   }
 

@@ -2631,8 +2631,6 @@ fn convert_spark_types_to_arrow_schema(
 
 /// Converts a protobuf PartitionValue to an iceberg Literal.
 ///
-/// This replaces JSON parsing with direct protobuf deserialization with a more compact
-/// representation (e.g., timestamps as integers vs strings).
 fn partition_value_to_literal(
     proto_value: &spark_operator::PartitionValue,
 ) -> Result<Option<iceberg::spec::Literal>, ExecutionError> {
@@ -2675,8 +2673,8 @@ fn partition_value_to_literal(
             // Handle sign extension for negative numbers
             let value = if !bytes.is_empty() && (bytes[0] & 0x80) != 0 {
                 // Negative number - sign extend
-                for i in 0..offset {
-                    buf[i] = 0xFF;
+                for byte in buf.iter_mut().take(offset) {
+                    *byte = 0xFF;
                 }
                 i128::from_be_bytes(buf)
             } else {
