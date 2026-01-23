@@ -43,6 +43,11 @@ import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
 /**
  * A [[ShuffleWriter]] that will delegate shuffle write to native shuffle.
+ *
+ * @param childNativePlan
+ *   When provided, the shuffle writer will execute this native plan directly and pipe its output
+ *   to the ShuffleWriter, avoiding the JNI round-trip for intermediate batches. This is used for
+ *   direct native execution optimization when the shuffle's child is a single-source native plan.
  */
 class CometNativeShuffleWriter[K, V](
     outputPartitioning: Partitioning,
@@ -53,7 +58,8 @@ class CometNativeShuffleWriter[K, V](
     mapId: Long,
     context: TaskContext,
     metricsReporter: ShuffleWriteMetricsReporter,
-    rangePartitionBounds: Option[Seq[InternalRow]] = None)
+    rangePartitionBounds: Option[Seq[InternalRow]] = None,
+    childNativePlan: Option[Operator] = None)
     extends ShuffleWriter[K, V]
     with Logging {
 
@@ -163,150 +169,150 @@ class CometNativeShuffleWriter[K, V](
   }
 
   private def getNativePlan(dataFile: String, indexFile: String): Operator = {
-    val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("ShuffleWriterInput")
-    val opBuilder = OperatorOuterClass.Operator.newBuilder()
-
-    val scanTypes = outputAttributes.flatten { attr =>
-      serializeDataType(attr.dataType)
-    }
-
-    if (scanTypes.length == outputAttributes.length) {
+    // When childNativePlan is provided, we use it directly as the input to ShuffleWriter.
+    // Otherwise, we create a Scan operator that reads from JNI input ("ShuffleWriterInput").
+    val inputOperator: Operator = childNativePlan.getOrElse {
+      val scanBuilder = OperatorOuterClass.Scan.newBuilder().setSource("ShuffleWriterInput")
+      val scanTypes = outputAttributes.flatten { attr =>
+        serializeDataType(attr.dataType)
+      }
+      if (scanTypes.length != outputAttributes.length) {
+        throw new UnsupportedOperationException(
+          s"$outputAttributes contains unsupported data types for CometShuffleExchangeExec.")
+      }
       scanBuilder.addAllFields(scanTypes.asJava)
-
-      val shuffleWriterBuilder = OperatorOuterClass.ShuffleWriter.newBuilder()
-      shuffleWriterBuilder.setOutputDataFile(dataFile)
-      shuffleWriterBuilder.setOutputIndexFile(indexFile)
-
-      if (SparkEnv.get.conf.getBoolean("spark.shuffle.compress", true)) {
-        val codec = CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC.get() match {
-          case "zstd" => CompressionCodec.Zstd
-          case "lz4" => CompressionCodec.Lz4
-          case "snappy" => CompressionCodec.Snappy
-          case other => throw new UnsupportedOperationException(s"invalid codec: $other")
-        }
-        shuffleWriterBuilder.setCodec(codec)
-      } else {
-        shuffleWriterBuilder.setCodec(CompressionCodec.None)
-      }
-      shuffleWriterBuilder.setCompressionLevel(
-        CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get)
-      shuffleWriterBuilder.setWriteBufferSize(
-        CometConf.COMET_SHUFFLE_WRITE_BUFFER_SIZE.get().max(Int.MaxValue).toInt)
-
-      outputPartitioning match {
-        case p if isSinglePartitioning(p) =>
-          val partitioning = PartitioningOuterClass.SinglePartition.newBuilder()
-
-          val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
-          shuffleWriterBuilder.setPartitioning(
-            partitioningBuilder.setSinglePartition(partitioning).build())
-        case _: HashPartitioning =>
-          val hashPartitioning = outputPartitioning.asInstanceOf[HashPartitioning]
-
-          val partitioning = PartitioningOuterClass.HashPartition.newBuilder()
-          partitioning.setNumPartitions(outputPartitioning.numPartitions)
-
-          val partitionExprs = hashPartitioning.expressions
-            .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
-
-          if (partitionExprs.length != hashPartitioning.expressions.length) {
-            throw new UnsupportedOperationException(
-              s"Partitioning $hashPartitioning is not supported.")
-          }
-
-          partitioning.addAllHashExpression(partitionExprs.asJava)
-
-          val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
-          shuffleWriterBuilder.setPartitioning(
-            partitioningBuilder.setHashPartition(partitioning).build())
-        case _: RangePartitioning =>
-          val rangePartitioning = outputPartitioning.asInstanceOf[RangePartitioning]
-
-          val partitioning = PartitioningOuterClass.RangePartition.newBuilder()
-          partitioning.setNumPartitions(outputPartitioning.numPartitions)
-
-          // Detect duplicates by tracking expressions directly, similar to DataFusion's LexOrdering
-          // DataFusion will deduplicate identical sort expressions in LexOrdering,
-          // so we need to transform boundary rows to match the deduplicated structure
-          val seenExprs = mutable.HashSet[Expression]()
-          val deduplicationMap = mutable.ArrayBuffer[(Int, Boolean)]() // (originalIndex, isKept)
-
-          rangePartitioning.ordering.zipWithIndex.foreach { case (sortOrder, idx) =>
-            if (seenExprs.contains(sortOrder.child)) {
-              deduplicationMap += (idx -> false) // Will be deduplicated by DataFusion
-            } else {
-              seenExprs += sortOrder.child
-              deduplicationMap += (idx -> true) // Will be kept by DataFusion
-            }
-          }
-
-          {
-            // Serialize the ordering expressions for comparisons
-            val orderingExprs = rangePartitioning.ordering
-              .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
-            if (orderingExprs.length != rangePartitioning.ordering.length) {
-              throw new UnsupportedOperationException(
-                s"Partitioning $rangePartitioning is not supported.")
-            }
-            partitioning.addAllSortOrders(orderingExprs.asJava)
-          }
-
-          // Convert Spark's sequence of InternalRows that represent partitioning boundaries to
-          // sequences of Literals, where each outer entry represents a boundary row, and each
-          // internal entry is a value in that row. In other words, these are stored in row major
-          // order, not column major
-          val boundarySchema = rangePartitioning.ordering.flatMap(e => Some(e.dataType))
-
-          // Transform boundary rows to match DataFusion's deduplicated structure
-          val transformedBoundaryExprs: Seq[Seq[Literal]] =
-            rangePartitionBounds.get.map((row: InternalRow) => {
-              // For every InternalRow, map its values to Literals
-              val allLiterals =
-                row.toSeq(boundarySchema).zip(boundarySchema).map { case (value, valueType) =>
-                  Literal(value, valueType)
-                }
-
-              // Keep only the literals that correspond to non-deduplicated expressions
-              allLiterals
-                .zip(deduplicationMap)
-                .filter(_._2._2) // Keep only where isKept = true
-                .map(_._1) // Extract the literal
-            })
-
-          {
-            // Convert the sequences of Literals to a collection of serialized BoundaryRows
-            val boundaryRows: Seq[PartitioningOuterClass.BoundaryRow] = transformedBoundaryExprs
-              .map((rowLiterals: Seq[Literal]) => {
-                // Serialize each sequence of Literals as a BoundaryRow
-                val rowBuilder = PartitioningOuterClass.BoundaryRow.newBuilder();
-                val serializedExprs =
-                  rowLiterals.map(lit_value =>
-                    QueryPlanSerde.exprToProto(lit_value, outputAttributes).get)
-                rowBuilder.addAllPartitionBounds(serializedExprs.asJava)
-                rowBuilder.build()
-              })
-            partitioning.addAllBoundaryRows(boundaryRows.asJava)
-          }
-
-          val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
-          shuffleWriterBuilder.setPartitioning(
-            partitioningBuilder.setRangePartition(partitioning).build())
-
-        case _ =>
-          throw new UnsupportedOperationException(
-            s"Partitioning $outputPartitioning is not supported.")
-      }
-
-      val shuffleWriterOpBuilder = OperatorOuterClass.Operator.newBuilder()
-      shuffleWriterOpBuilder
-        .setShuffleWriter(shuffleWriterBuilder)
-        .addChildren(opBuilder.setScan(scanBuilder).build())
-        .build()
-    } else {
-      // There are unsupported scan type
-      throw new UnsupportedOperationException(
-        s"$outputAttributes contains unsupported data types for CometShuffleExchangeExec.")
+      OperatorOuterClass.Operator.newBuilder().setScan(scanBuilder).build()
     }
+
+    val shuffleWriterBuilder = OperatorOuterClass.ShuffleWriter.newBuilder()
+    shuffleWriterBuilder.setOutputDataFile(dataFile)
+    shuffleWriterBuilder.setOutputIndexFile(indexFile)
+
+    if (SparkEnv.get.conf.getBoolean("spark.shuffle.compress", true)) {
+      val codec = CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC.get() match {
+        case "zstd" => CompressionCodec.Zstd
+        case "lz4" => CompressionCodec.Lz4
+        case "snappy" => CompressionCodec.Snappy
+        case other => throw new UnsupportedOperationException(s"invalid codec: $other")
+      }
+      shuffleWriterBuilder.setCodec(codec)
+    } else {
+      shuffleWriterBuilder.setCodec(CompressionCodec.None)
+    }
+    shuffleWriterBuilder.setCompressionLevel(
+      CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get)
+    shuffleWriterBuilder.setWriteBufferSize(
+      CometConf.COMET_SHUFFLE_WRITE_BUFFER_SIZE.get().max(Int.MaxValue).toInt)
+
+    outputPartitioning match {
+      case p if isSinglePartitioning(p) =>
+        val partitioning = PartitioningOuterClass.SinglePartition.newBuilder()
+
+        val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
+        shuffleWriterBuilder.setPartitioning(
+          partitioningBuilder.setSinglePartition(partitioning).build())
+      case _: HashPartitioning =>
+        val hashPartitioning = outputPartitioning.asInstanceOf[HashPartitioning]
+
+        val partitioning = PartitioningOuterClass.HashPartition.newBuilder()
+        partitioning.setNumPartitions(outputPartitioning.numPartitions)
+
+        val partitionExprs = hashPartitioning.expressions
+          .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+
+        if (partitionExprs.length != hashPartitioning.expressions.length) {
+          throw new UnsupportedOperationException(
+            s"Partitioning $hashPartitioning is not supported.")
+        }
+
+        partitioning.addAllHashExpression(partitionExprs.asJava)
+
+        val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
+        shuffleWriterBuilder.setPartitioning(
+          partitioningBuilder.setHashPartition(partitioning).build())
+      case _: RangePartitioning =>
+        val rangePartitioning = outputPartitioning.asInstanceOf[RangePartitioning]
+
+        val partitioning = PartitioningOuterClass.RangePartition.newBuilder()
+        partitioning.setNumPartitions(outputPartitioning.numPartitions)
+
+        // Detect duplicates by tracking expressions directly, similar to DataFusion's LexOrdering
+        // DataFusion will deduplicate identical sort expressions in LexOrdering,
+        // so we need to transform boundary rows to match the deduplicated structure
+        val seenExprs = mutable.HashSet[Expression]()
+        val deduplicationMap = mutable.ArrayBuffer[(Int, Boolean)]() // (originalIndex, isKept)
+
+        rangePartitioning.ordering.zipWithIndex.foreach { case (sortOrder, idx) =>
+          if (seenExprs.contains(sortOrder.child)) {
+            deduplicationMap += (idx -> false) // Will be deduplicated by DataFusion
+          } else {
+            seenExprs += sortOrder.child
+            deduplicationMap += (idx -> true) // Will be kept by DataFusion
+          }
+        }
+
+        {
+          // Serialize the ordering expressions for comparisons
+          val orderingExprs = rangePartitioning.ordering
+            .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+          if (orderingExprs.length != rangePartitioning.ordering.length) {
+            throw new UnsupportedOperationException(
+              s"Partitioning $rangePartitioning is not supported.")
+          }
+          partitioning.addAllSortOrders(orderingExprs.asJava)
+        }
+
+        // Convert Spark's sequence of InternalRows that represent partitioning boundaries to
+        // sequences of Literals, where each outer entry represents a boundary row, and each
+        // internal entry is a value in that row. In other words, these are stored in row major
+        // order, not column major
+        val boundarySchema = rangePartitioning.ordering.flatMap(e => Some(e.dataType))
+
+        // Transform boundary rows to match DataFusion's deduplicated structure
+        val transformedBoundaryExprs: Seq[Seq[Literal]] =
+          rangePartitionBounds.get.map((row: InternalRow) => {
+            // For every InternalRow, map its values to Literals
+            val allLiterals =
+              row.toSeq(boundarySchema).zip(boundarySchema).map { case (value, valueType) =>
+                Literal(value, valueType)
+              }
+
+            // Keep only the literals that correspond to non-deduplicated expressions
+            allLiterals
+              .zip(deduplicationMap)
+              .filter(_._2._2) // Keep only where isKept = true
+              .map(_._1) // Extract the literal
+          })
+
+        {
+          // Convert the sequences of Literals to a collection of serialized BoundaryRows
+          val boundaryRows: Seq[PartitioningOuterClass.BoundaryRow] = transformedBoundaryExprs
+            .map((rowLiterals: Seq[Literal]) => {
+              // Serialize each sequence of Literals as a BoundaryRow
+              val rowBuilder = PartitioningOuterClass.BoundaryRow.newBuilder();
+              val serializedExprs =
+                rowLiterals.map(lit_value =>
+                  QueryPlanSerde.exprToProto(lit_value, outputAttributes).get)
+              rowBuilder.addAllPartitionBounds(serializedExprs.asJava)
+              rowBuilder.build()
+            })
+          partitioning.addAllBoundaryRows(boundaryRows.asJava)
+        }
+
+        val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
+        shuffleWriterBuilder.setPartitioning(
+          partitioningBuilder.setRangePartition(partitioning).build())
+
+      case _ =>
+        throw new UnsupportedOperationException(
+          s"Partitioning $outputPartitioning is not supported.")
+    }
+
+    val shuffleWriterOpBuilder = OperatorOuterClass.Operator.newBuilder()
+    shuffleWriterOpBuilder
+      .setShuffleWriter(shuffleWriterBuilder)
+      .addChildren(inputOperator)
+      .build()
   }
 
   override def stop(success: Boolean): Option[MapStatus] = {
