@@ -349,6 +349,10 @@ jobs:
           path: ./tpch
           key: tpch-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
 
+      - name: Build project
+        run: |
+          ./mvnw -B -Prelease compile test-compile -DskipTests
+
       - name: Generate TPC-H data (SF=1)
         if: steps.cache-tpch.outputs.cache-hit != 'true'
         run: |
@@ -400,6 +404,10 @@ jobs:
         with:
           path: ./tpcds-sf-1
           key: tpcds-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
+
+      - name: Build project
+        run: |
+          ./mvnw -B -Prelease compile test-compile -DskipTests
 
       - name: Checkout tpcds-kit
         if: steps.cache-tpcds.outputs.cache-hit != 'true'
