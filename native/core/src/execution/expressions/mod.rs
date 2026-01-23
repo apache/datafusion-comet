@@ -17,6 +17,16 @@
 
 //! Native DataFusion expressions
 
+pub mod arithmetic;
+pub mod bitwise;
+pub mod comparison;
+pub mod logical;
+pub mod nullcheck;
+pub mod strings;
 pub mod subquery;
+pub mod temporal;
 
 pub use datafusion_comet_spark_expr::EvalMode;
+
+// Re-export the extract_expr macro for convenience in expression builders
+pub use crate::extract_expr;

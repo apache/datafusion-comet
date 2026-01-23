@@ -52,7 +52,7 @@ object CometConf extends ShimCometConf {
     "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
 
   private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
-    "Guide (https://datafusion.apache.org/comet/user-guide/tracing.html)"
+    "Guide (https://datafusion.apache.org/comet/contributor-guide/tracing.html)"
 
   /** List of all configs that is used for generating documentation */
   val allConfs = new ListBuffer[ConfigEntry[_]]
@@ -111,6 +111,10 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  // Deprecated: native_comet uses mutable buffers incompatible with Arrow FFI best practices
+  // and does not support complex types. Use native_iceberg_compat or auto instead.
+  // See: https://github.com/apache/datafusion-comet/issues/2186
+  @deprecated("Use SCAN_AUTO instead", "0.9.0")
   val SCAN_NATIVE_COMET = "native_comet"
   val SCAN_NATIVE_DATAFUSION = "native_datafusion"
   val SCAN_NATIVE_ICEBERG_COMPAT = "native_iceberg_compat"
@@ -121,11 +125,14 @@ object CometConf extends ShimCometConf {
     .doc(
       s"The implementation of Comet Native Scan to use. Available modes are `$SCAN_NATIVE_COMET`," +
         s"`$SCAN_NATIVE_DATAFUSION`, and `$SCAN_NATIVE_ICEBERG_COMPAT`. " +
-        s"`$SCAN_NATIVE_COMET` is for the original Comet native scan which uses a jvm based " +
-        "parquet file reader and native column decoding. Supports simple types only " +
-        s"`$SCAN_NATIVE_DATAFUSION` is a fully native implementation of scan based on DataFusion" +
-        s"`$SCAN_NATIVE_ICEBERG_COMPAT` is a native implementation that exposes apis to read " +
-        s"parquet columns natively. `$SCAN_AUTO` chooses the best scan.")
+        s"`$SCAN_NATIVE_COMET` (DEPRECATED) is for the original Comet native scan which " +
+        "uses a jvm based parquet file reader and native column decoding. " +
+        "Supports simple types only. " +
+        s"`$SCAN_NATIVE_DATAFUSION` is a fully native implementation of scan based on " +
+        "DataFusion. " +
+        s"`$SCAN_NATIVE_ICEBERG_COMPAT` is the recommended native implementation that " +
+        "exposes apis to read parquet columns natively and supports complex types. " +
+        s"`$SCAN_AUTO` (default) chooses the best scan.")
     .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
@@ -270,6 +277,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("union", defaultValue = true)
   val COMET_EXEC_EXPAND_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("expand", defaultValue = true)
+  val COMET_EXEC_EXPLODE_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("explode", defaultValue = true)
   val COMET_EXEC_WINDOW_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("window", defaultValue = true)
   val COMET_EXEC_TAKE_ORDERED_AND_PROJECT_ENABLED: ConfigEntry[Boolean] =
@@ -438,6 +447,17 @@ object CometConf extends ShimCometConf {
         "it will produce larger batches than expected in the native operator after shuffle.")
       .intConf
       .createWithDefault(8192)
+
+  val COMET_SHUFFLE_WRITE_BUFFER_SIZE: ConfigEntry[Long] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.writeBufferSize")
+      .category(CATEGORY_SHUFFLE)
+      .doc("Size of the write buffer in bytes used by the native shuffle writer when writing " +
+        "shuffle data to disk. Larger values may improve write performance by reducing " +
+        "the number of system calls, but will use more memory. " +
+        "The default is 1MB which provides a good balance between performance and memory usage.")
+      .bytesConf(ByteUnit.MiB)
+      .checkValue(v => v > 0, "Write buffer size must be positive")
+      .createWithDefault(1)
 
   val COMET_SHUFFLE_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
     "spark.comet.shuffle.preferDictionary.ratio")
@@ -651,6 +671,22 @@ object CometConf extends ShimCometConf {
         "enabled when reading from Iceberg tables.")
       .booleanConf
       .createWithDefault(COMET_SCHEMA_EVOLUTION_ENABLED_DEFAULT)
+
+  val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
+    conf("spark.comet.testing.aggregate.partialMode.enabled")
+      .internal()
+      .category(CATEGORY_TESTING)
+      .doc("This setting is used in unit tests")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_ENABLE_FINAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
+    conf("spark.comet.testing.aggregate.finalMode.enabled")
+      .internal()
+      .category(CATEGORY_TESTING)
+      .doc("This setting is used in unit tests")
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_SPARK_TO_ARROW_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.sparkToColumnar.enabled")

@@ -76,6 +76,7 @@ object CometTPCDSMicroBenchmark extends CometTPCQueryBenchmarkBase {
     "join_left_outer",
     "join_semi",
     "rlike",
+    "explode",
     "to_json")
 
   override def runQueries(

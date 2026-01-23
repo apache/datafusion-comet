@@ -28,7 +28,7 @@ import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
+import org.apache.comet.testing.{DataGenOptions, ParquetGenerator}
 import org.apache.comet.testing.FuzzDataGenerator.{doubleNaNLiteral, floatNaNLiteral}
 
 class CometFuzzTestSuite extends CometFuzzTestBase {
@@ -38,6 +38,17 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
     df.createOrReplaceTempView("t1")
     val sql = "SELECT * FROM t1"
     if (usingDataSourceExec) {
+      checkSparkAnswerAndOperator(sql)
+    } else {
+      checkSparkAnswer(sql)
+    }
+  }
+
+  test("select * with deeply nested complex types") {
+    val df = spark.read.parquet(complexTypesFilename)
+    df.createOrReplaceTempView("t1")
+    val sql = "SELECT * FROM t1"
+    if (CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_COMET) {
       checkSparkAnswerAndOperator(sql)
     } else {
       checkSparkAnswer(sql)
@@ -179,7 +190,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         case CometConf.SCAN_NATIVE_COMET =>
           // native_comet does not support reading complex types
           0
-        case CometConf.SCAN_NATIVE_ICEBERG_COMPAT | CometConf.SCAN_NATIVE_DATAFUSION =>
+        case _ =>
           CometConf.COMET_SHUFFLE_MODE.get() match {
             case "jvm" =>
               1
@@ -202,7 +213,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         case CometConf.SCAN_NATIVE_COMET =>
           // native_comet does not support reading complex types
           0
-        case CometConf.SCAN_NATIVE_ICEBERG_COMPAT | CometConf.SCAN_NATIVE_DATAFUSION =>
+        case _ =>
           CometConf.COMET_SHUFFLE_MODE.get() match {
             case "jvm" =>
               1
@@ -272,12 +283,7 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
   }
 
   private def testParquetTemporalTypes(
-      outputTimestampType: ParquetOutputTimestampType.Value,
-      generateArray: Boolean = true,
-      generateStruct: Boolean = true): Unit = {
-
-    val schemaGenOptions =
-      SchemaGenOptions(generateArray = generateArray, generateStruct = generateStruct)
+      outputTimestampType: ParquetOutputTimestampType.Value): Unit = {
 
     val dataGenOptions = DataGenOptions(generateNegativeZero = false)
 
@@ -287,12 +293,23 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
         CometConf.COMET_ENABLED.key -> "false",
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> outputTimestampType.toString,
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> defaultTimezone) {
+
+        // TODO test with MapType
+        // https://github.com/apache/datafusion-comet/issues/2945
+        val schema = StructType(
+          Seq(
+            StructField("c0", DataTypes.DateType),
+            StructField("c1", DataTypes.createArrayType(DataTypes.DateType)),
+            StructField(
+              "c2",
+              DataTypes.createStructType(Array(StructField("c3", DataTypes.DateType))))))
+
         ParquetGenerator.makeParquetFile(
           random,
           spark,
           filename.toString,
+          schema,
           100,
-          schemaGenOptions,
           dataGenOptions)
       }
 
@@ -309,18 +326,10 @@ class CometFuzzTestSuite extends CometFuzzTestBase {
 
                 val df = spark.read.parquet(filename.toString)
                 df.createOrReplaceTempView("t1")
-
-                def hasTemporalType(t: DataType): Boolean = t match {
-                  case DataTypes.DateType | DataTypes.TimestampType |
-                      DataTypes.TimestampNTZType =>
-                    true
-                  case t: StructType => t.exists(f => hasTemporalType(f.dataType))
-                  case t: ArrayType => hasTemporalType(t.elementType)
-                  case _ => false
-                }
-
                 val columns =
-                  df.schema.fields.filter(f => hasTemporalType(f.dataType)).map(_.name)
+                  df.schema.fields
+                    .filter(f => DataTypeSupport.hasTemporalType(f.dataType))
+                    .map(_.name)
 
                 for (col <- columns) {
                   checkSparkAnswer(s"SELECT $col FROM t1 ORDER BY $col")

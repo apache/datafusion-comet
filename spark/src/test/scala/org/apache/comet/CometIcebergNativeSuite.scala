@@ -26,12 +26,14 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
 
+import org.apache.comet.iceberg.RESTCatalogHelper
+
 /**
  * Test suite for native Iceberg scan using FileScanTasks and iceberg-rust.
  *
  * Note: Requires Iceberg dependencies to be added to pom.xml
  */
-class CometIcebergNativeSuite extends CometTestBase {
+class CometIcebergNativeSuite extends CometTestBase with RESTCatalogHelper {
 
   // Skip these tests if Iceberg is not available in classpath
   private def icebergAvailable: Boolean = {
@@ -1438,10 +1440,6 @@ class CometIcebergNativeSuite extends CometTestBase {
 
         assert(metrics("output_rows").value == 10000)
         assert(metrics("num_splits").value > 0)
-        assert(metrics("time_elapsed_opening").value > 0)
-        assert(metrics("time_elapsed_scanning_until_data").value > 0)
-        assert(metrics("time_elapsed_scanning_total").value > 0)
-        assert(metrics("time_elapsed_processing").value > 0)
         // ImmutableSQLMetric prevents these from being reset to 0 after execution
         assert(
           metrics("totalDataManifest").value > 0,
@@ -2097,6 +2095,186 @@ class CometIcebergNativeSuite extends CometTestBase {
           "SELECT * FROM test_cat.db.map_key_filter_test WHERE properties['age'] = 30 ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.map_key_filter_test")
+      }
+    }
+  }
+
+  // Test to reproduce "Field X not found in schema" errors
+  // Mimics TestAggregatePushDown.testNaN() where aggregate output schema differs from table schema
+  test("partitioned table with aggregates - reproduces Field not found error") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create table partitioned by id, like TestAggregatePushDown.testNaN
+        spark.sql("""
+          CREATE TABLE test_cat.db.agg_test (
+            id INT,
+            data FLOAT
+          ) USING iceberg
+          PARTITIONED BY (id)
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.agg_test VALUES
+          (1, CAST('NaN' AS FLOAT)),
+          (1, CAST('NaN' AS FLOAT)),
+          (2, 2.0),
+          (2, CAST('NaN' AS FLOAT)),
+          (3, CAST('NaN' AS FLOAT)),
+          (3, 1.0)
+        """)
+
+        // This aggregate query's output schema is completely different from table schema
+        // When iceberg-rust tries to look up partition field 'id' (field 1 in table schema),
+        // it needs to find it in the full table schema, not the aggregate output schema
+        checkIcebergNativeScan(
+          "SELECT count(*), max(data), min(data), count(data) FROM test_cat.db.agg_test")
+
+        spark.sql("DROP TABLE test_cat.db.agg_test")
+      }
+    }
+  }
+
+  test("MOR partitioned table with timestamp_ntz - reproduces NULL partition issue") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create partitioned table like TestRewritePositionDeleteFiles.testTimestampNtz
+        spark.sql("""
+          CREATE TABLE test_cat.db.timestamp_ntz_partition_test (
+            id LONG,
+            ts TIMESTAMP_NTZ,
+            c1 STRING,
+            c2 STRING
+          ) USING iceberg
+          PARTITIONED BY (ts)
+          TBLPROPERTIES (
+            'format-version' = '2',
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
+
+        // Insert data into multiple partitions
+        spark.sql("""
+          INSERT INTO test_cat.db.timestamp_ntz_partition_test
+          VALUES
+            (1, TIMESTAMP_NTZ '2023-01-01 15:30:00', 'a', 'b'),
+            (2, TIMESTAMP_NTZ '2023-01-02 15:30:00', 'c', 'd'),
+            (3, TIMESTAMP_NTZ '2023-01-03 15:30:00', 'e', 'f')
+        """)
+
+        // Delete some rows to create position delete files
+        spark.sql("DELETE FROM test_cat.db.timestamp_ntz_partition_test WHERE id = 2")
+
+        // Query should work with NULL partition handling
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.timestamp_ntz_partition_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.timestamp_ntz_partition_test")
+      }
+    }
+  }
+
+  test("MOR partitioned table with decimal - reproduces NULL partition issue") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        // Create partitioned table like TestRewritePositionDeleteFiles.testDecimalPartition
+        spark.sql("""
+          CREATE TABLE test_cat.db.decimal_partition_test (
+            id LONG,
+            dec DECIMAL(18, 10),
+            c1 STRING,
+            c2 STRING
+          ) USING iceberg
+          PARTITIONED BY (dec)
+          TBLPROPERTIES (
+            'format-version' = '2',
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read'
+          )
+        """)
+
+        // Insert data into multiple partitions
+        spark.sql("""
+          INSERT INTO test_cat.db.decimal_partition_test
+          VALUES
+            (1, 1.0, 'a', 'b'),
+            (2, 2.0, 'c', 'd'),
+            (3, 3.0, 'e', 'f')
+        """)
+
+        // Delete some rows to create position delete files
+        spark.sql("DELETE FROM test_cat.db.decimal_partition_test WHERE id = 2")
+
+        // Query should work with NULL partition handling
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.decimal_partition_test ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.decimal_partition_test")
+      }
+    }
+  }
+
+  test("REST catalog with native Iceberg scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withRESTCatalog { (restUri, _, warehouseDir) =>
+      withSQLConf(
+        "spark.sql.catalog.rest_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.rest_cat.catalog-impl" -> "org.apache.iceberg.rest.RESTCatalog",
+        "spark.sql.catalog.rest_cat.uri" -> restUri,
+        "spark.sql.catalog.rest_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "true") {
+
+        // Create namespace first (REST catalog requires explicit namespace creation)
+        spark.sql("CREATE NAMESPACE rest_cat.db")
+
+        // Create a table via REST catalog
+        spark.sql("""
+          CREATE TABLE rest_cat.db.test_table (
+            id INT,
+            name STRING,
+            value DOUBLE
+          ) USING iceberg
+        """)
+
+        spark.sql("""
+          INSERT INTO rest_cat.db.test_table
+          VALUES (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)
+        """)
+
+        checkIcebergNativeScan("SELECT * FROM rest_cat.db.test_table ORDER BY id")
+
+        spark.sql("DROP TABLE rest_cat.db.test_table")
+        spark.sql("DROP NAMESPACE rest_cat.db")
       }
     }
   }

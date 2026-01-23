@@ -30,6 +30,7 @@ not supported by Comet will fall back to regular Spark execution.
 | ExpandExec                        | Yes               |                                                                                                                    |
 | FileSourceScanExec                | Yes               | Supports Parquet files. See the [Comet Compatibility Guide] for more information.                                  |
 | FilterExec                        | Yes               |                                                                                                                    |
+| GenerateExec                      | Yes               | Supports `explode` generator only.                                                                                 |
 | GlobalLimitExec                   | Yes               |                                                                                                                    |
 | HashAggregateExec                 | Yes               |                                                                                                                    |
 | InsertIntoHadoopFsRelationCommand | No                | Experimental support for native Parquet writes. Disabled by default.                                               |

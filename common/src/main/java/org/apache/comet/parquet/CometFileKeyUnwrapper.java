@@ -102,12 +102,34 @@ public class CometFileKeyUnwrapper {
   private Configuration conf = null;
 
   /**
+   * Normalizes S3 URI schemes to a canonical form. S3 can be accessed via multiple schemes (s3://,
+   * s3a://, s3n://) that refer to the same logical filesystem. This method ensures consistent cache
+   * lookups regardless of which scheme is used.
+   *
+   * @param filePath The file path that may contain an S3 URI
+   * @return The file path with normalized S3 scheme (s3a://)
+   */
+  private String normalizeS3Scheme(final String filePath) {
+    // Normalize s3:// and s3n:// to s3a:// for consistent cache lookups
+    // This handles the case where ObjectStoreUrl uses s3:// but Spark uses s3a://
+    String s3Prefix = "s3://";
+    String s3nPrefix = "s3n://";
+    if (filePath.startsWith(s3Prefix)) {
+      return "s3a://" + filePath.substring(s3Prefix.length());
+    } else if (filePath.startsWith(s3nPrefix)) {
+      return "s3a://" + filePath.substring(s3nPrefix.length());
+    }
+    return filePath;
+  }
+
+  /**
    * Creates and stores a DecryptionKeyRetriever instance for the given file path.
    *
    * @param filePath The path to the Parquet file
    * @param hadoopConf The Hadoop Configuration to use for this file path
    */
   public void storeDecryptionKeyRetriever(final String filePath, final Configuration hadoopConf) {
+    final String normalizedPath = normalizeS3Scheme(filePath);
     // Use DecryptionPropertiesFactory.loadFactory to get the factory and then call
     // getFileDecryptionProperties
     if (factory == null) {
@@ -122,7 +144,7 @@ public class CometFileKeyUnwrapper {
         factory.getFileDecryptionProperties(hadoopConf, path);
 
     DecryptionKeyRetriever keyRetriever = decryptionProperties.getKeyRetriever();
-    retrieverCache.put(filePath, keyRetriever);
+    retrieverCache.put(normalizedPath, keyRetriever);
   }
 
   /**
@@ -136,7 +158,8 @@ public class CometFileKeyUnwrapper {
    */
   public byte[] getKey(final String filePath, final byte[] keyMetadata)
       throws ParquetCryptoRuntimeException {
-    DecryptionKeyRetriever keyRetriever = retrieverCache.get(filePath);
+    final String normalizedPath = normalizeS3Scheme(filePath);
+    DecryptionKeyRetriever keyRetriever = retrieverCache.get(normalizedPath);
     if (keyRetriever == null) {
       throw new ParquetCryptoRuntimeException(
           "Failed to find DecryptionKeyRetriever for path: " + filePath);

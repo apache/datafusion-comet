@@ -31,16 +31,16 @@ license = "Apache-2.0"
 edition = "2021"
 
 # Comet uses the same minimum Rust version as DataFusion
-rust-version = "1.86"
+rust-version = "1.88"
 
 [workspace.dependencies]
-arrow = { version = "56.2.0", features = ["prettyprint", "ffi", "chrono-tz"] }
+arrow = { version = "57.2.0", features = ["prettyprint", "ffi", "chrono-tz"] }
 async-trait = { version = "0.1" }
 bytes = { version = "1.10.0" }
-parquet = { version = "56.2.0", default-features = false, features = ["experimental"] }
-datafusion = { version = "50.3.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
-datafusion-datasource = { version = "50.3.0" }
-datafusion-spark = { version = "50.3.0" }
+parquet = { version = "57.2.0", default-features = false, features = ["experimental"] }
+datafusion = { version = "51.0.0", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-datasource = { version = "51.0.0" }
+datafusion-spark = { version = "51.0.0" }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-proto = { path = "proto" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -54,8 +54,7 @@ object_store = { version = "0.12.3", features = ["gcp", "azure", "aws", "http"] 
 url = "2.2"
 aws-config = "1.8.10"
 aws-credential-types = "1.2.9"
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "a667539" }
-iceberg-datafusion = { git = "https://github.com/apache/iceberg-rust", rev = "a667539" }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "ee21563" }
 
 [profile.release]
 debug = true

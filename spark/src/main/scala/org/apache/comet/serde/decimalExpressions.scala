@@ -38,6 +38,14 @@ object CometUnscaledValue extends CometExpressionSerde[UnscaledValue] {
 }
 
 object CometMakeDecimal extends CometExpressionSerde[MakeDecimal] {
+
+  override def getSupportLevel(expr: MakeDecimal): SupportLevel = {
+    expr.child.dataType match {
+      case LongType => Compatible()
+      case other => Unsupported(Some(s"Unsupported input data type: $other"))
+    }
+  }
+
   override def convert(
       expr: MakeDecimal,
       inputs: Seq[Attribute],

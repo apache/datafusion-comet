@@ -1581,10 +1581,6 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("bucketed table") {
-    // native_datafusion actually passes this test, but in the case where buckets are pruned it fails, so we're
-    // falling back for bucketed scans entirely as a workaround.
-    // https://github.com/apache/datafusion-comet/issues/1719
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() != CometConf.SCAN_NATIVE_DATAFUSION)
     val bucketSpec = Some(BucketSpec(8, Seq("i", "j"), Nil))
     val bucketedTableTestSpecLeft = BucketedTableTestSpec(bucketSpec, expectedShuffle = false)
     val bucketedTableTestSpecRight = BucketedTableTestSpec(bucketSpec, expectedShuffle = false)
@@ -1593,6 +1589,30 @@ class CometExecSuite extends CometTestBase {
       bucketedTableTestSpecLeft = bucketedTableTestSpecLeft,
       bucketedTableTestSpecRight = bucketedTableTestSpecRight,
       joinCondition = joinCondition(Seq("i", "j")))
+  }
+
+  test("bucketed table with bucket pruning") {
+    withSQLConf(
+      SQLConf.BUCKETING_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0") {
+      val df1 = (0 until 100).map(i => (i, i % 13, s"left_$i")).toDF("id", "bucket_col", "value")
+      val df2 = (0 until 100).map(i => (i, i % 13, s"right_$i")).toDF("id", "bucket_col", "value")
+      val bucketSpec = Some(BucketSpec(8, Seq("bucket_col"), Nil))
+
+      withTable("bucketed_table1", "bucketed_table2") {
+        withBucket(df1.write.format("parquet"), bucketSpec).saveAsTable("bucketed_table1")
+        withBucket(df2.write.format("parquet"), bucketSpec).saveAsTable("bucketed_table2")
+
+        // Join two bucketed tables, but filter one side to trigger bucket pruning
+        // Only buckets where hash(bucket_col) % 8 matches hash(1) % 8 will be read from left side
+        val left = spark.table("bucketed_table1").filter("bucket_col = 1")
+        val right = spark.table("bucketed_table2")
+
+        val result = left.join(right, Seq("bucket_col"), "inner")
+
+        checkSparkAnswerAndOperator(result)
+      }
+    }
   }
 
   def withBucket(

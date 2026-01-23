@@ -26,6 +26,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{ArrayAppend, ArrayDistinct, ArrayExcept, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayRepeat, ArraysOverlap, ArrayUnion}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
@@ -825,6 +826,66 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         for (field <- table.schema.fields.filter(_.dataType.isInstanceOf[ArrayType])) {
           val sql = s"SELECT ${field.name}, reverse(${field.name}) FROM t1 ORDER BY ${field.name}"
           checkSparkAnswer(sql)
+        }
+      }
+    }
+  }
+
+  test("size with array input") {
+    withTempDir { dir =>
+      withTempView("t1") {
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
+        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+
+        // Test size function with arrays built from columns (ensures native execution)
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(array(_2, _3, _4)) from t1 where _2 is not null order by _2, _3, _4"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(array(_1)) from t1 where _1 is not null order by _1"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(array(_2, _3)) from t1 where _2 is null order by _2, _3"))
+
+        // Test with conditional arrays (forces runtime evaluation)
+        checkSparkAnswerAndOperator(sql(
+          "SELECT size(case when _2 > 0 then array(_2, _3, _4) else array(_2) end) from t1 order by _2, _3, _4"))
+        checkSparkAnswerAndOperator(sql(
+          "SELECT size(case when _1 then array(_8, _9) else array(_8, _9, _10) end) from t1 order by _1, _8, _9, _10"))
+
+        // Test empty arrays using conditional logic to avoid constant folding
+        checkSparkAnswerAndOperator(sql(
+          "SELECT size(case when _2 < 0 then array(_2, _3) else array() end) from t1 order by _2, _3"))
+
+        // Test null arrays using conditional logic
+        checkSparkAnswerAndOperator(sql(
+          "SELECT size(case when _2 is null then cast(null as array<int>) else array(_2) end) from t1 order by _2"))
+
+        // Test with different data types using column references
+        checkSparkAnswerAndOperator(
+          sql("SELECT size(array(_8, _9, _10)) from t1 where _8 is not null order by _8, _9, _10")
+        ) // string arrays
+        checkSparkAnswerAndOperator(
+          sql(
+            "SELECT size(array(_2, _3, _4, _5, _6)) from t1 where _2 is not null order by _2, _3, _4, _5, _6"
+          )
+        ) // int arrays
+      }
+    }
+  }
+
+  test("size - respect to legacySizeOfNull") {
+    val table = "t1"
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
+      withTable(table) {
+        sql(s"create table $table(col array<string>) using parquet")
+        sql(s"insert into $table values(null)")
+        withSQLConf(SQLConf.LEGACY_SIZE_OF_NULL.key -> "false") {
+          checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+        }
+        withSQLConf(
+          SQLConf.LEGACY_SIZE_OF_NULL.key -> "true",
+          SQLConf.ANSI_ENABLED.key -> "false") {
+          checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
         }
       }
     }

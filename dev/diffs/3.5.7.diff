@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index a0e25ce4d8d..7db86212507 100644
+index a0e25ce4d8d..29d3b93f994 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
@@ -1274,18 +1274,21 @@ index de24b8c82b0..1f835481290 100644
  
    setupTestData()
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
-index 9e9d717db3b..91a4f9a38d5 100644
+index 9e9d717db3b..73de2b84938 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantProjectsSuite.scala
-@@ -18,6 +18,7 @@
+@@ -17,7 +17,10 @@
+ 
  package org.apache.spark.sql.execution
  
++import org.apache.comet.CometConf
++
  import org.apache.spark.sql.{DataFrame, QueryTest, Row}
 +import org.apache.spark.sql.comet.CometProjectExec
  import org.apache.spark.sql.connector.SimpleWritableDataSource
  import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecutionSuite, EnableAdaptiveExecutionSuite}
  import org.apache.spark.sql.internal.SQLConf
-@@ -34,7 +35,10 @@ abstract class RemoveRedundantProjectsSuiteBase
+@@ -34,7 +37,10 @@ abstract class RemoveRedundantProjectsSuiteBase
    private def assertProjectExecCount(df: DataFrame, expected: Int): Unit = {
      withClue(df.queryExecution) {
        val plan = df.queryExecution.executedPlan
@@ -1297,6 +1300,43 @@ index 9e9d717db3b..91a4f9a38d5 100644
        assert(actual == expected)
      }
    }
+@@ -134,12 +140,26 @@ abstract class RemoveRedundantProjectsSuiteBase
+       val df = data.selectExpr("a", "b", "key", "explode(array(key, a, b)) as d").filter("d > 0")
+       df.collect()
+       val plan = df.queryExecution.executedPlan
+-      val numProjects = collectWithSubqueries(plan) { case p: ProjectExec => p }.length
++
++      val numProjects = collectWithSubqueries(plan) {
++        case p: ProjectExec => p
++        case p: CometProjectExec => p
++      }.length
+ 
+       // Create a new plan that reverse the GenerateExec output and add a new ProjectExec between
+       // GenerateExec and its child. This is to test if the ProjectExec is removed, the output of
+       // the query will be incorrect.
+-      val newPlan = stripAQEPlan(plan) transform {
++
++      // Comet-specific change to get original Spark plan before applying
++      // a transformation to add a new ProjectExec
++      var sparkPlan: SparkPlan = null
++      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
++        val df = data.selectExpr("a", "b", "key", "explode(array(key, a, b)) as d").filter("d > 0")
++        df.collect()
++        sparkPlan = df.queryExecution.executedPlan
++      }
++
++      val newPlan = stripAQEPlan(sparkPlan) transform {
+         case g @ GenerateExec(_, requiredChildOutput, _, _, child) =>
+           g.copy(requiredChildOutput = requiredChildOutput.reverse,
+             child = ProjectExec(requiredChildOutput.reverse, child))
+@@ -151,6 +171,7 @@ abstract class RemoveRedundantProjectsSuiteBase
+       // The manually added ProjectExec node shouldn't be removed.
+       assert(collectWithSubqueries(newExecutedPlan) {
+         case p: ProjectExec => p
++        case p: CometProjectExec => p
+       }.size == numProjects + 1)
+ 
+       // Check the original plan's output and the new plan's output are the same.
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantSortsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantSortsSuite.scala
 index 005e764cc30..92ec088efab 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/RemoveRedundantSortsSuite.scala

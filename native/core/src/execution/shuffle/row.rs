@@ -45,7 +45,7 @@ use datafusion::physical_plan::metrics::Time;
 use jni::sys::{jint, jlong};
 use std::{
     fs::OpenOptions,
-    io::{Cursor, Seek, SeekFrom, Write},
+    io::{Cursor, Write},
     str::from_utf8,
     sync::Arc,
 };
@@ -765,9 +765,6 @@ pub fn process_sorted_row_partition(
     initial_checksum: Option<u32>,
     codec: &CompressionCodec,
 ) -> Result<(i64, Option<u32>), CometError> {
-    // TODO: We can tune this parameter automatically based on row size and cache size.
-    let row_step = 10;
-
     // The current row number we are reading
     let mut current_row = 0;
     // Total number of bytes written
@@ -779,40 +776,45 @@ pub fn process_sorted_row_partition(
         None
     };
 
+    // Create builders once and reuse them across batches.
+    // After finish() is called, builders are reset and can be reused.
+    let mut data_builders: Vec<Box<dyn ArrayBuilder>> = vec![];
+    schema.iter().try_for_each(|dt| {
+        make_builders(dt, batch_size, prefer_dictionary_ratio)
+            .map(|builder| data_builders.push(builder))?;
+        Ok::<(), CometError>(())
+    })?;
+
+    // Open the output file once and reuse it across batches
+    let mut output_data = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&output_path)?;
+
+    // Reusable buffer for serialized batch data
+    let mut frozen: Vec<u8> = Vec::new();
+
     while current_row < row_num {
         let n = std::cmp::min(batch_size, row_num - current_row);
 
-        let mut data_builders: Vec<Box<dyn ArrayBuilder>> = vec![];
-        schema.iter().try_for_each(|dt| {
-            make_builders(dt, n, prefer_dictionary_ratio)
-                .map(|builder| data_builders.push(builder))?;
-            Ok::<(), CometError>(())
-        })?;
-
         // Appends rows to the array builders.
-        let mut row_start: usize = current_row;
-        while row_start < current_row + n {
-            let row_end = std::cmp::min(row_start + row_step, current_row + n);
-
-            // For each column, iterating over rows and appending values to corresponding array
-            // builder.
-            for (idx, builder) in data_builders.iter_mut().enumerate() {
-                append_columns(
-                    row_addresses_ptr,
-                    row_sizes_ptr,
-                    row_start,
-                    row_end,
-                    schema,
-                    idx,
-                    builder,
-                    prefer_dictionary_ratio,
-                )?;
-            }
-
-            row_start = row_end;
+        // For each column, iterating over rows and appending values to corresponding array
+        // builder.
+        for (idx, builder) in data_builders.iter_mut().enumerate() {
+            append_columns(
+                row_addresses_ptr,
+                row_sizes_ptr,
+                current_row,
+                current_row + n,
+                schema,
+                idx,
+                builder,
+                prefer_dictionary_ratio,
+            )?;
         }
 
         // Writes a record batch generated from the array builders to the output file.
+        // Note: builder_to_array calls finish() which resets the builder, making it reusable for the next batch.
         let array_refs: Result<Vec<ArrayRef>, _> = data_builders
             .iter_mut()
             .zip(schema.iter())
@@ -820,9 +822,8 @@ pub fn process_sorted_row_partition(
             .collect();
         let batch = make_batch(array_refs?, n)?;
 
-        let mut frozen: Vec<u8> = vec![];
+        frozen.clear();
         let mut cursor = Cursor::new(&mut frozen);
-        cursor.seek(SeekFrom::End(0))?;
 
         // we do not collect metrics in Native_writeSortedFileNative
         let ipc_time = Time::default();
@@ -832,11 +833,6 @@ pub fn process_sorted_row_partition(
         if let Some(checksum) = &mut current_checksum {
             checksum.update(&mut cursor)?;
         }
-
-        let mut output_data = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&output_path)?;
 
         output_data.write_all(&frozen)?;
         current_row += n;

@@ -25,7 +25,7 @@ Before you start, have a look through [these slides](https://docs.google.com/pre
 
 ## Finding an Expression to Add
 
-You may have a specific expression in mind that you'd like to add, but if not, you can review the [expression coverage document](https://github.com/apache/datafusion-comet/blob/f08fcadd5fbdb5b04293d33e654f6c16f81b70c4/doc/spark_builtin_expr_coverage.txt) to see which expressions are not yet supported.
+You may have a specific expression in mind that you'd like to add, but if not, you can review the [expression coverage document](https://github.com/apache/datafusion-comet/blob/main/docs/spark_expressions_support.md) to see which expressions are not yet supported.
 
 ## Implementing the Expression
 
@@ -236,6 +236,29 @@ test("unhex") {
 }
 ```
 
+#### Testing with Literal Values
+
+When writing tests that use literal values (e.g., `SELECT my_func('literal')`), Spark's constant folding optimizer may evaluate the expression at planning time rather than execution time. This means your Comet implementation might not actually be exercised during the test.
+
+To ensure literal expressions are executed by Comet, disable the constant folding optimizer:
+
+```scala
+test("my_func with literals") {
+  withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+      "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+    checkSparkAnswerAndOperator("SELECT my_func('literal_value')")
+  }
+}
+```
+
+This is particularly important for:
+
+- Edge case tests using specific literal values (e.g., null handling, overflow conditions)
+- Tests verifying behavior with special input values
+- Any test where the expression inputs are entirely literal
+
+When possible, prefer testing with column references from tables (as shown in the `unhex` example above), which naturally avoids the constant folding issue.
+
 ### Adding the Expression To the Protobuf Definition
 
 Once you have the expression implemented in Scala, you might need to update the protobuf definition to include the new expression. You may not need to do this if the expression is already covered by the existing protobuf definition (e.g. you're adding a new scalar function that uses the `ScalarFunc` message).
@@ -271,7 +294,8 @@ How this works is somewhat dependent on the type of expression you're adding. Ex
 If you're adding a new expression that requires custom protobuf serialization, you may need to:
 
 1. Add a new message to the protobuf definition in `native/proto/src/proto/expr.proto`
-2. Update the Rust deserialization code to handle the new protobuf message type
+2. Add a native expression handler in `expression_registry.rs` to deserialize the new protobuf message type and
+   create a native expression
 
 For most expressions, you can skip this step if you're using the existing scalar function infrastructure.
 

@@ -136,7 +136,7 @@ impl PhysicalExpr for CheckOverflow {
                 );
 
                 let new_v: Option<i128> = v.and_then(|v| {
-                    Decimal128Type::validate_decimal_precision(v, precision)
+                    Decimal128Type::validate_decimal_precision(v, precision, scale)
                         .map(|_| v)
                         .ok()
                 });

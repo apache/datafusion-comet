@@ -31,6 +31,8 @@ import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, DataFrameWriter, Row, SparkSession}
+import org.apache.spark.sql.comet.CometPlanChecker
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.benchmark.SqlBasedBenchmark
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
@@ -38,7 +40,10 @@ import org.apache.spark.sql.types.DecimalType
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions
 
-trait CometBenchmarkBase extends SqlBasedBenchmark {
+trait CometBenchmarkBase
+    extends SqlBasedBenchmark
+    with AdaptiveSparkPlanHelper
+    with CometPlanChecker {
   override def getSparkSession: SparkSession = {
     val conf = new SparkConf()
       .setAppName("CometReadBenchmark")
@@ -88,22 +93,71 @@ trait CometBenchmarkBase extends SqlBasedBenchmark {
     }
   }
 
-  /** Runs function `f` with Comet on and off. */
-  final def runWithComet(name: String, cardinality: Long)(f: => Unit): Unit = {
+  /**
+   * Runs an expression benchmark with standard cases: Spark, Comet (Scan), Comet (Scan + Exec).
+   * This provides a consistent benchmark structure for expression evaluation.
+   *
+   * @param name
+   *   Benchmark name
+   * @param cardinality
+   *   Number of rows being processed
+   * @param query
+   *   SQL query to benchmark
+   * @param extraCometConfigs
+   *   Additional configurations to apply for Comet cases (optional)
+   */
+  final def runExpressionBenchmark(
+      name: String,
+      cardinality: Long,
+      query: String,
+      extraCometConfigs: Map[String, String] = Map.empty): Unit = {
     val benchmark = new Benchmark(name, cardinality, output = output)
 
-    benchmark.addCase(s"$name - Spark ") { _ =>
+    benchmark.addCase("Spark") { _ =>
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        f
+        spark.sql(query).noop()
       }
     }
 
-    benchmark.addCase(s"$name - Comet") { _ =>
+    benchmark.addCase("Comet (Scan)") { _ =>
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        SQLConf.ANSI_ENABLED.key -> "false") {
-        f
+        CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark.sql(query).noop()
+      }
+    }
+
+    val cometExecConfigs = Map(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      "spark.sql.optimizer.constantFolding.enabled" -> "false") ++ extraCometConfigs
+
+    // Check that the plan is fully Comet native before running the benchmark
+    withSQLConf(cometExecConfigs.toSeq: _*) {
+      val df = spark.sql(query)
+      df.noop()
+      val plan = stripAQEPlan(df.queryExecution.executedPlan)
+      findFirstNonCometOperator(plan) match {
+        case Some(op) =>
+          // scalastyle:off println
+          println()
+          println("=" * 80)
+          println("WARNING: Benchmark plan is NOT fully Comet native!")
+          println(s"First non-Comet operator: ${op.nodeName}")
+          println("=" * 80)
+          println("Query plan:")
+          println(plan.treeString)
+          println("=" * 80)
+          println()
+        // scalastyle:on println
+        case None =>
+        // All operators are Comet native, no warning needed
+      }
+    }
+
+    benchmark.addCase("Comet (Scan + Exec)") { _ =>
+      withSQLConf(cometExecConfigs.toSeq: _*) {
+        spark.sql(query).noop()
       }
     }
 

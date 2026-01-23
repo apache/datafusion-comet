@@ -122,7 +122,7 @@ pub(crate) fn init_datasource_exec(
                 object_store_url,
                 file_source,
             )
-            .with_projection(Some(projection_vector))
+            .with_projection_indices(Some(projection_vector))
             .with_table_partition_cols(partition_fields)
             .build()
         }

@@ -129,7 +129,8 @@ fn create_xxhash64_hashes<'a>(
         arrays,
         hashes_buffer,
         spark_compatible_xxhash64,
-        create_xxhash64_hashes_dictionary
+        create_xxhash64_hashes_dictionary,
+        create_xxhash64_hashes
     );
     Ok(hashes_buffer)
 }

@@ -85,6 +85,8 @@ message Expr {
     Rand randn = 62;
     EmptyExpr spark_partition_id = 63;
     EmptyExpr monotonically_increasing_id = 64;
+    UnixTimestamp unix_timestamp = 65;
+    FromJson from_json = 66;
   }
 }
 
@@ -120,7 +122,7 @@ message Count {
 message Sum {
   Expr child = 1;
   DataType datatype = 2;
-  bool fail_on_error = 3;
+  EvalMode eval_mode = 3;
 }
 
 message Min {
@@ -137,7 +139,7 @@ message Avg {
   Expr child = 1;
   DataType datatype = 2;
   DataType sum_datatype = 3;
-  bool fail_on_error = 4; // currently unused (useful for deciding Ansi vs Legacy mode)
+  EvalMode eval_mode = 4;
 }
 
 message First {
@@ -268,6 +270,12 @@ message ToJson {
   bool ignore_null_fields = 6;
 }
 
+message FromJson {
+  Expr child = 1;
+  DataType schema = 2;
+  string timezone = 3;
+}
+
 enum BinaryOutputStyle {
   UTF8 = 0;
   BASIC = 1;
@@ -293,6 +301,11 @@ message Minute {
 }
 
 message Second {
+  Expr child = 1;
+  string timezone = 2;
+}
+
+message UnixTimestamp {
   Expr child = 1;
   string timezone = 2;
 }

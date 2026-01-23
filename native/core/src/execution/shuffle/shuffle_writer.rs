@@ -44,7 +44,6 @@ use datafusion::{
     },
 };
 use datafusion_comet_spark_expr::hash_funcs::murmur3::create_murmur3_hashes;
-use futures::executor::block_on;
 use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use std::borrow::Borrow;
@@ -78,10 +77,13 @@ pub struct ShuffleWriterExec {
     /// The compression codec to use when compressing shuffle blocks
     codec: CompressionCodec,
     tracing_enabled: bool,
+    /// Size of the write buffer in bytes
+    write_buffer_size: usize,
 }
 
 impl ShuffleWriterExec {
     /// Create a new ShuffleWriterExec
+    #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         partitioning: CometPartitioning,
@@ -89,6 +91,7 @@ impl ShuffleWriterExec {
         output_data_file: String,
         output_index_file: String,
         tracing_enabled: bool,
+        write_buffer_size: usize,
     ) -> Result<Self> {
         let cache = PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
@@ -106,6 +109,7 @@ impl ShuffleWriterExec {
             cache,
             codec,
             tracing_enabled,
+            write_buffer_size,
         })
     }
 }
@@ -169,6 +173,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.output_data_file.clone(),
                 self.output_index_file.clone(),
                 self.tracing_enabled,
+                self.write_buffer_size,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -195,6 +200,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                     context,
                     self.codec.clone(),
                     self.tracing_enabled,
+                    self.write_buffer_size,
                 )
                 .map_err(|e| ArrowError::ExternalError(Box::new(e))),
             )
@@ -214,6 +220,7 @@ async fn external_shuffle(
     context: Arc<TaskContext>,
     codec: CompressionCodec,
     tracing_enabled: bool,
+    write_buffer_size: usize,
 ) -> Result<SendableRecordBatchStream> {
     with_trace_async("external_shuffle", tracing_enabled, || async {
         let schema = input.schema();
@@ -227,6 +234,7 @@ async fn external_shuffle(
                     metrics,
                     context.session_config().batch_size(),
                     codec,
+                    write_buffer_size,
                 )?)
             }
             _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
@@ -240,15 +248,16 @@ async fn external_shuffle(
                 context.session_config().batch_size(),
                 codec,
                 tracing_enabled,
+                write_buffer_size,
             )?),
         };
 
         while let Some(batch) = input.next().await {
-            // Block on the repartitioner to insert the batch and shuffle the rows
+            // Await the repartitioner to insert the batch and shuffle the rows
             // into the corresponding partition buffer.
             // Otherwise, pull the next batch from the input stream might overwrite the
             // current batch in the repartitioner.
-            block_on(repartitioner.insert_batch(batch?))?;
+            repartitioner.insert_batch(batch?).await?;
         }
 
         repartitioner.shuffle_write()?;
@@ -265,9 +274,6 @@ struct ShuffleRepartitionerMetrics {
 
     /// Time to perform repartitioning
     repart_time: Time,
-
-    /// Time interacting with memory pool
-    mempool_time: Time,
 
     /// Time encoding batches to IPC format
     encode_time: Time,
@@ -293,7 +299,6 @@ impl ShuffleRepartitionerMetrics {
         Self {
             baseline: BaselineMetrics::new(metrics, partition),
             repart_time: MetricBuilder::new(metrics).subset_time("repart_time", partition),
-            mempool_time: MetricBuilder::new(metrics).subset_time("mempool_time", partition),
             encode_time: MetricBuilder::new(metrics).subset_time("encode_time", partition),
             write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
             input_batches: MetricBuilder::new(metrics).counter("input_batches", partition),
@@ -331,6 +336,8 @@ struct MultiPartitionShuffleRepartitioner {
     /// Reservation for repartitioning
     reservation: MemoryReservation,
     tracing_enabled: bool,
+    /// Size of the write buffer in bytes
+    write_buffer_size: usize,
 }
 
 #[derive(Default)]
@@ -362,6 +369,7 @@ impl MultiPartitionShuffleRepartitioner {
         batch_size: usize,
         codec: CompressionCodec,
         tracing_enabled: bool,
+        write_buffer_size: usize,
     ) -> Result<Self> {
         let num_output_partitions = partitioning.partition_count();
         assert_ne!(
@@ -407,6 +415,7 @@ impl MultiPartitionShuffleRepartitioner {
             batch_size,
             reservation,
             tracing_enabled,
+            write_buffer_size,
         })
     }
 
@@ -635,13 +644,7 @@ impl MultiPartitionShuffleRepartitioner {
             mem_growth += after_size.saturating_sub(before_size);
         }
 
-        let grow_result = {
-            let mut timer = self.metrics.mempool_time.timer();
-            let result = self.reservation.try_grow(mem_growth);
-            timer.stop();
-            result
-        };
-        if grow_result.is_err() {
+        if self.reservation.try_grow(mem_growth).is_err() {
             self.spill()?;
         }
 
@@ -654,8 +657,10 @@ impl MultiPartitionShuffleRepartitioner {
         output_data: &mut BufWriter<File>,
         encode_time: &Time,
         write_time: &Time,
+        write_buffer_size: usize,
     ) -> Result<()> {
-        let mut buf_batch_writer = BufBatchWriter::new(shuffle_block_writer, output_data);
+        let mut buf_batch_writer =
+            BufBatchWriter::new(shuffle_block_writer, output_data, write_buffer_size);
         for batch in partition_iter {
             let batch = batch?;
             buf_batch_writer.write(&batch, encode_time, write_time)?;
@@ -695,7 +700,7 @@ impl MultiPartitionShuffleRepartitioner {
     }
 
     fn spill(&mut self) -> Result<()> {
-        log::debug!(
+        log::info!(
             "ShuffleRepartitioner spilling shuffle data of {} to disk while inserting ({} time(s) so far)",
             self.used(),
             self.spill_count()
@@ -714,12 +719,15 @@ impl MultiPartitionShuffleRepartitioner {
             for partition_id in 0..num_output_partitions {
                 let partition_writer = &mut self.partition_writers[partition_id];
                 let mut iter = partitioned_batches.produce(partition_id);
-                spilled_bytes += partition_writer.spill(&mut iter, &self.runtime, &self.metrics)?;
+                spilled_bytes += partition_writer.spill(
+                    &mut iter,
+                    &self.runtime,
+                    &self.metrics,
+                    self.write_buffer_size,
+                )?;
             }
 
-            let mut timer = self.metrics.mempool_time.timer();
             self.reservation.free();
-            timer.stop();
             self.metrics.spill_count.add(1);
             self.metrics.spilled_bytes.add(spilled_bytes);
             Ok(())
@@ -795,6 +803,7 @@ impl ShufflePartitioner for MultiPartitionShuffleRepartitioner {
                     &mut output_data,
                     &self.metrics.encode_time,
                     &self.metrics.write_time,
+                    self.write_buffer_size,
                 )?;
             }
 
@@ -862,6 +871,7 @@ impl SinglePartitionShufflePartitioner {
         metrics: ShuffleRepartitionerMetrics,
         batch_size: usize,
         codec: CompressionCodec,
+        write_buffer_size: usize,
     ) -> Result<Self> {
         let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
 
@@ -872,7 +882,8 @@ impl SinglePartitionShufflePartitioner {
             .open(output_data_path)
             .map_err(to_df_err)?;
 
-        let output_data_writer = BufBatchWriter::new(shuffle_block_writer, output_data_file);
+        let output_data_writer =
+            BufBatchWriter::new(shuffle_block_writer, output_data_file, write_buffer_size);
 
         Ok(Self {
             output_data_writer,
@@ -929,8 +940,6 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
             if num_rows >= self.batch_size || num_rows + self.num_buffered_rows > self.batch_size {
                 let concatenated_batch = self.concat_buffered_batches()?;
 
-                let write_start_time = Instant::now();
-
                 // Write the concatenated buffered batch
                 if let Some(batch) = concatenated_batch {
                     self.output_data_writer.write(
@@ -951,10 +960,6 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
                     // Add the new batch to the buffer
                     self.add_buffered_batch(batch);
                 }
-
-                self.metrics
-                    .write_time
-                    .add_duration(write_start_time.elapsed());
             } else {
                 self.add_buffered_batch(batch);
             }
@@ -1131,6 +1136,7 @@ impl PartitionWriter {
         iter: &mut PartitionedBatchIterator,
         runtime: &RuntimeEnv,
         metrics: &ShuffleRepartitionerMetrics,
+        write_buffer_size: usize,
     ) -> Result<usize> {
         if let Some(batch) = iter.next() {
             self.ensure_spill_file_created(runtime)?;
@@ -1139,6 +1145,7 @@ impl PartitionWriter {
                 let mut buf_batch_writer = BufBatchWriter::new(
                     &mut self.shuffle_block_writer,
                     &mut self.spill_file.as_mut().unwrap().file,
+                    write_buffer_size,
                 );
                 let mut bytes_written =
                     buf_batch_writer.write(&batch?, &metrics.encode_time, &metrics.write_time)?;
@@ -1194,10 +1201,7 @@ struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
 }
 
 impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
-    fn new(shuffle_block_writer: S, writer: W) -> Self {
-        // 1MB should be good enough to avoid frequent system calls,
-        // and also won't cause too much memory usage
-        let buffer_max_size = 1024 * 1024;
+    fn new(shuffle_block_writer: S, writer: W, buffer_max_size: usize) -> Self {
         Self {
             shuffle_block_writer,
             writer,
@@ -1343,6 +1347,7 @@ mod test {
             1024,
             CompressionCodec::Lz4Frame,
             false,
+            1024 * 1024, // write_buffer_size: 1MB default
         )
         .unwrap();
 
@@ -1439,6 +1444,7 @@ mod test {
                 "/tmp/data.out".to_string(),
                 "/tmp/index.out".to_string(),
                 false,
+                1024 * 1024, // write_buffer_size: 1MB default
             )
             .unwrap();
 

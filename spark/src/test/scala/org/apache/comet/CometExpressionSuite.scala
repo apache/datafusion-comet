@@ -506,6 +506,52 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("LEFT function") {
+    withParquetTable((0 until 10).map(i => (s"test$i", i)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 4) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 0) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, -1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 100) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT LEFT(CAST(NULL AS STRING), 2) FROM tbl LIMIT 1")
+    }
+  }
+
+  test("LEFT function with unicode") {
+    val data = Seq("café", "hello世界", "😀emoji", "తెలుగు")
+    withParquetTable(data.zipWithIndex, "unicode_tbl") {
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 2) FROM unicode_tbl")
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 3) FROM unicode_tbl")
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 0) FROM unicode_tbl")
+    }
+  }
+
+  test("LEFT function equivalence with SUBSTRING") {
+    withParquetTable((0 until 20).map(i => Tuple1(s"test$i")), "equiv_tbl") {
+      val df = spark.sql("""
+        SELECT _1,
+          LEFT(_1, 3) as left_result,
+          SUBSTRING(_1, 1, 3) as substring_result
+        FROM equiv_tbl
+      """)
+      checkAnswer(
+        df.filter(
+          "left_result != substring_result OR " +
+            "(left_result IS NULL AND substring_result IS NOT NULL) OR " +
+            "(left_result IS NOT NULL AND substring_result IS NULL)"),
+        Seq.empty)
+    }
+  }
+
+  test("LEFT function with dictionary") {
+    val data = (0 until 1000)
+      .map(_ % 5)
+      .map(i => s"value$i")
+    withParquetTable(data.zipWithIndex, "dict_tbl") {
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 3) FROM dict_tbl")
+    }
+  }
+
   test("hour, minute, second") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withTempDir { dir =>
@@ -1772,8 +1818,24 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("Decimal modulus with Decimal256 intermediate type") {
+    // regression test for https://github.com/apache/datafusion-comet/issues/2911
+    withTable("test") {
+      sql("create table test(a decimal(33, 29), b decimal(28, 17)) using parquet")
+      sql(
+        "insert into test values (-6788.53035340376888409034576923353, " +
+          "70948216565.90127985418365471)")
+      withSQLConf(
+        "spark.comet.enabled" -> "true",
+        "spark.sql.decimalOperations.allowPrecisionLoss" -> "true") {
+        val df = sql("select a, b, a % b from test")
+        df.collect()
+      }
+    }
+  }
+
   test("Decimal random number tests") {
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     def makeNum(p: Int, s: Int): String = {
       val int1 = rand.nextLong()
       val int2 = rand.nextLong().abs
@@ -3111,4 +3173,44 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConcat.unsupportedReason)
     }
   }
+
+  // https://github.com/apache/datafusion-comet/issues/2813
+  test("make decimal using DataFrame API - integer") {
+    withTable("t1") {
+      sql("create table t1 using parquet as select 123456 as c1 from range(1)")
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ANSI_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+
+        val df = sql("select * from t1")
+        val makeDecimalColumn = createMakeDecimalColumn(df.col("c1").expr, 3, 0)
+        val df1 = df.withColumn("result", makeDecimalColumn)
+
+        checkSparkAnswerAndFallbackReason(df1, "Unsupported input data type: IntegerType")
+      }
+    }
+  }
+
+  test("make decimal using DataFrame API - long") {
+    withTable("t1") {
+      sql("create table t1 using parquet as select cast(123456 as long) as c1 from range(1)")
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ANSI_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+
+        val df = sql("select * from t1")
+        val makeDecimalColumn = createMakeDecimalColumn(df.col("c1").expr, 3, 0)
+        val df1 = df.withColumn("result", makeDecimalColumn)
+
+        checkSparkAnswerAndOperator(df1)
+      }
+    }
+  }
+
 }

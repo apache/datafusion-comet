@@ -358,7 +358,7 @@ fn value_field(entries_field: &FieldRef) -> Option<FieldRef> {
     }
 }
 
-fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>) -> bool {
+pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>) -> bool {
     const COMET_LIBHDFS_SCHEMES_KEY: &str = "fs.comet.libhdfs.schemes";
     let scheme = url.scheme();
     if let Some(libhdfs_schemes) = object_store_configs.get(COMET_LIBHDFS_SCHEMES_KEY) {
@@ -369,9 +369,11 @@ fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>) -> 
     }
 }
 
-// Mirrors object_store::parse::parse_url for the hdfs object store
-#[cfg(feature = "hdfs")]
-fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+// Creates an HDFS object store from a URL using the native HDFS implementation
+#[cfg(all(feature = "hdfs", not(feature = "hdfs-opendal")))]
+fn create_hdfs_object_store(
+    url: &Url,
+) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
     match datafusion_comet_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new(url.as_ref())
     {
         Some(object_store) => {
@@ -385,17 +387,26 @@ fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_stor
     }
 }
 
+// Creates an OpenDAL HDFS Operator from a URL with optional configuration
 #[cfg(feature = "hdfs-opendal")]
-fn parse_hdfs_url(url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+pub(crate) fn create_hdfs_operator(url: &Url) -> Result<opendal::Operator, object_store::Error> {
     let name_node = get_name_node_uri(url)?;
     let builder = opendal::services::Hdfs::default().name_node(&name_node);
 
-    let op = opendal::Operator::new(builder)
+    opendal::Operator::new(builder)
         .map_err(|error| object_store::Error::Generic {
             store: "hdfs-opendal",
             source: error.into(),
-        })?
-        .finish();
+        })
+        .map(|op| op.finish())
+}
+
+// Creates an HDFS object store from a URL using OpenDAL
+#[cfg(feature = "hdfs-opendal")]
+pub(crate) fn create_hdfs_object_store(
+    url: &Url,
+) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+    let op = create_hdfs_operator(url)?;
     let store = object_store_opendal::OpendalStore::new(op);
     let path = Path::parse(url.path())?;
     Ok((Box::new(store), path))
@@ -422,8 +433,11 @@ fn get_name_node_uri(url: &Url) -> Result<String, object_store::Error> {
     }
 }
 
+// Stub implementation when HDFS support is not enabled
 #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
-fn parse_hdfs_url(_url: &Url) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
+fn create_hdfs_object_store(
+    _url: &Url,
+) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
     Err(object_store::Error::Generic {
         store: "HadoopFileSystem",
         source: "Hdfs support is not enabled in this build".into(),
@@ -454,7 +468,7 @@ pub(crate) fn prepare_object_store_with_configs(
     );
 
     let (object_store, object_store_path): (Box<dyn ObjectStore>, Path) = if is_hdfs_scheme {
-        parse_hdfs_url(&url)
+        create_hdfs_object_store(&url)
     } else if scheme == "s3" {
         objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
     } else {
@@ -469,24 +483,59 @@ pub(crate) fn prepare_object_store_with_configs(
 
 #[cfg(test)]
 mod tests {
-    use crate::execution::operators::ExecutionError;
-    use crate::parquet::parquet_support::prepare_object_store_with_configs;
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use datafusion::execution::object_store::ObjectStoreUrl;
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use datafusion::execution::runtime_env::RuntimeEnv;
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use object_store::path::Path;
-    use std::collections::HashMap;
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use std::sync::Arc;
+    #[cfg(any(
+        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
+        feature = "hdfs"
+    ))]
     use url::Url;
 
+    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    use crate::execution::operators::ExecutionError;
+    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    use std::collections::HashMap;
+
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
+    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
     pub(crate) fn prepare_object_store(
         runtime_env: Arc<RuntimeEnv>,
         url: String,
     ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
+        use crate::parquet::parquet_support::prepare_object_store_with_configs;
         prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
     }
 
-    #[cfg(not(feature = "hdfs"))]
+    /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
+    #[cfg(feature = "hdfs")]
+    pub(crate) fn prepare_object_store(
+        runtime_env: Arc<RuntimeEnv>,
+        url: String,
+    ) -> Result<(ObjectStoreUrl, Path), crate::execution::operators::ExecutionError> {
+        use crate::parquet::parquet_support::prepare_object_store_with_configs;
+        use std::collections::HashMap;
+        prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
+    }
+
+    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
     #[test]
     fn test_prepare_object_store() {
         use crate::execution::operators::ExecutionError;

@@ -46,7 +46,7 @@ object CometBitwiseNot extends CometExpressionSerde[BitwiseNot] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childProto = exprToProto(expr.child, inputs, binding)
     val bitNotScalarExpr =
-      scalarFunctionExprToProto("bit_not", childProto)
+      scalarFunctionExprToProto("bitwise_not", childProto)
     optExprWithInfo(bitNotScalarExpr, expr, expr.children: _*)
   }
 }

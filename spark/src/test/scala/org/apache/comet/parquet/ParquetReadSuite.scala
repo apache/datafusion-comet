@@ -348,7 +348,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   test("mixed nulls and non-nulls") {
-    val rand = scala.util.Random
+    val rand = new scala.util.Random(42)
     val data = (0 to 100).map { i =>
       val row: (Boolean, Integer, java.lang.Long, java.lang.Float, java.lang.Double, String) = {
         if (rand.nextBoolean()) {
@@ -403,7 +403,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         pageSize = pageSize,
         dictionaryPageSize = pageSize)
 
-      val rand = scala.util.Random
+      val rand = new scala.util.Random(42)
       val expected = (0 until n).map { i =>
         if (rand.nextBoolean()) {
           None
@@ -626,7 +626,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         dictionaryPageSize = dictionaryPageSize,
         pageRowCountLimit = pageRowCount)
 
-      val rand = scala.util.Random
+      val rand = new scala.util.Random(42)
       val expected = (0 until n).map { i =>
         // use a single value for the first page, to make sure dictionary encoding kicks in
         val value = if (i < pageRowCount) i % 8 else i
@@ -814,7 +814,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         dictionaryPageSize = pageSize,
         rowGroupSize = 1024 * 128)
 
-      val rand = scala.util.Random
+      val rand = new scala.util.Random(42)
       val expected = (0 until n).map { i =>
         if (rand.nextBoolean()) {
           None
@@ -1564,7 +1564,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         pageSize = pageSize,
         dictionaryPageSize = pageSize)
 
-      val rand = scala.util.Random
+      val rand = new scala.util.Random(42)
       val expected = (0 until n).map { i =>
         if (rand.nextBoolean()) {
           None
@@ -1662,7 +1662,7 @@ abstract class ParquetReadSuite extends CometTestBase {
         dictionaryPageSize = dictionaryPageSize,
         pageRowCountLimit = pageRowCount)
 
-      val rand = scala.util.Random
+      val rand = new scala.util.Random(42)
       val expected = (0 until n).map { i =>
         // use a single value for the first page, to make sure dictionary encoding kicks in
         val value = if (i < pageRowCount) i % 8 else i

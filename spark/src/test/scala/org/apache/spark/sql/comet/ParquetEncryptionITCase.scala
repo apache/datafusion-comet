@@ -32,7 +32,7 @@ import org.apache.parquet.crypto.DecryptionPropertiesFactory
 import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFactory}
 import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
 import org.apache.spark.{DebugFilesystem, SparkConf}
-import org.apache.spark.sql.{CometTestBase, SQLContext}
+import org.apache.spark.sql.{functions, CometTestBase, SQLContext}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SQLTestUtils
 
@@ -359,7 +359,8 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
         KeyToolkit.KMS_CLIENT_CLASS_PROPERTY_NAME ->
           "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
         InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
-          s"footerKey: ${footerKey}, key1: ${key1}, key2: ${key2}") {
+          s"footerKey: ${footerKey}, key1: ${key1}, key2: ${key2}",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
 
         // Write first file with key1
         val inputDF1 = spark
@@ -394,11 +395,16 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
         val parquetDF2 = spark.read.parquet(parquetDir2)
 
         val unionDF = parquetDF1.union(parquetDF2)
+        // Since the union has its own executeColumnar, problems would not surface if it is the last operator
+        // If we add another comet aggregate after the union, we see the need for the
+        // foreachUntilCometInput() in operator.scala
+        // as we would error on multiple native scan execs despite no longer being in the same plan at all
+        val aggDf = unionDF.agg(functions.sum("id"))
 
         if (CometConf.COMET_ENABLED.get(conf)) {
-          checkSparkAnswerAndOperator(unionDF)
+          checkSparkAnswerAndOperator(aggDf)
         } else {
-          checkSparkAnswer(unionDF)
+          checkSparkAnswer(aggDf)
         }
       }
     }
@@ -447,7 +453,7 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
   }
 
   protected override def sparkConf: SparkConf = {
-    val conf = new SparkConf()
+    val conf = super.sparkConf
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
     conf
   }

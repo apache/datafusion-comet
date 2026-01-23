@@ -34,6 +34,8 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, DataTypeSupport}
+import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.serde.operator.CometSink
 
 case class CometSparkToColumnarExec(child: SparkPlan)
     extends RowToColumnarTransition
@@ -136,7 +138,13 @@ case class CometSparkToColumnarExec(child: SparkPlan)
 
 }
 
-object CometSparkToColumnarExec extends DataTypeSupport {
+object CometSparkToColumnarExec extends CometSink[SparkPlan] with DataTypeSupport {
+  override def createExec(
+      nativeOp: OperatorOuterClass.Operator,
+      op: SparkPlan): CometNativeExec = {
+    CometScanWrapper(nativeOp, CometSparkToColumnarExec(op))
+  }
+
   override def isTypeSupported(
       dt: DataType,
       name: String,
