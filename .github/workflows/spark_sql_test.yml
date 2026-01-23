@@ -52,7 +52,47 @@ env:
   RUST_VERSION: stable
 
 jobs:
+
+  # Build native library once and share with all test jobs
+  build-native:
+    name: Build Native Library
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-
+
+      - name: Build native library (CI profile)
+        run: |
+          cd native
+          cargo build --profile ci
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-lib-linux
+          path: native/target/ci/libcomet.so
+          retention-days: 1
+
   spark-sql-auto-scan:
+    needs: build-native
     strategy:
       matrix:
         os: [ubuntu-24.04]
@@ -81,11 +121,17 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.spark-version.java }}
+      - name: Download native library
+        uses: actions/download-artifact@v4
+        with:
+          name: native-lib-linux
+          path: native/target/release/
       - name: Setup Spark
         uses: ./.github/actions/setup-spark-builder
         with:
           spark-version: ${{ matrix.spark-version.full }}
           spark-short-version: ${{ matrix.spark-version.short }}
+          skip-native-build: true
       - name: Run Spark tests
         run: |
           cd apache-spark
@@ -105,6 +151,7 @@ jobs:
           path: "**/fallback.log"
 
   spark-sql-native-native-comet:
+    needs: build-native
     strategy:
       matrix:
         os: [ ubuntu-24.04 ]
@@ -130,11 +177,17 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
+      - name: Download native library
+        uses: actions/download-artifact@v4
+        with:
+          name: native-lib-linux
+          path: native/target/release/
       - name: Setup Spark
         uses: ./.github/actions/setup-spark-builder
         with:
           spark-version: ${{ matrix.spark-version.full }}
           spark-short-version: ${{ matrix.spark-version.short }}
+          skip-native-build: true
       - name: Run Spark tests
         run: |
           cd apache-spark
@@ -154,6 +207,7 @@ jobs:
           path: "**/fallback.log"
 
   spark-sql-native-iceberg-compat:
+    needs: build-native
     strategy:
       matrix:
         os: [ubuntu-24.04]
@@ -179,11 +233,17 @@ jobs:
         with:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
+      - name: Download native library
+        uses: actions/download-artifact@v4
+        with:
+          name: native-lib-linux
+          path: native/target/release/
       - name: Setup Spark
         uses: ./.github/actions/setup-spark-builder
         with:
           spark-version: ${{ matrix.spark-version.full }}
           spark-short-version: ${{ matrix.spark-version.short }}
+          skip-native-build: true
       - name: Run Spark tests
         run: |
           cd apache-spark
