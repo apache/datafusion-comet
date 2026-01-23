@@ -17,7 +17,7 @@
 
 //! temporal kernels
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, LocalResult, NaiveDate, Offset, TimeZone, Timelike, Utc};
 
 use std::sync::Arc;
 
@@ -153,10 +153,30 @@ where
     Ok(())
 }
 
-// Apply the Tz to the Naive Date Time,,convert to UTC, and return as microseconds in Unix epoch
+// Apply the Tz to the Naive Date Time, convert to UTC, and return as microseconds in Unix epoch.
+// This function re-interprets the local datetime in the timezone to ensure the correct DST offset
+// is used for the target date (not the original date's offset). This is important when truncation
+// changes the date to a different DST period (e.g., from December/PST to October/PDT).
+//
+// Note: For far-future dates (approximately beyond year 2100), chrono-tz may not accurately
+// calculate DST transitions, which can result in incorrect offsets. See the compatibility
+// guide for more information.
 #[inline]
 fn as_micros_from_unix_epoch_utc(dt: Option<DateTime<Tz>>) -> i64 {
-    dt.unwrap().with_timezone(&Utc).timestamp_micros()
+    let dt = dt.unwrap();
+    let naive = dt.naive_local();
+    let tz = dt.timezone();
+
+    // Re-interpret the local time in the timezone to get the correct DST offset
+    // for the truncated date. Use noon to avoid DST gaps that occur around midnight.
+    let noon = naive.date().and_hms_opt(12, 0, 0).unwrap_or(naive);
+
+    let offset = match tz.offset_from_local_datetime(&noon) {
+        LocalResult::Single(off) | LocalResult::Ambiguous(off, _) => off.fix(),
+        LocalResult::None => return dt.with_timezone(&Utc).timestamp_micros(),
+    };
+
+    (naive - offset).and_utc().timestamp_micros()
 }
 
 #[inline]

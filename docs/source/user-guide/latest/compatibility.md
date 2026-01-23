@@ -58,6 +58,21 @@ Expressions that are not 100% Spark-compatible will fall back to Spark by defaul
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
 the [Comet Supported Expressions Guide](expressions.md) for more information on this configuration setting.
 
+## Date and Time Functions
+
+Comet's native implementation of date and time functions may produce different results than Spark for dates
+far in the future (approximately beyond year 2100). This is because Comet uses the chrono-tz library for
+timezone calculations, which has limited support for Daylight Saving Time (DST) rules beyond the IANA
+time zone database's explicit transitions.
+
+For dates within a reasonable range (approximately 1970-2100), Comet's date and time functions are compatible
+with Spark. For dates beyond this range, functions that involve timezone-aware calculations (such as
+`date_trunc` with timezone-aware timestamps) may produce results with incorrect DST offsets.
+
+If you need to process dates far in the future with accurate timezone handling, consider:
+- Using timezone-naive types (`timestamp_ntz`) when timezone conversion is not required
+- Falling back to Spark for these specific operations
+
 ## Regular Expressions
 
 Comet uses the Rust regexp crate for evaluating regular expressions, and this has different behavior from Java's
@@ -106,7 +121,6 @@ Cast operations in Comet fall into three levels of support:
 <!-- prettier-ignore-end -->
 
 **Notes:**
-
 - **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
 - **double -> decimal**: There can be rounding differences
 - **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
@@ -114,7 +128,7 @@ Cast operations in Comet fall into three levels of support:
 - **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 - **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
-  or strings containing null bytes (e.g \\u0000)
+or strings containing null bytes (e.g \\u0000)
 - **string -> timestamp**: Not all valid formats are supported
 <!--END:CAST_LEGACY_TABLE-->
 
@@ -142,7 +156,6 @@ Cast operations in Comet fall into three levels of support:
 <!-- prettier-ignore-end -->
 
 **Notes:**
-
 - **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
 - **double -> decimal**: There can be rounding differences
 - **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
@@ -150,7 +163,7 @@ Cast operations in Comet fall into three levels of support:
 - **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 - **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
-  or strings containing null bytes (e.g \\u0000)
+or strings containing null bytes (e.g \\u0000)
 - **string -> timestamp**: Not all valid formats are supported
 <!--END:CAST_TRY_TABLE-->
 
@@ -178,7 +191,6 @@ Cast operations in Comet fall into three levels of support:
 <!-- prettier-ignore-end -->
 
 **Notes:**
-
 - **decimal -> string**: There can be formatting differences in some case due to Spark using scientific notation where Comet does not
 - **double -> decimal**: There can be rounding differences
 - **double -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
@@ -186,7 +198,7 @@ Cast operations in Comet fall into three levels of support:
 - **float -> string**: There can be differences in precision. For example, the input "1.4E-45" will produce 1.0E-45 instead of 1.4E-45
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 - **string -> decimal**: Does not support fullwidth unicode digits (e.g \\uFF10)
-  or strings containing null bytes (e.g \\u0000)
+or strings containing null bytes (e.g \\u0000)
 - **string -> timestamp**: ANSI mode not supported
 <!--END:CAST_ANSI_TABLE-->
 

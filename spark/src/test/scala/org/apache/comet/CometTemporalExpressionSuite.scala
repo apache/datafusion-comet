@@ -158,7 +158,17 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   test("date_trunc - timestamp_ntz input") {
     val r = new Random(42)
     val ntzSchema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
-    val ntzDF = FuzzDataGenerator.generateDataFrame(r, spark, ntzSchema, 100, DataGenOptions())
+    // Use a reasonable date range (around year 2024) to avoid chrono-tz DST calculation
+    // issues with far-future dates. The default baseDate is year 3333 which is beyond
+    // the range where chrono-tz can reliably calculate DST transitions.
+    val reasonableBaseDate =
+      new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse("2024-06-15 12:00:00").getTime
+    val ntzDF = FuzzDataGenerator.generateDataFrame(
+      r,
+      spark,
+      ntzSchema,
+      100,
+      DataGenOptions(baseDate = reasonableBaseDate))
     ntzDF.createOrReplaceTempView("ntz_tbl")
     for (format <- CometTruncTimestamp.supportedFormats) {
       checkSparkAnswerAndOperator(
