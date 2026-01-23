@@ -114,9 +114,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             native/target
-          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-debug-java${{ matrix.java_version }}-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-debug-
+            ${{ runner.os }}-cargo-debug-java${{ matrix.java_version }}-
 
       - name: Rust test steps
         uses: ./.github/actions/rust-test
