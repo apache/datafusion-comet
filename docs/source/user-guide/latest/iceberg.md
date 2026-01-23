@@ -183,6 +183,38 @@ $SPARK_HOME/bin/spark-shell \
 The same sample queries from above can be used to test Comet's fully-native Iceberg integration,
 however the scan node to look for is `CometIcebergNativeScan`.
 
+### REST Catalog
+
+Comet's native Iceberg reader also supports REST catalogs. The following example shows how to
+configure Spark to use a REST catalog with Comet's native Iceberg scan:
+
+```shell
+$SPARK_HOME/bin/spark-shell \
+    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:0.12.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
+    --repositories https://repo1.maven.org/maven2/ \
+    --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
+    --conf spark.sql.catalog.rest_cat=org.apache.iceberg.spark.SparkCatalog \
+    --conf spark.sql.catalog.rest_cat.catalog-impl=org.apache.iceberg.rest.RESTCatalog \
+    --conf spark.sql.catalog.rest_cat.uri=http://localhost:8181 \
+    --conf spark.sql.catalog.rest_cat.warehouse=/tmp/warehouse \
+    --conf spark.plugins=org.apache.spark.CometPlugin \
+    --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
+    --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
+    --conf spark.comet.scan.icebergNative.enabled=true \
+    --conf spark.comet.explainFallback.enabled=true \
+    --conf spark.memory.offHeap.enabled=true \
+    --conf spark.memory.offHeap.size=2g
+```
+
+Note that REST catalogs require explicit namespace creation before creating tables:
+
+```scala
+scala> spark.sql("CREATE NAMESPACE rest_cat.db")
+scala> spark.sql("CREATE TABLE rest_cat.db.test_table (id INT, name STRING) USING iceberg")
+scala> spark.sql("INSERT INTO rest_cat.db.test_table VALUES (1, 'Alice'), (2, 'Bob')")
+scala> spark.sql("SELECT * FROM rest_cat.db.test_table").show()
+```
+
 ### Current limitations
 
 The following scenarios are not yet supported, but are work in progress:
