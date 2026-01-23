@@ -164,12 +164,12 @@ jobs:
           - name: "Spark 3.4, JDK 11, Scala 2.12"
             java_version: "11"
             maven_opts: "-Pspark-3.4 -Pscala-2.12"
-            scan_impl: "native_comet"
+            scan_impl: "auto"
 
           - name: "Spark 3.5.5, JDK 17, Scala 2.13"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Dspark.version=3.5.5 -Pscala-2.13"
-            scan_impl: "native_comet"
+            scan_impl: "auto"
 
           - name: "Spark 3.5.6, JDK 17, Scala 2.13"
             java_version: "17"
@@ -189,7 +189,7 @@ jobs:
           - name: "Spark 4.0, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.0"
-            scan_impl: "native_comet"
+            scan_impl: "auto"
         suite:
           - name: "fuzz"
             value: |
