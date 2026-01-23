@@ -67,6 +67,7 @@ enum TypedArray<'a> {
     LargeString(&'a LargeStringArray),
     Binary(&'a BinaryArray),
     LargeBinary(&'a LargeBinaryArray),
+    FixedSizeBinary(&'a FixedSizeBinaryArray),
     Struct(
         &'a StructArray,
         arrow::datatypes::Fields,
@@ -237,6 +238,17 @@ impl<'a> TypedArray<'a> {
                         ))
                     })?,
             )),
+            DataType::FixedSizeBinary(_) => Ok(TypedArray::FixedSizeBinary(
+                array
+                    .as_any()
+                    .downcast_ref::<FixedSizeBinaryArray>()
+                    .ok_or_else(|| {
+                        CometError::Internal(format!(
+                            "Failed to downcast to FixedSizeBinaryArray, actual type: {:?}",
+                            array.data_type()
+                        ))
+                    })?,
+            )),
             DataType::Struct(fields) => {
                 let struct_arr = array
                     .as_any()
@@ -314,6 +326,7 @@ impl<'a> TypedArray<'a> {
             TypedArray::LargeString(arr) => arr.is_null(row_idx),
             TypedArray::Binary(arr) => arr.is_null(row_idx),
             TypedArray::LargeBinary(arr) => arr.is_null(row_idx),
+            TypedArray::FixedSizeBinary(arr) => arr.is_null(row_idx),
             TypedArray::Struct(arr, _, _) => arr.is_null(row_idx),
             TypedArray::List(arr, _) => arr.is_null(row_idx),
             TypedArray::LargeList(arr, _) => arr.is_null(row_idx),
@@ -407,6 +420,14 @@ impl<'a> TypedArray<'a> {
                 buffer.extend(std::iter::repeat_n(0u8, padding));
                 Ok(len)
             }
+            TypedArray::FixedSizeBinary(arr) => {
+                let bytes = arr.value(row_idx);
+                let len = bytes.len();
+                buffer.extend_from_slice(bytes);
+                let padding = round_up_to_8(len) - len;
+                buffer.extend(std::iter::repeat_n(0u8, padding));
+                Ok(len)
+            }
             TypedArray::Decimal128(arr, precision) if *precision > MAX_LONG_DIGITS => {
                 let bytes = i128_to_spark_decimal_bytes(arr.value(row_idx));
                 let len = bytes.len();
@@ -461,6 +482,7 @@ enum TypedElements<'a> {
     LargeString(&'a LargeStringArray),
     Binary(&'a BinaryArray),
     LargeBinary(&'a LargeBinaryArray),
+    FixedSizeBinary(&'a FixedSizeBinaryArray),
     // For nested types, fall back to ArrayRef
     Other(&'a ArrayRef, DataType),
 }
@@ -539,6 +561,11 @@ impl<'a> TypedElements<'a> {
                     return TypedElements::LargeBinary(arr);
                 }
             }
+            DataType::FixedSizeBinary(_) => {
+                if let Some(arr) = array.as_any().downcast_ref::<FixedSizeBinaryArray>() {
+                    return TypedElements::FixedSizeBinary(arr);
+                }
+            }
             _ => {}
         }
         TypedElements::Other(array, element_type.clone())
@@ -592,6 +619,7 @@ impl<'a> TypedElements<'a> {
             TypedElements::LargeString(arr) => arr.is_null(idx),
             TypedElements::Binary(arr) => arr.is_null(idx),
             TypedElements::LargeBinary(arr) => arr.is_null(idx),
+            TypedElements::FixedSizeBinary(arr) => arr.is_null(idx),
             TypedElements::Other(arr, _) => arr.is_null(idx),
         }
     }
@@ -671,6 +699,14 @@ impl<'a> TypedElements<'a> {
                 Ok(len)
             }
             TypedElements::LargeBinary(arr) => {
+                let bytes = arr.value(idx);
+                let len = bytes.len();
+                buffer.extend_from_slice(bytes);
+                let padding = round_up_to_8(len) - len;
+                buffer.extend(std::iter::repeat_n(0u8, padding));
+                Ok(len)
+            }
+            TypedElements::FixedSizeBinary(arr) => {
                 let bytes = arr.value(idx);
                 let len = bytes.len();
                 buffer.extend_from_slice(bytes);
@@ -2896,6 +2932,43 @@ mod tests {
             let value =
                 i32::from_le_bytes(result[slot_offset..slot_offset + 4].try_into().unwrap());
             assert_eq!(value, i as i32, "element {} should be {}", i, i);
+        }
+    }
+
+    #[test]
+    fn test_convert_fixed_size_binary_array() {
+        // FixedSizeBinary(3) - each value is exactly 3 bytes
+        let schema = vec![DataType::FixedSizeBinary(3)];
+        let mut ctx = ColumnarToRowContext::new(schema, 100);
+
+        let array: ArrayRef = Arc::new(FixedSizeBinaryArray::from(vec![
+            Some(&[1u8, 2, 3][..]),
+            Some(&[4u8, 5, 6][..]),
+            None, // Test null handling
+        ]));
+        let arrays = vec![array];
+
+        let (ptr, offsets, lengths) = ctx.convert(&arrays, 3).unwrap();
+
+        assert!(!ptr.is_null());
+        assert_eq!(offsets.len(), 3);
+        assert_eq!(lengths.len(), 3);
+
+        // Row 0: 8 (bitset) + 8 (field slot) + 8 (aligned 3-byte data) = 24
+        // Row 1: 8 (bitset) + 8 (field slot) + 8 (aligned 3-byte data) = 24
+        // Row 2: 8 (bitset) + 8 (field slot) = 16 (null, no variable data)
+        assert_eq!(lengths[0], 24);
+        assert_eq!(lengths[1], 24);
+        assert_eq!(lengths[2], 16);
+
+        // Verify the data is correct for non-null rows
+        unsafe {
+            let row0 = std::slice::from_raw_parts(ptr.add(offsets[0] as usize), lengths[0] as usize);
+            // Variable data starts at offset 16 (8 bitset + 8 field slot)
+            assert_eq!(&row0[16..19], &[1u8, 2, 3]);
+
+            let row1 = std::slice::from_raw_parts(ptr.add(offsets[1] as usize), lengths[1] as usize);
+            assert_eq!(&row1[16..19], &[4u8, 5, 6]);
         }
     }
 }
