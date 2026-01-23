@@ -187,11 +187,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("basic data type support") {
-    Seq(true, false).foreach { dictionaryEnabled =>
-      withTempDir { dir =>
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
-        withSQLConf(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> "true") {
+    // this test requires native_comet scan due to unsigned u8/u16 issue
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
           withParquetTable(path.toString, "tbl") {
             checkSparkAnswerAndOperator("select * FROM tbl WHERE _2 > 100")
           }
@@ -200,41 +201,55 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("uint data type support") {
+  test("basic data type support - excluding u8/u16") {
+    // variant that skips _9 (UINT_8) and _10 (UINT_16) for default scan impl
     Seq(true, false).foreach { dictionaryEnabled =>
-      // TODO: Once the question of what to get back from uint_8, uint_16 types is resolved,
-      // we can also update this test to check for COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK=false
-      Seq(true).foreach { safetyCheck =>
-        {
-          withSQLConf(
-            CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> safetyCheck.toString) {
-            withTempDir { dir =>
-              val path = new Path(dir.toURI.toString, "testuint.parquet")
-              makeParquetFileAllPrimitiveTypes(
-                path,
-                dictionaryEnabled = dictionaryEnabled,
-                Byte.MinValue,
-                Byte.MaxValue)
-              withParquetTable(path.toString, "tbl") {
-                val qry = "select _9 from tbl order by _11"
-                if (usingDataSourceExec(conf)) {
-                  if (safetyCheck) {
-                    checkSparkAnswerAndOperator(qry)
-                  } else {
-                    // need to convert the values to unsigned values
-                    val expected = (Byte.MinValue to Byte.MaxValue)
-                      .map(v => {
-                        if (v < 0) Byte.MaxValue.toShort - v else v
-                      })
-                      .toDF("a")
-                    checkAnswer(sql(qry), expected)
-                  }
-                } else {
-                  checkSparkAnswerAndOperator(qry)
-                }
-              }
-            }
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "test.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 10000)
+        withParquetTable(path.toString, "tbl") {
+          // select all columns except _9 (UINT_8) and _10 (UINT_16)
+          checkSparkAnswerAndOperator(
+            """select _1, _2, _3, _4, _5, _6, _7, _8, _11, _12, _13, _14, _15, _16, _17,
+              |_18, _19, _20, _21, _id FROM tbl WHERE _2 > 100""".stripMargin)
+        }
+      }
+    }
+  }
+
+  test("uint data type support") {
+    // this test requires native_comet scan due to unsigned u8/u16 issue
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_COMET) {
+      Seq(true, false).foreach { dictionaryEnabled =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "testuint.parquet")
+          makeParquetFileAllPrimitiveTypes(
+            path,
+            dictionaryEnabled = dictionaryEnabled,
+            Byte.MinValue,
+            Byte.MaxValue)
+          withParquetTable(path.toString, "tbl") {
+            val qry = "select _9 from tbl order by _11"
+            checkSparkAnswerAndOperator(qry)
           }
+        }
+      }
+    }
+  }
+
+  test("uint data type support - excluding u8/u16") {
+    // variant that tests UINT_32 and UINT_64, skipping _9 (UINT_8) and _10 (UINT_16)
+    Seq(true, false).foreach { dictionaryEnabled =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "testuint.parquet")
+        makeParquetFileAllPrimitiveTypes(
+          path,
+          dictionaryEnabled = dictionaryEnabled,
+          Byte.MinValue,
+          Byte.MaxValue)
+        withParquetTable(path.toString, "tbl") {
+          // test UINT_32 (_11) and UINT_64 (_12) only
+          checkSparkAnswerAndOperator("select _11, _12 from tbl order by _11")
         }
       }
     }
@@ -504,6 +519,52 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       .map(i => (i.toString, (i + 100).toString))
     withParquetTable(data, "tbl") {
       checkSparkAnswerAndOperator("SELECT _1, substring(_2, 2, 2) FROM tbl")
+    }
+  }
+
+  test("LEFT function") {
+    withParquetTable((0 until 10).map(i => (s"test$i", i)), "tbl") {
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 4) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 0) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, -1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 100) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT LEFT(CAST(NULL AS STRING), 2) FROM tbl LIMIT 1")
+    }
+  }
+
+  test("LEFT function with unicode") {
+    val data = Seq("café", "hello世界", "😀emoji", "తెలుగు")
+    withParquetTable(data.zipWithIndex, "unicode_tbl") {
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 2) FROM unicode_tbl")
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 3) FROM unicode_tbl")
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 0) FROM unicode_tbl")
+    }
+  }
+
+  test("LEFT function equivalence with SUBSTRING") {
+    withParquetTable((0 until 20).map(i => Tuple1(s"test$i")), "equiv_tbl") {
+      val df = spark.sql("""
+        SELECT _1,
+          LEFT(_1, 3) as left_result,
+          SUBSTRING(_1, 1, 3) as substring_result
+        FROM equiv_tbl
+      """)
+      checkAnswer(
+        df.filter(
+          "left_result != substring_result OR " +
+            "(left_result IS NULL AND substring_result IS NOT NULL) OR " +
+            "(left_result IS NOT NULL AND substring_result IS NULL)"),
+        Seq.empty)
+    }
+  }
+
+  test("LEFT function with dictionary") {
+    val data = (0 until 1000)
+      .map(_ % 5)
+      .map(i => s"value$i")
+    withParquetTable(data.zipWithIndex, "dict_tbl") {
+      checkSparkAnswerAndOperator("SELECT _1, LEFT(_1, 3) FROM dict_tbl")
     }
   }
 
