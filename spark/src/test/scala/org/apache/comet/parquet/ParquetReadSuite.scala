@@ -423,12 +423,106 @@ abstract class ParquetReadSuite extends CometTestBase {
             record.add(5, i.toFloat)
             record.add(6, i.toDouble)
             record.add(7, i.toString * 48)
-            record.add(8, (-i).toByte)
-            record.add(9, (-i).toShort)
-            record.add(10, -i)
-            record.add(11, (-i).toLong)
+            // Use valid unsigned values (non-negative) for UINT fields
+            record.add(8, i % 256)
+            record.add(9, i % 65536)
+            record.add(10, i)
+            record.add(11, i.toLong)
             record.add(12, i.toString)
             record.add(13, (i % 10).toString * 3)
+          case _ =>
+        }
+        writer.write(record)
+      }
+
+      writer.close()
+      expected
+    }
+
+    Seq(64, 128, 256, 512, 1024, 4096, 5000).foreach { pageSize =>
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+        val expected = makeRawParquetFile(path, dictionaryEnabled = false, 10000, pageSize)
+        readParquetFile(path.toString) { df =>
+          checkAnswer(
+            df,
+            expected.map {
+              case None =>
+                Row(null, null, null, null, null, null, null, null, null, null, null, null, null,
+                  null)
+              case Some(i) =>
+                val flba_field = Array.fill(3)(i % 10 + 48) // char '0' is 48 in ascii
+                Row(
+                  i % 2 == 0,
+                  i.toByte,
+                  i.toShort,
+                  i,
+                  i.toLong,
+                  i.toFloat,
+                  i.toDouble,
+                  i.toString * 48,
+                  (i % 256).toShort,
+                  i % 65536,
+                  i.toLong,
+                  new BigDecimal(i),
+                  i.toString,
+                  flba_field)
+            })
+        }
+        readParquetFile(path.toString) { df =>
+          assert(
+            df.filter("_8 IS NOT NULL AND _4 % 256 == 255").count() ==
+              expected.flatten.count(_ % 256 == 255))
+        }
+      }
+    }
+  }
+
+  test("native_comet reads unsigned int types with values exceeding signed range") {
+    // This test verifies that native_comet correctly handles unsigned integer types
+    // when the stored values exceed the signed range (e.g., negative values stored
+    // as bit patterns that represent large unsigned values)
+    def makeRawParquetFile(
+        path: Path,
+        dictionaryEnabled: Boolean,
+        n: Int,
+        pageSize: Int): Seq[Option[Int]] = {
+      val schemaStr = {
+        """
+          |message root {
+          |  optional int32                   _1(UINT_8);
+          |  optional int32                   _2(UINT_16);
+          |  optional int32                   _3(UINT_32);
+          |  optional int64                   _4(UINT_64);
+          |}
+      """.stripMargin
+      }
+
+      val schema = MessageTypeParser.parseMessageType(schemaStr)
+      val writer = createParquetWriter(
+        schema,
+        path,
+        dictionaryEnabled = dictionaryEnabled,
+        pageSize = pageSize,
+        dictionaryPageSize = pageSize)
+
+      val rand = new scala.util.Random(42)
+      val expected = (0 until n).map { i =>
+        if (rand.nextBoolean()) {
+          None
+        } else {
+          Some(i)
+        }
+      }
+      expected.foreach { opt =>
+        val record = new SimpleGroup(schema)
+        opt match {
+          case Some(i) =>
+            // Write negative values which represent large unsigned values
+            record.add(0, (-i).toByte)
+            record.add(1, (-i).toShort)
+            record.add(2, -i)
+            record.add(3, (-i).toLong)
           case _ =>
         }
         writer.write(record)
@@ -448,31 +542,14 @@ abstract class ParquetReadSuite extends CometTestBase {
               df,
               expected.map {
                 case None =>
-                  Row(null, null, null, null, null, null, null, null, null, null, null, null,
-                    null, null)
+                  Row(null, null, null, null)
                 case Some(i) =>
-                  val flba_field = Array.fill(3)(i % 10 + 48) // char '0' is 48 in ascii
                   Row(
-                    i % 2 == 0,
-                    i.toByte,
-                    i.toShort,
-                    i,
-                    i.toLong,
-                    i.toFloat,
-                    i.toDouble,
-                    i.toString * 48,
                     (-i).toByte,
                     (-i).toShort,
                     java.lang.Integer.toUnsignedLong(-i),
-                    new BigDecimal(UnsignedLong.fromLongBits((-i).toLong).bigIntegerValue()),
-                    i.toString,
-                    flba_field)
+                    new BigDecimal(UnsignedLong.fromLongBits((-i).toLong).bigIntegerValue()))
               })
-          }
-          readParquetFile(path.toString) { df =>
-            assert(
-              df.filter("_8 IS NOT NULL AND _4 % 256 == 255").count() ==
-                expected.flatten.count(_ % 256 == 255))
           }
         }
       }
