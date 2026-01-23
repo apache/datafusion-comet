@@ -43,6 +43,6 @@ not supported by Comet will fall back to regular Spark execution.
 | SortExec                          | Yes               |                                                                                                                    |
 | SortMergeJoinExec                 | Yes               |                                                                                                                    |
 | UnionExec                         | Yes               |                                                                                                                    |
-| WindowExec                        | No                | Disabled by default due to known correctness issues.                                                               |
+| WindowExec                        | Yes               | Only a subset of window aggregate queries are supported. See [Comet Compatibility Guide] for details.              |
 
 [Comet Compatibility Guide]: compatibility.md
