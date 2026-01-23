@@ -217,7 +217,7 @@
 - [ ] unix_micros
 - [ ] unix_millis
 - [ ] unix_seconds
-- [ ] unix_timestamp
+- [x] unix_timestamp
 - [ ] weekday
 - [ ] weekofyear
 - [ ] year
