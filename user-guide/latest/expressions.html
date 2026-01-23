@@ -600,83 +600,87 @@ of expressions that be disabled.</p>
 <td><p>No</p></td>
 <td><p>Behavior is different in some cases, such as hyphenated names.</p></td>
 </tr>
-<tr class="row-even"><td><p>Length</p></td>
+<tr class="row-even"><td><p>Left</p></td>
+<td><p>Yes</p></td>
+<td><p>Length argument must be a literal value</p></td>
+</tr>
+<tr class="row-odd"><td><p>Length</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Like</p></td>
+<tr class="row-even"><td><p>Like</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Lower</p></td>
+<tr class="row-odd"><td><p>Lower</p></td>
 <td><p>No</p></td>
 <td><p>Results can vary depending on locale and character set. Requires <code class="docutils literal notranslate"><span class="pre">spark.comet.caseConversion.enabled=true</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>OctetLength</p></td>
+<tr class="row-even"><td><p>OctetLength</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Reverse</p></td>
+<tr class="row-odd"><td><p>Reverse</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>RLike</p></td>
+<tr class="row-even"><td><p>RLike</p></td>
 <td><p>No</p></td>
 <td><p>Uses Rust regexp engine, which has different behavior to Java regexp engine</p></td>
 </tr>
-<tr class="row-even"><td><p>StartsWith</p></td>
+<tr class="row-odd"><td><p>StartsWith</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>StringInstr</p></td>
+<tr class="row-even"><td><p>StringInstr</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>StringRepeat</p></td>
+<tr class="row-odd"><td><p>StringRepeat</p></td>
 <td><p>Yes</p></td>
 <td><p>Negative argument for number of times to repeat causes exception</p></td>
 </tr>
-<tr class="row-odd"><td><p>StringReplace</p></td>
+<tr class="row-even"><td><p>StringReplace</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>StringLPad</p></td>
+<tr class="row-odd"><td><p>StringLPad</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>StringRPad</p></td>
+<tr class="row-even"><td><p>StringRPad</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>StringSpace</p></td>
+<tr class="row-odd"><td><p>StringSpace</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>StringTranslate</p></td>
+<tr class="row-even"><td><p>StringTranslate</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>StringTrim</p></td>
+<tr class="row-odd"><td><p>StringTrim</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>StringTrimBoth</p></td>
+<tr class="row-even"><td><p>StringTrimBoth</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>StringTrimLeft</p></td>
+<tr class="row-odd"><td><p>StringTrimLeft</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>StringTrimRight</p></td>
+<tr class="row-even"><td><p>StringTrimRight</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Substring</p></td>
+<tr class="row-odd"><td><p>Substring</p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Upper</p></td>
+<tr class="row-even"><td><p>Upper</p></td>
 <td><p>No</p></td>
 <td><p>Results can vary depending on locale and character set. Requires <code class="docutils literal notranslate"><span class="pre">spark.comet.caseConversion.enabled=true</span></code></p></td>
 </tr>
@@ -699,6 +703,16 @@ of expressions that be disabled.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">date_add</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>DateDiff</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">datediff</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>DateFormat</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">date_format</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Partial support. Only specific format patterns are supported.</p></td>
 </tr>
 <tr class="row-odd"><td><p>DateSub</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">date_sub</span></code></p></td>
@@ -725,62 +739,77 @@ of expressions that be disabled.</p>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Minute</p></td>
+<tr class="row-even"><td><p>LastDay</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">last_day</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Minute</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">minute</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Second</p></td>
+<tr class="row-even"><td><p>Second</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">second</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>TruncDate</p></td>
+<tr class="row-odd"><td><p>TruncDate</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">trunc</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>TruncTimestamp</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">trunc_date</span></code></p></td>
+<tr class="row-even"><td><p>TruncTimestamp</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">date_trunc</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>Year</p></td>
+<tr class="row-odd"><td><p>UnixDate</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">unix_date</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p>UnixTimestamp</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">unix_timestamp</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Year</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">year</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Month</p></td>
+<tr class="row-even"><td><p>Month</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">month</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>DayOfMonth</p></td>
+<tr class="row-odd"><td><p>DayOfMonth</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">day</span></code>/<code class="docutils literal notranslate"><span class="pre">dayofmonth</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>DayOfWeek</p></td>
+<tr class="row-even"><td><p>DayOfWeek</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">dayofweek</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>WeekDay</p></td>
+<tr class="row-odd"><td><p>WeekDay</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">weekday</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>DayOfYear</p></td>
+<tr class="row-even"><td><p>DayOfYear</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">dayofyear</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p>WeekOfYear</p></td>
+<tr class="row-odd"><td><p>WeekOfYear</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">weekofyear</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>Quarter</p></td>
+<tr class="row-even"><td><p>Quarter</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">quarter</span></code></p></td>
 <td><p>Yes</p></td>
 <td><p></p></td>
@@ -1019,10 +1048,13 @@ of expressions that be disabled.</p>
 <tr class="row-odd"><td><p>Murmur3Hash</p></td>
 <td><p>Yes</p></td>
 </tr>
-<tr class="row-even"><td><p>Sha2</p></td>
+<tr class="row-even"><td><p>Sha1</p></td>
 <td><p>Yes</p></td>
 </tr>
-<tr class="row-odd"><td><p>XxHash64</p></td>
+<tr class="row-odd"><td><p>Sha2</p></td>
+<td><p>Yes</p></td>
+</tr>
+<tr class="row-even"><td><p>XxHash64</p></td>
 <td><p>Yes</p></td>
 </tr>
 </tbody>
@@ -1345,20 +1377,29 @@ of expressions that be disabled.</p>
 <thead>
 <tr class="row-odd"><th class="head"><p>Expression</p></th>
 <th class="head"><p>Spark-Compatible?</p></th>
+<th class="head"><p>Compatibility Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p>CreateNamedStruct</p></td>
 <td><p>Yes</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p>GetArrayStructFields</p></td>
 <td><p>Yes</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p>GetStructField</p></td>
 <td><p>Yes</p></td>
+<td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p>StructsToJson</p></td>
+<tr class="row-odd"><td><p>JsonToStructs</p></td>
+<td><p>No</p></td>
+<td><p>Partial support. Requires explicit schema.</p></td>
+</tr>
+<tr class="row-even"><td><p>StructsToJson</p></td>
 <td><p>Yes</p></td>
+<td><p></p></td>
 </tr>
 </tbody>
 </table>

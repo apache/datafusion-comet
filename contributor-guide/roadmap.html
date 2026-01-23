@@ -462,8 +462,8 @@ helpful to have a roadmap for some of the major items that require coordination 
 <section id="iceberg-integration">
 <h3>Iceberg Integration<a class="headerlink" href="#iceberg-integration" title="Link to this heading">#</a></h3>
 <p>Iceberg integration is still a work-in-progress (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2060">#2060</a>), with major improvements expected in the next few
-releases. Once this integration is complete, we plan on switching from the <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> scan to the
-<code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> scan (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2189">#2189</a>) so that complex types can be supported.</p>
+releases. The default <code class="docutils literal notranslate"><span class="pre">auto</span></code> scan mode now uses <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> instead of <code class="docutils literal notranslate"><span class="pre">native_comet</span></code>, enabling
+support for complex types.</p>
 </section>
 <section id="spark-4-0-support">
 <h3>Spark 4.0 Support<a class="headerlink" href="#spark-4-0-support" title="Link to this heading">#</a></h3>
@@ -473,11 +473,11 @@ more Spark SQL tests and fully implementing ANSI support (<a class="reference ex
 <section id="removing-the-native-comet-scan-implementation">
 <h3>Removing the native_comet scan implementation<a class="headerlink" href="#removing-the-native-comet-scan-implementation" title="Link to this heading">#</a></h3>
 <p>We are working towards deprecating (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2186">#2186</a>) and removing (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2177">#2177</a>) the <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> scan implementation, which
-is the originally scan implementation that uses mutable buffers (which is incompatible with best practices around
+is the original scan implementation that uses mutable buffers (which is incompatible with best practices around
 Arrow FFI) and does not support complex types.</p>
-<p>Once we are using the <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> scan (which is based on DataFusion’s <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code>) in the Iceberg
-integration, we will be able to remove the <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> scan implementation, and can then improve the efficiency
-of our use of Arrow FFI (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2171">#2171</a>).</p>
+<p>Now that the default <code class="docutils literal notranslate"><span class="pre">auto</span></code> scan mode uses <code class="docutils literal notranslate"><span class="pre">native_iceberg_compat</span></code> (which is based on DataFusion’s <code class="docutils literal notranslate"><span class="pre">DataSourceExec</span></code>),
+we can proceed with removing the <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> scan implementation, and then improve the efficiency of our use of
+Arrow FFI (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2171">#2171</a>).</p>
 </section>
 </section>
 <section id="ongoing-improvements">

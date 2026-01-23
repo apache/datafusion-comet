@@ -493,8 +493,8 @@ implementation:</p>
 <li><p>When reading Parquet files written by systems other than Spark that contain columns with the logical types <code class="docutils literal notranslate"><span class="pre">UINT_8</span></code>
 or <code class="docutils literal notranslate"><span class="pre">UINT_16</span></code>, Comet will produce different results than Spark because Spark does not preserve or understand these
 logical types. Arrow-based readers, such as DataFusion and Comet do respect these types and read the data as unsigned
-rather than signed. By default, Comet will fall back to <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> when scanning Parquet files containing <code class="docutils literal notranslate"><span class="pre">byte</span></code> or <code class="docutils literal notranslate"><span class="pre">short</span></code>
-types (regardless of the logical type). This behavior can be disabled by setting
+rather than signed. By default, Comet will fall back to Spark’s native scan when scanning Parquet files containing
+<code class="docutils literal notranslate"><span class="pre">byte</span></code> or <code class="docutils literal notranslate"><span class="pre">short</span></code> types (regardless of the logical type). This behavior can be disabled by setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.allowIncompatible=true</span></code>.</p></li>
 <li><p>No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.</p></li>
 </ul>
@@ -507,10 +507,10 @@ types (regardless of the logical type). This behavior can be disabled by setting
 </ul>
 <section id="s3-support">
 <h2>S3 Support<a class="headerlink" href="#s3-support" title="Link to this heading">#</a></h2>
-<p>There are some</p>
+<p>There are some differences in S3 support between the scan implementations.</p>
 <section id="native-comet">
 <h3><code class="docutils literal notranslate"><span class="pre">native_comet</span></code><a class="headerlink" href="#native-comet" title="Link to this heading">#</a></h3>
-<p>The default <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> Parquet scan implementation reads data from S3 using the <a class="reference external" href="https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html">Hadoop-AWS module</a>, which
+<p>The <code class="docutils literal notranslate"><span class="pre">native_comet</span></code> Parquet scan implementation reads data from S3 using the <a class="reference external" href="https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html">Hadoop-AWS module</a>, which
 is identical to the approach commonly used with vanilla Spark. AWS credential configuration and other Hadoop S3A
 configurations works the same way as in vanilla Spark.</p>
 </section>

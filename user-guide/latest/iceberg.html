@@ -607,17 +607,93 @@ configuration should <strong>not</strong> be used with the hybrid Iceberg config
 </div>
 <p>The same sample queries from above can be used to test Comet’s fully-native Iceberg integration,
 however the scan node to look for is <code class="docutils literal notranslate"><span class="pre">CometIcebergNativeScan</span></code>.</p>
+<section id="supported-features">
+<h3>Supported features<a class="headerlink" href="#supported-features" title="Link to this heading">#</a></h3>
+<p>The native Iceberg reader supports the following features:</p>
+<p><strong>Table specifications:</strong></p>
+<ul class="simple">
+<li><p>Iceberg table spec v1 and v2 (v3 will fall back to Spark)</p></li>
+</ul>
+<p><strong>Schema and data types:</strong></p>
+<ul class="simple">
+<li><p>All primitive types including UUID</p></li>
+<li><p>Complex types: arrays, maps, and structs</p></li>
+<li><p>Schema evolution (adding and dropping columns)</p></li>
+</ul>
+<p><strong>Time travel and branching:</strong></p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">VERSION</span> <span class="pre">AS</span> <span class="pre">OF</span></code> queries to read historical snapshots</p></li>
+<li><p>Branch reads for accessing named branches</p></li>
+</ul>
+<p><strong>Delete handling (Merge-On-Read tables):</strong></p>
+<ul class="simple">
+<li><p>Positional deletes</p></li>
+<li><p>Equality deletes</p></li>
+<li><p>Mixed delete types</p></li>
+</ul>
+<p><strong>Filter pushdown:</strong></p>
+<ul class="simple">
+<li><p>Equality and comparison predicates (<code class="docutils literal notranslate"><span class="pre">=</span></code>, <code class="docutils literal notranslate"><span class="pre">!=</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&gt;=</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;</span></code>, <code class="docutils literal notranslate"><span class="pre">&lt;=</span></code>)</p></li>
+<li><p>Logical operators (<code class="docutils literal notranslate"><span class="pre">AND</span></code>, <code class="docutils literal notranslate"><span class="pre">OR</span></code>)</p></li>
+<li><p>NULL checks (<code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NULL</span></code>, <code class="docutils literal notranslate"><span class="pre">IS</span> <span class="pre">NOT</span> <span class="pre">NULL</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">IN</span></code> and <code class="docutils literal notranslate"><span class="pre">NOT</span> <span class="pre">IN</span></code> list operations</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">BETWEEN</span></code> operations</p></li>
+</ul>
+<p><strong>Partitioning:</strong></p>
+<ul class="simple">
+<li><p>Standard partitioning with partition pruning</p></li>
+<li><p>Date partitioning with <code class="docutils literal notranslate"><span class="pre">days()</span></code> transform</p></li>
+<li><p>Bucket partitioning</p></li>
+<li><p>Truncate transform</p></li>
+<li><p>Hour transform</p></li>
+</ul>
+<p><strong>Storage:</strong></p>
+<ul class="simple">
+<li><p>Local filesystem</p></li>
+<li><p>Hadoop Distributed File System (HDFS)</p></li>
+<li><p>S3-compatible storage (AWS S3, MinIO)</p></li>
+</ul>
+</section>
+<section id="rest-catalog">
+<h3>REST Catalog<a class="headerlink" href="#rest-catalog" title="Link to this heading">#</a></h3>
+<p>Comet’s native Iceberg reader also supports REST catalogs. The following example shows how to
+configure Spark to use a REST catalog with Comet’s native Iceberg scan:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--packages<span class="w"> </span>org.apache.datafusion:comet-spark-spark3.5_2.12:0.12.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--repositories<span class="w"> </span>https://repo1.maven.org/maven2/<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.extensions<span class="o">=</span>org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.rest_cat<span class="o">=</span>org.apache.iceberg.spark.SparkCatalog<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.rest_cat.catalog-impl<span class="o">=</span>org.apache.iceberg.rest.RESTCatalog<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.rest_cat.uri<span class="o">=</span>http://localhost:8181<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.rest_cat.warehouse<span class="o">=</span>/tmp/warehouse<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.plugins<span class="o">=</span>org.apache.spark.CometPlugin<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.shuffle.manager<span class="o">=</span>org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.extensions<span class="o">=</span>org.apache.comet.CometSparkSessionExtensions<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.scan.icebergNative.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>2g
+</pre></div>
+</div>
+<p>Note that REST catalogs require explicit namespace creation before creating tables:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;CREATE NAMESPACE rest_cat.db&quot;</span><span class="p">)</span>
+<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;CREATE TABLE rest_cat.db.test_table (id INT, name STRING) USING iceberg&quot;</span><span class="p">)</span>
+<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;INSERT INTO rest_cat.db.test_table VALUES (1, &#39;Alice&#39;), (2, &#39;Bob&#39;)&quot;</span><span class="p">)</span>
+<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;SELECT * FROM rest_cat.db.test_table&quot;</span><span class="p">).</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</section>
 <section id="current-limitations">
 <h3>Current limitations<a class="headerlink" href="#current-limitations" title="Link to this heading">#</a></h3>
-<p>The following scenarios are not yet supported, but are work in progress:</p>
+<p>The following scenarios will fall back to Spark’s native Iceberg reader:</p>
 <ul class="simple">
-<li><p>Iceberg table spec v3 scans will fall back.</p></li>
-<li><p>Iceberg writes will fall back.</p></li>
-<li><p>Iceberg table scans backed by Avro or ORC data files will fall back.</p></li>
-<li><p>Iceberg table scans partitioned on <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> (with precision &gt;28) columns will fall back.</p></li>
-<li><p>Iceberg scans with residual filters (<em>i.e.</em>, filter expressions that are not partition values,
-and are evaluated on the column values at scan time) of <code class="docutils literal notranslate"><span class="pre">truncate</span></code>, <code class="docutils literal notranslate"><span class="pre">bucket</span></code>, <code class="docutils literal notranslate"><span class="pre">year</span></code>, <code class="docutils literal notranslate"><span class="pre">month</span></code>,
-<code class="docutils literal notranslate"><span class="pre">day</span></code>, <code class="docutils literal notranslate"><span class="pre">hour</span></code> will fall back.</p></li>
+<li><p>Iceberg table spec v3 scans</p></li>
+<li><p>Iceberg writes (reads are accelerated, writes use Spark)</p></li>
+<li><p>Tables backed by Avro or ORC data files (only Parquet is accelerated)</p></li>
+<li><p>Tables partitioned on <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> (with precision &gt;28) columns</p></li>
+<li><p>Scans with residual filters using <code class="docutils literal notranslate"><span class="pre">truncate</span></code>, <code class="docutils literal notranslate"><span class="pre">bucket</span></code>, <code class="docutils literal notranslate"><span class="pre">year</span></code>, <code class="docutils literal notranslate"><span class="pre">month</span></code>, <code class="docutils literal notranslate"><span class="pre">day</span></code>, or <code class="docutils literal notranslate"><span class="pre">hour</span></code>
+transform functions (partition pruning still works, but row-level filtering of these
+transforms falls back)</p></li>
 </ul>
 </section>
 </section>
