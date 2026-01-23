@@ -426,10 +426,11 @@ abstract class CometNativeExec extends CometExec {
   def foreachUntilCometInput(plan: SparkPlan)(func: SparkPlan => Unit): Unit = {
     plan match {
       case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec |
-          _: CometIcebergNativeScanExec | _: ShuffleQueryStageExec | _: AQEShuffleReadExec |
-          _: CometShuffleExchangeExec | _: CometUnionExec | _: CometTakeOrderedAndProjectExec |
-          _: CometCoalesceExec | _: ReusedExchangeExec | _: CometBroadcastExchangeExec |
-          _: BroadcastQueryStageExec | _: CometSparkToColumnarExec | _: CometLocalTableScanExec =>
+          _: CometIcebergNativeScanExec | _: CometCsvNativeScanExec | _: ShuffleQueryStageExec |
+          _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
+          _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
+          _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
+          _: CometSparkToColumnarExec | _: CometLocalTableScanExec =>
         func(plan)
       case _: CometPlan =>
         // Other Comet operators, continue to traverse the tree.
