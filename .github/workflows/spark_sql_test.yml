@@ -68,8 +68,8 @@ jobs:
           rust-version: ${{ env.RUST_VERSION }}
           jdk-version: 17
 
-      - name: Cache Cargo
-        uses: actions/cache@v4
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
@@ -90,6 +90,16 @@ jobs:
           name: native-lib-linux
           path: native/target/ci/libcomet.so
           retention-days: 1
+
+      - name: Save Cargo cache
+        uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
 
   spark-sql-auto-scan:
     needs: build-native
