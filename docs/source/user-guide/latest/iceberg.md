@@ -188,23 +188,28 @@ however the scan node to look for is `CometIcebergNativeScan`.
 The native Iceberg reader supports the following features:
 
 **Table specifications:**
+
 - Iceberg table spec v1 and v2 (v3 will fall back to Spark)
 
 **Schema and data types:**
+
 - All primitive types including UUID
 - Complex types: arrays, maps, and structs
 - Schema evolution (adding and dropping columns)
 
 **Time travel and branching:**
+
 - `VERSION AS OF` queries to read historical snapshots
 - Branch reads for accessing named branches
 
 **Delete handling (Merge-On-Read tables):**
+
 - Positional deletes
 - Equality deletes
 - Mixed delete types
 
 **Filter pushdown:**
+
 - Equality and comparison predicates (`=`, `!=`, `>`, `>=`, `<`, `<=`)
 - Logical operators (`AND`, `OR`)
 - NULL checks (`IS NULL`, `IS NOT NULL`)
@@ -212,6 +217,7 @@ The native Iceberg reader supports the following features:
 - `BETWEEN` operations
 
 **Partitioning:**
+
 - Standard partitioning with partition pruning
 - Date partitioning with `days()` transform
 - Bucket partitioning
@@ -219,6 +225,7 @@ The native Iceberg reader supports the following features:
 - Hour transform
 
 **Storage:**
+
 - Local filesystem
 - Hadoop Distributed File System (HDFS)
 - S3-compatible storage (AWS S3, MinIO)
