@@ -59,7 +59,7 @@ The `native_datafusion` scan has some additional limitations:
 
 ## S3 Support
 
-There are some
+There are some differences in S3 support between the scan implementations.
 
 ### `native_comet`
 
