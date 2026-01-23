@@ -27,11 +27,10 @@ helpful to have a roadmap for some of the major items that require coordination 
 ### Iceberg Integration
 
 Iceberg integration is still a work-in-progress ([#2060]), with major improvements expected in the next few
-releases. Once this integration is complete, we plan on switching from the `native_comet` scan to the
-`native_iceberg_compat` scan ([#2189]) so that complex types can be supported.
+releases. The default `auto` scan mode now uses `native_iceberg_compat` instead of `native_comet`, enabling
+support for complex types.
 
 [#2060]: https://github.com/apache/datafusion-comet/issues/2060
-[#2189]: https://github.com/apache/datafusion-comet/issues/2189
 
 ### Spark 4.0 Support
 
