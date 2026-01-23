@@ -609,14 +609,10 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 
   test("fix: native Unsafe row accessors return incorrect results") {
-    // TODO byte/short issue
-    assume(CometConf.COMET_NATIVE_SCAN_IMPL.get() == CometConf.SCAN_NATIVE_COMET)
     Seq(10, 201).foreach { numPartitions =>
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, false, 10000, 10010)
-        // TODO: revisit this when we have resolution of https://github.com/apache/arrow-rs/issues/7040
-        // and https://github.com/apache/arrow-rs/issues/7097
         val fieldsToTest =
           if (usingDataSourceExec(conf)) {
             Seq(
