@@ -41,7 +41,7 @@ import org.apache.comet.iceberg.CometIcebergNativeScanMetadata
 case class CometBatchScanExec(
     wrapped: BatchScanExec,
     runtimeFilters: Seq[Expression],
-    nativeIcebergScanMetadata: Option[CometIcebergNativeScanMetadata] = None)
+    @transient nativeIcebergScanMetadata: Option[CometIcebergNativeScanMetadata] = None)
     extends DataSourceV2ScanExecBase
     with CometPlan {
   def ordering: Option[Seq[SortOrder]] = wrapped.ordering
@@ -99,18 +99,14 @@ case class CometBatchScanExec(
   override def equals(other: Any): Boolean = other match {
     case other: CometBatchScanExec =>
       // `wrapped` in `this` and `other` could reference to the same `BatchScanExec` object,
-      // check `runtimeFilters` and `nativeIcebergScanMetadata` equality too.
-      this.wrappedScan == other.wrappedScan && this.runtimeFilters == other.runtimeFilters &&
-      this.nativeIcebergScanMetadata == other.nativeIcebergScanMetadata
+      // check `runtimeFilters` equality too.
+      this.wrappedScan == other.wrappedScan && this.runtimeFilters == other.runtimeFilters
     case _ =>
       false
   }
 
   override def hashCode(): Int = {
-    Objects.hashCode(
-      wrappedScan,
-      runtimeFilters,
-      Integer.valueOf(nativeIcebergScanMetadata.map(_.hashCode()).getOrElse(0)))
+    Objects.hashCode(wrappedScan, runtimeFilters)
   }
 
   override def doCanonicalize(): CometBatchScanExec = {
@@ -118,7 +114,8 @@ case class CometBatchScanExec(
       wrapped = wrappedScan.doCanonicalize(),
       runtimeFilters = QueryPlan.normalizePredicates(
         runtimeFilters.filterNot(_ == DynamicPruningExpression(Literal.TrueLiteral)),
-        output))
+        output),
+      nativeIcebergScanMetadata = None)
   }
 
   override def nodeName: String = {

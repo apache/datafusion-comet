@@ -171,6 +171,7 @@ object QueryPlanSerde extends Logging with CometExprShim {
     classOf[StringTrimBoth] -> CometScalarFunction("btrim"),
     classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),
     classOf[StringTrimRight] -> CometScalarFunction("rtrim"),
+    classOf[Left] -> CometLeft,
     classOf[Substring] -> CometSubstring,
     classOf[Upper] -> CometUpper)
 

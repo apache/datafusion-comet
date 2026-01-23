@@ -21,6 +21,7 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
+use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
 use crate::{
     errors::ExpressionError,
@@ -94,6 +95,7 @@ use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
+
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
     Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray,
@@ -1072,6 +1074,44 @@ impl PhysicalPlanner {
                     scan.case_sensitive,
                     self.session_ctx(),
                     scan.encryption_enabled,
+                )?;
+                Ok((
+                    vec![],
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
+                ))
+            }
+            OpStruct::CsvScan(scan) => {
+                let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
+                let partition_schema =
+                    convert_spark_types_to_arrow_schema(scan.partition_schema.as_slice());
+                let projection_vector: Vec<usize> =
+                    scan.projection_vector.iter().map(|i| *i as usize).collect();
+                let object_store_options: HashMap<String, String> = scan
+                    .object_store_options
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let one_file = scan
+                    .file_partitions
+                    .first()
+                    .and_then(|f| f.partitioned_file.first())
+                    .map(|f| f.file_path.clone())
+                    .ok_or(GeneralError("Failed to locate file".to_string()))?;
+                let (object_store_url, _) = prepare_object_store_with_configs(
+                    self.session_ctx.runtime_env(),
+                    one_file,
+                    &object_store_options,
+                )?;
+                let files =
+                    self.get_partitioned_files(&scan.file_partitions[self.partition as usize])?;
+                let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
+                let scan = init_csv_datasource_exec(
+                    object_store_url,
+                    file_groups,
+                    data_schema,
+                    partition_schema,
+                    projection_vector,
+                    &scan.csv_options.clone().unwrap(),
                 )?;
                 Ok((
                     vec![],
