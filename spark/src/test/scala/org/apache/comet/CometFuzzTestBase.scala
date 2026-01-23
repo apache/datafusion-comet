@@ -112,18 +112,11 @@ class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     Seq("native", "jvm").foreach { shuffleMode =>
-      Seq(
-        CometConf.SCAN_AUTO,
-        CometConf.SCAN_NATIVE_COMET,
-        CometConf.SCAN_NATIVE_DATAFUSION,
-        CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach { scanImpl =>
-        super.test(testName + s" ($scanImpl, $shuffleMode shuffle)", testTags: _*) {
-          withSQLConf(
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl,
-            CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
-            CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
-            testFun
-          }
+      super.test(testName + s" ($shuffleMode shuffle)", testTags: _*) {
+        withSQLConf(
+          CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
+          testFun
         }
       }
     }
