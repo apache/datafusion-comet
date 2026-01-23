@@ -1,0 +1,78 @@
+BroadcastNestedLoopJoin
+:- BroadcastNestedLoopJoin
+:  :- BroadcastNestedLoopJoin
+:  :  :- BroadcastNestedLoopJoin
+:  :  :  :-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
+:  :  :  :  :- CometColumnarToRow
+:  :  :  :  :  +- CometHashAggregate
+:  :  :  :  :     +- CometColumnarExchange
+:  :  :  :  :        +- HashAggregate
+:  :  :  :  :           +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge]
+:  :  :  :  :              +- CometColumnarToRow
+:  :  :  :  :                 +- CometExchange
+:  :  :  :  :                    +- CometHashAggregate
+:  :  :  :  :                       +- CometProject
+:  :  :  :  :                          +- CometFilter
+:  :  :  :  :                             +- CometNativeScan parquet spark_catalog.default.store_sales
+:  :  :  :  +- BroadcastExchange
+:  :  :  :     +- CometColumnarToRow
+:  :  :  :        +- CometHashAggregate
+:  :  :  :           +- CometColumnarExchange
+:  :  :  :              +- HashAggregate
+:  :  :  :                 +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge]
+:  :  :  :                    +- CometColumnarToRow
+:  :  :  :                       +- CometExchange
+:  :  :  :                          +- CometHashAggregate
+:  :  :  :                             +- CometProject
+:  :  :  :                                +- CometFilter
+:  :  :  :                                   +- CometNativeScan parquet spark_catalog.default.store_sales
+:  :  :  +- BroadcastExchange
+:  :  :     +- CometColumnarToRow
+:  :  :        +- CometHashAggregate
+:  :  :           +- CometColumnarExchange
+:  :  :              +- HashAggregate
+:  :  :                 +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge]
+:  :  :                    +- CometColumnarToRow
+:  :  :                       +- CometExchange
+:  :  :                          +- CometHashAggregate
+:  :  :                             +- CometProject
+:  :  :                                +- CometFilter
+:  :  :                                   +- CometNativeScan parquet spark_catalog.default.store_sales
+:  :  +- BroadcastExchange
+:  :     +- CometColumnarToRow
+:  :        +- CometHashAggregate
+:  :           +- CometColumnarExchange
+:  :              +- HashAggregate
+:  :                 +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge]
+:  :                    +- CometColumnarToRow
+:  :                       +- CometExchange
+:  :                          +- CometHashAggregate
+:  :                             +- CometProject
+:  :                                +- CometFilter
+:  :                                   +- CometNativeScan parquet spark_catalog.default.store_sales
+:  +- BroadcastExchange
+:     +- CometColumnarToRow
+:        +- CometHashAggregate
+:           +- CometColumnarExchange
+:              +- HashAggregate
+:                 +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge]
+:                    +- CometColumnarToRow
+:                       +- CometExchange
+:                          +- CometHashAggregate
+:                             +- CometProject
+:                                +- CometFilter
+:                                   +- CometNativeScan parquet spark_catalog.default.store_sales
++- BroadcastExchange
+   +- CometColumnarToRow
+      +- CometHashAggregate
+         +- CometColumnarExchange
+            +- HashAggregate
+               +-  HashAggregate [COMET: Unsupported aggregation mode PartialMerge]
+                  +- CometColumnarToRow
+                     +- CometExchange
+                        +- CometHashAggregate
+                           +- CometProject
+                              +- CometFilter
+                                 +- CometNativeScan parquet spark_catalog.default.store_sales
+
+Comet accelerated 42 out of 64 eligible operators (65%). Final plan contains 12 transitions between Spark and Comet.
