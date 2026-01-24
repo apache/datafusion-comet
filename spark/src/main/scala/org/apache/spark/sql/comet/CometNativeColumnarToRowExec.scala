@@ -63,6 +63,8 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
   // supportsColumnar requires to be only called on driver side, see also SPARK-37779.
   assert(Utils.isInRunningSparkTask || child.supportsColumnar)
 
+  override def nodeName: String = "CometColumnarToRow"
+
   override def output: Seq[Attribute] = child.output
 
   override def outputPartitioning: Partitioning = child.outputPartitioning

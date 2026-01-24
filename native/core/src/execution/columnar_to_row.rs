@@ -1196,6 +1196,7 @@ impl ColumnarToRowContext {
     /// This handles cases where:
     /// 1. Parquet returns dictionary-encoded arrays but the schema expects a non-dictionary type
     /// 2. Parquet returns NullArray when all values are null, but the schema expects a typed array
+    /// 3. Parquet returns Int32/Int64 for small-precision decimals but schema expects Decimal128
     fn maybe_cast_to_schema_type(
         array: &ArrayRef,
         schema_type: &DataType,
@@ -1207,22 +1208,20 @@ impl ColumnarToRowContext {
             return Ok(Arc::clone(array));
         }
 
-        match actual_type {
-            DataType::Dictionary(_, _) => {
+        match (actual_type, schema_type) {
+            (DataType::Dictionary(_, _), schema)
+                if !matches!(schema, DataType::Dictionary(_, _)) =>
+            {
                 // Unpack dictionary if the schema type is not a dictionary
-                if !matches!(schema_type, DataType::Dictionary(_, _)) {
-                    let options = CastOptions::default();
-                    cast_with_options(array, schema_type, &options).map_err(|e| {
-                        CometError::Internal(format!(
-                            "Failed to unpack dictionary array from {:?} to {:?}: {}",
-                            actual_type, schema_type, e
-                        ))
-                    })
-                } else {
-                    Ok(Arc::clone(array))
-                }
+                let options = CastOptions::default();
+                cast_with_options(array, schema_type, &options).map_err(|e| {
+                    CometError::Internal(format!(
+                        "Failed to unpack dictionary array from {:?} to {:?}: {}",
+                        actual_type, schema_type, e
+                    ))
+                })
             }
-            DataType::Null => {
+            (DataType::Null, _) => {
                 // Cast NullArray to the expected schema type
                 // This happens when all values in a column are null
                 let options = CastOptions::default();
@@ -1232,6 +1231,39 @@ impl ColumnarToRowContext {
                         schema_type, e
                     ))
                 })
+            }
+            (DataType::Int32, DataType::Decimal128(precision, scale)) => {
+                // Parquet stores small-precision decimals as Int32 for efficiency.
+                // When COMET_USE_DECIMAL_128 is false, BatchReader produces these types.
+                // The Int32 value is already scaled (e.g., -1 means -0.01 for scale 2).
+                // We need to reinterpret (not cast) to Decimal128 preserving the value.
+                let int_array = array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to Int32Array".to_string())
+                })?;
+                let decimal_array: Decimal128Array = int_array
+                    .iter()
+                    .map(|v| v.map(|x| x as i128))
+                    .collect::<Decimal128Array>()
+                    .with_precision_and_scale(*precision, *scale)
+                    .map_err(|e| {
+                        CometError::Internal(format!("Invalid decimal precision/scale: {}", e))
+                    })?;
+                Ok(Arc::new(decimal_array))
+            }
+            (DataType::Int64, DataType::Decimal128(precision, scale)) => {
+                // Same as Int32 but for medium-precision decimals stored as Int64.
+                let int_array = array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
+                    CometError::Internal("Failed to downcast to Int64Array".to_string())
+                })?;
+                let decimal_array: Decimal128Array = int_array
+                    .iter()
+                    .map(|v| v.map(|x| x as i128))
+                    .collect::<Decimal128Array>()
+                    .with_precision_and_scale(*precision, *scale)
+                    .map_err(|e| {
+                        CometError::Internal(format!("Invalid decimal precision/scale: {}", e))
+                    })?;
+                Ok(Arc::new(decimal_array))
             }
             _ => Ok(Arc::clone(array)),
         }
@@ -3007,6 +3039,80 @@ mod tests {
         // Fixed-width decimal is stored directly in the 8-byte field slot
         unsafe {
             for (i, expected) in [-1i64, -2, -3, -1, -2, -3].iter().enumerate() {
+                let row =
+                    std::slice::from_raw_parts(ptr.add(offsets[i] as usize), lengths[i] as usize);
+                // Field value starts at offset 8 (after null bitset)
+                let value = i64::from_le_bytes(row[8..16].try_into().unwrap());
+                assert_eq!(
+                    value, *expected,
+                    "Row {} should have value {}, got {}",
+                    i, expected, value
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_convert_int32_to_decimal128() {
+        // Test that Int32 arrays are correctly cast to Decimal128 when schema expects Decimal128.
+        // This can happen when COMET_USE_DECIMAL_128 is false and the parquet reader produces
+        // Int32 for small-precision decimals.
+
+        // Create an Int32 array representing decimals: [-1, -2, -3] which at scale 2 means
+        // [-0.01, -0.02, -0.03]
+        let int_array: ArrayRef = Arc::new(Int32Array::from(vec![-1i32, -2, -3]));
+
+        // Schema expects Decimal128(5, 2)
+        let schema = vec![DataType::Decimal128(5, 2)];
+        let mut ctx = ColumnarToRowContext::new(schema, 100);
+
+        let arrays = vec![int_array];
+        let (ptr, offsets, lengths) = ctx.convert(&arrays, 3).unwrap();
+
+        assert!(!ptr.is_null());
+        assert_eq!(offsets.len(), 3);
+        assert_eq!(lengths.len(), 3);
+
+        // Verify the decimal values are correct after casting
+        // Fixed-width decimal is stored directly in the 8-byte field slot
+        unsafe {
+            for (i, expected) in [-1i64, -2, -3].iter().enumerate() {
+                let row =
+                    std::slice::from_raw_parts(ptr.add(offsets[i] as usize), lengths[i] as usize);
+                // Field value starts at offset 8 (after null bitset)
+                let value = i64::from_le_bytes(row[8..16].try_into().unwrap());
+                assert_eq!(
+                    value, *expected,
+                    "Row {} should have value {}, got {}",
+                    i, expected, value
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_convert_int64_to_decimal128() {
+        // Test that Int64 arrays are correctly cast to Decimal128 when schema expects Decimal128.
+        // This can happen when COMET_USE_DECIMAL_128 is false and the parquet reader produces
+        // Int64 for medium-precision decimals.
+
+        // Create an Int64 array representing decimals
+        let int_array: ArrayRef = Arc::new(Int64Array::from(vec![-100i64, -200, -300]));
+
+        // Schema expects Decimal128(10, 2)
+        let schema = vec![DataType::Decimal128(10, 2)];
+        let mut ctx = ColumnarToRowContext::new(schema, 100);
+
+        let arrays = vec![int_array];
+        let (ptr, offsets, lengths) = ctx.convert(&arrays, 3).unwrap();
+
+        assert!(!ptr.is_null());
+        assert_eq!(offsets.len(), 3);
+        assert_eq!(lengths.len(), 3);
+
+        // Verify the decimal values are correct after casting
+        unsafe {
+            for (i, expected) in [-100i64, -200, -300].iter().enumerate() {
                 let row =
                     std::slice::from_raw_parts(ptr.add(offsets[i] as usize), lengths[i] as usize);
                 // Field value starts at offset 8 (after null bitset)
