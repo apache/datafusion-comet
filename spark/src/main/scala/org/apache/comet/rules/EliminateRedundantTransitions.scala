@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometScanExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
@@ -131,15 +131,36 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
   }
 
   /**
+   * Checks if the plan contains a native_comet scan. Native C2R is not compatible with
+   * native_comet scans because native_comet uses mutable buffers that may be modified after C2R
+   * reads them.
+   */
+  private def hasNativeCometScan(op: SparkPlan): Boolean = {
+    op match {
+      case c: QueryStageExec => hasNativeCometScan(c.plan)
+      case c: ReusedExchangeExec => hasNativeCometScan(c.child)
+      case _ =>
+        op.exists {
+          case scan: CometScanExec => scan.scanImpl == CometConf.SCAN_NATIVE_COMET
+          case _ => false
+        }
+    }
+  }
+
+  /**
    * Creates an appropriate columnar to row transition operator.
    *
    * If native columnar to row conversion is enabled and the schema is supported, uses
    * CometNativeColumnarToRowExec. Otherwise falls back to CometColumnarToRowExec.
+   *
+   * Native C2R is disabled when the plan contains a native_comet scan because native_comet uses
+   * mutable buffers that may be modified after C2R reads them.
    */
   private def createColumnarToRowExec(child: SparkPlan): SparkPlan = {
     val schema = child.schema
     val useNative = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.get() &&
-      CometNativeColumnarToRowExec.supportsSchema(schema)
+      CometNativeColumnarToRowExec.supportsSchema(schema) &&
+      !hasNativeCometScan(child)
 
     if (useNative) {
       CometNativeColumnarToRowExec(child)
