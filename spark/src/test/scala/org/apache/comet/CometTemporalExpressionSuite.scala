@@ -173,6 +173,26 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
+  test("to_date - string input") {
+    withTempView("string_tbl") {
+      // Create test data with timestamp strings
+      val schema = StructType(Seq(StructField("dt_str", DataTypes.StringType, true)))
+      val data = Seq(
+        Row("2020-01-01"),
+        Row("2021-06-15"),
+        Row("2022-12-31"),
+        Row(null))
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(data), schema)
+        .createOrReplaceTempView("string_tbl")
+
+      // String input with custom format should also fall back
+      checkSparkAnswerAndFallbackReason(
+        "SELECT dt_str, to_date(dt_str, 'yyyy-MM-dd') from string_tbl",
+        "to_date does not support input type: StringType")
+    }
+  }
+
   private def createTimestampTestData = {
     val r = new Random(42)
     val schema = StructType(
