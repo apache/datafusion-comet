@@ -2963,11 +2963,13 @@ mod tests {
 
         // Verify the data is correct for non-null rows
         unsafe {
-            let row0 = std::slice::from_raw_parts(ptr.add(offsets[0] as usize), lengths[0] as usize);
+            let row0 =
+                std::slice::from_raw_parts(ptr.add(offsets[0] as usize), lengths[0] as usize);
             // Variable data starts at offset 16 (8 bitset + 8 field slot)
             assert_eq!(&row0[16..19], &[1u8, 2, 3]);
 
-            let row1 = std::slice::from_raw_parts(ptr.add(offsets[1] as usize), lengths[1] as usize);
+            let row1 =
+                std::slice::from_raw_parts(ptr.add(offsets[1] as usize), lengths[1] as usize);
             assert_eq!(&row1[16..19], &[4u8, 5, 6]);
         }
     }
@@ -2987,9 +2989,8 @@ mod tests {
         // Keys: [0, 1, 2, 0, 1, 2] - each value appears twice
         let keys = Int8Array::from(vec![0i8, 1, 2, 0, 1, 2]);
 
-        let dict_array: ArrayRef = Arc::new(
-            DictionaryArray::<Int8Type>::try_new(keys, Arc::new(values)).unwrap(),
-        );
+        let dict_array: ArrayRef =
+            Arc::new(DictionaryArray::<Int8Type>::try_new(keys, Arc::new(values)).unwrap());
 
         // Schema expects Decimal128(5, 2) - not a dictionary type
         let schema = vec![DataType::Decimal128(5, 2)];
@@ -3006,10 +3007,8 @@ mod tests {
         // Fixed-width decimal is stored directly in the 8-byte field slot
         unsafe {
             for (i, expected) in [-1i64, -2, -3, -1, -2, -3].iter().enumerate() {
-                let row = std::slice::from_raw_parts(
-                    ptr.add(offsets[i] as usize),
-                    lengths[i] as usize,
-                );
+                let row =
+                    std::slice::from_raw_parts(ptr.add(offsets[i] as usize), lengths[i] as usize);
                 // Field value starts at offset 8 (after null bitset)
                 let value = i64::from_le_bytes(row[8..16].try_into().unwrap());
                 assert_eq!(
