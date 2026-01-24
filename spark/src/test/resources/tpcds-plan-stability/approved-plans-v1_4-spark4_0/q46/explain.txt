@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometColumnarToRow (39)
+CometNativeColumnarToRow (39)
 +- CometTakeOrderedAndProject (38)
    +- CometProject (37)
       +- CometBroadcastHashJoin (36)
@@ -218,14 +218,14 @@ Arguments: [c_last_name#27, c_first_name#26, ca_city#32, bought_city#28, ss_tick
 Input [7]: [c_last_name#27, c_first_name#26, ca_city#32, bought_city#28, ss_ticket_number#5, amt#29, profit#30]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[c_last_name#27 ASC NULLS FIRST,c_first_name#26 ASC NULLS FIRST,ca_city#32 ASC NULLS FIRST,bought_city#28 ASC NULLS FIRST,ss_ticket_number#5 ASC NULLS FIRST], output=[c_last_name#27,c_first_name#26,ca_city#32,bought_city#28,ss_ticket_number#5,amt#29,profit#30]), [c_last_name#27, c_first_name#26, ca_city#32, bought_city#28, ss_ticket_number#5, amt#29, profit#30], 100, 0, [c_last_name#27 ASC NULLS FIRST, c_first_name#26 ASC NULLS FIRST, ca_city#32 ASC NULLS FIRST, bought_city#28 ASC NULLS FIRST, ss_ticket_number#5 ASC NULLS FIRST], [c_last_name#27, c_first_name#26, ca_city#32, bought_city#28, ss_ticket_number#5, amt#29, profit#30]
 
-(39) CometColumnarToRow
+(39) CometNativeColumnarToRow
 Input [7]: [c_last_name#27, c_first_name#26, ca_city#32, bought_city#28, ss_ticket_number#5, amt#29, profit#30]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#8 IN dynamicpruning#9
 BroadcastExchange (44)
-+- CometColumnarToRow (43)
++- CometNativeColumnarToRow (43)
    +- CometProject (42)
       +- CometFilter (41)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (40)
@@ -246,7 +246,7 @@ Condition : ((d_dow#12 IN (6,0) AND d_year#11 IN (1999,2000,2001)) AND isnotnull
 Input [3]: [d_date_sk#10, d_year#11, d_dow#12]
 Arguments: [d_date_sk#10], [d_date_sk#10]
 
-(43) CometColumnarToRow
+(43) CometNativeColumnarToRow
 Input [1]: [d_date_sk#10]
 
 (44) BroadcastExchange

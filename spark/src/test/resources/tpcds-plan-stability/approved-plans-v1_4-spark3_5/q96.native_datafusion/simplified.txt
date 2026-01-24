@@ -1,4 +1,4 @@
-CometColumnarToRow
+CometNativeColumnarToRow
   CometHashAggregate [count] [count(1),count(1)]
     CometExchange #1
       CometHashAggregate [count]

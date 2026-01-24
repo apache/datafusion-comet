@@ -1,4 +1,4 @@
-CometColumnarToRow
+CometNativeColumnarToRow
   CometTakeOrderedAndProject [prev_year,year,i_brand_id,i_class_id,i_category_id,i_manufact_id,prev_yr_cnt,curr_yr_cnt,sales_cnt_diff,sales_amt_diff]
     CometProject [d_year,d_year,sales_cnt,sales_cnt,sales_amt,sales_amt] [prev_year,year,i_brand_id,i_class_id,i_category_id,i_manufact_id,prev_yr_cnt,curr_yr_cnt,sales_cnt_diff,sales_amt_diff]
       CometSortMergeJoin [d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt,d_year,i_brand_id,i_class_id,i_category_id,i_manufact_id,sales_cnt,sales_amt]
@@ -27,12 +27,12 @@ CometColumnarToRow
                                                     Scan parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,cs_sold_date_sk]
                                                       SubqueryBroadcast [d_date_sk] #1
                                                         BroadcastExchange #5
-                                                          CometColumnarToRow
+                                                          CometNativeColumnarToRow
                                                             CometFilter [d_date_sk,d_year]
                                                               CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                               InputAdapter
                                                 BroadcastExchange #6
-                                                  CometColumnarToRow
+                                                  CometNativeColumnarToRow
                                                     CometProject [i_item_sk,i_brand_id,i_class_id,i_category_id,i_manufact_id]
                                                       CometFilter [i_item_sk,i_brand_id,i_class_id,i_category_id,i_category,i_manufact_id]
                                                         CometNativeScan parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_class_id,i_category_id,i_category,i_manufact_id]
@@ -114,7 +114,7 @@ CometColumnarToRow
                                                     Scan parquet spark_catalog.default.catalog_sales [cs_item_sk,cs_order_number,cs_quantity,cs_ext_sales_price,cs_sold_date_sk]
                                                       SubqueryBroadcast [d_date_sk] #2
                                                         BroadcastExchange #16
-                                                          CometColumnarToRow
+                                                          CometNativeColumnarToRow
                                                             CometFilter [d_date_sk,d_year]
                                                               CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                               InputAdapter

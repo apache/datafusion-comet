@@ -1,4 +1,4 @@
-CometColumnarToRow
+CometNativeColumnarToRow
   CometSort [product_name,store_name,store_zip,b_street_number,b_streen_name,b_city,b_zip,c_street_number,c_street_name,c_city,c_zip,syear,cnt,s1,s2,s3,s1,s2,s3,syear,cnt]
     CometExchange [product_name,store_name,cnt,s1,s1] #1
       CometProject [product_name,store_name,store_zip,b_street_number,b_streen_name,b_city,b_zip,c_street_number,c_street_name,c_city,c_zip,syear,cnt,s1,s2,s3,s1,s2,s3,syear,cnt]
@@ -53,11 +53,11 @@ CometColumnarToRow
                                                                                                         Scan parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
                                                                                                           SubqueryBroadcast [d_date_sk] #1
                                                                                                             BroadcastExchange #5
-                                                                                                              CometColumnarToRow
+                                                                                                              CometNativeColumnarToRow
                                                                                                                 CometFilter [d_date_sk,d_year]
                                                                                                                   CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                                                                             InputAdapter
-                                                                                              CometColumnarToRow
+                                                                                              CometNativeColumnarToRow
                                                                                                 CometProject [sr_item_sk,sr_ticket_number]
                                                                                                   CometFilter [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
                                                                                                     CometNativeScan parquet spark_catalog.default.store_returns [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
@@ -168,11 +168,11 @@ CometColumnarToRow
                                                                                                         Scan parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_cdemo_sk,ss_hdemo_sk,ss_addr_sk,ss_store_sk,ss_promo_sk,ss_ticket_number,ss_wholesale_cost,ss_list_price,ss_coupon_amt,ss_sold_date_sk]
                                                                                                           SubqueryBroadcast [d_date_sk] #2
                                                                                                             BroadcastExchange #22
-                                                                                                              CometColumnarToRow
+                                                                                                              CometNativeColumnarToRow
                                                                                                                 CometFilter [d_date_sk,d_year]
                                                                                                                   CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                                                                             InputAdapter
-                                                                                              CometColumnarToRow
+                                                                                              CometNativeColumnarToRow
                                                                                                 CometProject [sr_item_sk,sr_ticket_number]
                                                                                                   CometFilter [sr_item_sk,sr_ticket_number,sr_returned_date_sk]
                                                                                                     CometNativeScan parquet spark_catalog.default.store_returns [sr_item_sk,sr_ticket_number,sr_returned_date_sk]

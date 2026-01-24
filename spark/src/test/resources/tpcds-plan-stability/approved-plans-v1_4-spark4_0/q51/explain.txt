@@ -2,7 +2,7 @@
 TakeOrderedAndProject (41)
 +- * Filter (40)
    +- Window (39)
-      +- CometColumnarToRow (38)
+      +- CometNativeColumnarToRow (38)
          +- CometSort (37)
             +- CometExchange (36)
                +- CometProject (35)
@@ -11,7 +11,7 @@ TakeOrderedAndProject (41)
                      :  +- CometColumnarExchange (17)
                      :     +- * Project (16)
                      :        +- Window (15)
-                     :           +- CometColumnarToRow (14)
+                     :           +- CometNativeColumnarToRow (14)
                      :              +- CometSort (13)
                      :                 +- CometExchange (12)
                      :                    +- CometHashAggregate (11)
@@ -29,7 +29,7 @@ TakeOrderedAndProject (41)
                         +- CometColumnarExchange (32)
                            +- * Project (31)
                               +- Window (30)
-                                 +- CometColumnarToRow (29)
+                                 +- CometNativeColumnarToRow (29)
                                     +- CometSort (28)
                                        +- CometExchange (27)
                                           +- CometHashAggregate (26)
@@ -104,7 +104,7 @@ Arguments: hashpartitioning(ws_item_sk#1, 5), ENSURE_REQUIREMENTS, CometNativeSh
 Input [4]: [item_sk#9, d_date#6, _w0#10, ws_item_sk#1]
 Arguments: [item_sk#9, d_date#6, _w0#10, ws_item_sk#1], [ws_item_sk#1 ASC NULLS FIRST, d_date#6 ASC NULLS FIRST]
 
-(14) CometColumnarToRow
+(14) CometNativeColumnarToRow
 Input [4]: [item_sk#9, d_date#6, _w0#10, ws_item_sk#1]
 
 (15) Window
@@ -169,7 +169,7 @@ Arguments: hashpartitioning(ss_item_sk#12, 5), ENSURE_REQUIREMENTS, CometNativeS
 Input [4]: [item_sk#19, d_date#17, _w0#20, ss_item_sk#12]
 Arguments: [item_sk#19, d_date#17, _w0#20, ss_item_sk#12], [ss_item_sk#12 ASC NULLS FIRST, d_date#17 ASC NULLS FIRST]
 
-(29) CometColumnarToRow
+(29) CometNativeColumnarToRow
 Input [4]: [item_sk#19, d_date#17, _w0#20, ss_item_sk#12]
 
 (30) Window
@@ -205,7 +205,7 @@ Arguments: hashpartitioning(item_sk#22, 5), ENSURE_REQUIREMENTS, CometNativeShuf
 Input [4]: [item_sk#22, d_date#23, web_sales#24, store_sales#25]
 Arguments: [item_sk#22, d_date#23, web_sales#24, store_sales#25], [item_sk#22 ASC NULLS FIRST, d_date#23 ASC NULLS FIRST]
 
-(38) CometColumnarToRow
+(38) CometNativeColumnarToRow
 Input [4]: [item_sk#22, d_date#23, web_sales#24, store_sales#25]
 
 (39) Window
@@ -224,7 +224,7 @@ Arguments: 100, [item_sk#22 ASC NULLS FIRST, d_date#23 ASC NULLS FIRST], [item_s
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (46)
-+- CometColumnarToRow (45)
++- CometNativeColumnarToRow (45)
    +- CometProject (44)
       +- CometFilter (43)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (42)
@@ -245,7 +245,7 @@ Condition : (((isnotnull(d_month_seq#7) AND (d_month_seq#7 >= 1200)) AND (d_mont
 Input [3]: [d_date_sk#5, d_date#6, d_month_seq#7]
 Arguments: [d_date_sk#5, d_date#6], [d_date_sk#5, d_date#6]
 
-(45) CometColumnarToRow
+(45) CometNativeColumnarToRow
 Input [2]: [d_date_sk#5, d_date#6]
 
 (46) BroadcastExchange

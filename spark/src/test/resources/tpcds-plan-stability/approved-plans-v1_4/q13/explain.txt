@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometColumnarToRow (34)
+CometNativeColumnarToRow (34)
 +- CometHashAggregate (33)
    +- CometExchange (32)
       +- CometHashAggregate (31)
@@ -193,14 +193,14 @@ Input [7]: [sum#26, count#27, sum#28, count#29, sum#30, count#31, sum#32]
 Keys: []
 Functions [4]: [avg(ss_quantity#5), avg(UnscaledValue(ss_ext_sales_price#7)), avg(UnscaledValue(ss_ext_wholesale_cost#8)), sum(UnscaledValue(ss_ext_wholesale_cost#8))]
 
-(34) CometColumnarToRow
+(34) CometNativeColumnarToRow
 Input [4]: [avg(ss_quantity)#33, avg(ss_ext_sales_price)#34, avg(ss_ext_wholesale_cost)#35, sum(ss_ext_wholesale_cost)#36]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#10 IN dynamicpruning#11
 BroadcastExchange (39)
-+- CometColumnarToRow (38)
++- CometNativeColumnarToRow (38)
    +- CometProject (37)
       +- CometFilter (36)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (35)
@@ -221,7 +221,7 @@ Condition : ((isnotnull(d_year#18) AND (d_year#18 = 2001)) AND isnotnull(d_date_
 Input [2]: [d_date_sk#17, d_year#18]
 Arguments: [d_date_sk#17], [d_date_sk#17]
 
-(38) CometColumnarToRow
+(38) CometNativeColumnarToRow
 Input [1]: [d_date_sk#17]
 
 (39) BroadcastExchange

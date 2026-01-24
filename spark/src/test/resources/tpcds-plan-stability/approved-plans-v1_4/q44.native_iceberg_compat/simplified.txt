@@ -13,12 +13,12 @@ TakeOrderedAndProject [rnk,best_performing,worst_performing]
                         Filter [rnk,item_sk]
                           InputAdapter
                             Window [rank_col]
-                              CometColumnarToRow
+                              CometNativeColumnarToRow
                                 CometSort [item_sk,rank_col]
                                   CometExchange #1
                                     CometFilter [item_sk,rank_col]
                                       Subquery #1
-                                        CometColumnarToRow
+                                        CometNativeColumnarToRow
                                           CometHashAggregate [ss_store_sk,sum,count] [rank_col,avg(UnscaledValue(ss_net_profit))]
                                             CometExchange [ss_store_sk] #3
                                               CometHashAggregate [ss_net_profit] [ss_store_sk,sum,count]
@@ -38,12 +38,12 @@ TakeOrderedAndProject [rnk,best_performing,worst_performing]
                         Filter [rnk,item_sk]
                           InputAdapter
                             Window [rank_col]
-                              CometColumnarToRow
+                              CometNativeColumnarToRow
                                 CometSort [item_sk,rank_col]
                                   ReusedExchange [item_sk,rank_col] #1
             InputAdapter
               BroadcastExchange #4
-                CometColumnarToRow
+                CometNativeColumnarToRow
                   CometProject [i_product_name] [i_item_sk,i_product_name]
                     CometFilter [i_item_sk,i_product_name]
                       CometScan [native_iceberg_compat] parquet spark_catalog.default.item [i_item_sk,i_product_name]

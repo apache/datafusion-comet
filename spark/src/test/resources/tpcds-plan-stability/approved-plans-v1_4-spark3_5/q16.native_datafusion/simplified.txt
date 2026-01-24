@@ -1,11 +1,11 @@
-CometColumnarToRow
+CometNativeColumnarToRow
   CometHashAggregate [sum,sum,count] [order count ,total shipping cost ,total net profit ,count(cs_order_number),sum(UnscaledValue(cs_ext_ship_cost)),sum(UnscaledValue(cs_net_profit))]
     CometColumnarExchange #1
       WholeStageCodegen (1)
         HashAggregate [cs_order_number] [sum(UnscaledValue(cs_ext_ship_cost)),sum(UnscaledValue(cs_net_profit)),count(cs_order_number),sum,sum,count,sum,sum,count]
           HashAggregate [cs_order_number] [sum(UnscaledValue(cs_ext_ship_cost)),sum(UnscaledValue(cs_net_profit)),sum,sum,sum,sum]
             InputAdapter
-              CometColumnarToRow
+              CometNativeColumnarToRow
                 CometHashAggregate [cs_ext_ship_cost,cs_net_profit] [cs_order_number,sum,sum]
                   CometProject [cs_order_number,cs_ext_ship_cost,cs_net_profit]
                     CometBroadcastHashJoin [cs_call_center_sk,cs_order_number,cs_ext_ship_cost,cs_net_profit,cc_call_center_sk]

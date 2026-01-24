@@ -2,7 +2,7 @@
 TakeOrderedAndProject (43)
 +- * Project (42)
    +- Window (41)
-      +- CometColumnarToRow (40)
+      +- CometNativeColumnarToRow (40)
          +- CometSort (39)
             +- CometExchange (38)
                +- CometHashAggregate (37)
@@ -225,7 +225,7 @@ Arguments: hashpartitioning(lochierarchy#41, _w0#53, 5), ENSURE_REQUIREMENTS, Co
 Input [5]: [gross_margin#36, i_category#37, i_class#38, lochierarchy#41, _w0#53]
 Arguments: [gross_margin#36, i_category#37, i_class#38, lochierarchy#41, _w0#53], [lochierarchy#41 ASC NULLS FIRST, _w0#53 ASC NULLS FIRST, gross_margin#36 ASC NULLS FIRST]
 
-(40) CometColumnarToRow
+(40) CometNativeColumnarToRow
 Input [5]: [gross_margin#36, i_category#37, i_class#38, lochierarchy#41, _w0#53]
 
 (41) Window
@@ -244,7 +244,7 @@ Arguments: 100, [lochierarchy#41 DESC NULLS LAST, CASE WHEN (lochierarchy#41 = 0
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (48)
-+- CometColumnarToRow (47)
++- CometNativeColumnarToRow (47)
    +- CometProject (46)
       +- CometFilter (45)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (44)
@@ -265,7 +265,7 @@ Condition : ((isnotnull(d_year#8) AND (d_year#8 = 2001)) AND isnotnull(d_date_sk
 Input [2]: [d_date_sk#7, d_year#8]
 Arguments: [d_date_sk#7], [d_date_sk#7]
 
-(47) CometColumnarToRow
+(47) CometNativeColumnarToRow
 Input [1]: [d_date_sk#7]
 
 (48) BroadcastExchange

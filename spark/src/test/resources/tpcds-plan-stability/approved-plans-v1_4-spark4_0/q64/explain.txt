@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometColumnarToRow (176)
+CometNativeColumnarToRow (176)
 +- CometSort (175)
    +- CometExchange (174)
       +- CometProject (173)
@@ -953,14 +953,14 @@ Arguments: rangepartitioning(product_name#81 ASC NULLS FIRST, store_name#83 ASC 
 Input [21]: [product_name#81, store_name#83, store_zip#84, b_street_number#85, b_streen_name#86, b_city#87, b_zip#88, c_street_number#89, c_street_name#90, c_city#91, c_zip#92, syear#93, cnt#94, s1#95, s2#96, s3#97, s1#170, s2#171, s3#172, syear#168, cnt#169]
 Arguments: [product_name#81, store_name#83, store_zip#84, b_street_number#85, b_streen_name#86, b_city#87, b_zip#88, c_street_number#89, c_street_name#90, c_city#91, c_zip#92, syear#93, cnt#94, s1#95, s2#96, s3#97, s1#170, s2#171, s3#172, syear#168, cnt#169], [product_name#81 ASC NULLS FIRST, store_name#83 ASC NULLS FIRST, cnt#169 ASC NULLS FIRST]
 
-(176) CometColumnarToRow
+(176) CometNativeColumnarToRow
 Input [21]: [product_name#81, store_name#83, store_zip#84, b_street_number#85, b_streen_name#86, b_city#87, b_zip#88, c_street_number#89, c_street_name#90, c_city#91, c_zip#92, syear#93, cnt#94, s1#95, s2#96, s3#97, s1#170, s2#171, s3#172, syear#168, cnt#169]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#12 IN dynamicpruning#13
 BroadcastExchange (180)
-+- CometColumnarToRow (179)
++- CometNativeColumnarToRow (179)
    +- CometFilter (178)
       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (177)
 
@@ -976,7 +976,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#32, d_year#33]
 Condition : ((isnotnull(d_year#33) AND (d_year#33 = 1999)) AND isnotnull(d_date_sk#32))
 
-(179) CometColumnarToRow
+(179) CometNativeColumnarToRow
 Input [2]: [d_date_sk#32, d_year#33]
 
 (180) BroadcastExchange
@@ -985,7 +985,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)
 
 Subquery:2 Hosting operator id = 104 Hosting Expression = ss_sold_date_sk#109 IN dynamicpruning#110
 BroadcastExchange (184)
-+- CometColumnarToRow (183)
++- CometNativeColumnarToRow (183)
    +- CometFilter (182)
       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (181)
 
@@ -1001,7 +1001,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#124, d_year#125]
 Condition : ((isnotnull(d_year#125) AND (d_year#125 = 2000)) AND isnotnull(d_date_sk#124))
 
-(183) CometColumnarToRow
+(183) CometNativeColumnarToRow
 Input [2]: [d_date_sk#124, d_year#125]
 
 (184) BroadcastExchange

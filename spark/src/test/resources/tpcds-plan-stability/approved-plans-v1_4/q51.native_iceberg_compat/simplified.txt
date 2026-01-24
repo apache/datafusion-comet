@@ -3,7 +3,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
     Filter [web_cumulative,store_cumulative]
       InputAdapter
         Window [web_sales,item_sk,d_date,store_sales]
-          CometColumnarToRow
+          CometNativeColumnarToRow
             CometSort [item_sk,d_date,web_sales,store_sales]
               CometExchange [item_sk] #1
                 CometProject [item_sk,item_sk,d_date,d_date,cume_sales,cume_sales] [item_sk,d_date,web_sales,store_sales]
@@ -14,7 +14,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                           Project [item_sk,d_date,cume_sales]
                             InputAdapter
                               Window [_w0,ws_item_sk,d_date]
-                                CometColumnarToRow
+                                CometNativeColumnarToRow
                                   CometSort [item_sk,d_date,_w0,ws_item_sk]
                                     CometExchange [ws_item_sk] #3
                                       CometHashAggregate [sum] [item_sk,d_date,_w0,ws_item_sk,sum(UnscaledValue(ws_sales_price))]
@@ -26,7 +26,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                                                   CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales [ws_item_sk,ws_sales_price,ws_sold_date_sk]
                                                     SubqueryBroadcast [d_date_sk] #1
                                                       BroadcastExchange #5
-                                                        CometColumnarToRow
+                                                        CometNativeColumnarToRow
                                                           CometProject [d_date_sk,d_date]
                                                             CometFilter [d_date_sk,d_date,d_month_seq]
                                                               CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_month_seq]
@@ -40,7 +40,7 @@ TakeOrderedAndProject [item_sk,d_date,web_sales,store_sales,web_cumulative,store
                           Project [item_sk,d_date,cume_sales]
                             InputAdapter
                               Window [_w0,ss_item_sk,d_date]
-                                CometColumnarToRow
+                                CometNativeColumnarToRow
                                   CometSort [item_sk,d_date,_w0,ss_item_sk]
                                     CometExchange [ss_item_sk] #8
                                       CometHashAggregate [sum] [item_sk,d_date,_w0,ss_item_sk,sum(UnscaledValue(ss_sales_price))]

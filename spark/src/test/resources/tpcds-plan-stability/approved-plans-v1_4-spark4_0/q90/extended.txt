@@ -1,6 +1,6 @@
 Project
 +-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
-   :- CometColumnarToRow
+   :- CometNativeColumnarToRow
    :  +- CometHashAggregate
    :     +- CometExchange
    :        +- CometHashAggregate
@@ -26,7 +26,7 @@ Project
    :                       +- CometFilter
    :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_page
    +- BroadcastExchange
-      +- CometColumnarToRow
+      +- CometNativeColumnarToRow
          +- CometHashAggregate
             +- CometExchange
                +- CometHashAggregate

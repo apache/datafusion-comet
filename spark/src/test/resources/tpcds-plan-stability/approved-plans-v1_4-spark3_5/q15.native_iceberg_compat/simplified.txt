@@ -1,4 +1,4 @@
-CometColumnarToRow
+CometNativeColumnarToRow
   CometTakeOrderedAndProject [ca_zip,sum(cs_sales_price)]
     CometHashAggregate [sum] [ca_zip,sum(cs_sales_price),sum(UnscaledValue(cs_sales_price))]
       CometExchange [ca_zip] #1
@@ -13,7 +13,7 @@ CometColumnarToRow
                         CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_sales_price,cs_sold_date_sk]
                           SubqueryBroadcast [d_date_sk] #1
                             BroadcastExchange #2
-                              CometColumnarToRow
+                              CometNativeColumnarToRow
                                 CometProject [d_date_sk]
                                   CometFilter [d_date_sk,d_year,d_qoy]
                                     CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]

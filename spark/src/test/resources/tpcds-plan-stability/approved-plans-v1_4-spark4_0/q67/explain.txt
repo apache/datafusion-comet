@@ -3,11 +3,11 @@ TakeOrderedAndProject (34)
 +- * Filter (33)
    +- Window (32)
       +- WindowGroupLimit (31)
-         +- CometColumnarToRow (30)
+         +- CometNativeColumnarToRow (30)
             +- CometSort (29)
                +- CometColumnarExchange (28)
                   +- WindowGroupLimit (27)
-                     +- CometColumnarToRow (26)
+                     +- CometNativeColumnarToRow (26)
                         +- CometSort (25)
                            +- CometHashAggregate (24)
                               +- CometExchange (23)
@@ -153,7 +153,7 @@ Functions [1]: [sum(coalesce((ss_sales_price#4 * cast(ss_quantity#3 as decimal(1
 Input [9]: [i_category#24, i_class#25, i_brand#26, i_product_name#27, d_year#28, d_qoy#29, d_moy#30, s_store_id#31, sumsales#35]
 Arguments: [i_category#24, i_class#25, i_brand#26, i_product_name#27, d_year#28, d_qoy#29, d_moy#30, s_store_id#31, sumsales#35], [i_category#24 ASC NULLS FIRST, sumsales#35 DESC NULLS LAST]
 
-(26) CometColumnarToRow
+(26) CometNativeColumnarToRow
 Input [9]: [i_category#24, i_class#25, i_brand#26, i_product_name#27, d_year#28, d_qoy#29, d_moy#30, s_store_id#31, sumsales#35]
 
 (27) WindowGroupLimit
@@ -168,7 +168,7 @@ Arguments: hashpartitioning(i_category#24, 5), ENSURE_REQUIREMENTS, CometColumna
 Input [9]: [i_category#24, i_class#25, i_brand#26, i_product_name#27, d_year#28, d_qoy#29, d_moy#30, s_store_id#31, sumsales#35]
 Arguments: [i_category#24, i_class#25, i_brand#26, i_product_name#27, d_year#28, d_qoy#29, d_moy#30, s_store_id#31, sumsales#35], [i_category#24 ASC NULLS FIRST, sumsales#35 DESC NULLS LAST]
 
-(30) CometColumnarToRow
+(30) CometNativeColumnarToRow
 Input [9]: [i_category#24, i_class#25, i_brand#26, i_product_name#27, d_year#28, d_qoy#29, d_moy#30, s_store_id#31, sumsales#35]
 
 (31) WindowGroupLimit
@@ -191,7 +191,7 @@ Arguments: 100, [i_category#24 ASC NULLS FIRST, i_class#25 ASC NULLS FIRST, i_br
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (39)
-+- CometColumnarToRow (38)
++- CometNativeColumnarToRow (38)
    +- CometProject (37)
       +- CometFilter (36)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (35)
@@ -212,7 +212,7 @@ Condition : (((isnotnull(d_month_seq#8) AND (d_month_seq#8 >= 1200)) AND (d_mont
 Input [5]: [d_date_sk#7, d_month_seq#8, d_year#9, d_moy#10, d_qoy#11]
 Arguments: [d_date_sk#7, d_year#9, d_moy#10, d_qoy#11], [d_date_sk#7, d_year#9, d_moy#10, d_qoy#11]
 
-(38) CometColumnarToRow
+(38) CometNativeColumnarToRow
 Input [4]: [d_date_sk#7, d_year#9, d_moy#10, d_qoy#11]
 
 (39) BroadcastExchange

@@ -1,11 +1,11 @@
 HashAggregate
-+- CometColumnarToRow
++- CometNativeColumnarToRow
    +- CometColumnarExchange
       +- HashAggregate
          +- Project
             +- BroadcastHashJoin
                :-  BroadcastHashJoin [COMET: BuildRight with LeftAnti is not supported]
-               :  :- CometColumnarToRow
+               :  :- CometNativeColumnarToRow
                :  :  +- CometHashAggregate
                :  :     +- CometExchange
                :  :        +- CometHashAggregate
@@ -17,7 +17,7 @@ HashAggregate
                :  :                 :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
                :  :                 :     :        +- SubqueryBroadcast
                :  :                 :     :           +- BroadcastExchange
-               :  :                 :     :              +- CometColumnarToRow
+               :  :                 :     :              +- CometNativeColumnarToRow
                :  :                 :     :                 +- CometProject
                :  :                 :     :                    +- CometFilter
                :  :                 :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
@@ -30,7 +30,7 @@ HashAggregate
                :  :                       +- CometFilter
                :  :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
                :  +- BroadcastExchange
-               :     +- CometColumnarToRow
+               :     +- CometNativeColumnarToRow
                :        +- CometHashAggregate
                :           +- CometExchange
                :              +- CometHashAggregate
@@ -50,7 +50,7 @@ HashAggregate
                :                             +- CometFilter
                :                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
                +- BroadcastExchange
-                  +- CometColumnarToRow
+                  +- CometNativeColumnarToRow
                      +- CometHashAggregate
                         +- CometExchange
                            +- CometHashAggregate

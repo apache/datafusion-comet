@@ -12,7 +12,7 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,d_moy,i_category,d_year,psum,
                       Filter [d_year]
                         InputAdapter
                           Window [d_year,d_moy,i_category,i_brand,s_store_name,s_company_name]
-                            CometColumnarToRow
+                            CometNativeColumnarToRow
                               CometSort [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum_sales,_w0]
                                 CometExchange [i_category,i_brand,s_store_name,s_company_name] #1
                                   CometHashAggregate [sum] [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum_sales,_w0,sum(UnscaledValue(ss_sales_price))]
@@ -32,7 +32,7 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,d_moy,i_category,d_year,psum,
                                                         CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_item_sk,ss_store_sk,ss_sales_price,ss_sold_date_sk]
                                                           SubqueryBroadcast [d_date_sk] #1
                                                             BroadcastExchange #4
-                                                              CometColumnarToRow
+                                                              CometNativeColumnarToRow
                                                                 CometFilter [d_date_sk,d_year,d_moy]
                                                                   CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
                                                 CometBroadcastExchange [d_date_sk,d_year,d_moy] #5
@@ -47,7 +47,7 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,d_moy,i_category,d_year,psum,
                   Project [i_category,i_brand,s_store_name,s_company_name,sum_sales,rn]
                     InputAdapter
                       Window [d_year,d_moy,i_category,i_brand,s_store_name,s_company_name]
-                        CometColumnarToRow
+                        CometNativeColumnarToRow
                           CometSort [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum_sales]
                             CometExchange [i_category,i_brand,s_store_name,s_company_name] #8
                               CometHashAggregate [sum] [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum_sales,sum(UnscaledValue(ss_sales_price))]
@@ -58,6 +58,6 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,d_moy,i_category,d_year,psum,
               Project [i_category,i_brand,s_store_name,s_company_name,sum_sales,rn]
                 InputAdapter
                   Window [d_year,d_moy,i_category,i_brand,s_store_name,s_company_name]
-                    CometColumnarToRow
+                    CometNativeColumnarToRow
                       CometSort [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum_sales]
                         ReusedExchange [i_category,i_brand,s_store_name,s_company_name,d_year,d_moy,sum_sales] #8

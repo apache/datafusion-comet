@@ -1,10 +1,10 @@
-CometColumnarToRow
+CometNativeColumnarToRow
   CometSort [brand_id,brand,t_hour,t_minute,ext_price]
     CometColumnarExchange [ext_price,brand_id] #1
       WholeStageCodegen (5)
         HashAggregate [i_brand,i_brand_id,t_hour,t_minute,sum] [sum(UnscaledValue(ext_price)),brand_id,brand,ext_price,sum]
           InputAdapter
-            CometColumnarToRow
+            CometNativeColumnarToRow
               CometColumnarExchange [i_brand,i_brand_id,t_hour,t_minute] #2
                 WholeStageCodegen (4)
                   HashAggregate [i_brand,i_brand_id,t_hour,t_minute,ext_price] [sum,sum]
@@ -14,7 +14,7 @@ CometColumnarToRow
                           BroadcastHashJoin [i_item_sk,sold_item_sk]
                             InputAdapter
                               BroadcastExchange #3
-                                CometColumnarToRow
+                                CometNativeColumnarToRow
                                   CometProject [i_brand] [i_item_sk,i_brand_id,i_brand]
                                     CometFilter [i_item_sk,i_brand_id,i_brand,i_manager_id]
                                       CometNativeScan parquet spark_catalog.default.item [i_item_sk,i_brand_id,i_brand,i_manager_id]
@@ -29,7 +29,7 @@ CometColumnarToRow
                                             Scan parquet spark_catalog.default.web_sales [ws_sold_time_sk,ws_item_sk,ws_ext_sales_price,ws_sold_date_sk]
                                               SubqueryBroadcast [d_date_sk] #1
                                                 BroadcastExchange #4
-                                                  CometColumnarToRow
+                                                  CometNativeColumnarToRow
                                                     CometProject [d_date_sk]
                                                       CometFilter [d_date_sk,d_year,d_moy]
                                                         CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
@@ -57,7 +57,7 @@ CometColumnarToRow
                                         ReusedExchange [d_date_sk] #4
                         InputAdapter
                           BroadcastExchange #5
-                            CometColumnarToRow
+                            CometNativeColumnarToRow
                               CometProject [t_time_sk,t_hour,t_minute]
                                 CometFilter [t_time_sk,t_hour,t_minute,t_meal_time]
                                   CometNativeScan parquet spark_catalog.default.time_dim [t_time_sk,t_hour,t_minute,t_meal_time]

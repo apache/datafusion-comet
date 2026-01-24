@@ -1,4 +1,4 @@
-CometColumnarToRow
+CometNativeColumnarToRow
   CometHashAggregate [sum,sum,sum] [store_only,catalog_only,store_and_catalog,sum(CASE WHEN (isnotnull(customer_sk) AND isnull(customer_sk)) THEN 1 ELSE 0 END),sum(CASE WHEN (isnull(customer_sk) AND isnotnull(customer_sk)) THEN 1 ELSE 0 END),sum(CASE WHEN (isnotnull(customer_sk) AND isnotnull(customer_sk)) THEN 1 ELSE 0 END)]
     CometExchange #1
       CometHashAggregate [customer_sk,customer_sk] [sum,sum,sum]
@@ -13,7 +13,7 @@ CometColumnarToRow
                         CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_sold_date_sk]
                           SubqueryBroadcast [d_date_sk] #1
                             BroadcastExchange #3
-                              CometColumnarToRow
+                              CometNativeColumnarToRow
                                 CometProject [d_date_sk]
                                   CometFilter [d_date_sk,d_month_seq]
                                     CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]

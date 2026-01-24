@@ -1,10 +1,10 @@
-CometColumnarToRow
+CometNativeColumnarToRow
   CometSort [Call_Center,Call_Center_Name,Manager,Returns_Loss]
     CometColumnarExchange [Returns_Loss] #1
       WholeStageCodegen (3)
         HashAggregate [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status,sum] [sum(UnscaledValue(cr_net_loss)),Call_Center,Call_Center_Name,Manager,Returns_Loss,sum]
           InputAdapter
-            CometColumnarToRow
+            CometNativeColumnarToRow
               CometColumnarExchange [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status] #2
                 WholeStageCodegen (2)
                   HashAggregate [cc_call_center_id,cc_name,cc_manager,cd_marital_status,cd_education_status,cr_net_loss] [sum,sum]
@@ -21,7 +21,7 @@ CometColumnarToRow
                                         Project [cc_call_center_id,cc_name,cc_manager,cr_returning_customer_sk,cr_net_loss,cr_returned_date_sk]
                                           BroadcastHashJoin [cc_call_center_sk,cr_call_center_sk]
                                             InputAdapter
-                                              CometColumnarToRow
+                                              CometNativeColumnarToRow
                                                 CometProject [cc_call_center_id] [cc_call_center_sk,cc_call_center_id,cc_name,cc_manager]
                                                   CometFilter [cc_call_center_sk,cc_call_center_id,cc_name,cc_manager]
                                                     CometNativeScan parquet spark_catalog.default.call_center [cc_call_center_sk,cc_call_center_id,cc_name,cc_manager]
@@ -34,7 +34,7 @@ CometColumnarToRow
                                                         Scan parquet spark_catalog.default.catalog_returns [cr_returning_customer_sk,cr_call_center_sk,cr_net_loss,cr_returned_date_sk]
                                                           SubqueryBroadcast [d_date_sk] #1
                                                             BroadcastExchange #4
-                                                              CometColumnarToRow
+                                                              CometNativeColumnarToRow
                                                                 CometProject [d_date_sk]
                                                                   CometFilter [d_date_sk,d_year,d_moy]
                                                                     CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
@@ -42,24 +42,24 @@ CometColumnarToRow
                                           ReusedExchange [d_date_sk] #4
                                     InputAdapter
                                       BroadcastExchange #5
-                                        CometColumnarToRow
+                                        CometNativeColumnarToRow
                                           CometFilter [c_customer_sk,c_current_cdemo_sk,c_current_hdemo_sk,c_current_addr_sk]
                                             CometNativeScan parquet spark_catalog.default.customer [c_customer_sk,c_current_cdemo_sk,c_current_hdemo_sk,c_current_addr_sk]
                                 InputAdapter
                                   BroadcastExchange #6
-                                    CometColumnarToRow
+                                    CometNativeColumnarToRow
                                       CometProject [ca_address_sk]
                                         CometFilter [ca_address_sk,ca_gmt_offset]
                                           CometNativeScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_gmt_offset]
                             InputAdapter
                               BroadcastExchange #7
-                                CometColumnarToRow
+                                CometNativeColumnarToRow
                                   CometProject [cd_marital_status,cd_education_status] [cd_demo_sk,cd_marital_status,cd_education_status]
                                     CometFilter [cd_demo_sk,cd_marital_status,cd_education_status]
                                       CometNativeScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status,cd_education_status]
                         InputAdapter
                           BroadcastExchange #8
-                            CometColumnarToRow
+                            CometNativeColumnarToRow
                               CometProject [hd_demo_sk]
                                 CometFilter [hd_demo_sk,hd_buy_potential]
                                   CometNativeScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_buy_potential]

@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometColumnarToRow (78)
+CometNativeColumnarToRow (78)
 +- CometTakeOrderedAndProject (77)
    +- CometHashAggregate (76)
       +- CometColumnarExchange (75)
@@ -10,7 +10,7 @@ CometColumnarToRow (78)
                :     +- Window (24)
                :        +- * Sort (23)
                :           +- Window (22)
-               :              +- CometColumnarToRow (21)
+               :              +- CometNativeColumnarToRow (21)
                :                 +- CometSort (20)
                :                    +- CometExchange (19)
                :                       +- CometHashAggregate (18)
@@ -36,7 +36,7 @@ CometColumnarToRow (78)
                :     +- Window (47)
                :        +- * Sort (46)
                :           +- Window (45)
-               :              +- CometColumnarToRow (44)
+               :              +- CometNativeColumnarToRow (44)
                :                 +- CometSort (43)
                :                    +- CometExchange (42)
                :                       +- CometHashAggregate (41)
@@ -59,7 +59,7 @@ CometColumnarToRow (78)
                      +- Window (70)
                         +- * Sort (69)
                            +- Window (68)
-                              +- CometColumnarToRow (67)
+                              +- CometNativeColumnarToRow (67)
                                  +- CometSort (66)
                                     +- CometExchange (65)
                                        +- CometHashAggregate (64)
@@ -173,7 +173,7 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 Input [3]: [item#22, return_ratio#23, currency_ratio#24]
 Arguments: [item#22, return_ratio#23, currency_ratio#24], [return_ratio#23 ASC NULLS FIRST]
 
-(21) CometColumnarToRow
+(21) CometNativeColumnarToRow
 Input [3]: [item#22, return_ratio#23, currency_ratio#24]
 
 (22) Window
@@ -274,7 +274,7 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=4]
 Input [3]: [item#47, return_ratio#48, currency_ratio#49]
 Arguments: [item#47, return_ratio#48, currency_ratio#49], [return_ratio#48 ASC NULLS FIRST]
 
-(44) CometColumnarToRow
+(44) CometNativeColumnarToRow
 Input [3]: [item#47, return_ratio#48, currency_ratio#49]
 
 (45) Window
@@ -375,7 +375,7 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=6]
 Input [3]: [item#72, return_ratio#73, currency_ratio#74]
 Arguments: [item#72, return_ratio#73, currency_ratio#74], [return_ratio#73 ASC NULLS FIRST]
 
-(67) CometColumnarToRow
+(67) CometNativeColumnarToRow
 Input [3]: [item#72, return_ratio#73, currency_ratio#74]
 
 (68) Window
@@ -420,14 +420,14 @@ Functions: []
 Input [5]: [channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#27 ASC NULLS FIRST,return_rank#25 ASC NULLS FIRST,currency_rank#26 ASC NULLS FIRST,item#22 ASC NULLS FIRST], output=[channel#27,item#22,return_ratio#23,return_rank#25,currency_rank#26]), [channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26], 100, 0, [channel#27 ASC NULLS FIRST, return_rank#25 ASC NULLS FIRST, currency_rank#26 ASC NULLS FIRST, item#22 ASC NULLS FIRST], [channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26]
 
-(78) CometColumnarToRow
+(78) CometNativeColumnarToRow
 Input [5]: [channel#27, item#22, return_ratio#23, return_rank#25, currency_rank#26]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#6 IN dynamicpruning#7
 BroadcastExchange (83)
-+- CometColumnarToRow (82)
++- CometNativeColumnarToRow (82)
    +- CometProject (81)
       +- CometFilter (80)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (79)
@@ -448,7 +448,7 @@ Condition : ((((isnotnull(d_year#14) AND isnotnull(d_moy#15)) AND (d_year#14 = 2
 Input [3]: [d_date_sk#13, d_year#14, d_moy#15]
 Arguments: [d_date_sk#13], [d_date_sk#13]
 
-(82) CometColumnarToRow
+(82) CometNativeColumnarToRow
 Input [1]: [d_date_sk#13]
 
 (83) BroadcastExchange

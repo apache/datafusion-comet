@@ -3,13 +3,13 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
     Project [total_sum,s_state,s_county,lochierarchy,rank_within_parent]
       InputAdapter
         Window [_w0,_w1,_w2]
-          CometColumnarToRow
+          CometNativeColumnarToRow
             CometSort [total_sum,s_state,s_county,lochierarchy,_w0,_w1,_w2]
               CometColumnarExchange [_w1,_w2] #1
                 WholeStageCodegen (4)
                   HashAggregate [s_state,s_county,spark_grouping_id,sum] [sum(UnscaledValue(ss_net_profit)),total_sum,lochierarchy,_w0,_w1,_w2,sum]
                     InputAdapter
-                      CometColumnarToRow
+                      CometNativeColumnarToRow
                         CometColumnarExchange [s_state,s_county,spark_grouping_id] #2
                           WholeStageCodegen (3)
                             HashAggregate [s_state,s_county,spark_grouping_id,ss_net_profit] [sum,sum]
@@ -17,14 +17,14 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                 Project [ss_net_profit,s_state,s_county]
                                   BroadcastHashJoin [ss_store_sk,s_store_sk]
                                     InputAdapter
-                                      CometColumnarToRow
+                                      CometNativeColumnarToRow
                                         CometProject [ss_store_sk,ss_net_profit]
                                           CometBroadcastHashJoin [ss_store_sk,ss_net_profit,ss_sold_date_sk,d_date_sk]
                                             CometFilter [ss_store_sk,ss_net_profit,ss_sold_date_sk]
                                               CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_store_sk,ss_net_profit,ss_sold_date_sk]
                                                 SubqueryBroadcast [d_date_sk] #1
                                                   BroadcastExchange #3
-                                                    CometColumnarToRow
+                                                    CometNativeColumnarToRow
                                                       CometProject [d_date_sk]
                                                         CometFilter [d_date_sk,d_month_seq]
                                                           CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
@@ -38,7 +38,7 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                           Project [s_store_sk,s_county,s_state]
                                             BroadcastHashJoin [s_state,s_state]
                                               InputAdapter
-                                                CometColumnarToRow
+                                                CometNativeColumnarToRow
                                                   CometFilter [s_store_sk,s_county,s_state]
                                                     CometScan [native_iceberg_compat] parquet spark_catalog.default.store [s_store_sk,s_county,s_state]
                                               InputAdapter
@@ -48,7 +48,7 @@ TakeOrderedAndProject [lochierarchy,s_state,rank_within_parent,total_sum,s_count
                                                       Filter [ranking]
                                                         InputAdapter
                                                           Window [_w0,s_state]
-                                                            CometColumnarToRow
+                                                            CometNativeColumnarToRow
                                                               CometSort [s_state,_w0]
                                                                 CometHashAggregate [sum] [s_state,_w0,sum(UnscaledValue(ss_net_profit))]
                                                                   CometExchange [s_state] #7

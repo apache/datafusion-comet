@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometColumnarToRow (127)
+CometNativeColumnarToRow (127)
 +- CometTakeOrderedAndProject (126)
    +- CometProject (125)
       +- CometSortMergeJoin (124)
@@ -25,7 +25,7 @@ CometColumnarToRow (127)
          :                             :     :           :     :  +- * ColumnarToRow (2)
          :                             :     :           :     :     +- Scan parquet spark_catalog.default.catalog_sales (1)
          :                             :     :           :     +- BroadcastExchange (8)
-         :                             :     :           :        +- CometColumnarToRow (7)
+         :                             :     :           :        +- CometNativeColumnarToRow (7)
          :                             :     :           :           +- CometProject (6)
          :                             :     :           :              +- CometFilter (5)
          :                             :     :           :                 +- CometNativeScan parquet spark_catalog.default.item (4)
@@ -158,7 +158,7 @@ Condition : ((((((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarc
 Input [6]: [i_item_sk#7, i_brand_id#8, i_class_id#9, i_category_id#10, i_category#11, i_manufact_id#12]
 Arguments: [i_item_sk#7, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12], [i_item_sk#7, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12]
 
-(7) CometColumnarToRow
+(7) CometNativeColumnarToRow
 Input [5]: [i_item_sk#7, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12]
 
 (8) BroadcastExchange
@@ -688,14 +688,14 @@ Arguments: [prev_year#116, year#117, i_brand_id#8, i_class_id#9, i_category_id#1
 Input [10]: [prev_year#116, year#117, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#118, curr_yr_cnt#119, sales_cnt_diff#120, sales_amt_diff#121]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[sales_cnt_diff#120 ASC NULLS FIRST,sales_amt_diff#121 ASC NULLS FIRST], output=[prev_year#116,year#117,i_brand_id#8,i_class_id#9,i_category_id#10,i_manufact_id#12,prev_yr_cnt#118,curr_yr_cnt#119,sales_cnt_diff#120,sales_amt_diff#121]), [prev_year#116, year#117, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#118, curr_yr_cnt#119, sales_cnt_diff#120, sales_amt_diff#121], 100, 0, [sales_cnt_diff#120 ASC NULLS FIRST, sales_amt_diff#121 ASC NULLS FIRST], [prev_year#116, year#117, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#118, curr_yr_cnt#119, sales_cnt_diff#120, sales_amt_diff#121]
 
-(127) CometColumnarToRow
+(127) CometNativeColumnarToRow
 Input [10]: [prev_year#116, year#117, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#118, curr_yr_cnt#119, sales_cnt_diff#120, sales_amt_diff#121]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cs_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (131)
-+- CometColumnarToRow (130)
++- CometNativeColumnarToRow (130)
    +- CometFilter (129)
       +- CometNativeScan parquet spark_catalog.default.date_dim (128)
 
@@ -711,7 +711,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#13, d_year#14]
 Condition : ((isnotnull(d_year#14) AND (d_year#14 = 2002)) AND isnotnull(d_date_sk#13))
 
-(130) CometColumnarToRow
+(130) CometNativeColumnarToRow
 Input [2]: [d_date_sk#13, d_year#14]
 
 (131) BroadcastExchange
@@ -724,7 +724,7 @@ Subquery:3 Hosting operator id = 41 Hosting Expression = ws_sold_date_sk#45 IN d
 
 Subquery:4 Hosting operator id = 69 Hosting Expression = cs_sold_date_sk#68 IN dynamicpruning#69
 BroadcastExchange (135)
-+- CometColumnarToRow (134)
++- CometNativeColumnarToRow (134)
    +- CometFilter (133)
       +- CometNativeScan parquet spark_catalog.default.date_dim (132)
 
@@ -740,7 +740,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int>
 Input [2]: [d_date_sk#75, d_year#76]
 Condition : ((isnotnull(d_year#76) AND (d_year#76 = 2001)) AND isnotnull(d_date_sk#75))
 
-(134) CometColumnarToRow
+(134) CometNativeColumnarToRow
 Input [2]: [d_date_sk#75, d_year#76]
 
 (135) BroadcastExchange

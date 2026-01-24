@@ -1,4 +1,4 @@
-CometColumnarToRow
+CometNativeColumnarToRow
   CometTakeOrderedAndProject [i_item_desc,w_warehouse_name,d_week_seq,no_promo,promo,total_cnt]
     CometHashAggregate [count] [i_item_desc,w_warehouse_name,d_week_seq,no_promo,promo,total_cnt,count(1)]
       CometExchange [i_item_desc,w_warehouse_name,d_week_seq] #1
@@ -32,34 +32,34 @@ CometColumnarToRow
                                                               Scan parquet spark_catalog.default.catalog_sales [cs_ship_date_sk,cs_bill_cdemo_sk,cs_bill_hdemo_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_quantity,cs_sold_date_sk]
                                                                 SubqueryBroadcast [d_date_sk] #1
                                                                   BroadcastExchange #3
-                                                                    CometColumnarToRow
+                                                                    CometNativeColumnarToRow
                                                                       CometProject [d_date_sk,d_date,d_week_seq]
                                                                         CometFilter [d_date_sk,d_date,d_week_seq,d_year]
                                                                           CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_week_seq,d_year]
                                                         InputAdapter
                                                           BroadcastExchange #4
-                                                            CometColumnarToRow
+                                                            CometNativeColumnarToRow
                                                               CometFilter [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
                                                                 CometNativeScan parquet spark_catalog.default.inventory [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
                                                     InputAdapter
                                                       BroadcastExchange #5
-                                                        CometColumnarToRow
+                                                        CometNativeColumnarToRow
                                                           CometFilter [w_warehouse_sk,w_warehouse_name]
                                                             CometNativeScan parquet spark_catalog.default.warehouse [w_warehouse_sk,w_warehouse_name]
                                                 InputAdapter
                                                   BroadcastExchange #6
-                                                    CometColumnarToRow
+                                                    CometNativeColumnarToRow
                                                       CometFilter [i_item_sk,i_item_desc]
                                                         CometNativeScan parquet spark_catalog.default.item [i_item_sk,i_item_desc]
                                             InputAdapter
                                               BroadcastExchange #7
-                                                CometColumnarToRow
+                                                CometNativeColumnarToRow
                                                   CometProject [cd_demo_sk]
                                                     CometFilter [cd_demo_sk,cd_marital_status]
                                                       CometNativeScan parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_marital_status]
                                         InputAdapter
                                           BroadcastExchange #8
-                                            CometColumnarToRow
+                                            CometNativeColumnarToRow
                                               CometProject [hd_demo_sk]
                                                 CometFilter [hd_demo_sk,hd_buy_potential]
                                                   CometNativeScan parquet spark_catalog.default.household_demographics [hd_demo_sk,hd_buy_potential]
@@ -67,17 +67,17 @@ CometColumnarToRow
                                       ReusedExchange [d_date_sk,d_date,d_week_seq] #3
                                 InputAdapter
                                   BroadcastExchange #9
-                                    CometColumnarToRow
+                                    CometNativeColumnarToRow
                                       CometFilter [d_date_sk,d_week_seq]
                                         CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_week_seq]
                             InputAdapter
                               BroadcastExchange #10
-                                CometColumnarToRow
+                                CometNativeColumnarToRow
                                   CometFilter [d_date_sk,d_date]
                                     CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
                         InputAdapter
                           BroadcastExchange #11
-                            CometColumnarToRow
+                            CometNativeColumnarToRow
                               CometFilter [p_promo_sk]
                                 CometNativeScan parquet spark_catalog.default.promotion [p_promo_sk]
               CometSort [cr_item_sk,cr_order_number]

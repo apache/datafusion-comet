@@ -1,4 +1,4 @@
-CometColumnarToRow
+CometNativeColumnarToRow
   CometTakeOrderedAndProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev,ws_dev,average]
     CometProject [item_id,ss_item_rev,ss_dev,cs_item_rev,cs_dev,ws_item_rev,ws_dev,average]
       CometBroadcastHashJoin [item_id,ss_item_rev,cs_item_rev,item_id,ws_item_rev]
@@ -16,7 +16,7 @@ CometColumnarToRow
                               CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_item_sk,ss_ext_sales_price,ss_sold_date_sk]
                                 SubqueryBroadcast [d_date_sk] #1
                                   BroadcastExchange #2
-                                    CometColumnarToRow
+                                    CometNativeColumnarToRow
                                       CometProject [d_date_sk]
                                         CometBroadcastHashJoin [d_date_sk,d_date,d_date]
                                           CometFilter [d_date_sk,d_date]
@@ -27,7 +27,7 @@ CometColumnarToRow
                                                 ReusedSubquery [d_week_seq] #2
                                                 CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date,d_week_seq]
                                                   Subquery #2
-                                                    CometColumnarToRow
+                                                    CometNativeColumnarToRow
                                                       CometProject [d_week_seq]
                                                         CometFilter [d_date,d_week_seq]
                                                           CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date,d_week_seq]
