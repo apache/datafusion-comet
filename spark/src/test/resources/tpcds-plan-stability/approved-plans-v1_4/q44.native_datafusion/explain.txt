@@ -10,7 +10,7 @@ TakeOrderedAndProject (34)
       :     :     :  +- * Project (13)
       :     :     :     +- * Filter (12)
       :     :     :        +- Window (11)
-      :     :     :           +- CometNativeColumnarToRow (10)
+      :     :     :           +- CometColumnarToRow (10)
       :     :     :              +- CometSort (9)
       :     :     :                 +- CometExchange (8)
       :     :     :                    +- CometFilter (7)
@@ -24,11 +24,11 @@ TakeOrderedAndProject (34)
       :     :        +- * Project (20)
       :     :           +- * Filter (19)
       :     :              +- Window (18)
-      :     :                 +- CometNativeColumnarToRow (17)
+      :     :                 +- CometColumnarToRow (17)
       :     :                    +- CometSort (16)
       :     :                       +- ReusedExchange (15)
       :     +- BroadcastExchange (28)
-      :        +- CometNativeColumnarToRow (27)
+      :        +- CometColumnarToRow (27)
       :           +- CometProject (26)
       :              +- CometFilter (25)
       :                 +- CometNativeScan parquet spark_catalog.default.item (24)
@@ -76,7 +76,7 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometNativeShuffle, [plan_id=2]
 Input [2]: [item_sk#7, rank_col#8]
 Arguments: [item_sk#7, rank_col#8], [rank_col#8 ASC NULLS FIRST]
 
-(10) CometNativeColumnarToRow
+(10) CometColumnarToRow
 Input [2]: [item_sk#7, rank_col#8]
 
 (11) Window
@@ -102,7 +102,7 @@ Output [2]: [item_sk#12, rank_col#13]
 Input [2]: [item_sk#12, rank_col#13]
 Arguments: [item_sk#12, rank_col#13], [rank_col#13 DESC NULLS LAST]
 
-(17) CometNativeColumnarToRow
+(17) CometColumnarToRow
 Input [2]: [item_sk#12, rank_col#13]
 
 (18) Window
@@ -146,7 +146,7 @@ Condition : isnotnull(i_item_sk#15)
 Input [2]: [i_item_sk#15, i_product_name#16]
 Arguments: [i_item_sk#15, i_product_name#17], [i_item_sk#15, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_product_name#16, 50, true, false, true) AS i_product_name#17]
 
-(27) CometNativeColumnarToRow
+(27) CometColumnarToRow
 Input [2]: [i_item_sk#15, i_product_name#17]
 
 (28) BroadcastExchange
@@ -183,7 +183,7 @@ Arguments: 100, [rnk#11 ASC NULLS FIRST], [rnk#11, best_performing#20, worst_per
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 7 Hosting Expression = Subquery scalar-subquery#9, [id=#10]
-CometNativeColumnarToRow (41)
+CometColumnarToRow (41)
 +- CometHashAggregate (40)
    +- CometExchange (39)
       +- CometHashAggregate (38)
@@ -221,7 +221,7 @@ Input [3]: [ss_store_sk#23, sum#26, count#27]
 Keys [1]: [ss_store_sk#23]
 Functions [1]: [avg(UnscaledValue(ss_net_profit#24))]
 
-(41) CometNativeColumnarToRow
+(41) CometColumnarToRow
 Input [1]: [rank_col#28]
 
 

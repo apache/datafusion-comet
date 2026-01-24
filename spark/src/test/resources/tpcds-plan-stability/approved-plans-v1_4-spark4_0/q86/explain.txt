@@ -2,7 +2,7 @@
 TakeOrderedAndProject (24)
 +- * Project (23)
    +- Window (22)
-      +- CometNativeColumnarToRow (21)
+      +- CometColumnarToRow (21)
          +- CometSort (20)
             +- CometExchange (19)
                +- CometHashAggregate (18)
@@ -119,7 +119,7 @@ Arguments: hashpartitioning(_w1#19, _w2#20, 5), ENSURE_REQUIREMENTS, CometNative
 Input [7]: [total_sum#16, i_category#12, i_class#13, lochierarchy#17, _w0#18, _w1#19, _w2#20]
 Arguments: [total_sum#16, i_category#12, i_class#13, lochierarchy#17, _w0#18, _w1#19, _w2#20], [_w1#19 ASC NULLS FIRST, _w2#20 ASC NULLS FIRST, _w0#18 DESC NULLS LAST]
 
-(21) CometNativeColumnarToRow
+(21) CometColumnarToRow
 Input [7]: [total_sum#16, i_category#12, i_class#13, lochierarchy#17, _w0#18, _w1#19, _w2#20]
 
 (22) Window
@@ -138,7 +138,7 @@ Arguments: 100, [lochierarchy#17 DESC NULLS LAST, CASE WHEN (lochierarchy#17 = 0
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (29)
-+- CometNativeColumnarToRow (28)
++- CometColumnarToRow (28)
    +- CometProject (27)
       +- CometFilter (26)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (25)
@@ -159,7 +159,7 @@ Condition : (((isnotnull(d_month_seq#6) AND (d_month_seq#6 >= 1200)) AND (d_mont
 Input [2]: [d_date_sk#5, d_month_seq#6]
 Arguments: [d_date_sk#5], [d_date_sk#5]
 
-(28) CometNativeColumnarToRow
+(28) CometColumnarToRow
 Input [1]: [d_date_sk#5]
 
 (29) BroadcastExchange

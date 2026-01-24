@@ -2,7 +2,7 @@ TakeOrderedAndProject [ca_zip,sum(cs_sales_price)]
   WholeStageCodegen (2)
     HashAggregate [ca_zip,sum] [sum(UnscaledValue(cs_sales_price)),sum(cs_sales_price),sum]
       InputAdapter
-        CometNativeColumnarToRow
+        CometColumnarToRow
           CometColumnarExchange [ca_zip] #1
             WholeStageCodegen (1)
               HashAggregate [ca_zip,cs_sales_price] [sum,sum]
@@ -18,18 +18,18 @@ TakeOrderedAndProject [ca_zip,sum(cs_sales_price)]
                                   Scan parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_sales_price,cs_sold_date_sk]
                                     SubqueryBroadcast [d_date_sk] #1
                                       BroadcastExchange #2
-                                        CometNativeColumnarToRow
+                                        CometColumnarToRow
                                           CometProject [d_date_sk]
                                             CometFilter [d_date_sk,d_year,d_qoy]
                                               CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_qoy]
                             InputAdapter
                               BroadcastExchange #3
-                                CometNativeColumnarToRow
+                                CometColumnarToRow
                                   CometFilter [c_customer_sk,c_current_addr_sk]
                                     CometNativeScan parquet spark_catalog.default.customer [c_customer_sk,c_current_addr_sk]
                         InputAdapter
                           BroadcastExchange #4
-                            CometNativeColumnarToRow
+                            CometColumnarToRow
                               CometProject [ca_state,ca_zip] [ca_address_sk,ca_state,ca_zip]
                                 CometFilter [ca_address_sk,ca_state,ca_zip]
                                   CometNativeScan parquet spark_catalog.default.customer_address [ca_address_sk,ca_state,ca_zip]

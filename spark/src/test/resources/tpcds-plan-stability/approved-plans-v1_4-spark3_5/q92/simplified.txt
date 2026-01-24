@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
   CometHashAggregate [sum] [Excess Discount Amount ,sum(UnscaledValue(ws_ext_discount_amt))]
     CometExchange #1
       CometHashAggregate [ws_ext_discount_amt] [sum]
@@ -12,7 +12,7 @@ CometNativeColumnarToRow
                       CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales [ws_item_sk,ws_ext_discount_amt,ws_sold_date_sk]
                         SubqueryBroadcast [d_date_sk] #1
                           BroadcastExchange #2
-                            CometNativeColumnarToRow
+                            CometColumnarToRow
                               CometProject [d_date_sk]
                                 CometFilter [d_date_sk,d_date]
                                   CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]

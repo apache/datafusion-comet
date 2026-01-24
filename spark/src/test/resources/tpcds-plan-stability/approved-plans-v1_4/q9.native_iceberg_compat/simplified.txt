@@ -1,7 +1,7 @@
 WholeStageCodegen (1)
   Project
     Subquery #1
-      CometNativeColumnarToRow
+      CometColumnarToRow
         CometProject [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid)] [mergedValue]
           CometHashAggregate [count,sum,count,sum,count] [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid),count(1),avg(UnscaledValue(ss_ext_discount_amt)),avg(UnscaledValue(ss_net_paid))]
             CometExchange #1
@@ -12,7 +12,7 @@ WholeStageCodegen (1)
     ReusedSubquery [mergedValue] #1
     ReusedSubquery [mergedValue] #1
     Subquery #2
-      CometNativeColumnarToRow
+      CometColumnarToRow
         CometProject [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid)] [mergedValue]
           CometHashAggregate [count,sum,count,sum,count] [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid),count(1),avg(UnscaledValue(ss_ext_discount_amt)),avg(UnscaledValue(ss_net_paid))]
             CometExchange #2
@@ -23,7 +23,7 @@ WholeStageCodegen (1)
     ReusedSubquery [mergedValue] #2
     ReusedSubquery [mergedValue] #2
     Subquery #3
-      CometNativeColumnarToRow
+      CometColumnarToRow
         CometProject [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid)] [mergedValue]
           CometHashAggregate [count,sum,count,sum,count] [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid),count(1),avg(UnscaledValue(ss_ext_discount_amt)),avg(UnscaledValue(ss_net_paid))]
             CometExchange #3
@@ -34,7 +34,7 @@ WholeStageCodegen (1)
     ReusedSubquery [mergedValue] #3
     ReusedSubquery [mergedValue] #3
     Subquery #4
-      CometNativeColumnarToRow
+      CometColumnarToRow
         CometProject [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid)] [mergedValue]
           CometHashAggregate [count,sum,count,sum,count] [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid),count(1),avg(UnscaledValue(ss_ext_discount_amt)),avg(UnscaledValue(ss_net_paid))]
             CometExchange #4
@@ -45,7 +45,7 @@ WholeStageCodegen (1)
     ReusedSubquery [mergedValue] #4
     ReusedSubquery [mergedValue] #4
     Subquery #5
-      CometNativeColumnarToRow
+      CometColumnarToRow
         CometProject [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid)] [mergedValue]
           CometHashAggregate [count,sum,count,sum,count] [count(1),avg(ss_ext_discount_amt),avg(ss_net_paid),count(1),avg(UnscaledValue(ss_ext_discount_amt)),avg(UnscaledValue(ss_net_paid))]
             CometExchange #5
@@ -56,6 +56,6 @@ WholeStageCodegen (1)
     ReusedSubquery [mergedValue] #5
     ReusedSubquery [mergedValue] #5
     InputAdapter
-      CometNativeColumnarToRow
+      CometColumnarToRow
         CometFilter [r_reason_sk]
           CometScan [native_iceberg_compat] parquet spark_catalog.default.reason [r_reason_sk]

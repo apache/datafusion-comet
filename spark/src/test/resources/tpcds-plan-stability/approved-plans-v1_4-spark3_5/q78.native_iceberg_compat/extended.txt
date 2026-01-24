@@ -1,6 +1,6 @@
 TakeOrderedAndProject
 +-  Project [COMET: Comet does not support Spark's BigDecimal rounding]
-   +- CometNativeColumnarToRow
+   +- CometColumnarToRow
       +- CometSortMergeJoin
          :- CometProject
          :  +- CometSortMergeJoin
@@ -19,7 +19,7 @@ TakeOrderedAndProject
          :     :                 :        :        +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
          :     :                 :        :              +- SubqueryBroadcast
          :     :                 :        :                 +- BroadcastExchange
-         :     :                 :        :                    +- CometNativeColumnarToRow
+         :     :                 :        :                    +- CometColumnarToRow
          :     :                 :        :                       +- CometFilter
          :     :                 :        :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
          :     :                 :        +- CometSort

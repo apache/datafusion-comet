@@ -1,12 +1,12 @@
 == Physical Plan ==
-CometNativeColumnarToRow (47)
+CometColumnarToRow (47)
 +- CometSort (46)
    +- CometColumnarExchange (45)
       +- * BroadcastHashJoin Inner BuildRight (44)
          :- * Project (24)
          :  +- * Filter (23)
          :     +- * HashAggregate (22)
-         :        +- CometNativeColumnarToRow (21)
+         :        +- CometColumnarToRow (21)
          :           +- CometColumnarExchange (20)
          :              +- * HashAggregate (19)
          :                 +- * Project (18)
@@ -19,11 +19,11 @@ CometNativeColumnarToRow (47)
          :                       :     :     :  +- * ColumnarToRow (2)
          :                       :     :     :     +- Scan parquet spark_catalog.default.inventory (1)
          :                       :     :     +- BroadcastExchange (7)
-         :                       :     :        +- CometNativeColumnarToRow (6)
+         :                       :     :        +- CometColumnarToRow (6)
          :                       :     :           +- CometFilter (5)
          :                       :     :              +- CometNativeScan parquet spark_catalog.default.item (4)
          :                       :     +- BroadcastExchange (13)
-         :                       :        +- CometNativeColumnarToRow (12)
+         :                       :        +- CometColumnarToRow (12)
          :                       :           +- CometFilter (11)
          :                       :              +- CometNativeScan parquet spark_catalog.default.warehouse (10)
          :                       +- ReusedExchange (16)
@@ -31,7 +31,7 @@ CometNativeColumnarToRow (47)
             +- * Project (42)
                +- * Filter (41)
                   +- * HashAggregate (40)
-                     +- CometNativeColumnarToRow (39)
+                     +- CometColumnarToRow (39)
                         +- CometColumnarExchange (38)
                            +- * HashAggregate (37)
                               +- * Project (36)
@@ -74,7 +74,7 @@ ReadSchema: struct<i_item_sk:int>
 Input [1]: [i_item_sk#6]
 Condition : isnotnull(i_item_sk#6)
 
-(6) CometNativeColumnarToRow
+(6) CometColumnarToRow
 Input [1]: [i_item_sk#6]
 
 (7) BroadcastExchange
@@ -102,7 +102,7 @@ ReadSchema: struct<w_warehouse_sk:int,w_warehouse_name:string>
 Input [2]: [w_warehouse_sk#7, w_warehouse_name#8]
 Condition : isnotnull(w_warehouse_sk#7)
 
-(12) CometNativeColumnarToRow
+(12) CometColumnarToRow
 Input [2]: [w_warehouse_sk#7, w_warehouse_name#8]
 
 (13) BroadcastExchange
@@ -143,7 +143,7 @@ Results [9]: [w_warehouse_name#8, w_warehouse_sk#7, i_item_sk#6, d_moy#10, n#16,
 Input [9]: [w_warehouse_name#8, w_warehouse_sk#7, i_item_sk#6, d_moy#10, n#16, avg#17, m2#18, sum#19, count#20]
 Arguments: hashpartitioning(w_warehouse_name#8, w_warehouse_sk#7, i_item_sk#6, d_moy#10, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
-(21) CometNativeColumnarToRow
+(21) CometColumnarToRow
 Input [9]: [w_warehouse_name#8, w_warehouse_sk#7, i_item_sk#6, d_moy#10, n#16, avg#17, m2#18, sum#19, count#20]
 
 (22) HashAggregate [codegen id : 4]
@@ -226,7 +226,7 @@ Results [9]: [w_warehouse_name#33, w_warehouse_sk#32, i_item_sk#31, d_moy#35, n#
 Input [9]: [w_warehouse_name#33, w_warehouse_sk#32, i_item_sk#31, d_moy#35, n#41, avg#42, m2#43, sum#44, count#45]
 Arguments: hashpartitioning(w_warehouse_name#33, w_warehouse_sk#32, i_item_sk#31, d_moy#35, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
-(39) CometNativeColumnarToRow
+(39) CometColumnarToRow
 Input [9]: [w_warehouse_name#33, w_warehouse_sk#32, i_item_sk#31, d_moy#35, n#41, avg#42, m2#43, sum#44, count#45]
 
 (40) HashAggregate [codegen id : 3]
@@ -262,14 +262,14 @@ Arguments: rangepartitioning(w_warehouse_sk#7 ASC NULLS FIRST, i_item_sk#6 ASC N
 Input [10]: [w_warehouse_sk#7, i_item_sk#6, d_moy#10, mean#24, cov#25, w_warehouse_sk#32, i_item_sk#31, d_moy#35, mean#47, cov#48]
 Arguments: [w_warehouse_sk#7, i_item_sk#6, d_moy#10, mean#24, cov#25, w_warehouse_sk#32, i_item_sk#31, d_moy#35, mean#47, cov#48], [w_warehouse_sk#7 ASC NULLS FIRST, i_item_sk#6 ASC NULLS FIRST, d_moy#10 ASC NULLS FIRST, mean#24 ASC NULLS FIRST, cov#25 ASC NULLS FIRST, d_moy#35 ASC NULLS FIRST, mean#47 ASC NULLS FIRST, cov#48 ASC NULLS FIRST]
 
-(47) CometNativeColumnarToRow
+(47) CometColumnarToRow
 Input [10]: [w_warehouse_sk#7, i_item_sk#6, d_moy#10, mean#24, cov#25, w_warehouse_sk#32, i_item_sk#31, d_moy#35, mean#47, cov#48]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = inv_date_sk#4 IN dynamicpruning#5
 BroadcastExchange (52)
-+- CometNativeColumnarToRow (51)
++- CometColumnarToRow (51)
    +- CometProject (50)
       +- CometFilter (49)
          +- CometNativeScan parquet spark_catalog.default.date_dim (48)
@@ -290,7 +290,7 @@ Condition : ((((isnotnull(d_year#49) AND isnotnull(d_moy#10)) AND (d_year#49 = 2
 Input [3]: [d_date_sk#9, d_year#49, d_moy#10]
 Arguments: [d_date_sk#9, d_moy#10], [d_date_sk#9, d_moy#10]
 
-(51) CometNativeColumnarToRow
+(51) CometColumnarToRow
 Input [2]: [d_date_sk#9, d_moy#10]
 
 (52) BroadcastExchange
@@ -299,7 +299,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 
 Subquery:2 Hosting operator id = 25 Hosting Expression = inv_date_sk#29 IN dynamicpruning#30
 BroadcastExchange (57)
-+- CometNativeColumnarToRow (56)
++- CometColumnarToRow (56)
    +- CometProject (55)
       +- CometFilter (54)
          +- CometNativeScan parquet spark_catalog.default.date_dim (53)
@@ -320,7 +320,7 @@ Condition : ((((isnotnull(d_year#50) AND isnotnull(d_moy#35)) AND (d_year#50 = 2
 Input [3]: [d_date_sk#34, d_year#50, d_moy#35]
 Arguments: [d_date_sk#34, d_moy#35], [d_date_sk#34, d_moy#35]
 
-(56) CometNativeColumnarToRow
+(56) CometColumnarToRow
 Input [2]: [d_date_sk#34, d_moy#35]
 
 (57) BroadcastExchange

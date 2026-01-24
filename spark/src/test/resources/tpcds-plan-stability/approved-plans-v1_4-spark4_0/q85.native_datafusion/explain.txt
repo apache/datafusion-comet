@@ -1,7 +1,7 @@
 == Physical Plan ==
 TakeOrderedAndProject (52)
 +- * HashAggregate (51)
-   +- CometNativeColumnarToRow (50)
+   +- CometColumnarToRow (50)
       +- CometColumnarExchange (49)
          +- * HashAggregate (48)
             +- * Project (47)
@@ -22,32 +22,32 @@ TakeOrderedAndProject (52)
                   :     :     :     :     :     :     :  +- * Filter (3)
                   :     :     :     :     :     :     :     +- * ColumnarToRow (2)
                   :     :     :     :     :     :     :        +- Scan parquet spark_catalog.default.web_sales (1)
-                  :     :     :     :     :     :     +- CometNativeColumnarToRow (8)
+                  :     :     :     :     :     :     +- CometColumnarToRow (8)
                   :     :     :     :     :     :        +- CometProject (7)
                   :     :     :     :     :     :           +- CometFilter (6)
                   :     :     :     :     :     :              +- CometNativeScan parquet spark_catalog.default.web_returns (5)
                   :     :     :     :     :     +- BroadcastExchange (14)
-                  :     :     :     :     :        +- CometNativeColumnarToRow (13)
+                  :     :     :     :     :        +- CometColumnarToRow (13)
                   :     :     :     :     :           +- CometFilter (12)
                   :     :     :     :     :              +- CometNativeScan parquet spark_catalog.default.web_page (11)
                   :     :     :     :     +- BroadcastExchange (21)
-                  :     :     :     :        +- CometNativeColumnarToRow (20)
+                  :     :     :     :        +- CometColumnarToRow (20)
                   :     :     :     :           +- CometProject (19)
                   :     :     :     :              +- CometFilter (18)
                   :     :     :     :                 +- CometNativeScan parquet spark_catalog.default.customer_demographics (17)
                   :     :     :     +- BroadcastExchange (28)
-                  :     :     :        +- CometNativeColumnarToRow (27)
+                  :     :     :        +- CometColumnarToRow (27)
                   :     :     :           +- CometProject (26)
                   :     :     :              +- CometFilter (25)
                   :     :     :                 +- CometNativeScan parquet spark_catalog.default.customer_demographics (24)
                   :     :     +- BroadcastExchange (35)
-                  :     :        +- CometNativeColumnarToRow (34)
+                  :     :        +- CometColumnarToRow (34)
                   :     :           +- CometProject (33)
                   :     :              +- CometFilter (32)
                   :     :                 +- CometNativeScan parquet spark_catalog.default.customer_address (31)
                   :     +- ReusedExchange (38)
                   +- BroadcastExchange (45)
-                     +- CometNativeColumnarToRow (44)
+                     +- CometColumnarToRow (44)
                         +- CometProject (43)
                            +- CometFilter (42)
                               +- CometNativeScan parquet spark_catalog.default.reason (41)
@@ -87,7 +87,7 @@ Condition : (((((isnotnull(wr_item_sk#9) AND isnotnull(wr_order_number#14)) AND 
 Input [9]: [wr_item_sk#9, wr_refunded_cdemo_sk#10, wr_refunded_addr_sk#11, wr_returning_cdemo_sk#12, wr_reason_sk#13, wr_order_number#14, wr_fee#15, wr_refunded_cash#16, wr_returned_date_sk#17]
 Arguments: [wr_item_sk#9, wr_refunded_cdemo_sk#10, wr_refunded_addr_sk#11, wr_returning_cdemo_sk#12, wr_reason_sk#13, wr_order_number#14, wr_fee#15, wr_refunded_cash#16], [wr_item_sk#9, wr_refunded_cdemo_sk#10, wr_refunded_addr_sk#11, wr_returning_cdemo_sk#12, wr_reason_sk#13, wr_order_number#14, wr_fee#15, wr_refunded_cash#16]
 
-(8) CometNativeColumnarToRow
+(8) CometColumnarToRow
 Input [8]: [wr_item_sk#9, wr_refunded_cdemo_sk#10, wr_refunded_addr_sk#11, wr_returning_cdemo_sk#12, wr_reason_sk#13, wr_order_number#14, wr_fee#15, wr_refunded_cash#16]
 
 (9) BroadcastHashJoin [codegen id : 2]
@@ -111,7 +111,7 @@ ReadSchema: struct<wp_web_page_sk:int>
 Input [1]: [wp_web_page_sk#18]
 Condition : isnotnull(wp_web_page_sk#18)
 
-(13) CometNativeColumnarToRow
+(13) CometColumnarToRow
 Input [1]: [wp_web_page_sk#18]
 
 (14) BroadcastExchange
@@ -143,7 +143,7 @@ Condition : (((isnotnull(cd_demo_sk#19) AND isnotnull(static_invoke(CharVarcharC
 Input [3]: [cd_demo_sk#19, cd_marital_status#20, cd_education_status#21]
 Arguments: [cd_demo_sk#19, cd_marital_status#22, cd_education_status#23], [cd_demo_sk#19, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#20, 1)) AS cd_marital_status#22, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#21, 20)) AS cd_education_status#23]
 
-(20) CometNativeColumnarToRow
+(20) CometColumnarToRow
 Input [3]: [cd_demo_sk#19, cd_marital_status#22, cd_education_status#23]
 
 (21) BroadcastExchange
@@ -175,7 +175,7 @@ Condition : ((isnotnull(cd_demo_sk#24) AND isnotnull(static_invoke(CharVarcharCo
 Input [3]: [cd_demo_sk#24, cd_marital_status#25, cd_education_status#26]
 Arguments: [cd_demo_sk#24, cd_marital_status#27, cd_education_status#28], [cd_demo_sk#24, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#25, 1)) AS cd_marital_status#27, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#26, 20)) AS cd_education_status#28]
 
-(27) CometNativeColumnarToRow
+(27) CometColumnarToRow
 Input [3]: [cd_demo_sk#24, cd_marital_status#27, cd_education_status#28]
 
 (28) BroadcastExchange
@@ -207,7 +207,7 @@ Condition : (((isnotnull(ca_country#31) AND (ca_country#31 = United States)) AND
 Input [3]: [ca_address_sk#29, ca_state#30, ca_country#31]
 Arguments: [ca_address_sk#29, ca_state#32], [ca_address_sk#29, static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_state#30, 2)) AS ca_state#32]
 
-(34) CometNativeColumnarToRow
+(34) CometColumnarToRow
 Input [2]: [ca_address_sk#29, ca_state#32]
 
 (35) BroadcastExchange
@@ -252,7 +252,7 @@ Condition : isnotnull(r_reason_sk#34)
 Input [2]: [r_reason_sk#34, r_reason_desc#35]
 Arguments: [r_reason_sk#34, r_reason_desc#36], [r_reason_sk#34, static_invoke(CharVarcharCodegenUtils.readSidePadding(r_reason_desc#35, 100)) AS r_reason_desc#36]
 
-(44) CometNativeColumnarToRow
+(44) CometColumnarToRow
 Input [2]: [r_reason_sk#34, r_reason_desc#36]
 
 (45) BroadcastExchange
@@ -280,7 +280,7 @@ Results [7]: [r_reason_desc#36, sum#43, count#44, sum#45, count#46, sum#47, coun
 Input [7]: [r_reason_desc#36, sum#43, count#44, sum#45, count#46, sum#47, count#48]
 Arguments: hashpartitioning(r_reason_desc#36, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=7]
 
-(50) CometNativeColumnarToRow
+(50) CometColumnarToRow
 Input [7]: [r_reason_desc#36, sum#43, count#44, sum#45, count#46, sum#47, count#48]
 
 (51) HashAggregate [codegen id : 3]
@@ -298,7 +298,7 @@ Arguments: 100, [substr(r_reason_desc, 1, 20)#52 ASC NULLS FIRST, avg(ws_quantit
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#7 IN dynamicpruning#8
 BroadcastExchange (57)
-+- CometNativeColumnarToRow (56)
++- CometColumnarToRow (56)
    +- CometProject (55)
       +- CometFilter (54)
          +- CometNativeScan parquet spark_catalog.default.date_dim (53)
@@ -319,7 +319,7 @@ Condition : ((isnotnull(d_year#56) AND (d_year#56 = 2000)) AND isnotnull(d_date_
 Input [2]: [d_date_sk#33, d_year#56]
 Arguments: [d_date_sk#33], [d_date_sk#33]
 
-(56) CometNativeColumnarToRow
+(56) CometColumnarToRow
 Input [1]: [d_date_sk#33]
 
 (57) BroadcastExchange

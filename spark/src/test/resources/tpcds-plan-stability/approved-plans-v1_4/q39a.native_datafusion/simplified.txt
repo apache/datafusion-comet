@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
   CometSort [w_warehouse_sk,i_item_sk,d_moy,mean,cov,w_warehouse_sk,i_item_sk,d_moy,mean,cov]
     CometColumnarExchange [w_warehouse_sk,i_item_sk,d_moy,mean,cov,d_moy,mean,cov] #1
       WholeStageCodegen (4)
@@ -7,7 +7,7 @@ CometNativeColumnarToRow
             Filter [mean,stdev]
               HashAggregate [w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy,n,avg,m2,sum,count] [stddev_samp(cast(inv_quantity_on_hand as double)),avg(inv_quantity_on_hand),stdev,mean,n,avg,m2,sum,count]
                 InputAdapter
-                  CometNativeColumnarToRow
+                  CometColumnarToRow
                     CometColumnarExchange [w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy] #2
                       WholeStageCodegen (1)
                         HashAggregate [w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy,inv_quantity_on_hand] [n,avg,m2,sum,count,n,avg,m2,sum,count]
@@ -23,18 +23,18 @@ CometNativeColumnarToRow
                                             Scan parquet spark_catalog.default.inventory [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
                                               SubqueryBroadcast [d_date_sk] #1
                                                 BroadcastExchange #3
-                                                  CometNativeColumnarToRow
+                                                  CometColumnarToRow
                                                     CometProject [d_date_sk,d_moy]
                                                       CometFilter [d_date_sk,d_year,d_moy]
                                                         CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
                                       InputAdapter
                                         BroadcastExchange #4
-                                          CometNativeColumnarToRow
+                                          CometColumnarToRow
                                             CometFilter [i_item_sk]
                                               CometNativeScan parquet spark_catalog.default.item [i_item_sk]
                                   InputAdapter
                                     BroadcastExchange #5
-                                      CometNativeColumnarToRow
+                                      CometColumnarToRow
                                         CometFilter [w_warehouse_sk,w_warehouse_name]
                                           CometNativeScan parquet spark_catalog.default.warehouse [w_warehouse_sk,w_warehouse_name]
                               InputAdapter
@@ -46,7 +46,7 @@ CometNativeColumnarToRow
                   Filter [mean,stdev]
                     HashAggregate [w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy,n,avg,m2,sum,count] [stddev_samp(cast(inv_quantity_on_hand as double)),avg(inv_quantity_on_hand),stdev,mean,n,avg,m2,sum,count]
                       InputAdapter
-                        CometNativeColumnarToRow
+                        CometColumnarToRow
                           CometColumnarExchange [w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy] #7
                             WholeStageCodegen (2)
                               HashAggregate [w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy,inv_quantity_on_hand] [n,avg,m2,sum,count,n,avg,m2,sum,count]
@@ -62,7 +62,7 @@ CometNativeColumnarToRow
                                                   Scan parquet spark_catalog.default.inventory [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
                                                     SubqueryBroadcast [d_date_sk] #2
                                                       BroadcastExchange #8
-                                                        CometNativeColumnarToRow
+                                                        CometColumnarToRow
                                                           CometProject [d_date_sk,d_moy]
                                                             CometFilter [d_date_sk,d_year,d_moy]
                                                               CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]

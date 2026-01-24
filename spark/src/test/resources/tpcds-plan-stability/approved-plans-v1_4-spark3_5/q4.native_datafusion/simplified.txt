@@ -12,7 +12,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                       Filter [year_total]
                         HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum,isEmpty] [sum(((((ss_ext_list_price - ss_ext_wholesale_cost) - ss_ext_discount_amt) + ss_ext_sales_price) / 2)),customer_id,year_total,sum,isEmpty]
                           InputAdapter
-                            CometNativeColumnarToRow
+                            CometColumnarToRow
                               CometColumnarExchange [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year] #1
                                 WholeStageCodegen (2)
                                   HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,ss_ext_list_price,ss_ext_wholesale_cost,ss_ext_discount_amt,ss_ext_sales_price] [sum,isEmpty,sum,isEmpty]
@@ -21,7 +21,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                                         Project [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ss_ext_discount_amt,ss_ext_sales_price,ss_ext_wholesale_cost,ss_ext_list_price,ss_sold_date_sk]
                                           BroadcastHashJoin [c_customer_sk,ss_customer_sk]
                                             InputAdapter
-                                              CometNativeColumnarToRow
+                                              CometColumnarToRow
                                                 CometProject [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_login,c_email_address] [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
                                                   CometFilter [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
                                                     CometNativeScan parquet spark_catalog.default.customer [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
@@ -34,7 +34,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                                                         Scan parquet spark_catalog.default.store_sales [ss_customer_sk,ss_ext_discount_amt,ss_ext_sales_price,ss_ext_wholesale_cost,ss_ext_list_price,ss_sold_date_sk]
                                                           SubqueryBroadcast [d_date_sk] #1
                                                             BroadcastExchange #3
-                                                              CometNativeColumnarToRow
+                                                              CometColumnarToRow
                                                                 CometFilter [d_date_sk,d_year]
                                                                   CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                         InputAdapter
@@ -44,7 +44,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                           WholeStageCodegen (5)
                             HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum,isEmpty] [sum(((((ss_ext_list_price - ss_ext_wholesale_cost) - ss_ext_discount_amt) + ss_ext_sales_price) / 2)),customer_id,customer_first_name,customer_last_name,customer_preferred_cust_flag,customer_birth_country,customer_login,customer_email_address,year_total,sum,isEmpty]
                               InputAdapter
-                                CometNativeColumnarToRow
+                                CometColumnarToRow
                                   CometColumnarExchange [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year] #5
                                     WholeStageCodegen (4)
                                       HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,ss_ext_list_price,ss_ext_wholesale_cost,ss_ext_discount_amt,ss_ext_sales_price] [sum,isEmpty,sum,isEmpty]
@@ -53,7 +53,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                                             Project [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ss_ext_discount_amt,ss_ext_sales_price,ss_ext_wholesale_cost,ss_ext_list_price,ss_sold_date_sk]
                                               BroadcastHashJoin [c_customer_sk,ss_customer_sk]
                                                 InputAdapter
-                                                  CometNativeColumnarToRow
+                                                  CometColumnarToRow
                                                     CometProject [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_login,c_email_address] [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
                                                       CometFilter [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
                                                         CometNativeScan parquet spark_catalog.default.customer [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
@@ -66,7 +66,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                                                             Scan parquet spark_catalog.default.store_sales [ss_customer_sk,ss_ext_discount_amt,ss_ext_sales_price,ss_ext_wholesale_cost,ss_ext_list_price,ss_sold_date_sk]
                                                               SubqueryBroadcast [d_date_sk] #2
                                                                 BroadcastExchange #7
-                                                                  CometNativeColumnarToRow
+                                                                  CometColumnarToRow
                                                                     CometFilter [d_date_sk,d_year]
                                                                       CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year]
                                             InputAdapter
@@ -77,7 +77,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                           Filter [year_total]
                             HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum,isEmpty] [sum(((((cs_ext_list_price - cs_ext_wholesale_cost) - cs_ext_discount_amt) + cs_ext_sales_price) / 2)),customer_id,year_total,sum,isEmpty]
                               InputAdapter
-                                CometNativeColumnarToRow
+                                CometColumnarToRow
                                   CometColumnarExchange [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year] #9
                                     WholeStageCodegen (7)
                                       HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,cs_ext_list_price,cs_ext_wholesale_cost,cs_ext_discount_amt,cs_ext_sales_price] [sum,isEmpty,sum,isEmpty]
@@ -86,7 +86,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                                             Project [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,cs_ext_discount_amt,cs_ext_sales_price,cs_ext_wholesale_cost,cs_ext_list_price,cs_sold_date_sk]
                                               BroadcastHashJoin [c_customer_sk,cs_bill_customer_sk]
                                                 InputAdapter
-                                                  CometNativeColumnarToRow
+                                                  CometColumnarToRow
                                                     CometProject [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_login,c_email_address] [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
                                                       CometFilter [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
                                                         CometNativeScan parquet spark_catalog.default.customer [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
@@ -105,7 +105,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                     WholeStageCodegen (11)
                       HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum,isEmpty] [sum(((((cs_ext_list_price - cs_ext_wholesale_cost) - cs_ext_discount_amt) + cs_ext_sales_price) / 2)),customer_id,year_total,sum,isEmpty]
                         InputAdapter
-                          CometNativeColumnarToRow
+                          CometColumnarToRow
                             CometColumnarExchange [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year] #12
                               WholeStageCodegen (10)
                                 HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,cs_ext_list_price,cs_ext_wholesale_cost,cs_ext_discount_amt,cs_ext_sales_price] [sum,isEmpty,sum,isEmpty]
@@ -114,7 +114,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                                       Project [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,cs_ext_discount_amt,cs_ext_sales_price,cs_ext_wholesale_cost,cs_ext_list_price,cs_sold_date_sk]
                                         BroadcastHashJoin [c_customer_sk,cs_bill_customer_sk]
                                           InputAdapter
-                                            CometNativeColumnarToRow
+                                            CometColumnarToRow
                                               CometProject [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_login,c_email_address] [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
                                                 CometFilter [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
                                                   CometNativeScan parquet spark_catalog.default.customer [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
@@ -134,7 +134,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                   Filter [year_total]
                     HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum,isEmpty] [sum(((((ws_ext_list_price - ws_ext_wholesale_cost) - ws_ext_discount_amt) + ws_ext_sales_price) / 2)),customer_id,year_total,sum,isEmpty]
                       InputAdapter
-                        CometNativeColumnarToRow
+                        CometColumnarToRow
                           CometColumnarExchange [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year] #15
                             WholeStageCodegen (13)
                               HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,ws_ext_list_price,ws_ext_wholesale_cost,ws_ext_discount_amt,ws_ext_sales_price] [sum,isEmpty,sum,isEmpty]
@@ -143,7 +143,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                                     Project [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ws_ext_discount_amt,ws_ext_sales_price,ws_ext_wholesale_cost,ws_ext_list_price,ws_sold_date_sk]
                                       BroadcastHashJoin [c_customer_sk,ws_bill_customer_sk]
                                         InputAdapter
-                                          CometNativeColumnarToRow
+                                          CometColumnarToRow
                                             CometProject [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_login,c_email_address] [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
                                               CometFilter [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
                                                 CometNativeScan parquet spark_catalog.default.customer [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
@@ -162,7 +162,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
             WholeStageCodegen (17)
               HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,sum,isEmpty] [sum(((((ws_ext_list_price - ws_ext_wholesale_cost) - ws_ext_discount_amt) + ws_ext_sales_price) / 2)),customer_id,year_total,sum,isEmpty]
                 InputAdapter
-                  CometNativeColumnarToRow
+                  CometColumnarToRow
                     CometColumnarExchange [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year] #18
                       WholeStageCodegen (16)
                         HashAggregate [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,d_year,ws_ext_list_price,ws_ext_wholesale_cost,ws_ext_discount_amt,ws_ext_sales_price] [sum,isEmpty,sum,isEmpty]
@@ -171,7 +171,7 @@ TakeOrderedAndProject [customer_id,customer_first_name,customer_last_name,custom
                               Project [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address,ws_ext_discount_amt,ws_ext_sales_price,ws_ext_wholesale_cost,ws_ext_list_price,ws_sold_date_sk]
                                 BroadcastHashJoin [c_customer_sk,ws_bill_customer_sk]
                                   InputAdapter
-                                    CometNativeColumnarToRow
+                                    CometColumnarToRow
                                       CometProject [c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_login,c_email_address] [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
                                         CometFilter [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]
                                           CometNativeScan parquet spark_catalog.default.customer [c_customer_sk,c_customer_id,c_first_name,c_last_name,c_preferred_cust_flag,c_birth_country,c_login,c_email_address]

@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
   CometTakeOrderedAndProject [channel,id,sales,returns,profit]
     CometHashAggregate [channel,id,sales,returns,profit]
       CometColumnarExchange [channel,id,sales,returns,profit] #1
@@ -9,7 +9,7 @@ CometNativeColumnarToRow
                 WholeStageCodegen (15)
                   HashAggregate [channel,id,sum,isEmpty,sum,isEmpty,sum,isEmpty] [sum(sales),sum(returns),sum(profit),sales,returns,profit,sum,isEmpty,sum,isEmpty,sum,isEmpty]
                     InputAdapter
-                      CometNativeColumnarToRow
+                      CometColumnarToRow
                         CometColumnarExchange [channel,id] #2
                           WholeStageCodegen (14)
                             HashAggregate [channel,id,sales,returns,profit] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
@@ -18,7 +18,7 @@ CometNativeColumnarToRow
                                   WholeStageCodegen (4)
                                     HashAggregate [s_store_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),channel,id,sales,returns,profit,sum,sum,sum,sum]
                                       InputAdapter
-                                        CometNativeColumnarToRow
+                                        CometColumnarToRow
                                           CometColumnarExchange [s_store_id] #3
                                             WholeStageCodegen (3)
                                               HashAggregate [s_store_id,sales_price,return_amt,profit,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
@@ -36,7 +36,7 @@ CometNativeColumnarToRow
                                                                       Scan parquet spark_catalog.default.store_sales [ss_store_sk,ss_ext_sales_price,ss_net_profit,ss_sold_date_sk]
                                                                         SubqueryBroadcast [d_date_sk] #1
                                                                           BroadcastExchange #4
-                                                                            CometNativeColumnarToRow
+                                                                            CometColumnarToRow
                                                                               CometProject [d_date_sk]
                                                                                 CometFilter [d_date_sk,d_date]
                                                                                   CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_date]
@@ -51,14 +51,14 @@ CometNativeColumnarToRow
                                                           ReusedExchange [d_date_sk] #4
                                                     InputAdapter
                                                       BroadcastExchange #5
-                                                        CometNativeColumnarToRow
+                                                        CometColumnarToRow
                                                           CometProject [s_store_id] [s_store_sk,s_store_id]
                                                             CometFilter [s_store_sk,s_store_id]
                                                               CometNativeScan parquet spark_catalog.default.store [s_store_sk,s_store_id]
                                   WholeStageCodegen (8)
                                     HashAggregate [cp_catalog_page_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),channel,id,sales,returns,profit,sum,sum,sum,sum]
                                       InputAdapter
-                                        CometNativeColumnarToRow
+                                        CometColumnarToRow
                                           CometColumnarExchange [cp_catalog_page_id] #6
                                             WholeStageCodegen (7)
                                               HashAggregate [cp_catalog_page_id,sales_price,return_amt,profit,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
@@ -86,14 +86,14 @@ CometNativeColumnarToRow
                                                           ReusedExchange [d_date_sk] #4
                                                     InputAdapter
                                                       BroadcastExchange #7
-                                                        CometNativeColumnarToRow
+                                                        CometColumnarToRow
                                                           CometProject [cp_catalog_page_id] [cp_catalog_page_sk,cp_catalog_page_id]
                                                             CometFilter [cp_catalog_page_sk,cp_catalog_page_id]
                                                               CometNativeScan parquet spark_catalog.default.catalog_page [cp_catalog_page_sk,cp_catalog_page_id]
                                   WholeStageCodegen (13)
                                     HashAggregate [web_site_id,sum,sum,sum,sum] [sum(UnscaledValue(sales_price)),sum(UnscaledValue(return_amt)),sum(UnscaledValue(profit)),sum(UnscaledValue(net_loss)),channel,id,sales,returns,profit,sum,sum,sum,sum]
                                       InputAdapter
-                                        CometNativeColumnarToRow
+                                        CometColumnarToRow
                                           CometColumnarExchange [web_site_id] #8
                                             WholeStageCodegen (12)
                                               HashAggregate [web_site_id,sales_price,return_amt,profit,net_loss] [sum,sum,sum,sum,sum,sum,sum,sum]
@@ -121,7 +121,7 @@ CometNativeColumnarToRow
                                                                             Scan parquet spark_catalog.default.web_returns [wr_item_sk,wr_order_number,wr_return_amt,wr_net_loss,wr_returned_date_sk]
                                                                               ReusedSubquery [d_date_sk] #1
                                                                   InputAdapter
-                                                                    CometNativeColumnarToRow
+                                                                    CometColumnarToRow
                                                                       CometProject [ws_item_sk,ws_web_site_sk,ws_order_number]
                                                                         CometFilter [ws_item_sk,ws_web_site_sk,ws_order_number,ws_sold_date_sk]
                                                                           CometNativeScan parquet spark_catalog.default.web_sales [ws_item_sk,ws_web_site_sk,ws_order_number,ws_sold_date_sk]
@@ -129,29 +129,29 @@ CometNativeColumnarToRow
                                                           ReusedExchange [d_date_sk] #4
                                                     InputAdapter
                                                       BroadcastExchange #10
-                                                        CometNativeColumnarToRow
+                                                        CometColumnarToRow
                                                           CometProject [web_site_id] [web_site_sk,web_site_id]
                                                             CometFilter [web_site_sk,web_site_id]
                                                               CometNativeScan parquet spark_catalog.default.web_site [web_site_sk,web_site_id]
                 WholeStageCodegen (31)
                   HashAggregate [channel,sum,isEmpty,sum,isEmpty,sum,isEmpty] [sum(sales),sum(returns),sum(profit),id,sum(sales),sum(returns),sum(profit),sum,isEmpty,sum,isEmpty,sum,isEmpty]
                     InputAdapter
-                      CometNativeColumnarToRow
+                      CometColumnarToRow
                         CometColumnarExchange [channel] #11
                           WholeStageCodegen (30)
                             HashAggregate [channel,sales,returns,profit] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
                               HashAggregate [channel,id,sum,isEmpty,sum,isEmpty,sum,isEmpty] [sum(sales),sum(returns),sum(profit),sales,returns,profit,sum,isEmpty,sum,isEmpty,sum,isEmpty]
                                 InputAdapter
-                                  CometNativeColumnarToRow
+                                  CometColumnarToRow
                                     ReusedExchange [channel,id,sum,isEmpty,sum,isEmpty,sum,isEmpty] #2
                 WholeStageCodegen (47)
                   HashAggregate [sum,isEmpty,sum,isEmpty,sum,isEmpty] [sum(sales),sum(returns),sum(profit),channel,id,sum(sales),sum(returns),sum(profit),sum,isEmpty,sum,isEmpty,sum,isEmpty]
                     InputAdapter
-                      CometNativeColumnarToRow
+                      CometColumnarToRow
                         CometColumnarExchange #12
                           WholeStageCodegen (46)
                             HashAggregate [sales,returns,profit] [sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty,sum,isEmpty]
                               HashAggregate [channel,id,sum,isEmpty,sum,isEmpty,sum,isEmpty] [sum(sales),sum(returns),sum(profit),sales,returns,profit,sum,isEmpty,sum,isEmpty,sum,isEmpty]
                                 InputAdapter
-                                  CometNativeColumnarToRow
+                                  CometColumnarToRow
                                     ReusedExchange [channel,id,sum,isEmpty,sum,isEmpty,sum,isEmpty] #2

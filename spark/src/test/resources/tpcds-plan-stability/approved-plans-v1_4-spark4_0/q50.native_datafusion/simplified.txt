@@ -2,7 +2,7 @@ TakeOrderedAndProject [s_store_name,s_company_id,s_street_number,s_street_name,s
   WholeStageCodegen (3)
     HashAggregate [s_store_name,s_company_id,s_street_number,s_street_name,s_street_type,s_suite_number,s_city,s_county,s_state,s_zip,sum,sum,sum,sum,sum] [sum(CASE WHEN ((sr_returned_date_sk - ss_sold_date_sk) <= 30) THEN 1 ELSE 0 END),sum(CASE WHEN (((sr_returned_date_sk - ss_sold_date_sk) > 30) AND ((sr_returned_date_sk - ss_sold_date_sk) <= 60)) THEN 1 ELSE 0 END),sum(CASE WHEN (((sr_returned_date_sk - ss_sold_date_sk) > 60) AND ((sr_returned_date_sk - ss_sold_date_sk) <= 90)) THEN 1 ELSE 0 END),sum(CASE WHEN (((sr_returned_date_sk - ss_sold_date_sk) > 90) AND ((sr_returned_date_sk - ss_sold_date_sk) <= 120)) THEN 1 ELSE 0 END),sum(CASE WHEN ((sr_returned_date_sk - ss_sold_date_sk) > 120) THEN 1 ELSE 0 END),30 days ,31 - 60 days ,61 - 90 days ,91 - 120 days ,>120 days ,sum,sum,sum,sum,sum]
       InputAdapter
-        CometNativeColumnarToRow
+        CometColumnarToRow
           CometColumnarExchange [s_store_name,s_company_id,s_street_number,s_street_name,s_street_type,s_suite_number,s_city,s_county,s_state,s_zip] #1
             WholeStageCodegen (2)
               HashAggregate [s_store_name,s_company_id,s_street_number,s_street_name,s_street_type,s_suite_number,s_city,s_county,s_state,s_zip,sr_returned_date_sk,ss_sold_date_sk] [sum,sum,sum,sum,sum,sum,sum,sum,sum,sum]
@@ -15,7 +15,7 @@ TakeOrderedAndProject [s_store_name,s_company_id,s_street_number,s_street_name,s
                             Project [ss_store_sk,ss_sold_date_sk,sr_returned_date_sk]
                               BroadcastHashJoin [ss_ticket_number,ss_item_sk,ss_customer_sk,sr_ticket_number,sr_item_sk,sr_customer_sk]
                                 InputAdapter
-                                  CometNativeColumnarToRow
+                                  CometColumnarToRow
                                     CometFilter [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_sold_date_sk]
                                       CometNativeScan parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_sold_date_sk]
                                 InputAdapter
@@ -27,19 +27,19 @@ TakeOrderedAndProject [s_store_name,s_company_id,s_street_number,s_street_name,s
                                             Scan parquet spark_catalog.default.store_returns [sr_item_sk,sr_customer_sk,sr_ticket_number,sr_returned_date_sk]
                                               SubqueryBroadcast [d_date_sk] #1
                                                 BroadcastExchange #3
-                                                  CometNativeColumnarToRow
+                                                  CometColumnarToRow
                                                     CometProject [d_date_sk]
                                                       CometFilter [d_date_sk,d_year,d_moy]
                                                         CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
                             InputAdapter
                               BroadcastExchange #4
-                                CometNativeColumnarToRow
+                                CometColumnarToRow
                                   CometProject [s_street_type,s_suite_number,s_state,s_zip] [s_store_sk,s_store_name,s_company_id,s_street_number,s_street_name,s_street_type,s_suite_number,s_city,s_county,s_state,s_zip]
                                     CometFilter [s_store_sk,s_store_name,s_company_id,s_street_number,s_street_name,s_street_type,s_suite_number,s_city,s_county,s_state,s_zip]
                                       CometNativeScan parquet spark_catalog.default.store [s_store_sk,s_store_name,s_company_id,s_street_number,s_street_name,s_street_type,s_suite_number,s_city,s_county,s_state,s_zip]
                         InputAdapter
                           BroadcastExchange #5
-                            CometNativeColumnarToRow
+                            CometColumnarToRow
                               CometFilter [d_date_sk]
                                 CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk]
                     InputAdapter

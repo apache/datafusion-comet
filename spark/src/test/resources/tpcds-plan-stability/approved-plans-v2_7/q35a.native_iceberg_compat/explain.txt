@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (40)
+CometColumnarToRow (40)
 +- CometTakeOrderedAndProject (39)
    +- CometHashAggregate (38)
       +- CometExchange (37)
@@ -225,14 +225,14 @@ Functions [10]: [count(1), avg(cd_dep_count#25), max(cd_dep_count#25), sum(cd_de
 Input [18]: [ca_state#21, cd_gender#28, cd_marital_status#29, cd_dep_count#25, cnt1#43, avg(cd_dep_count)#44, max(cd_dep_count)#45, sum(cd_dep_count)#46, cd_dep_employed_count#26, cnt2#47, avg(cd_dep_employed_count)#48, max(cd_dep_employed_count)#49, sum(cd_dep_employed_count)#50, cd_dep_college_count#27, cnt3#51, avg(cd_dep_college_count)#52, max(cd_dep_college_count)#53, sum(cd_dep_college_count)#54]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[ca_state#21 ASC NULLS FIRST,cd_gender#28 ASC NULLS FIRST,cd_marital_status#29 ASC NULLS FIRST,cd_dep_count#25 ASC NULLS FIRST,cd_dep_employed_count#26 ASC NULLS FIRST,cd_dep_college_count#27 ASC NULLS FIRST], output=[ca_state#21,cd_gender#28,cd_marital_status#29,cd_dep_count#25,cnt1#43,avg(cd_dep_count)#44,max(cd_dep_count)#45,sum(cd_dep_count)#46,cd_dep_employed_count#26,cnt2#47,avg(cd_dep_employed_count)#48,max(cd_dep_employed_count)#49,sum(cd_dep_employed_count)#50,cd_dep_college_count#27,cnt3#51,avg(cd_dep_college_count)#52,max(cd_dep_college_count)#53,sum(cd_dep_college_count)#54]), [ca_state#21, cd_gender#28, cd_marital_status#29, cd_dep_count#25, cnt1#43, avg(cd_dep_count)#44, max(cd_dep_count)#45, sum(cd_dep_count)#46, cd_dep_employed_count#26, cnt2#47, avg(cd_dep_employed_count)#48, max(cd_dep_employed_count)#49, sum(cd_dep_employed_count)#50, cd_dep_college_count#27, cnt3#51, avg(cd_dep_college_count)#52, max(cd_dep_college_count)#53, sum(cd_dep_college_count)#54], 100, 0, [ca_state#21 ASC NULLS FIRST, cd_gender#28 ASC NULLS FIRST, cd_marital_status#29 ASC NULLS FIRST, cd_dep_count#25 ASC NULLS FIRST, cd_dep_employed_count#26 ASC NULLS FIRST, cd_dep_college_count#27 ASC NULLS FIRST], [ca_state#21, cd_gender#28, cd_marital_status#29, cd_dep_count#25, cnt1#43, avg(cd_dep_count)#44, max(cd_dep_count)#45, sum(cd_dep_count)#46, cd_dep_employed_count#26, cnt2#47, avg(cd_dep_employed_count)#48, max(cd_dep_employed_count)#49, sum(cd_dep_employed_count)#50, cd_dep_college_count#27, cnt3#51, avg(cd_dep_college_count)#52, max(cd_dep_college_count)#53, sum(cd_dep_college_count)#54]
 
-(40) CometNativeColumnarToRow
+(40) CometColumnarToRow
 Input [18]: [ca_state#21, cd_gender#28, cd_marital_status#29, cd_dep_count#25, cnt1#43, avg(cd_dep_count)#44, max(cd_dep_count)#45, sum(cd_dep_count)#46, cd_dep_employed_count#26, cnt2#47, avg(cd_dep_employed_count)#48, max(cd_dep_employed_count)#49, sum(cd_dep_employed_count)#50, cd_dep_college_count#27, cnt3#51, avg(cd_dep_college_count)#52, max(cd_dep_college_count)#53, sum(cd_dep_college_count)#54]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 3 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (45)
-+- CometNativeColumnarToRow (44)
++- CometColumnarToRow (44)
    +- CometProject (43)
       +- CometFilter (42)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (41)
@@ -253,7 +253,7 @@ Condition : ((((isnotnull(d_year#8) AND isnotnull(d_qoy#9)) AND (d_year#8 = 1999
 Input [3]: [d_date_sk#7, d_year#8, d_qoy#9]
 Arguments: [d_date_sk#7], [d_date_sk#7]
 
-(44) CometNativeColumnarToRow
+(44) CometColumnarToRow
 Input [1]: [d_date_sk#7]
 
 (45) BroadcastExchange

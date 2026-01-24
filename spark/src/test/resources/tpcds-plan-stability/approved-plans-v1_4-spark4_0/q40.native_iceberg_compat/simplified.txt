@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
   CometTakeOrderedAndProject [w_state,i_item_id,sales_before,sales_after]
     CometHashAggregate [sum,isEmpty,sum,isEmpty] [w_state,i_item_id,sales_before,sales_after,sum(CASE WHEN (d_date < 2000-03-11) THEN (cs_sales_price - coalesce(cast(cr_refunded_cash as decimal(12,2)), 0.00)) ELSE 0.00 END),sum(CASE WHEN (d_date >= 2000-03-11) THEN (cs_sales_price - coalesce(cast(cr_refunded_cash as decimal(12,2)), 0.00)) ELSE 0.00 END)]
       CometExchange [w_state,i_item_id] #1
@@ -17,7 +17,7 @@ CometNativeColumnarToRow
                                 CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_warehouse_sk,cs_item_sk,cs_order_number,cs_sales_price,cs_sold_date_sk]
                                   SubqueryBroadcast [d_date_sk] #1
                                     BroadcastExchange #3
-                                      CometNativeColumnarToRow
+                                      CometColumnarToRow
                                         CometFilter [d_date_sk,d_date]
                                           CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]
                           CometSort [cr_item_sk,cr_order_number,cr_refunded_cash]

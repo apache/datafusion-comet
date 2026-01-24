@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
   CometTakeOrderedAndProject [ss_customer_sk,sumsales]
     CometHashAggregate [sum,isEmpty] [ss_customer_sk,sumsales,sum(act_sales)]
       CometExchange [ss_customer_sk] #1

@@ -5,7 +5,7 @@ TakeOrderedAndProject (50)
       :- * Project (33)
       :  +- * BroadcastHashJoin Inner BuildRight (32)
       :     :- * HashAggregate (17)
-      :     :  +- CometNativeColumnarToRow (16)
+      :     :  +- CometColumnarToRow (16)
       :     :     +- CometColumnarExchange (15)
       :     :        +- * HashAggregate (14)
       :     :           +- * Project (13)
@@ -16,14 +16,14 @@ TakeOrderedAndProject (50)
       :     :                 :     :  +- * ColumnarToRow (2)
       :     :                 :     :     +- Scan parquet spark_catalog.default.store_returns (1)
       :     :                 :     +- BroadcastExchange (8)
-      :     :                 :        +- CometNativeColumnarToRow (7)
+      :     :                 :        +- CometColumnarToRow (7)
       :     :                 :           +- CometProject (6)
       :     :                 :              +- CometFilter (5)
       :     :                 :                 +- CometNativeScan parquet spark_catalog.default.item (4)
       :     :                 +- ReusedExchange (11)
       :     +- BroadcastExchange (31)
       :        +- * HashAggregate (30)
-      :           +- CometNativeColumnarToRow (29)
+      :           +- CometColumnarToRow (29)
       :              +- CometColumnarExchange (28)
       :                 +- * HashAggregate (27)
       :                    +- * Project (26)
@@ -37,7 +37,7 @@ TakeOrderedAndProject (50)
       :                          +- ReusedExchange (24)
       +- BroadcastExchange (47)
          +- * HashAggregate (46)
-            +- CometNativeColumnarToRow (45)
+            +- CometColumnarToRow (45)
                +- CometColumnarExchange (44)
                   +- * HashAggregate (43)
                      +- * Project (42)
@@ -81,7 +81,7 @@ Condition : (isnotnull(i_item_sk#5) AND isnotnull(static_invoke(CharVarcharCodeg
 Input [2]: [i_item_sk#5, i_item_id#6]
 Arguments: [i_item_sk#5, i_item_id#7], [i_item_sk#5, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#6, 16)) AS i_item_id#7]
 
-(7) CometNativeColumnarToRow
+(7) CometColumnarToRow
 Input [2]: [i_item_sk#5, i_item_id#7]
 
 (8) BroadcastExchange
@@ -122,7 +122,7 @@ Results [2]: [i_item_id#7, sum#10]
 Input [2]: [i_item_id#7, sum#10]
 Arguments: hashpartitioning(i_item_id#7, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
-(16) CometNativeColumnarToRow
+(16) CometColumnarToRow
 Input [2]: [i_item_id#7, sum#10]
 
 (17) HashAggregate [codegen id : 6]
@@ -184,7 +184,7 @@ Results [2]: [i_item_id#18, sum#21]
 Input [2]: [i_item_id#18, sum#21]
 Arguments: hashpartitioning(i_item_id#18, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
-(29) CometNativeColumnarToRow
+(29) CometColumnarToRow
 Input [2]: [i_item_id#18, sum#21]
 
 (30) HashAggregate [codegen id : 3]
@@ -260,7 +260,7 @@ Results [2]: [i_item_id#29, sum#32]
 Input [2]: [i_item_id#29, sum#32]
 Arguments: hashpartitioning(i_item_id#29, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
-(45) CometNativeColumnarToRow
+(45) CometColumnarToRow
 Input [2]: [i_item_id#29, sum#32]
 
 (46) HashAggregate [codegen id : 5]
@@ -292,7 +292,7 @@ Arguments: 100, [item_id#12 ASC NULLS FIRST, sr_item_qty#13 ASC NULLS FIRST], [i
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = sr_returned_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (64)
-+- CometNativeColumnarToRow (63)
++- CometColumnarToRow (63)
    +- CometProject (62)
       +- CometBroadcastHashJoin (61)
          :- CometFilter (52)
@@ -365,7 +365,7 @@ Arguments: [d_date#40], [d_date#41], LeftSemi, BuildRight
 Input [2]: [d_date_sk#8, d_date#40]
 Arguments: [d_date_sk#8], [d_date_sk#8]
 
-(63) CometNativeColumnarToRow
+(63) CometColumnarToRow
 Input [1]: [d_date_sk#8]
 
 (64) BroadcastExchange

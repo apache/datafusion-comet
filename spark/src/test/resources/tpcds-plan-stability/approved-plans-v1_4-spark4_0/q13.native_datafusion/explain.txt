@@ -1,6 +1,6 @@
 == Physical Plan ==
 * HashAggregate (36)
-+- CometNativeColumnarToRow (35)
++- CometColumnarToRow (35)
    +- CometColumnarExchange (34)
       +- * HashAggregate (33)
          +- * Project (32)
@@ -17,22 +17,22 @@
                :     :     :     :     :  +- * ColumnarToRow (2)
                :     :     :     :     :     +- Scan parquet spark_catalog.default.store_sales (1)
                :     :     :     :     +- BroadcastExchange (7)
-               :     :     :     :        +- CometNativeColumnarToRow (6)
+               :     :     :     :        +- CometColumnarToRow (6)
                :     :     :     :           +- CometFilter (5)
                :     :     :     :              +- CometNativeScan parquet spark_catalog.default.store (4)
                :     :     :     +- BroadcastExchange (14)
-               :     :     :        +- CometNativeColumnarToRow (13)
+               :     :     :        +- CometColumnarToRow (13)
                :     :     :           +- CometProject (12)
                :     :     :              +- CometFilter (11)
                :     :     :                 +- CometNativeScan parquet spark_catalog.default.customer_address (10)
                :     :     +- ReusedExchange (17)
                :     +- BroadcastExchange (24)
-               :        +- CometNativeColumnarToRow (23)
+               :        +- CometColumnarToRow (23)
                :           +- CometProject (22)
                :              +- CometFilter (21)
                :                 +- CometNativeScan parquet spark_catalog.default.customer_demographics (20)
                +- BroadcastExchange (30)
-                  +- CometNativeColumnarToRow (29)
+                  +- CometColumnarToRow (29)
                      +- CometFilter (28)
                         +- CometNativeScan parquet spark_catalog.default.household_demographics (27)
 
@@ -63,7 +63,7 @@ ReadSchema: struct<s_store_sk:int>
 Input [1]: [s_store_sk#12]
 Condition : isnotnull(s_store_sk#12)
 
-(6) CometNativeColumnarToRow
+(6) CometColumnarToRow
 Input [1]: [s_store_sk#12]
 
 (7) BroadcastExchange
@@ -95,7 +95,7 @@ Condition : (((isnotnull(ca_country#15) AND (ca_country#15 = United States)) AND
 Input [3]: [ca_address_sk#13, ca_state#14, ca_country#15]
 Arguments: [ca_address_sk#13, ca_state#16], [ca_address_sk#13, static_invoke(CharVarcharCodegenUtils.readSidePadding(ca_state#14, 2)) AS ca_state#16]
 
-(13) CometNativeColumnarToRow
+(13) CometColumnarToRow
 Input [2]: [ca_address_sk#13, ca_state#16]
 
 (14) BroadcastExchange
@@ -140,7 +140,7 @@ Condition : (isnotnull(cd_demo_sk#18) AND ((((static_invoke(CharVarcharCodegenUt
 Input [3]: [cd_demo_sk#18, cd_marital_status#19, cd_education_status#20]
 Arguments: [cd_demo_sk#18, cd_marital_status#21, cd_education_status#22], [cd_demo_sk#18, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_marital_status#19, 1)) AS cd_marital_status#21, static_invoke(CharVarcharCodegenUtils.readSidePadding(cd_education_status#20, 20)) AS cd_education_status#22]
 
-(23) CometNativeColumnarToRow
+(23) CometColumnarToRow
 Input [3]: [cd_demo_sk#18, cd_marital_status#21, cd_education_status#22]
 
 (24) BroadcastExchange
@@ -168,7 +168,7 @@ ReadSchema: struct<hd_demo_sk:int,hd_dep_count:int>
 Input [2]: [hd_demo_sk#23, hd_dep_count#24]
 Condition : (isnotnull(hd_demo_sk#23) AND ((hd_dep_count#24 = 3) OR (hd_dep_count#24 = 1)))
 
-(29) CometNativeColumnarToRow
+(29) CometColumnarToRow
 Input [2]: [hd_demo_sk#23, hd_dep_count#24]
 
 (30) BroadcastExchange
@@ -196,7 +196,7 @@ Results [7]: [sum#32, count#33, sum#34, count#35, sum#36, count#37, sum#38]
 Input [7]: [sum#32, count#33, sum#34, count#35, sum#36, count#37, sum#38]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
-(35) CometNativeColumnarToRow
+(35) CometColumnarToRow
 Input [7]: [sum#32, count#33, sum#34, count#35, sum#36, count#37, sum#38]
 
 (36) HashAggregate [codegen id : 2]
@@ -210,7 +210,7 @@ Results [4]: [avg(ss_quantity#5)#39 AS avg(ss_quantity)#43, cast((avg(UnscaledVa
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#10 IN dynamicpruning#11
 BroadcastExchange (41)
-+- CometNativeColumnarToRow (40)
++- CometColumnarToRow (40)
    +- CometProject (39)
       +- CometFilter (38)
          +- CometNativeScan parquet spark_catalog.default.date_dim (37)
@@ -231,7 +231,7 @@ Condition : ((isnotnull(d_year#47) AND (d_year#47 = 2001)) AND isnotnull(d_date_
 Input [2]: [d_date_sk#17, d_year#47]
 Arguments: [d_date_sk#17], [d_date_sk#17]
 
-(40) CometNativeColumnarToRow
+(40) CometColumnarToRow
 Input [1]: [d_date_sk#17]
 
 (41) BroadcastExchange

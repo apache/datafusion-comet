@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
   CometTakeOrderedAndProject [i_item_id,ca_country,ca_state,ca_county,agg1,agg2,agg3,agg4,agg5,agg6,agg7]
     CometHashAggregate [spark_grouping_id,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count,sum,count] [i_item_id,ca_country,ca_state,ca_county,agg1,agg2,agg3,agg4,agg5,agg6,agg7,avg(cast(cs_quantity as decimal(12,2))),avg(cast(cs_list_price as decimal(12,2))),avg(cast(cs_coupon_amt as decimal(12,2))),avg(cast(cs_sales_price as decimal(12,2))),avg(cast(cs_net_profit as decimal(12,2))),avg(cast(c_birth_year as decimal(12,2))),avg(cast(cd_dep_count as decimal(12,2)))]
       CometExchange [i_item_id,ca_country,ca_state,ca_county,spark_grouping_id] #1
@@ -20,7 +20,7 @@ CometNativeColumnarToRow
                                       CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_bill_customer_sk,cs_bill_cdemo_sk,cs_item_sk,cs_quantity,cs_list_price,cs_sales_price,cs_coupon_amt,cs_net_profit,cs_sold_date_sk]
                                         SubqueryBroadcast [d_date_sk] #1
                                           BroadcastExchange #2
-                                            CometNativeColumnarToRow
+                                            CometColumnarToRow
                                               CometProject [d_date_sk]
                                                 CometFilter [d_date_sk,d_year]
                                                   CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year]

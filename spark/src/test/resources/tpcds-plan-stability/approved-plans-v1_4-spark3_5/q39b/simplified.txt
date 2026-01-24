@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
   CometSort [w_warehouse_sk,i_item_sk,d_moy,mean,cov,w_warehouse_sk,i_item_sk,d_moy,mean,cov]
     CometExchange [w_warehouse_sk,i_item_sk,d_moy,mean,cov,d_moy,mean,cov] #1
       CometBroadcastHashJoin [w_warehouse_sk,i_item_sk,d_moy,mean,cov,w_warehouse_sk,i_item_sk,d_moy,mean,cov]
@@ -17,7 +17,7 @@ CometNativeColumnarToRow
                                 CometScan [native_iceberg_compat] parquet spark_catalog.default.inventory [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
                                   SubqueryBroadcast [d_date_sk] #1
                                     BroadcastExchange #3
-                                      CometNativeColumnarToRow
+                                      CometColumnarToRow
                                         CometProject [d_date_sk,d_moy]
                                           CometFilter [d_date_sk,d_year,d_moy]
                                             CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
@@ -47,7 +47,7 @@ CometNativeColumnarToRow
                                   CometScan [native_iceberg_compat] parquet spark_catalog.default.inventory [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
                                     SubqueryBroadcast [d_date_sk] #2
                                       BroadcastExchange #9
-                                        CometNativeColumnarToRow
+                                        CometColumnarToRow
                                           CometProject [d_date_sk,d_moy]
                                             CometFilter [d_date_sk,d_year,d_moy]
                                               CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]

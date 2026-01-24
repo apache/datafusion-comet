@@ -2,11 +2,11 @@
 TakeOrderedAndProject (24)
 +- * Project (23)
    +- Window (22)
-      +- CometNativeColumnarToRow (21)
+      +- CometColumnarToRow (21)
          +- CometSort (20)
             +- CometColumnarExchange (19)
                +- * HashAggregate (18)
-                  +- CometNativeColumnarToRow (17)
+                  +- CometColumnarToRow (17)
                      +- CometColumnarExchange (16)
                         +- * HashAggregate (15)
                            +- * Expand (14)
@@ -19,7 +19,7 @@ TakeOrderedAndProject (24)
                                     :     :     +- Scan parquet spark_catalog.default.web_sales (1)
                                     :     +- ReusedExchange (4)
                                     +- BroadcastExchange (11)
-                                       +- CometNativeColumnarToRow (10)
+                                       +- CometColumnarToRow (10)
                                           +- CometProject (9)
                                              +- CometFilter (8)
                                                 +- CometNativeScan parquet spark_catalog.default.item (7)
@@ -68,7 +68,7 @@ Condition : isnotnull(i_item_sk#6)
 Input [3]: [i_item_sk#6, i_class#7, i_category#8]
 Arguments: [i_item_sk#6, i_class#9, i_category#10], [i_item_sk#6, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_class#7, 50, true, false, true) AS i_class#9, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#8, 50, true, false, true) AS i_category#10]
 
-(10) CometNativeColumnarToRow
+(10) CometColumnarToRow
 Input [3]: [i_item_sk#6, i_class#9, i_category#10]
 
 (11) BroadcastExchange
@@ -100,7 +100,7 @@ Results [4]: [i_category#11, i_class#12, spark_grouping_id#13, sum#15]
 Input [4]: [i_category#11, i_class#12, spark_grouping_id#13, sum#15]
 Arguments: hashpartitioning(i_category#11, i_class#12, spark_grouping_id#13, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
-(17) CometNativeColumnarToRow
+(17) CometColumnarToRow
 Input [4]: [i_category#11, i_class#12, spark_grouping_id#13, sum#15]
 
 (18) HashAggregate [codegen id : 2]
@@ -118,7 +118,7 @@ Arguments: hashpartitioning(_w1#20, _w2#21, 5), ENSURE_REQUIREMENTS, CometColumn
 Input [7]: [total_sum#17, i_category#11, i_class#12, lochierarchy#18, _w0#19, _w1#20, _w2#21]
 Arguments: [total_sum#17, i_category#11, i_class#12, lochierarchy#18, _w0#19, _w1#20, _w2#21], [_w1#20 ASC NULLS FIRST, _w2#21 ASC NULLS FIRST, _w0#19 DESC NULLS LAST]
 
-(21) CometNativeColumnarToRow
+(21) CometColumnarToRow
 Input [7]: [total_sum#17, i_category#11, i_class#12, lochierarchy#18, _w0#19, _w1#20, _w2#21]
 
 (22) Window
@@ -137,7 +137,7 @@ Arguments: 100, [lochierarchy#18 DESC NULLS LAST, CASE WHEN (lochierarchy#18 = 0
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (29)
-+- CometNativeColumnarToRow (28)
++- CometColumnarToRow (28)
    +- CometProject (27)
       +- CometFilter (26)
          +- CometNativeScan parquet spark_catalog.default.date_dim (25)
@@ -158,7 +158,7 @@ Condition : (((isnotnull(d_month_seq#23) AND (d_month_seq#23 >= 1200)) AND (d_mo
 Input [2]: [d_date_sk#5, d_month_seq#23]
 Arguments: [d_date_sk#5], [d_date_sk#5]
 
-(28) CometNativeColumnarToRow
+(28) CometColumnarToRow
 Input [1]: [d_date_sk#5]
 
 (29) BroadcastExchange

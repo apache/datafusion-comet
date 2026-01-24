@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
   CometTakeOrderedAndProject [rnk,best_performing,worst_performing]
     CometProject [i_product_name,i_product_name] [rnk,best_performing,worst_performing]
       CometBroadcastHashJoin [rnk,item_sk,i_product_name,i_item_sk,i_product_name]
@@ -14,15 +14,15 @@ CometNativeColumnarToRow
                           InputAdapter
                             Window [rank_col]
                               WindowGroupLimit [rank_col]
-                                CometNativeColumnarToRow
+                                CometColumnarToRow
                                   CometSort [item_sk,rank_col]
                                     CometColumnarExchange #2
                                       WindowGroupLimit [rank_col]
-                                        CometNativeColumnarToRow
+                                        CometColumnarToRow
                                           CometSort [item_sk,rank_col]
                                             CometFilter [item_sk,rank_col]
                                               Subquery #1
-                                                CometNativeColumnarToRow
+                                                CometColumnarToRow
                                                   CometHashAggregate [ss_store_sk,sum,count] [rank_col,avg(UnscaledValue(ss_net_profit))]
                                                     CometExchange [ss_store_sk] #4
                                                       CometHashAggregate [ss_net_profit] [ss_store_sk,sum,count]
@@ -43,11 +43,11 @@ CometNativeColumnarToRow
                           InputAdapter
                             Window [rank_col]
                               WindowGroupLimit [rank_col]
-                                CometNativeColumnarToRow
+                                CometColumnarToRow
                                   CometSort [item_sk,rank_col]
                                     CometColumnarExchange #6
                                       WindowGroupLimit [rank_col]
-                                        CometNativeColumnarToRow
+                                        CometColumnarToRow
                                           CometSort [item_sk,rank_col]
                                             CometFilter [item_sk,rank_col]
                                               ReusedSubquery [rank_col] #1

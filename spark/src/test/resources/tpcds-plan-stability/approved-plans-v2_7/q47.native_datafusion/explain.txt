@@ -9,11 +9,11 @@ TakeOrderedAndProject (51)
       :     :     +- Window (29)
       :     :        +- * Filter (28)
       :     :           +- Window (27)
-      :     :              +- CometNativeColumnarToRow (26)
+      :     :              +- CometColumnarToRow (26)
       :     :                 +- CometSort (25)
       :     :                    +- CometColumnarExchange (24)
       :     :                       +- * HashAggregate (23)
-      :     :                          +- CometNativeColumnarToRow (22)
+      :     :                          +- CometColumnarToRow (22)
       :     :                             +- CometColumnarExchange (21)
       :     :                                +- * HashAggregate (20)
       :     :                                   +- * Project (19)
@@ -22,7 +22,7 @@ TakeOrderedAndProject (51)
       :     :                                         :  +- * BroadcastHashJoin Inner BuildRight (12)
       :     :                                         :     :- * Project (10)
       :     :                                         :     :  +- * BroadcastHashJoin Inner BuildRight (9)
-      :     :                                         :     :     :- CometNativeColumnarToRow (4)
+      :     :                                         :     :     :- CometColumnarToRow (4)
       :     :                                         :     :     :  +- CometProject (3)
       :     :                                         :     :     :     +- CometFilter (2)
       :     :                                         :     :     :        +- CometNativeScan parquet spark_catalog.default.item (1)
@@ -32,22 +32,22 @@ TakeOrderedAndProject (51)
       :     :                                         :     :              +- Scan parquet spark_catalog.default.store_sales (5)
       :     :                                         :     +- ReusedExchange (11)
       :     :                                         +- BroadcastExchange (17)
-      :     :                                            +- CometNativeColumnarToRow (16)
+      :     :                                            +- CometColumnarToRow (16)
       :     :                                               +- CometFilter (15)
       :     :                                                  +- CometNativeScan parquet spark_catalog.default.store (14)
       :     +- BroadcastExchange (40)
       :        +- * Project (39)
       :           +- Window (38)
-      :              +- CometNativeColumnarToRow (37)
+      :              +- CometColumnarToRow (37)
       :                 +- CometSort (36)
       :                    +- CometColumnarExchange (35)
       :                       +- * HashAggregate (34)
-      :                          +- CometNativeColumnarToRow (33)
+      :                          +- CometColumnarToRow (33)
       :                             +- ReusedExchange (32)
       +- BroadcastExchange (48)
          +- * Project (47)
             +- Window (46)
-               +- CometNativeColumnarToRow (45)
+               +- CometColumnarToRow (45)
                   +- CometSort (44)
                      +- ReusedExchange (43)
 
@@ -67,7 +67,7 @@ Condition : ((isnotnull(i_item_sk#1) AND isnotnull(staticinvoke(class org.apache
 Input [3]: [i_item_sk#1, i_brand#2, i_category#3]
 Arguments: [i_item_sk#1, i_brand#4, i_category#5], [i_item_sk#1, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_brand#2, 50, true, false, true) AS i_brand#4, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#3, 50, true, false, true) AS i_category#5]
 
-(4) CometNativeColumnarToRow
+(4) CometColumnarToRow
 Input [3]: [i_item_sk#1, i_brand#4, i_category#5]
 
 (5) Scan parquet spark_catalog.default.store_sales
@@ -123,7 +123,7 @@ ReadSchema: struct<s_store_sk:int,s_store_name:string,s_company_name:string>
 Input [3]: [s_store_sk#14, s_store_name#15, s_company_name#16]
 Condition : ((isnotnull(s_store_sk#14) AND isnotnull(s_store_name#15)) AND isnotnull(s_company_name#16))
 
-(16) CometNativeColumnarToRow
+(16) CometColumnarToRow
 Input [3]: [s_store_sk#14, s_store_name#15, s_company_name#16]
 
 (17) BroadcastExchange
@@ -151,7 +151,7 @@ Results [7]: [i_category#5, i_brand#4, s_store_name#15, s_company_name#16, d_yea
 Input [7]: [i_category#5, i_brand#4, s_store_name#15, s_company_name#16, d_year#12, d_moy#13, sum#18]
 Arguments: hashpartitioning(i_category#5, i_brand#4, s_store_name#15, s_company_name#16, d_year#12, d_moy#13, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
-(22) CometNativeColumnarToRow
+(22) CometColumnarToRow
 Input [7]: [i_category#5, i_brand#4, s_store_name#15, s_company_name#16, d_year#12, d_moy#13, sum#18]
 
 (23) HashAggregate [codegen id : 3]
@@ -169,7 +169,7 @@ Arguments: hashpartitioning(i_category#5, i_brand#4, s_store_name#15, s_company_
 Input [8]: [i_category#5, i_brand#4, s_store_name#15, s_company_name#16, d_year#12, d_moy#13, sum_sales#20, _w0#21]
 Arguments: [i_category#5, i_brand#4, s_store_name#15, s_company_name#16, d_year#12, d_moy#13, sum_sales#20, _w0#21], [i_category#5 ASC NULLS FIRST, i_brand#4 ASC NULLS FIRST, s_store_name#15 ASC NULLS FIRST, s_company_name#16 ASC NULLS FIRST, d_year#12 ASC NULLS FIRST, d_moy#13 ASC NULLS FIRST]
 
-(26) CometNativeColumnarToRow
+(26) CometColumnarToRow
 Input [8]: [i_category#5, i_brand#4, s_store_name#15, s_company_name#16, d_year#12, d_moy#13, sum_sales#20, _w0#21]
 
 (27) Window
@@ -195,7 +195,7 @@ Input [10]: [i_category#5, i_brand#4, s_store_name#15, s_company_name#16, d_year
 (32) ReusedExchange [Reuses operator id: 21]
 Output [7]: [i_category#5, i_brand#4, s_store_name#24, s_company_name#25, d_year#26, d_moy#27, sum#28]
 
-(33) CometNativeColumnarToRow
+(33) CometColumnarToRow
 Input [7]: [i_category#5, i_brand#4, s_store_name#24, s_company_name#25, d_year#26, d_moy#27, sum#28]
 
 (34) HashAggregate [codegen id : 7]
@@ -213,7 +213,7 @@ Arguments: hashpartitioning(i_category#5, i_brand#4, s_store_name#24, s_company_
 Input [7]: [i_category#5, i_brand#4, s_store_name#24, s_company_name#25, d_year#26, d_moy#27, sum_sales#20]
 Arguments: [i_category#5, i_brand#4, s_store_name#24, s_company_name#25, d_year#26, d_moy#27, sum_sales#20], [i_category#5 ASC NULLS FIRST, i_brand#4 ASC NULLS FIRST, s_store_name#24 ASC NULLS FIRST, s_company_name#25 ASC NULLS FIRST, d_year#26 ASC NULLS FIRST, d_moy#27 ASC NULLS FIRST]
 
-(37) CometNativeColumnarToRow
+(37) CometColumnarToRow
 Input [7]: [i_category#5, i_brand#4, s_store_name#24, s_company_name#25, d_year#26, d_moy#27, sum_sales#20]
 
 (38) Window
@@ -245,7 +245,7 @@ Output [7]: [i_category#5, i_brand#4, s_store_name#34, s_company_name#35, d_year
 Input [7]: [i_category#5, i_brand#4, s_store_name#34, s_company_name#35, d_year#36, d_moy#37, sum_sales#20]
 Arguments: [i_category#5, i_brand#4, s_store_name#34, s_company_name#35, d_year#36, d_moy#37, sum_sales#20], [i_category#5 ASC NULLS FIRST, i_brand#4 ASC NULLS FIRST, s_store_name#34 ASC NULLS FIRST, s_company_name#35 ASC NULLS FIRST, d_year#36 ASC NULLS FIRST, d_moy#37 ASC NULLS FIRST]
 
-(45) CometNativeColumnarToRow
+(45) CometColumnarToRow
 Input [7]: [i_category#5, i_brand#4, s_store_name#34, s_company_name#35, d_year#36, d_moy#37, sum_sales#20]
 
 (46) Window
@@ -278,7 +278,7 @@ Arguments: 100, [(sum_sales#20 - avg_monthly_sales#23) ASC NULLS FIRST, d_moy#13
 
 Subquery:1 Hosting operator id = 5 Hosting Expression = ss_sold_date_sk#9 IN dynamicpruning#10
 BroadcastExchange (55)
-+- CometNativeColumnarToRow (54)
++- CometColumnarToRow (54)
    +- CometFilter (53)
       +- CometNativeScan parquet spark_catalog.default.date_dim (52)
 
@@ -294,7 +294,7 @@ ReadSchema: struct<d_date_sk:int,d_year:int,d_moy:int>
 Input [3]: [d_date_sk#11, d_year#12, d_moy#13]
 Condition : ((((d_year#12 = 1999) OR ((d_year#12 = 1998) AND (d_moy#13 = 12))) OR ((d_year#12 = 2000) AND (d_moy#13 = 1))) AND isnotnull(d_date_sk#11))
 
-(54) CometNativeColumnarToRow
+(54) CometColumnarToRow
 Input [3]: [d_date_sk#11, d_year#12, d_moy#13]
 
 (55) BroadcastExchange

@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
   CometTakeOrderedAndProject [state,cnt]
     CometFilter [state,cnt]
       CometHashAggregate [count] [state,cnt,ca_state,count(1)]
@@ -23,11 +23,11 @@ CometNativeColumnarToRow
                             CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_sold_date_sk]
                               SubqueryBroadcast [d_date_sk] #1
                                 BroadcastExchange #4
-                                  CometNativeColumnarToRow
+                                  CometColumnarToRow
                                     CometProject [d_date_sk]
                                       CometFilter [d_date_sk,d_month_seq]
                                         Subquery #2
-                                          CometNativeColumnarToRow
+                                          CometColumnarToRow
                                             CometHashAggregate [d_month_seq]
                                               CometExchange [d_month_seq] #5
                                                 CometHashAggregate [d_month_seq]

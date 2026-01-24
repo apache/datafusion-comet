@@ -3,7 +3,7 @@ TakeOrderedAndProject [i_category,i_class,i_item_id,i_item_desc,revenueratio,i_c
     Project [i_item_id,i_item_desc,i_category,i_class,i_current_price,itemrevenue,_w0,_we0]
       InputAdapter
         Window [_w0,i_class]
-          CometNativeColumnarToRow
+          CometColumnarToRow
             CometSort [i_item_id,i_item_desc,i_category,i_class,i_current_price,itemrevenue,_w0]
               CometExchange [i_class] #1
                 CometHashAggregate [sum] [i_item_id,i_item_desc,i_category,i_class,i_current_price,itemrevenue,_w0,sum(UnscaledValue(ws_ext_sales_price))]
@@ -17,7 +17,7 @@ TakeOrderedAndProject [i_category,i_class,i_item_id,i_item_desc,revenueratio,i_c
                                 CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales [ws_item_sk,ws_ext_sales_price,ws_sold_date_sk]
                                   SubqueryBroadcast [d_date_sk] #1
                                     BroadcastExchange #3
-                                      CometNativeColumnarToRow
+                                      CometColumnarToRow
                                         CometProject [d_date_sk]
                                           CometFilter [d_date_sk,d_date]
                                             CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]

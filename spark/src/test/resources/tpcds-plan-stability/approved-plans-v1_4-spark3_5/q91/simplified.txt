@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
   CometSort [Call_Center,Call_Center_Name,Manager,Returns_Loss]
     CometExchange [Returns_Loss] #1
       CometHashAggregate [cd_marital_status,cd_education_status,sum] [Call_Center,Call_Center_Name,Manager,Returns_Loss,cc_call_center_id,cc_name,cc_manager,sum(UnscaledValue(cr_net_loss))]
@@ -24,7 +24,7 @@ CometNativeColumnarToRow
                                         CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_returns [cr_returning_customer_sk,cr_call_center_sk,cr_net_loss,cr_returned_date_sk]
                                           SubqueryBroadcast [d_date_sk] #1
                                             BroadcastExchange #4
-                                              CometNativeColumnarToRow
+                                              CometColumnarToRow
                                                 CometProject [d_date_sk]
                                                   CometFilter [d_date_sk,d_year,d_moy]
                                                     CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]

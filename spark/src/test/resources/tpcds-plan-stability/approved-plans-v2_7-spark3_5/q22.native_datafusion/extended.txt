@@ -1,6 +1,6 @@
 TakeOrderedAndProject
 +- HashAggregate
-   +- CometNativeColumnarToRow
+   +- CometColumnarToRow
       +- CometColumnarExchange
          +- HashAggregate
             +- Expand
@@ -15,22 +15,22 @@ TakeOrderedAndProject
                      :     :     :     +-  Scan parquet spark_catalog.default.inventory [COMET: Native DataFusion scan does not support subqueries/dynamic pruning]
                      :     :     :           +- SubqueryBroadcast
                      :     :     :              +- BroadcastExchange
-                     :     :     :                 +- CometNativeColumnarToRow
+                     :     :     :                 +- CometColumnarToRow
                      :     :     :                    +- CometProject
                      :     :     :                       +- CometFilter
                      :     :     :                          +- CometNativeScan parquet spark_catalog.default.date_dim
                      :     :     +- BroadcastExchange
-                     :     :        +- CometNativeColumnarToRow
+                     :     :        +- CometColumnarToRow
                      :     :           +- CometProject
                      :     :              +- CometFilter
                      :     :                 +- CometNativeScan parquet spark_catalog.default.date_dim
                      :     +- BroadcastExchange
-                     :        +- CometNativeColumnarToRow
+                     :        +- CometColumnarToRow
                      :           +- CometProject
                      :              +- CometFilter
                      :                 +- CometNativeScan parquet spark_catalog.default.item
                      +- BroadcastExchange
-                        +- CometNativeColumnarToRow
+                        +- CometColumnarToRow
                            +- CometNativeScan parquet spark_catalog.default.warehouse
 
 Comet accelerated 11 out of 28 eligible operators (39%). Final plan contains 6 transitions between Spark and Comet.

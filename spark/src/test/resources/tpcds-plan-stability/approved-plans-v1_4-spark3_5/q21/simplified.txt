@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
   CometTakeOrderedAndProject [w_warehouse_name,i_item_id,inv_before,inv_after]
     CometFilter [w_warehouse_name,i_item_id,inv_before,inv_after]
       CometHashAggregate [sum,sum] [w_warehouse_name,i_item_id,inv_before,inv_after,sum(CASE WHEN (d_date < 2000-03-11) THEN inv_quantity_on_hand ELSE 0 END),sum(CASE WHEN (d_date >= 2000-03-11) THEN inv_quantity_on_hand ELSE 0 END)]
@@ -14,7 +14,7 @@ CometNativeColumnarToRow
                           CometScan [native_iceberg_compat] parquet spark_catalog.default.inventory [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
                             SubqueryBroadcast [d_date_sk] #1
                               BroadcastExchange #2
-                                CometNativeColumnarToRow
+                                CometColumnarToRow
                                   CometFilter [d_date_sk,d_date]
                                     CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]
                         CometBroadcastExchange [w_warehouse_sk,w_warehouse_name] #3

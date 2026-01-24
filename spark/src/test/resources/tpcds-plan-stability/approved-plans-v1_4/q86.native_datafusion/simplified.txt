@@ -3,13 +3,13 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
     Project [total_sum,i_category,i_class,lochierarchy,rank_within_parent]
       InputAdapter
         Window [_w0,_w1,_w2]
-          CometNativeColumnarToRow
+          CometColumnarToRow
             CometSort [total_sum,i_category,i_class,lochierarchy,_w0,_w1,_w2]
               CometColumnarExchange [_w1,_w2] #1
                 WholeStageCodegen (2)
                   HashAggregate [i_category,i_class,spark_grouping_id,sum] [sum(UnscaledValue(ws_net_paid)),total_sum,lochierarchy,_w0,_w1,_w2,sum]
                     InputAdapter
-                      CometNativeColumnarToRow
+                      CometColumnarToRow
                         CometColumnarExchange [i_category,i_class,spark_grouping_id] #2
                           WholeStageCodegen (1)
                             HashAggregate [i_category,i_class,spark_grouping_id,ws_net_paid] [sum,sum]
@@ -24,7 +24,7 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                               Scan parquet spark_catalog.default.web_sales [ws_item_sk,ws_net_paid,ws_sold_date_sk]
                                                 SubqueryBroadcast [d_date_sk] #1
                                                   BroadcastExchange #3
-                                                    CometNativeColumnarToRow
+                                                    CometColumnarToRow
                                                       CometProject [d_date_sk]
                                                         CometFilter [d_date_sk,d_month_seq]
                                                           CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_month_seq]
@@ -32,7 +32,7 @@ TakeOrderedAndProject [lochierarchy,i_category,rank_within_parent,total_sum,i_cl
                                           ReusedExchange [d_date_sk] #3
                                     InputAdapter
                                       BroadcastExchange #4
-                                        CometNativeColumnarToRow
+                                        CometColumnarToRow
                                           CometProject [i_class,i_category] [i_item_sk,i_class,i_category]
                                             CometFilter [i_item_sk,i_class,i_category]
                                               CometNativeScan parquet spark_catalog.default.item [i_item_sk,i_class,i_category]

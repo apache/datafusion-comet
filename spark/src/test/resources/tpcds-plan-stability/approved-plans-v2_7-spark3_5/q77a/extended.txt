@@ -1,15 +1,15 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometHashAggregate
       +- CometColumnarExchange
          +- HashAggregate
             +- Union
                :- HashAggregate
-               :  +- CometNativeColumnarToRow
+               :  +- CometColumnarToRow
                :     +- CometColumnarExchange
                :        +- HashAggregate
                :           +- Union
-               :              :- CometNativeColumnarToRow
+               :              :- CometColumnarToRow
                :              :  +- CometProject
                :              :     +- CometBroadcastHashJoin
                :              :        :- CometHashAggregate
@@ -23,7 +23,7 @@ CometNativeColumnarToRow
                :              :        :              :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
                :              :        :              :     :        +- SubqueryBroadcast
                :              :        :              :     :           +- BroadcastExchange
-               :              :        :              :     :              +- CometNativeColumnarToRow
+               :              :        :              :     :              +- CometColumnarToRow
                :              :        :              :     :                 +- CometProject
                :              :        :              :     :                    +- CometFilter
                :              :        :              :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
@@ -55,7 +55,7 @@ CometNativeColumnarToRow
                :              :- Project
                :              :  +-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
                :              :     :- BroadcastExchange
-               :              :     :  +- CometNativeColumnarToRow
+               :              :     :  +- CometColumnarToRow
                :              :     :     +- CometHashAggregate
                :              :     :        +- CometExchange
                :              :     :           +- CometHashAggregate
@@ -67,7 +67,7 @@ CometNativeColumnarToRow
                :              :     :                       +- CometProject
                :              :     :                          +- CometFilter
                :              :     :                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-               :              :     +- CometNativeColumnarToRow
+               :              :     +- CometColumnarToRow
                :              :        +- CometHashAggregate
                :              :           +- CometExchange
                :              :              +- CometHashAggregate
@@ -79,7 +79,7 @@ CometNativeColumnarToRow
                :              :                          +- CometProject
                :              :                             +- CometFilter
                :              :                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-               :              +- CometNativeColumnarToRow
+               :              +- CometColumnarToRow
                :                 +- CometProject
                :                    +- CometBroadcastHashJoin
                :                       :- CometHashAggregate
@@ -118,15 +118,15 @@ CometNativeColumnarToRow
                :                                            +- CometFilter
                :                                               +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_page
                :- HashAggregate
-               :  +- CometNativeColumnarToRow
+               :  +- CometColumnarToRow
                :     +- CometColumnarExchange
                :        +- HashAggregate
                :           +- HashAggregate
-               :              +- CometNativeColumnarToRow
+               :              +- CometColumnarToRow
                :                 +- CometColumnarExchange
                :                    +- HashAggregate
                :                       +- Union
-               :                          :- CometNativeColumnarToRow
+               :                          :- CometColumnarToRow
                :                          :  +- CometProject
                :                          :     +- CometBroadcastHashJoin
                :                          :        :- CometHashAggregate
@@ -140,7 +140,7 @@ CometNativeColumnarToRow
                :                          :        :              :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
                :                          :        :              :     :        +- SubqueryBroadcast
                :                          :        :              :     :           +- BroadcastExchange
-               :                          :        :              :     :              +- CometNativeColumnarToRow
+               :                          :        :              :     :              +- CometColumnarToRow
                :                          :        :              :     :                 +- CometProject
                :                          :        :              :     :                    +- CometFilter
                :                          :        :              :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
@@ -172,7 +172,7 @@ CometNativeColumnarToRow
                :                          :- Project
                :                          :  +-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
                :                          :     :- BroadcastExchange
-               :                          :     :  +- CometNativeColumnarToRow
+               :                          :     :  +- CometColumnarToRow
                :                          :     :     +- CometHashAggregate
                :                          :     :        +- CometExchange
                :                          :     :           +- CometHashAggregate
@@ -184,7 +184,7 @@ CometNativeColumnarToRow
                :                          :     :                       +- CometProject
                :                          :     :                          +- CometFilter
                :                          :     :                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-               :                          :     +- CometNativeColumnarToRow
+               :                          :     +- CometColumnarToRow
                :                          :        +- CometHashAggregate
                :                          :           +- CometExchange
                :                          :              +- CometHashAggregate
@@ -196,7 +196,7 @@ CometNativeColumnarToRow
                :                          :                          +- CometProject
                :                          :                             +- CometFilter
                :                          :                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-               :                          +- CometNativeColumnarToRow
+               :                          +- CometColumnarToRow
                :                             +- CometProject
                :                                +- CometBroadcastHashJoin
                :                                   :- CometHashAggregate
@@ -235,15 +235,15 @@ CometNativeColumnarToRow
                :                                                        +- CometFilter
                :                                                           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_page
                +- HashAggregate
-                  +- CometNativeColumnarToRow
+                  +- CometColumnarToRow
                      +- CometColumnarExchange
                         +- HashAggregate
                            +- HashAggregate
-                              +- CometNativeColumnarToRow
+                              +- CometColumnarToRow
                                  +- CometColumnarExchange
                                     +- HashAggregate
                                        +- Union
-                                          :- CometNativeColumnarToRow
+                                          :- CometColumnarToRow
                                           :  +- CometProject
                                           :     +- CometBroadcastHashJoin
                                           :        :- CometHashAggregate
@@ -257,7 +257,7 @@ CometNativeColumnarToRow
                                           :        :              :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
                                           :        :              :     :        +- SubqueryBroadcast
                                           :        :              :     :           +- BroadcastExchange
-                                          :        :              :     :              +- CometNativeColumnarToRow
+                                          :        :              :     :              +- CometColumnarToRow
                                           :        :              :     :                 +- CometProject
                                           :        :              :     :                    +- CometFilter
                                           :        :              :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
@@ -289,7 +289,7 @@ CometNativeColumnarToRow
                                           :- Project
                                           :  +-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
                                           :     :- BroadcastExchange
-                                          :     :  +- CometNativeColumnarToRow
+                                          :     :  +- CometColumnarToRow
                                           :     :     +- CometHashAggregate
                                           :     :        +- CometExchange
                                           :     :           +- CometHashAggregate
@@ -301,7 +301,7 @@ CometNativeColumnarToRow
                                           :     :                       +- CometProject
                                           :     :                          +- CometFilter
                                           :     :                             +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-                                          :     +- CometNativeColumnarToRow
+                                          :     +- CometColumnarToRow
                                           :        +- CometHashAggregate
                                           :           +- CometExchange
                                           :              +- CometHashAggregate
@@ -313,7 +313,7 @@ CometNativeColumnarToRow
                                           :                          +- CometProject
                                           :                             +- CometFilter
                                           :                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
-                                          +- CometNativeColumnarToRow
+                                          +- CometColumnarToRow
                                              +- CometProject
                                                 +- CometBroadcastHashJoin
                                                    :- CometHashAggregate

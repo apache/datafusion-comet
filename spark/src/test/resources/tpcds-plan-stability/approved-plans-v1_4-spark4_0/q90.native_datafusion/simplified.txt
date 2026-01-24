@@ -2,7 +2,7 @@ WholeStageCodegen (1)
   Project [amc,pmc]
     BroadcastNestedLoopJoin
       InputAdapter
-        CometNativeColumnarToRow
+        CometColumnarToRow
           CometHashAggregate [count] [amc,count(1)]
             CometExchange #1
               CometHashAggregate [count]
@@ -29,7 +29,7 @@ WholeStageCodegen (1)
                           CometNativeScan parquet spark_catalog.default.web_page [wp_web_page_sk,wp_char_count]
       InputAdapter
         BroadcastExchange #5
-          CometNativeColumnarToRow
+          CometColumnarToRow
             CometHashAggregate [count] [pmc,count(1)]
               CometExchange #6
                 CometHashAggregate [count]

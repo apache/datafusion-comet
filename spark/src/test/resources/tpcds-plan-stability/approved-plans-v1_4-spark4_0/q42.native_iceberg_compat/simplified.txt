@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
   CometTakeOrderedAndProject [d_year,i_category_id,i_category,sum(ss_ext_sales_price)]
     CometHashAggregate [sum] [d_year,i_category_id,i_category,sum(ss_ext_sales_price),sum(UnscaledValue(ss_ext_sales_price))]
       CometExchange [d_year,i_category_id,i_category] #1

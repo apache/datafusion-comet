@@ -1,13 +1,13 @@
 == Physical Plan ==
 TakeOrderedAndProject (39)
 +- * HashAggregate (38)
-   +- CometNativeColumnarToRow (37)
+   +- CometColumnarToRow (37)
       +- CometColumnarExchange (36)
          +- * HashAggregate (35)
             +- * Project (34)
                +- * Filter (33)
                   +- * BroadcastHashJoin ExistenceJoin(exists#1) BuildRight (32)
-                     :- CometNativeColumnarToRow (26)
+                     :- CometColumnarToRow (26)
                      :  +- CometProject (25)
                      :     +- CometBroadcastHashJoin (24)
                      :        :- CometProject (19)
@@ -34,7 +34,7 @@ TakeOrderedAndProject (39)
                      :              +- CometFilter (21)
                      :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item (20)
                      +- BroadcastExchange (31)
-                        +- CometNativeColumnarToRow (30)
+                        +- CometColumnarToRow (30)
                            +- CometProject (29)
                               +- CometFilter (28)
                                  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item (27)
@@ -160,7 +160,7 @@ Arguments: [ws_item_sk#2], [i_item_sk#16], Inner, BuildRight
 Input [6]: [ws_item_sk#2, ws_sales_price#4, ca_city#10, ca_zip#12, i_item_sk#16, i_item_id#18]
 Arguments: [ws_sales_price#4, ca_city#10, ca_zip#12, i_item_id#18], [ws_sales_price#4, ca_city#10, ca_zip#12, i_item_id#18]
 
-(26) CometNativeColumnarToRow
+(26) CometColumnarToRow
 Input [4]: [ws_sales_price#4, ca_city#10, ca_zip#12, i_item_id#18]
 
 (27) CometScan [native_iceberg_compat] parquet spark_catalog.default.item
@@ -178,7 +178,7 @@ Condition : i_item_sk#19 IN (2,3,5,7,11,13,17,19,23,29)
 Input [2]: [i_item_sk#19, i_item_id#20]
 Arguments: [i_item_id#21], [static_invoke(CharVarcharCodegenUtils.readSidePadding(i_item_id#20, 16)) AS i_item_id#21]
 
-(30) CometNativeColumnarToRow
+(30) CometColumnarToRow
 Input [1]: [i_item_id#21]
 
 (31) BroadcastExchange
@@ -210,7 +210,7 @@ Results [3]: [ca_zip#12, ca_city#10, sum#23]
 Input [3]: [ca_zip#12, ca_city#10, sum#23]
 Arguments: hashpartitioning(ca_zip#12, ca_city#10, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
-(37) CometNativeColumnarToRow
+(37) CometColumnarToRow
 Input [3]: [ca_zip#12, ca_city#10, sum#23]
 
 (38) HashAggregate [codegen id : 2]
@@ -228,7 +228,7 @@ Arguments: 100, [ca_zip#12 ASC NULLS FIRST, ca_city#10 ASC NULLS FIRST], [ca_zip
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ws_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (44)
-+- CometNativeColumnarToRow (43)
++- CometColumnarToRow (43)
    +- CometProject (42)
       +- CometFilter (41)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (40)
@@ -249,7 +249,7 @@ Condition : ((((isnotnull(d_qoy#15) AND isnotnull(d_year#14)) AND (d_qoy#15 = 2)
 Input [3]: [d_date_sk#13, d_year#14, d_qoy#15]
 Arguments: [d_date_sk#13], [d_date_sk#13]
 
-(43) CometNativeColumnarToRow
+(43) CometColumnarToRow
 Input [1]: [d_date_sk#13]
 
 (44) BroadcastExchange

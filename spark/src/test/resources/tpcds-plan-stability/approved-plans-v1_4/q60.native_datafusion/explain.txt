@@ -1,12 +1,12 @@
 == Physical Plan ==
 TakeOrderedAndProject (67)
 +- * HashAggregate (66)
-   +- CometNativeColumnarToRow (65)
+   +- CometColumnarToRow (65)
       +- CometColumnarExchange (64)
          +- * HashAggregate (63)
             +- Union (62)
                :- * HashAggregate (29)
-               :  +- CometNativeColumnarToRow (28)
+               :  +- CometColumnarToRow (28)
                :     +- CometColumnarExchange (27)
                :        +- * HashAggregate (26)
                :           +- * Project (25)
@@ -20,12 +20,12 @@ TakeOrderedAndProject (67)
                :                 :     :     :     +- Scan parquet spark_catalog.default.store_sales (1)
                :                 :     :     +- ReusedExchange (4)
                :                 :     +- BroadcastExchange (11)
-               :                 :        +- CometNativeColumnarToRow (10)
+               :                 :        +- CometColumnarToRow (10)
                :                 :           +- CometProject (9)
                :                 :              +- CometFilter (8)
                :                 :                 +- CometNativeScan parquet spark_catalog.default.customer_address (7)
                :                 +- BroadcastExchange (23)
-               :                    +- CometNativeColumnarToRow (22)
+               :                    +- CometColumnarToRow (22)
                :                       +- CometProject (21)
                :                          +- CometBroadcastHashJoin (20)
                :                             :- CometFilter (15)
@@ -35,7 +35,7 @@ TakeOrderedAndProject (67)
                :                                   +- CometFilter (17)
                :                                      +- CometNativeScan parquet spark_catalog.default.item (16)
                :- * HashAggregate (45)
-               :  +- CometNativeColumnarToRow (44)
+               :  +- CometColumnarToRow (44)
                :     +- CometColumnarExchange (43)
                :        +- * HashAggregate (42)
                :           +- * Project (41)
@@ -51,7 +51,7 @@ TakeOrderedAndProject (67)
                :                 :     +- ReusedExchange (36)
                :                 +- ReusedExchange (39)
                +- * HashAggregate (61)
-                  +- CometNativeColumnarToRow (60)
+                  +- CometColumnarToRow (60)
                      +- CometColumnarExchange (59)
                         +- * HashAggregate (58)
                            +- * Project (57)
@@ -111,7 +111,7 @@ Condition : ((isnotnull(ca_gmt_offset#8) AND (ca_gmt_offset#8 = -5.00)) AND isno
 Input [2]: [ca_address_sk#7, ca_gmt_offset#8]
 Arguments: [ca_address_sk#7], [ca_address_sk#7]
 
-(10) CometNativeColumnarToRow
+(10) CometColumnarToRow
 Input [1]: [ca_address_sk#7]
 
 (11) BroadcastExchange
@@ -166,7 +166,7 @@ Arguments: [staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCod
 Input [2]: [i_item_sk#9, i_item_id#10]
 Arguments: [i_item_sk#9, i_item_id#14], [i_item_sk#9, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_item_id#10, 16, true, false, true) AS i_item_id#14]
 
-(22) CometNativeColumnarToRow
+(22) CometColumnarToRow
 Input [2]: [i_item_sk#9, i_item_id#14]
 
 (23) BroadcastExchange
@@ -194,7 +194,7 @@ Results [2]: [i_item_id#14, sum#16]
 Input [2]: [i_item_id#14, sum#16]
 Arguments: hashpartitioning(i_item_id#14, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
-(28) CometNativeColumnarToRow
+(28) CometColumnarToRow
 Input [2]: [i_item_id#14, sum#16]
 
 (29) HashAggregate [codegen id : 2]
@@ -269,7 +269,7 @@ Results [2]: [i_item_id#27, sum#29]
 Input [2]: [i_item_id#27, sum#29]
 Arguments: hashpartitioning(i_item_id#27, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
-(44) CometNativeColumnarToRow
+(44) CometColumnarToRow
 Input [2]: [i_item_id#27, sum#29]
 
 (45) HashAggregate [codegen id : 4]
@@ -344,7 +344,7 @@ Results [2]: [i_item_id#39, sum#41]
 Input [2]: [i_item_id#39, sum#41]
 Arguments: hashpartitioning(i_item_id#39, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
-(60) CometNativeColumnarToRow
+(60) CometColumnarToRow
 Input [2]: [i_item_id#39, sum#41]
 
 (61) HashAggregate [codegen id : 6]
@@ -367,7 +367,7 @@ Results [3]: [i_item_id#18, sum#46, isEmpty#47]
 Input [3]: [i_item_id#18, sum#46, isEmpty#47]
 Arguments: hashpartitioning(i_item_id#18, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=6]
 
-(65) CometNativeColumnarToRow
+(65) CometColumnarToRow
 Input [3]: [i_item_id#18, sum#46, isEmpty#47]
 
 (66) HashAggregate [codegen id : 8]
@@ -385,7 +385,7 @@ Arguments: 100, [i_item_id#18 ASC NULLS FIRST, total_sales#49 ASC NULLS FIRST], 
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#4 IN dynamicpruning#5
 BroadcastExchange (72)
-+- CometNativeColumnarToRow (71)
++- CometColumnarToRow (71)
    +- CometProject (70)
       +- CometFilter (69)
          +- CometNativeScan parquet spark_catalog.default.date_dim (68)
@@ -406,7 +406,7 @@ Condition : ((((isnotnull(d_year#50) AND isnotnull(d_moy#51)) AND (d_year#50 = 1
 Input [3]: [d_date_sk#6, d_year#50, d_moy#51]
 Arguments: [d_date_sk#6], [d_date_sk#6]
 
-(71) CometNativeColumnarToRow
+(71) CometColumnarToRow
 Input [1]: [d_date_sk#6]
 
 (72) BroadcastExchange

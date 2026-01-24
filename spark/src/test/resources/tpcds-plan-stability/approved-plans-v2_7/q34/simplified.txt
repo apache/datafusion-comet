@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
   CometSort [c_last_name,c_first_name,c_salutation,c_preferred_cust_flag,ss_ticket_number,cnt]
     CometExchange [c_last_name,c_first_name,c_salutation,c_preferred_cust_flag,ss_ticket_number] #1
       CometProject [c_last_name,c_first_name,c_salutation,c_preferred_cust_flag,ss_ticket_number,cnt]
@@ -17,7 +17,7 @@ CometNativeColumnarToRow
                                 CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_customer_sk,ss_hdemo_sk,ss_store_sk,ss_ticket_number,ss_sold_date_sk]
                                   SubqueryBroadcast [d_date_sk] #1
                                     BroadcastExchange #3
-                                      CometNativeColumnarToRow
+                                      CometColumnarToRow
                                         CometProject [d_date_sk]
                                           CometFilter [d_date_sk,d_year,d_dom]
                                             CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_dom]
