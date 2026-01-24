@@ -400,6 +400,9 @@ object CometConf extends ShimCometConf {
           "which can improve performance for wide tables while still providing " +
           "reasonable distribution.")
       .intConf
+      .checkValue(
+        v => v >= 0,
+        "The maximum number of columns to hash for round robin partitioning must be non-negative.")
       .createWithDefault(0)
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =

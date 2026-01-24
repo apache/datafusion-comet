@@ -87,7 +87,8 @@ impossible to match Spark's exact partition assignments.
 Instead of true round-robin assignment, Comet implements round-robin as hash partitioning on ALL columns. This
 achieves the same semantic goals:
 
-- **Even distribution**: Rows are distributed evenly across partitions
+- **Even distribution**: Rows are distributed evenly across partitions (as long as the hash varies sufficiently -
+  in some cases there could be skew)
 - **Deterministic**: Same input always produces the same partition assignments (important for fault tolerance)
 - **No semantic grouping**: Unlike hash partitioning on specific columns, this doesn't group related rows together
 
