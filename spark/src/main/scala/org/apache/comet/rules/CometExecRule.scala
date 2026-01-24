@@ -51,9 +51,8 @@ import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, Unsupported}
+import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
-import org.apache.comet.serde.operator.CometDataWritingCommand
 
 object CometExecRule {
 
@@ -190,6 +189,9 @@ case class CometExecRule(session: SparkSession) extends Rule[SparkPlan] {
       // Config checks (COMET_ICEBERG_NATIVE_ENABLED, COMET_EXEC_ENABLED) are done in CometScanRule
       case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
         convertToComet(scan, CometIcebergNativeScan).getOrElse(scan)
+
+      case scan: CometBatchScanExec if scan.wrapped.scan.isInstanceOf[CSVScan] =>
+        convertToComet(scan, CometCsvNativeScanExec).getOrElse(scan)
 
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>

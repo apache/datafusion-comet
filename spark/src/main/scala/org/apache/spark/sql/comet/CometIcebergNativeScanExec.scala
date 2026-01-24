@@ -166,8 +166,7 @@ case class CometIcebergNativeScanExec(
         this.metadataLocation == other.metadataLocation &&
         this.output == other.output &&
         this.serializedPlanOpt == other.serializedPlanOpt &&
-        this.numPartitions == other.numPartitions &&
-        this.nativeIcebergScanMetadata == other.nativeIcebergScanMetadata
+        this.numPartitions == other.numPartitions
       case _ =>
         false
     }
@@ -178,8 +177,7 @@ case class CometIcebergNativeScanExec(
       metadataLocation,
       output.asJava,
       serializedPlanOpt,
-      numPartitions: java.lang.Integer,
-      nativeIcebergScanMetadata)
+      numPartitions: java.lang.Integer)
 }
 
 object CometIcebergNativeScanExec {
