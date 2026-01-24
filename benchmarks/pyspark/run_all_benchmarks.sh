@@ -105,9 +105,6 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.comet.explainFallback.enabled=true \
   --conf spark.comet.exec.shuffle.mode=native \
   --conf spark.comet.exec.replaceSortMergeJoin=true \
-  --conf spark.comet.native.shuffle.partitioning.roundrobin.enabled=true \
-  --conf spark.comet.native.shuffle.partitioning.roundrobin.maxHashColumns=0 \
-  --conf spark.comet.parquet.write.enabled=true \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
   --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
   --conf spark.comet.cast.allowIncompatible=true \

@@ -62,3 +62,11 @@ overflow-checks = false
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+
+# CI profile: faster compilation, same overflow behavior as release
+# Use with: cargo build --profile ci
+[profile.ci]
+inherits = "release"
+lto = false          # Skip LTO for faster linking
+codegen-units = 16   # Parallel codegen (faster compile, slightly larger binary)
+# overflow-checks inherited as false from release
