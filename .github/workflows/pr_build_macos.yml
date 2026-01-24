@@ -47,8 +47,23 @@ env:
 
 jobs:
 
+  # Fast lint check - gates all other jobs (runs on Linux for cost efficiency)
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check Rust formatting
+        run: |
+          rustup component add rustfmt
+          cd native && cargo fmt --all -- --check
+
   # Build native library once and share with all test jobs
   build-native:
+    needs: lint
     name: Build Native Library (macOS)
     runs-on: macos-14
     steps:
@@ -62,8 +77,8 @@ jobs:
           jdk-architecture: aarch64
           protoc-architecture: aarch_64
 
-      - name: Cache Cargo
-        uses: actions/cache@v4
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
@@ -86,6 +101,16 @@ jobs:
           name: native-lib-macos
           path: native/target/ci/libcomet.dylib
           retention-days: 1
+
+      - name: Save Cargo cache
+        uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
 
   macos-aarch64-test:
     needs: build-native
