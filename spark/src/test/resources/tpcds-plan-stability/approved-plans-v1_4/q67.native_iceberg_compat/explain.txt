@@ -2,7 +2,7 @@
 TakeOrderedAndProject (30)
 +- * Filter (29)
    +- Window (28)
-      +- CometNativeColumnarToRow (27)
+      +- * CometColumnarToRow (27)
          +- CometSort (26)
             +- CometExchange (25)
                +- CometHashAggregate (24)
@@ -153,14 +153,14 @@ Arguments: hashpartitioning(i_category#24, 5), ENSURE_REQUIREMENTS, CometNativeS
 Input [9]: [i_category#24, i_class#25, i_brand#26, i_product_name#27, d_year#28, d_qoy#29, d_moy#30, s_store_id#31, sumsales#35]
 Arguments: [i_category#24, i_class#25, i_brand#26, i_product_name#27, d_year#28, d_qoy#29, d_moy#30, s_store_id#31, sumsales#35], [i_category#24 ASC NULLS FIRST, sumsales#35 DESC NULLS LAST]
 
-(27) CometNativeColumnarToRow
+(27) CometColumnarToRow [codegen id : 1]
 Input [9]: [i_category#24, i_class#25, i_brand#26, i_product_name#27, d_year#28, d_qoy#29, d_moy#30, s_store_id#31, sumsales#35]
 
 (28) Window
 Input [9]: [i_category#24, i_class#25, i_brand#26, i_product_name#27, d_year#28, d_qoy#29, d_moy#30, s_store_id#31, sumsales#35]
 Arguments: [rank(sumsales#35) windowspecdefinition(i_category#24, sumsales#35 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rk#36], [i_category#24], [sumsales#35 DESC NULLS LAST]
 
-(29) Filter [codegen id : 1]
+(29) Filter [codegen id : 2]
 Input [10]: [i_category#24, i_class#25, i_brand#26, i_product_name#27, d_year#28, d_qoy#29, d_moy#30, s_store_id#31, sumsales#35, rk#36]
 Condition : (rk#36 <= 100)
 

@@ -3,11 +3,11 @@ TakeOrderedAndProject (74)
 +- * Filter (73)
    +- Window (72)
       +- WindowGroupLimit (71)
-         +- CometNativeColumnarToRow (70)
+         +- * CometColumnarToRow (70)
             +- CometSort (69)
                +- CometColumnarExchange (68)
                   +- WindowGroupLimit (67)
-                     +- CometNativeColumnarToRow (66)
+                     +- * CometColumnarToRow (66)
                         +- CometSort (65)
                            +- CometUnion (64)
                               :- CometHashAggregate (23)
@@ -376,7 +376,7 @@ Child 8 Input [9]: [i_category#190, i_class#191, i_brand#192, i_product_name#193
 Input [9]: [i_category#146, i_class#147, i_brand#148, i_product_name#149, d_year#150, d_qoy#151, d_moy#152, s_store_id#153, sumsales#154]
 Arguments: [i_category#146, i_class#147, i_brand#148, i_product_name#149, d_year#150, d_qoy#151, d_moy#152, s_store_id#153, sumsales#154], [i_category#146 ASC NULLS FIRST, sumsales#154 DESC NULLS LAST]
 
-(66) CometNativeColumnarToRow
+(66) CometColumnarToRow [codegen id : 1]
 Input [9]: [i_category#146, i_class#147, i_brand#148, i_product_name#149, d_year#150, d_qoy#151, d_moy#152, s_store_id#153, sumsales#154]
 
 (67) WindowGroupLimit
@@ -391,7 +391,7 @@ Arguments: hashpartitioning(i_category#146, 5), ENSURE_REQUIREMENTS, CometColumn
 Input [9]: [i_category#146, i_class#147, i_brand#148, i_product_name#149, d_year#150, d_qoy#151, d_moy#152, s_store_id#153, sumsales#154]
 Arguments: [i_category#146, i_class#147, i_brand#148, i_product_name#149, d_year#150, d_qoy#151, d_moy#152, s_store_id#153, sumsales#154], [i_category#146 ASC NULLS FIRST, sumsales#154 DESC NULLS LAST]
 
-(70) CometNativeColumnarToRow
+(70) CometColumnarToRow [codegen id : 2]
 Input [9]: [i_category#146, i_class#147, i_brand#148, i_product_name#149, d_year#150, d_qoy#151, d_moy#152, s_store_id#153, sumsales#154]
 
 (71) WindowGroupLimit
@@ -402,7 +402,7 @@ Arguments: [i_category#146], [sumsales#154 DESC NULLS LAST], rank(sumsales#154),
 Input [9]: [i_category#146, i_class#147, i_brand#148, i_product_name#149, d_year#150, d_qoy#151, d_moy#152, s_store_id#153, sumsales#154]
 Arguments: [rank(sumsales#154) windowspecdefinition(i_category#146, sumsales#154 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rk#199], [i_category#146], [sumsales#154 DESC NULLS LAST]
 
-(73) Filter [codegen id : 1]
+(73) Filter [codegen id : 3]
 Input [10]: [i_category#146, i_class#147, i_brand#148, i_product_name#149, d_year#150, d_qoy#151, d_moy#152, s_store_id#153, sumsales#154, rk#199]
 Condition : (rk#199 <= 100)
 

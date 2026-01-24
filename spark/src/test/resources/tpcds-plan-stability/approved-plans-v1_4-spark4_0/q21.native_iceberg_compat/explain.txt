@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (24)
+* CometColumnarToRow (24)
 +- CometTakeOrderedAndProject (23)
    +- CometFilter (22)
       +- CometHashAggregate (21)
@@ -135,7 +135,7 @@ Condition : (CASE WHEN (inv_before#16 > 0) THEN (knownfloatingpointnormalized(no
 Input [4]: [w_warehouse_name#7, i_item_id#11, inv_before#16, inv_after#17]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[w_warehouse_name#7 ASC NULLS FIRST,i_item_id#11 ASC NULLS FIRST], output=[w_warehouse_name#7,i_item_id#11,inv_before#16,inv_after#17]), [w_warehouse_name#7, i_item_id#11, inv_before#16, inv_after#17], 100, 0, [w_warehouse_name#7 ASC NULLS FIRST, i_item_id#11 ASC NULLS FIRST], [w_warehouse_name#7, i_item_id#11, inv_before#16, inv_after#17]
 
-(24) CometNativeColumnarToRow
+(24) CometColumnarToRow [codegen id : 1]
 Input [4]: [w_warehouse_name#7, i_item_id#11, inv_before#16, inv_after#17]
 
 ===== Subqueries =====

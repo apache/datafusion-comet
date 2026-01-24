@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (72)
+* CometColumnarToRow (72)
 +- CometTakeOrderedAndProject (71)
    +- CometProject (70)
       +- CometBroadcastHashJoin (69)
@@ -408,7 +408,7 @@ Arguments: [customer_id#31, customer_first_name#32, customer_last_name#33], [cus
 Input [3]: [customer_id#31, customer_first_name#32, customer_last_name#33]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[customer_first_name#32 ASC NULLS FIRST,customer_id#31 ASC NULLS FIRST,customer_last_name#33 ASC NULLS FIRST], output=[customer_id#31,customer_first_name#32,customer_last_name#33]), [customer_id#31, customer_first_name#32, customer_last_name#33], 100, 0, [customer_first_name#32 ASC NULLS FIRST, customer_id#31 ASC NULLS FIRST, customer_last_name#33 ASC NULLS FIRST], [customer_id#31, customer_first_name#32, customer_last_name#33]
 
-(72) CometNativeColumnarToRow
+(72) CometColumnarToRow [codegen id : 1]
 Input [3]: [customer_id#31, customer_first_name#32, customer_last_name#33]
 
 ===== Subqueries =====

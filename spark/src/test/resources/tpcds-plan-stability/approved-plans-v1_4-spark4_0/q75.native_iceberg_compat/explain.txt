@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (124)
+* CometColumnarToRow (124)
 +- CometTakeOrderedAndProject (123)
    +- CometProject (122)
       +- CometSortMergeJoin (121)
@@ -676,7 +676,7 @@ Arguments: [prev_year#127, year#128, i_brand_id#8, i_class_id#9, i_category_id#1
 Input [10]: [prev_year#127, year#128, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#129, curr_yr_cnt#130, sales_cnt_diff#131, sales_amt_diff#132]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[sales_cnt_diff#131 ASC NULLS FIRST], output=[prev_year#127,year#128,i_brand_id#8,i_class_id#9,i_category_id#10,i_manufact_id#12,prev_yr_cnt#129,curr_yr_cnt#130,sales_cnt_diff#131,sales_amt_diff#132]), [prev_year#127, year#128, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#129, curr_yr_cnt#130, sales_cnt_diff#131, sales_amt_diff#132], 100, 0, [sales_cnt_diff#131 ASC NULLS FIRST], [prev_year#127, year#128, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#129, curr_yr_cnt#130, sales_cnt_diff#131, sales_amt_diff#132]
 
-(124) CometNativeColumnarToRow
+(124) CometColumnarToRow [codegen id : 1]
 Input [10]: [prev_year#127, year#128, i_brand_id#8, i_class_id#9, i_category_id#10, i_manufact_id#12, prev_yr_cnt#129, curr_yr_cnt#130, sales_cnt_diff#131, sales_amt_diff#132]
 
 ===== Subqueries =====

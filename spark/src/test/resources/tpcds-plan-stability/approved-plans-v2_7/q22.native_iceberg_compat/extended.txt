@@ -1,12 +1,12 @@
 TakeOrderedAndProject
 +- HashAggregate
-   +- CometNativeColumnarToRow
+   +- CometColumnarToRow
       +- CometColumnarExchange
          +- HashAggregate
             +- Expand
                +- Project
                   +-  BroadcastNestedLoopJoin [COMET: BroadcastNestedLoopJoin is not supported]
-                     :- CometNativeColumnarToRow
+                     :- CometColumnarToRow
                      :  +- CometProject
                      :     +- CometBroadcastHashJoin
                      :        :- CometProject

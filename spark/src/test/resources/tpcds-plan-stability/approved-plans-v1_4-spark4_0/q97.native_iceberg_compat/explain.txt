@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (25)
+* CometColumnarToRow (25)
 +- CometHashAggregate (24)
    +- CometExchange (23)
       +- CometHashAggregate (22)
@@ -139,7 +139,7 @@ Input [3]: [sum#16, sum#17, sum#18]
 Keys: []
 Functions [3]: [sum(CASE WHEN (isnotnull(customer_sk#7) AND isnull(customer_sk#14)) THEN 1 ELSE 0 END), sum(CASE WHEN (isnull(customer_sk#7) AND isnotnull(customer_sk#14)) THEN 1 ELSE 0 END), sum(CASE WHEN (isnotnull(customer_sk#7) AND isnotnull(customer_sk#14)) THEN 1 ELSE 0 END)]
 
-(25) CometNativeColumnarToRow
+(25) CometColumnarToRow [codegen id : 1]
 Input [3]: [store_only#19, catalog_only#20, store_and_catalog#21]
 
 ===== Subqueries =====

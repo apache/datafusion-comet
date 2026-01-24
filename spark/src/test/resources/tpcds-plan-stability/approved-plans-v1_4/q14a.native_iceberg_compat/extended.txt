@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometHashAggregate
       +- CometExchange
@@ -8,7 +8,7 @@ CometNativeColumnarToRow
                   :- CometProject
                   :  +- CometFilter
                   :     :  +- Subquery
-                  :     :     +- CometNativeColumnarToRow
+                  :     :     +- CometColumnarToRow
                   :     :        +- CometHashAggregate
                   :     :           +- CometExchange
                   :     :              +- CometHashAggregate

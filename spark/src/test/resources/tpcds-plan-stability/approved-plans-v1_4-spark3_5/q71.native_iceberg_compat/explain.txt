@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (37)
+* CometColumnarToRow (37)
 +- CometSort (36)
    +- CometExchange (35)
       +- CometHashAggregate (34)
@@ -209,7 +209,7 @@ Arguments: rangepartitioning(ext_price#42 DESC NULLS LAST, brand_id#40 ASC NULLS
 Input [5]: [brand_id#40, brand#41, t_hour#36, t_minute#37, ext_price#42]
 Arguments: [brand_id#40, brand#41, t_hour#36, t_minute#37, ext_price#42], [ext_price#42 DESC NULLS LAST, brand_id#40 ASC NULLS FIRST]
 
-(37) CometNativeColumnarToRow
+(37) CometColumnarToRow [codegen id : 1]
 Input [5]: [brand_id#40, brand#41, t_hour#36, t_minute#37, ext_price#42]
 
 ===== Subqueries =====

@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (34)
+* CometColumnarToRow (34)
 +- CometHashAggregate (33)
    +- CometExchange (32)
       +- CometHashAggregate (31)
@@ -193,7 +193,7 @@ Input [7]: [sum#26, count#27, sum#28, count#29, sum#30, count#31, sum#32]
 Keys: []
 Functions [4]: [avg(ss_quantity#5), avg(UnscaledValue(ss_ext_sales_price#7)), avg(UnscaledValue(ss_ext_wholesale_cost#8)), sum(UnscaledValue(ss_ext_wholesale_cost#8))]
 
-(34) CometNativeColumnarToRow
+(34) CometColumnarToRow [codegen id : 1]
 Input [4]: [avg(ss_quantity)#33, avg(ss_ext_sales_price)#34, avg(ss_ext_wholesale_cost)#35, sum(ss_ext_wholesale_cost)#36]
 
 ===== Subqueries =====

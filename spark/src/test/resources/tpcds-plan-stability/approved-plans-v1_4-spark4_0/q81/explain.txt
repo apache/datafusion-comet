@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (50)
+* CometColumnarToRow (50)
 +- CometTakeOrderedAndProject (49)
    +- CometProject (48)
       +- CometBroadcastHashJoin (47)
@@ -278,7 +278,7 @@ Arguments: [c_customer_id#35, c_salutation#36, c_first_name#37, c_last_name#38, 
 Input [16]: [c_customer_id#35, c_salutation#36, c_first_name#37, c_last_name#38, ca_street_number#51, ca_street_name#41, ca_street_type#52, ca_suite_number#53, ca_city#44, ca_county#45, ca_state#54, ca_zip#55, ca_country#48, ca_gmt_offset#49, ca_location_type#56, ctr_total_return#14]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[c_customer_id#35 ASC NULLS FIRST,c_salutation#36 ASC NULLS FIRST,c_first_name#37 ASC NULLS FIRST,c_last_name#38 ASC NULLS FIRST,ca_street_number#51 ASC NULLS FIRST,ca_street_name#41 ASC NULLS FIRST,ca_street_type#52 ASC NULLS FIRST,ca_suite_number#53 ASC NULLS FIRST,ca_city#44 ASC NULLS FIRST,ca_county#45 ASC NULLS FIRST,ca_state#54 ASC NULLS FIRST,ca_zip#55 ASC NULLS FIRST,ca_country#48 ASC NULLS FIRST,ca_gmt_offset#49 ASC NULLS FIRST,ca_location_type#56 ASC NULLS FIRST,ctr_total_return#14 ASC NULLS FIRST], output=[c_customer_id#35,c_salutation#36,c_first_name#37,c_last_name#38,ca_street_number#51,ca_street_name#41,ca_street_type#52,ca_suite_number#53,ca_city#44,ca_county#45,ca_state#54,ca_zip#55,ca_country#48,ca_gmt_offset#49,ca_location_type#56,ctr_total_return#14]), [c_customer_id#35, c_salutation#36, c_first_name#37, c_last_name#38, ca_street_number#51, ca_street_name#41, ca_street_type#52, ca_suite_number#53, ca_city#44, ca_county#45, ca_state#54, ca_zip#55, ca_country#48, ca_gmt_offset#49, ca_location_type#56, ctr_total_return#14], 100, 0, [c_customer_id#35 ASC NULLS FIRST, c_salutation#36 ASC NULLS FIRST, c_first_name#37 ASC NULLS FIRST, c_last_name#38 ASC NULLS FIRST, ca_street_number#51 ASC NULLS FIRST, ca_street_name#41 ASC NULLS FIRST, ca_street_type#52 ASC NULLS FIRST, ca_suite_number#53 ASC NULLS FIRST, ca_city#44 ASC NULLS FIRST, ca_county#45 ASC NULLS FIRST, ca_state#54 ASC NULLS FIRST, ca_zip#55 ASC NULLS FIRST, ca_country#48 ASC NULLS FIRST, ca_gmt_offset#49 ASC NULLS FIRST, ca_location_type#56 ASC NULLS FIRST, ctr_total_return#14 ASC NULLS FIRST], [c_customer_id#35, c_salutation#36, c_first_name#37, c_last_name#38, ca_street_number#51, ca_street_name#41, ca_street_type#52, ca_suite_number#53, ca_city#44, ca_county#45, ca_state#54, ca_zip#55, ca_country#48, ca_gmt_offset#49, ca_location_type#56, ctr_total_return#14]
 
-(50) CometNativeColumnarToRow
+(50) CometColumnarToRow [codegen id : 1]
 Input [16]: [c_customer_id#35, c_salutation#36, c_first_name#37, c_last_name#38, ca_street_number#51, ca_street_name#41, ca_street_type#52, ca_suite_number#53, ca_city#44, ca_county#45, ca_state#54, ca_zip#55, ca_country#48, ca_gmt_offset#49, ca_location_type#56, ctr_total_return#14]
 
 ===== Subqueries =====

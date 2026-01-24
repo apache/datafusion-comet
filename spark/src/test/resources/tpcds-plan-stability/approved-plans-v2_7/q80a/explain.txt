@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (116)
+* CometColumnarToRow (116)
 +- CometTakeOrderedAndProject (115)
    +- CometHashAggregate (114)
       +- CometExchange (113)
@@ -641,7 +641,7 @@ Functions: []
 Input [5]: [channel#76, id#77, sales#112, returns#113, profit#114]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#76 ASC NULLS FIRST,id#77 ASC NULLS FIRST], output=[channel#76,id#77,sales#112,returns#113,profit#114]), [channel#76, id#77, sales#112, returns#113, profit#114], 100, 0, [channel#76 ASC NULLS FIRST, id#77 ASC NULLS FIRST], [channel#76, id#77, sales#112, returns#113, profit#114]
 
-(116) CometNativeColumnarToRow
+(116) CometColumnarToRow [codegen id : 1]
 Input [5]: [channel#76, id#77, sales#112, returns#113, profit#114]
 
 ===== Subqueries =====

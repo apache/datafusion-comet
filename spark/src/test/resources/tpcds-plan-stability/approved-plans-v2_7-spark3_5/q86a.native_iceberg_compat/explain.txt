@@ -2,7 +2,7 @@
 TakeOrderedAndProject (37)
 +- * Project (36)
    +- Window (35)
-      +- CometNativeColumnarToRow (34)
+      +- * CometColumnarToRow (34)
          +- CometSort (33)
             +- CometExchange (32)
                +- CometHashAggregate (31)
@@ -191,14 +191,14 @@ Arguments: hashpartitioning(lochierarchy#28, _w0#40, 5), ENSURE_REQUIREMENTS, Co
 Input [5]: [total_sum#23, i_category#24, i_class#25, lochierarchy#28, _w0#40]
 Arguments: [total_sum#23, i_category#24, i_class#25, lochierarchy#28, _w0#40], [lochierarchy#28 ASC NULLS FIRST, _w0#40 ASC NULLS FIRST, total_sum#23 DESC NULLS LAST]
 
-(34) CometNativeColumnarToRow
+(34) CometColumnarToRow [codegen id : 1]
 Input [5]: [total_sum#23, i_category#24, i_class#25, lochierarchy#28, _w0#40]
 
 (35) Window
 Input [5]: [total_sum#23, i_category#24, i_class#25, lochierarchy#28, _w0#40]
 Arguments: [rank(total_sum#23) windowspecdefinition(lochierarchy#28, _w0#40, total_sum#23 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#41], [lochierarchy#28, _w0#40], [total_sum#23 DESC NULLS LAST]
 
-(36) Project [codegen id : 1]
+(36) Project [codegen id : 2]
 Output [5]: [total_sum#23, i_category#24, i_class#25, lochierarchy#28, rank_within_parent#41]
 Input [6]: [total_sum#23, i_category#24, i_class#25, lochierarchy#28, _w0#40, rank_within_parent#41]
 

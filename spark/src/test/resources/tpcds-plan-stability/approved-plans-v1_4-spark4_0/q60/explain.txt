@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (62)
+* CometColumnarToRow (62)
 +- CometTakeOrderedAndProject (61)
    +- CometHashAggregate (60)
       +- CometExchange (59)
@@ -344,7 +344,7 @@ Functions [1]: [sum(total_sales#39)]
 Input [2]: [i_item_id#38, total_sales#44]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_item_id#38 ASC NULLS FIRST,total_sales#44 ASC NULLS FIRST], output=[i_item_id#38,total_sales#44]), [i_item_id#38, total_sales#44], 100, 0, [i_item_id#38 ASC NULLS FIRST, total_sales#44 ASC NULLS FIRST], [i_item_id#38, total_sales#44]
 
-(62) CometNativeColumnarToRow
+(62) CometColumnarToRow [codegen id : 1]
 Input [2]: [i_item_id#38, total_sales#44]
 
 ===== Subqueries =====

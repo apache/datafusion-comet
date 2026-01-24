@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (146)
+* CometColumnarToRow (146)
 +- CometTakeOrderedAndProject (145)
    +- CometUnion (144)
       :- CometHashAggregate (40)
@@ -800,7 +800,7 @@ Child 4 Input [11]: [i_item_id#263, ca_country#264, ca_state#265, county#266, ag
 Input [11]: [i_item_id#31, ca_country#32, ca_state#33, ca_county#34, agg1#229, agg2#230, agg3#231, agg4#232, agg5#233, agg6#234, agg7#235]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[ca_country#32 ASC NULLS FIRST,ca_state#33 ASC NULLS FIRST,ca_county#34 ASC NULLS FIRST,i_item_id#31 ASC NULLS FIRST], output=[i_item_id#31,ca_country#32,ca_state#33,ca_county#34,agg1#229,agg2#230,agg3#231,agg4#232,agg5#233,agg6#234,agg7#235]), [i_item_id#31, ca_country#32, ca_state#33, ca_county#34, agg1#229, agg2#230, agg3#231, agg4#232, agg5#233, agg6#234, agg7#235], 100, 0, [ca_country#32 ASC NULLS FIRST, ca_state#33 ASC NULLS FIRST, ca_county#34 ASC NULLS FIRST, i_item_id#31 ASC NULLS FIRST], [i_item_id#31, ca_country#32, ca_state#33, ca_county#34, agg1#229, agg2#230, agg3#231, agg4#232, agg5#233, agg6#234, agg7#235]
 
-(146) CometNativeColumnarToRow
+(146) CometColumnarToRow [codegen id : 1]
 Input [11]: [i_item_id#31, ca_country#32, ca_state#33, ca_county#34, agg1#229, agg2#230, agg3#231, agg4#232, agg5#233, agg6#234, agg7#235]
 
 ===== Subqueries =====

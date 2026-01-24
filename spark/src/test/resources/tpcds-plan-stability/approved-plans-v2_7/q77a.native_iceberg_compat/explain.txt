@@ -1,16 +1,16 @@
 == Physical Plan ==
-CometNativeColumnarToRow (103)
+* CometColumnarToRow (103)
 +- CometTakeOrderedAndProject (102)
    +- CometHashAggregate (101)
       +- CometColumnarExchange (100)
          +- * HashAggregate (99)
             +- Union (98)
                :- * HashAggregate (83)
-               :  +- CometNativeColumnarToRow (82)
+               :  +- * CometColumnarToRow (82)
                :     +- CometColumnarExchange (81)
                :        +- * HashAggregate (80)
                :           +- Union (79)
-               :              :- CometNativeColumnarToRow (31)
+               :              :- * CometColumnarToRow (31)
                :              :  +- CometProject (30)
                :              :     +- CometBroadcastHashJoin (29)
                :              :        :- CometHashAggregate (16)
@@ -44,7 +44,7 @@ CometNativeColumnarToRow (103)
                :              :- * Project (50)
                :              :  +- * BroadcastNestedLoopJoin Inner BuildLeft (49)
                :              :     :- BroadcastExchange (40)
-               :              :     :  +- CometNativeColumnarToRow (39)
+               :              :     :  +- * CometColumnarToRow (39)
                :              :     :     +- CometHashAggregate (38)
                :              :     :        +- CometExchange (37)
                :              :     :           +- CometHashAggregate (36)
@@ -52,7 +52,7 @@ CometNativeColumnarToRow (103)
                :              :     :                 +- CometBroadcastHashJoin (34)
                :              :     :                    :- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales (32)
                :              :     :                    +- ReusedExchange (33)
-               :              :     +- CometNativeColumnarToRow (48)
+               :              :     +- * CometColumnarToRow (48)
                :              :        +- CometHashAggregate (47)
                :              :           +- CometExchange (46)
                :              :              +- CometHashAggregate (45)
@@ -60,7 +60,7 @@ CometNativeColumnarToRow (103)
                :              :                    +- CometBroadcastHashJoin (43)
                :              :                       :- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_returns (41)
                :              :                       +- ReusedExchange (42)
-               :              +- CometNativeColumnarToRow (78)
+               :              +- * CometColumnarToRow (78)
                :                 +- CometProject (77)
                :                    +- CometBroadcastHashJoin (76)
                :                       :- CometHashAggregate (63)
@@ -89,18 +89,18 @@ CometNativeColumnarToRow (103)
                :                                         :     +- ReusedExchange (66)
                :                                         +- ReusedExchange (69)
                :- * HashAggregate (90)
-               :  +- CometNativeColumnarToRow (89)
+               :  +- * CometColumnarToRow (89)
                :     +- CometColumnarExchange (88)
                :        +- * HashAggregate (87)
                :           +- * HashAggregate (86)
-               :              +- CometNativeColumnarToRow (85)
+               :              +- * CometColumnarToRow (85)
                :                 +- ReusedExchange (84)
                +- * HashAggregate (97)
-                  +- CometNativeColumnarToRow (96)
+                  +- * CometColumnarToRow (96)
                      +- CometColumnarExchange (95)
                         +- * HashAggregate (94)
                            +- * HashAggregate (93)
-                              +- CometNativeColumnarToRow (92)
+                              +- * CometColumnarToRow (92)
                                  +- ReusedExchange (91)
 
 
@@ -245,7 +245,7 @@ Arguments: [s_store_sk#8], [s_store_sk#17], LeftOuter, BuildRight
 Input [6]: [s_store_sk#8, sales#22, profit#23, s_store_sk#17, returns#20, profit_loss#21]
 Arguments: [channel#24, id#25, sales#22, returns#26, profit#27], [store channel AS channel#24, s_store_sk#8 AS id#25, sales#22, coalesce(returns#20, 0.00) AS returns#26, (profit#23 - coalesce(profit_loss#21, 0.00)) AS profit#27]
 
-(31) CometNativeColumnarToRow
+(31) CometColumnarToRow [codegen id : 1]
 Input [5]: [channel#24, id#25, sales#22, returns#26, profit#27]
 
 (32) CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales
@@ -281,7 +281,7 @@ Input [3]: [cs_call_center_sk#28, sum#34, sum#35]
 Keys [1]: [cs_call_center_sk#28]
 Functions [2]: [sum(UnscaledValue(cs_ext_sales_price#29)), sum(UnscaledValue(cs_net_profit#30))]
 
-(39) CometNativeColumnarToRow
+(39) CometColumnarToRow [codegen id : 2]
 Input [3]: [cs_call_center_sk#28, sales#36, profit#37]
 
 (40) BroadcastExchange
@@ -321,14 +321,14 @@ Input [2]: [sum#43, sum#44]
 Keys: []
 Functions [2]: [sum(UnscaledValue(cr_return_amount#38)), sum(UnscaledValue(cr_net_loss#39))]
 
-(48) CometNativeColumnarToRow
+(48) CometColumnarToRow
 Input [2]: [returns#45, profit_loss#46]
 
-(49) BroadcastNestedLoopJoin [codegen id : 1]
+(49) BroadcastNestedLoopJoin [codegen id : 3]
 Join type: Inner
 Join condition: None
 
-(50) Project [codegen id : 1]
+(50) Project [codegen id : 3]
 Output [5]: [catalog channel AS channel#47, cs_call_center_sk#28 AS id#48, sales#36, returns#45, (profit#37 - profit_loss#46) AS profit#49]
 Input [5]: [cs_call_center_sk#28, sales#36, profit#37, returns#45, profit_loss#46]
 
@@ -457,12 +457,12 @@ Arguments: [wp_web_page_sk#56], [wp_web_page_sk#65], LeftOuter, BuildRight
 Input [6]: [wp_web_page_sk#56, sales#70, profit#71, wp_web_page_sk#65, returns#68, profit_loss#69]
 Arguments: [channel#72, id#73, sales#70, returns#74, profit#75], [web channel AS channel#72, wp_web_page_sk#56 AS id#73, sales#70, coalesce(returns#68, 0.00) AS returns#74, (profit#71 - coalesce(profit_loss#69, 0.00)) AS profit#75]
 
-(78) CometNativeColumnarToRow
+(78) CometColumnarToRow [codegen id : 4]
 Input [5]: [channel#72, id#73, sales#70, returns#74, profit#75]
 
 (79) Union
 
-(80) HashAggregate [codegen id : 2]
+(80) HashAggregate [codegen id : 5]
 Input [5]: [channel#24, id#25, sales#22, returns#26, profit#27]
 Keys [2]: [channel#24, id#25]
 Functions [3]: [partial_sum(sales#22), partial_sum(returns#26), partial_sum(profit#27)]
@@ -473,10 +473,10 @@ Results [8]: [channel#24, id#25, sum#82, isEmpty#83, sum#84, isEmpty#85, sum#86,
 Input [8]: [channel#24, id#25, sum#82, isEmpty#83, sum#84, isEmpty#85, sum#86, isEmpty#87]
 Arguments: hashpartitioning(channel#24, id#25, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=8]
 
-(82) CometNativeColumnarToRow
+(82) CometColumnarToRow [codegen id : 6]
 Input [8]: [channel#24, id#25, sum#82, isEmpty#83, sum#84, isEmpty#85, sum#86, isEmpty#87]
 
-(83) HashAggregate [codegen id : 3]
+(83) HashAggregate [codegen id : 6]
 Input [8]: [channel#24, id#25, sum#82, isEmpty#83, sum#84, isEmpty#85, sum#86, isEmpty#87]
 Keys [2]: [channel#24, id#25]
 Functions [3]: [sum(sales#22), sum(returns#26), sum(profit#27)]
@@ -486,17 +486,17 @@ Results [5]: [channel#24, id#25, cast(sum(sales#22)#88 as decimal(37,2)) AS sale
 (84) ReusedExchange [Reuses operator id: 81]
 Output [8]: [channel#24, id#25, sum#82, isEmpty#83, sum#84, isEmpty#85, sum#86, isEmpty#87]
 
-(85) CometNativeColumnarToRow
+(85) CometColumnarToRow [codegen id : 12]
 Input [8]: [channel#24, id#25, sum#82, isEmpty#83, sum#84, isEmpty#85, sum#86, isEmpty#87]
 
-(86) HashAggregate [codegen id : 6]
+(86) HashAggregate [codegen id : 12]
 Input [8]: [channel#24, id#25, sum#82, isEmpty#83, sum#84, isEmpty#85, sum#86, isEmpty#87]
 Keys [2]: [channel#24, id#25]
 Functions [3]: [sum(sales#22), sum(returns#26), sum(profit#27)]
 Aggregate Attributes [3]: [sum(sales#22)#88, sum(returns#26)#89, sum(profit#27)#90]
 Results [4]: [channel#24, sum(sales#22)#88 AS sales#94, sum(returns#26)#89 AS returns#95, sum(profit#27)#90 AS profit#96]
 
-(87) HashAggregate [codegen id : 6]
+(87) HashAggregate [codegen id : 12]
 Input [4]: [channel#24, sales#94, returns#95, profit#96]
 Keys [1]: [channel#24]
 Functions [3]: [partial_sum(sales#94), partial_sum(returns#95), partial_sum(profit#96)]
@@ -507,10 +507,10 @@ Results [7]: [channel#24, sum#103, isEmpty#104, sum#105, isEmpty#106, sum#107, i
 Input [7]: [channel#24, sum#103, isEmpty#104, sum#105, isEmpty#106, sum#107, isEmpty#108]
 Arguments: hashpartitioning(channel#24, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=9]
 
-(89) CometNativeColumnarToRow
+(89) CometColumnarToRow [codegen id : 13]
 Input [7]: [channel#24, sum#103, isEmpty#104, sum#105, isEmpty#106, sum#107, isEmpty#108]
 
-(90) HashAggregate [codegen id : 7]
+(90) HashAggregate [codegen id : 13]
 Input [7]: [channel#24, sum#103, isEmpty#104, sum#105, isEmpty#106, sum#107, isEmpty#108]
 Keys [1]: [channel#24]
 Functions [3]: [sum(sales#94), sum(returns#95), sum(profit#96)]
@@ -520,17 +520,17 @@ Results [5]: [channel#24, null AS id#112, sum(sales#94)#109 AS sales#113, sum(re
 (91) ReusedExchange [Reuses operator id: 81]
 Output [8]: [channel#24, id#25, sum#82, isEmpty#83, sum#84, isEmpty#85, sum#86, isEmpty#87]
 
-(92) CometNativeColumnarToRow
+(92) CometColumnarToRow [codegen id : 19]
 Input [8]: [channel#24, id#25, sum#82, isEmpty#83, sum#84, isEmpty#85, sum#86, isEmpty#87]
 
-(93) HashAggregate [codegen id : 10]
+(93) HashAggregate [codegen id : 19]
 Input [8]: [channel#24, id#25, sum#82, isEmpty#83, sum#84, isEmpty#85, sum#86, isEmpty#87]
 Keys [2]: [channel#24, id#25]
 Functions [3]: [sum(sales#22), sum(returns#26), sum(profit#27)]
 Aggregate Attributes [3]: [sum(sales#22)#88, sum(returns#26)#89, sum(profit#27)#90]
 Results [3]: [sum(sales#22)#88 AS sales#94, sum(returns#26)#89 AS returns#95, sum(profit#27)#90 AS profit#96]
 
-(94) HashAggregate [codegen id : 10]
+(94) HashAggregate [codegen id : 19]
 Input [3]: [sales#94, returns#95, profit#96]
 Keys: []
 Functions [3]: [partial_sum(sales#94), partial_sum(returns#95), partial_sum(profit#96)]
@@ -541,10 +541,10 @@ Results [6]: [sum#122, isEmpty#123, sum#124, isEmpty#125, sum#126, isEmpty#127]
 Input [6]: [sum#122, isEmpty#123, sum#124, isEmpty#125, sum#126, isEmpty#127]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=10]
 
-(96) CometNativeColumnarToRow
+(96) CometColumnarToRow [codegen id : 20]
 Input [6]: [sum#122, isEmpty#123, sum#124, isEmpty#125, sum#126, isEmpty#127]
 
-(97) HashAggregate [codegen id : 11]
+(97) HashAggregate [codegen id : 20]
 Input [6]: [sum#122, isEmpty#123, sum#124, isEmpty#125, sum#126, isEmpty#127]
 Keys: []
 Functions [3]: [sum(sales#94), sum(returns#95), sum(profit#96)]
@@ -553,7 +553,7 @@ Results [5]: [null AS channel#131, null AS id#132, sum(sales#94)#128 AS sales#13
 
 (98) Union
 
-(99) HashAggregate [codegen id : 12]
+(99) HashAggregate [codegen id : 21]
 Input [5]: [channel#24, id#25, sales#91, returns#92, profit#93]
 Keys [5]: [channel#24, id#25, sales#91, returns#92, profit#93]
 Functions: []
@@ -573,7 +573,7 @@ Functions: []
 Input [5]: [channel#24, id#25, sales#91, returns#92, profit#93]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#24 ASC NULLS FIRST,id#25 ASC NULLS FIRST], output=[channel#24,id#25,sales#91,returns#92,profit#93]), [channel#24, id#25, sales#91, returns#92, profit#93], 100, 0, [channel#24 ASC NULLS FIRST, id#25 ASC NULLS FIRST], [channel#24, id#25, sales#91, returns#92, profit#93]
 
-(103) CometNativeColumnarToRow
+(103) CometColumnarToRow [codegen id : 22]
 Input [5]: [channel#24, id#25, sales#91, returns#92, profit#93]
 
 ===== Subqueries =====

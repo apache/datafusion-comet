@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (43)
+* CometColumnarToRow (43)
 +- CometSort (42)
    +- CometExchange (41)
       +- CometHashAggregate (40)
@@ -242,7 +242,7 @@ Arguments: rangepartitioning(Returns_Loss#31 DESC NULLS LAST, 5), ENSURE_REQUIRE
 Input [4]: [Call_Center#28, Call_Center_Name#29, Manager#30, Returns_Loss#31]
 Arguments: [Call_Center#28, Call_Center_Name#29, Manager#30, Returns_Loss#31], [Returns_Loss#31 DESC NULLS LAST]
 
-(43) CometNativeColumnarToRow
+(43) CometColumnarToRow [codegen id : 1]
 Input [4]: [Call_Center#28, Call_Center_Name#29, Manager#30, Returns_Loss#31]
 
 ===== Subqueries =====

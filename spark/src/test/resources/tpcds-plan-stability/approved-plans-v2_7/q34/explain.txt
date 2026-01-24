@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (33)
+* CometColumnarToRow (33)
 +- CometSort (32)
    +- CometExchange (31)
       +- CometProject (30)
@@ -184,7 +184,7 @@ Arguments: rangepartitioning(c_last_name#25 ASC NULLS FIRST, c_first_name#24 ASC
 Input [6]: [c_last_name#25, c_first_name#24, c_salutation#23, c_preferred_cust_flag#26, ss_ticket_number#4, cnt#17]
 Arguments: [c_last_name#25, c_first_name#24, c_salutation#23, c_preferred_cust_flag#26, ss_ticket_number#4, cnt#17], [c_last_name#25 ASC NULLS FIRST, c_first_name#24 ASC NULLS FIRST, c_salutation#23 ASC NULLS FIRST, c_preferred_cust_flag#26 DESC NULLS LAST, ss_ticket_number#4 ASC NULLS FIRST]
 
-(33) CometNativeColumnarToRow
+(33) CometColumnarToRow [codegen id : 1]
 Input [6]: [c_last_name#25, c_first_name#24, c_salutation#23, c_preferred_cust_flag#26, ss_ticket_number#4, cnt#17]
 
 ===== Subqueries =====

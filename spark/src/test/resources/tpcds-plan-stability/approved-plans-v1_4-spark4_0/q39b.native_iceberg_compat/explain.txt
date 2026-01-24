@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (47)
+* CometColumnarToRow (47)
 +- CometSort (46)
    +- CometExchange (45)
       +- CometBroadcastHashJoin (44)
@@ -261,7 +261,7 @@ Arguments: rangepartitioning(w_warehouse_sk#7 ASC NULLS FIRST, i_item_sk#6 ASC N
 Input [10]: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, mean#18, cov#19, w_warehouse_sk#26, i_item_sk#25, d_moy#30, mean#37, cov#38]
 Arguments: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, mean#18, cov#19, w_warehouse_sk#26, i_item_sk#25, d_moy#30, mean#37, cov#38], [w_warehouse_sk#7 ASC NULLS FIRST, i_item_sk#6 ASC NULLS FIRST, d_moy#11 ASC NULLS FIRST, mean#18 ASC NULLS FIRST, cov#19 ASC NULLS FIRST, d_moy#30 ASC NULLS FIRST, mean#37 ASC NULLS FIRST, cov#38 ASC NULLS FIRST]
 
-(47) CometNativeColumnarToRow
+(47) CometColumnarToRow [codegen id : 1]
 Input [10]: [w_warehouse_sk#7, i_item_sk#6, d_moy#11, mean#18, cov#19, w_warehouse_sk#26, i_item_sk#25, d_moy#30, mean#37, cov#38]
 
 ===== Subqueries =====

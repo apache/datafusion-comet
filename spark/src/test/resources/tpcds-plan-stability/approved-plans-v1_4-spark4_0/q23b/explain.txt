@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (88)
+* CometColumnarToRow (88)
 +- CometTakeOrderedAndProject (87)
    +- CometUnion (86)
       :- CometHashAggregate (63)
@@ -484,7 +484,7 @@ Child 1 Input [3]: [c_last_name#54, c_first_name#53, sales#59]
 Input [3]: [c_last_name#33, c_first_name#32, sales#58]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[c_last_name#33 ASC NULLS FIRST,c_first_name#32 ASC NULLS FIRST,sales#58 ASC NULLS FIRST], output=[c_last_name#33,c_first_name#32,sales#58]), [c_last_name#33, c_first_name#32, sales#58], 100, 0, [c_last_name#33 ASC NULLS FIRST, c_first_name#32 ASC NULLS FIRST, sales#58 ASC NULLS FIRST], [c_last_name#33, c_first_name#32, sales#58]
 
-(88) CometNativeColumnarToRow
+(88) CometColumnarToRow [codegen id : 1]
 Input [3]: [c_last_name#33, c_first_name#32, sales#58]
 
 ===== Subqueries =====
@@ -550,7 +550,7 @@ Input [2]: [d_date_sk#10, d_date#11]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=9]
 
 Subquery:3 Hosting operator id = 37 Hosting Expression = Subquery scalar-subquery#27, [id=#28]
-CometNativeColumnarToRow (116)
+* CometColumnarToRow (116)
 +- CometHashAggregate (115)
    +- CometExchange (114)
       +- CometHashAggregate (113)
@@ -650,7 +650,7 @@ Input [1]: [max#71]
 Keys: []
 Functions [1]: [max(csales#70)]
 
-(116) CometNativeColumnarToRow
+(116) CometColumnarToRow [codegen id : 1]
 Input [1]: [tpcds_cmax#72]
 
 Subquery:4 Hosting operator id = 99 Hosting Expression = ss_sold_date_sk#63 IN dynamicpruning#64

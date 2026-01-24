@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (176)
+* CometColumnarToRow (176)
 +- CometSort (175)
    +- CometExchange (174)
       +- CometProject (173)
@@ -953,7 +953,7 @@ Arguments: rangepartitioning(product_name#81 ASC NULLS FIRST, store_name#83 ASC 
 Input [21]: [product_name#81, store_name#83, store_zip#84, b_street_number#85, b_streen_name#86, b_city#87, b_zip#88, c_street_number#89, c_street_name#90, c_city#91, c_zip#92, syear#93, cnt#94, s1#95, s2#96, s3#97, s1#170, s2#171, s3#172, syear#168, cnt#169]
 Arguments: [product_name#81, store_name#83, store_zip#84, b_street_number#85, b_streen_name#86, b_city#87, b_zip#88, c_street_number#89, c_street_name#90, c_city#91, c_zip#92, syear#93, cnt#94, s1#95, s2#96, s3#97, s1#170, s2#171, s3#172, syear#168, cnt#169], [product_name#81 ASC NULLS FIRST, store_name#83 ASC NULLS FIRST, cnt#169 ASC NULLS FIRST]
 
-(176) CometNativeColumnarToRow
+(176) CometColumnarToRow [codegen id : 1]
 Input [21]: [product_name#81, store_name#83, store_zip#84, b_street_number#85, b_streen_name#86, b_city#87, b_zip#88, c_street_number#89, c_street_name#90, c_city#91, c_zip#92, syear#93, cnt#94, s1#95, s2#96, s3#97, s1#170, s2#171, s3#172, syear#168, cnt#169]
 
 ===== Subqueries =====

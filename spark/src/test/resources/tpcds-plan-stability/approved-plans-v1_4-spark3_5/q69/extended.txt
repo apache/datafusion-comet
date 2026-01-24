@@ -1,6 +1,6 @@
 TakeOrderedAndProject
 +- HashAggregate
-   +- CometNativeColumnarToRow
+   +- CometColumnarToRow
       +- CometColumnarExchange
          +- HashAggregate
             +- Project
@@ -10,7 +10,7 @@ TakeOrderedAndProject
                   :     :- Project
                   :     :  +- BroadcastHashJoin
                   :     :     :-  BroadcastHashJoin [COMET: BuildRight with LeftAnti is not supported]
-                  :     :     :  :- CometNativeColumnarToRow
+                  :     :     :  :- CometColumnarToRow
                   :     :     :  :  +- CometBroadcastHashJoin
                   :     :     :  :     :- CometFilter
                   :     :     :  :     :  +- CometScan [native_iceberg_compat] parquet spark_catalog.default.customer
@@ -29,7 +29,7 @@ TakeOrderedAndProject
                   :     :     :  :                    +- CometFilter
                   :     :     :  :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                   :     :     :  +- BroadcastExchange
-                  :     :     :     +- CometNativeColumnarToRow
+                  :     :     :     +- CometColumnarToRow
                   :     :     :        +- CometProject
                   :     :     :           +- CometBroadcastHashJoin
                   :     :     :              :- CometScan [native_iceberg_compat] parquet spark_catalog.default.web_sales
@@ -39,7 +39,7 @@ TakeOrderedAndProject
                   :     :     :                    +- CometFilter
                   :     :     :                       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                   :     :     +- BroadcastExchange
-                  :     :        +- CometNativeColumnarToRow
+                  :     :        +- CometColumnarToRow
                   :     :           +- CometProject
                   :     :              +- CometBroadcastHashJoin
                   :     :                 :- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales

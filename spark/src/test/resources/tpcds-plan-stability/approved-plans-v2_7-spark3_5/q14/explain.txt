@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (85)
+* CometColumnarToRow (85)
 +- CometTakeOrderedAndProject (84)
    +- CometBroadcastHashJoin (83)
       :- CometFilter (64)
@@ -480,13 +480,13 @@ Arguments: [i_brand_id#40, i_class_id#41, i_category_id#42], [i_brand_id#62, i_c
 Input [12]: [channel#50, i_brand_id#40, i_class_id#41, i_category_id#42, sales#51, number_sales#52, channel#72, i_brand_id#62, i_class_id#63, i_category_id#64, sales#73, number_sales#74]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[i_brand_id#40 ASC NULLS FIRST,i_class_id#41 ASC NULLS FIRST,i_category_id#42 ASC NULLS FIRST], output=[channel#50,i_brand_id#40,i_class_id#41,i_category_id#42,sales#51,number_sales#52,channel#72,i_brand_id#62,i_class_id#63,i_category_id#64,sales#73,number_sales#74]), [channel#50, i_brand_id#40, i_class_id#41, i_category_id#42, sales#51, number_sales#52, channel#72, i_brand_id#62, i_class_id#63, i_category_id#64, sales#73, number_sales#74], 100, 0, [i_brand_id#40 ASC NULLS FIRST, i_class_id#41 ASC NULLS FIRST, i_category_id#42 ASC NULLS FIRST], [channel#50, i_brand_id#40, i_class_id#41, i_category_id#42, sales#51, number_sales#52, channel#72, i_brand_id#62, i_class_id#63, i_category_id#64, sales#73, number_sales#74]
 
-(85) CometNativeColumnarToRow
+(85) CometColumnarToRow [codegen id : 1]
 Input [12]: [channel#50, i_brand_id#40, i_class_id#41, i_category_id#42, sales#51, number_sales#52, channel#72, i_brand_id#62, i_class_id#63, i_category_id#64, sales#73, number_sales#74]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 64 Hosting Expression = Subquery scalar-subquery#53, [id=#54]
-CometNativeColumnarToRow (102)
+* CometColumnarToRow (102)
 +- CometHashAggregate (101)
    +- CometExchange (100)
       +- CometHashAggregate (99)
@@ -581,7 +581,7 @@ Input [2]: [sum#96, count#97]
 Keys: []
 Functions [1]: [avg((cast(quantity#80 as decimal(10,0)) * list_price#81))]
 
-(102) CometNativeColumnarToRow
+(102) CometColumnarToRow [codegen id : 1]
 Input [1]: [average_sales#98]
 
 Subquery:2 Hosting operator id = 86 Hosting Expression = ss_sold_date_sk#77 IN dynamicpruning#12

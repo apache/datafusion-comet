@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (29)
+* CometColumnarToRow (29)
 +- CometHashAggregate (28)
    +- CometExchange (27)
       +- CometHashAggregate (26)
@@ -164,7 +164,7 @@ Input [1]: [sum#21]
 Keys: []
 Functions [1]: [sum(ss_quantity#4)]
 
-(29) CometNativeColumnarToRow
+(29) CometColumnarToRow [codegen id : 1]
 Input [1]: [sum(ss_quantity)#22]
 
 ===== Subqueries =====

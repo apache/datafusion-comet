@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (122)
+* CometColumnarToRow (122)
 +- CometTakeOrderedAndProject (121)
    +- CometHashAggregate (120)
       +- CometExchange (119)
@@ -682,13 +682,13 @@ Functions: []
 Input [6]: [channel#49, i_brand_id#40, i_class_id#41, i_category_id#42, sum_sales#147, number_sales#148]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[channel#49 ASC NULLS FIRST,i_brand_id#40 ASC NULLS FIRST,i_class_id#41 ASC NULLS FIRST,i_category_id#42 ASC NULLS FIRST], output=[channel#49,i_brand_id#40,i_class_id#41,i_category_id#42,sum_sales#147,number_sales#148]), [channel#49, i_brand_id#40, i_class_id#41, i_category_id#42, sum_sales#147, number_sales#148], 100, 0, [channel#49 ASC NULLS FIRST, i_brand_id#40 ASC NULLS FIRST, i_class_id#41 ASC NULLS FIRST, i_category_id#42 ASC NULLS FIRST], [channel#49, i_brand_id#40, i_class_id#41, i_category_id#42, sum_sales#147, number_sales#148]
 
-(122) CometNativeColumnarToRow
+(122) CometColumnarToRow [codegen id : 1]
 Input [6]: [channel#49, i_brand_id#40, i_class_id#41, i_category_id#42, sum_sales#147, number_sales#148]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 64 Hosting Expression = Subquery scalar-subquery#52, [id=#53]
-CometNativeColumnarToRow (142)
+* CometColumnarToRow (142)
 +- CometHashAggregate (141)
    +- CometExchange (140)
       +- CometHashAggregate (139)
@@ -802,7 +802,7 @@ Input [2]: [sum#189, count#190]
 Keys: []
 Functions [1]: [avg((cast(quantity#172 as decimal(10,0)) * list_price#173))]
 
-(142) CometNativeColumnarToRow
+(142) CometColumnarToRow [codegen id : 1]
 Input [1]: [average_sales#191]
 
 Subquery:2 Hosting operator id = 123 Hosting Expression = ss_sold_date_sk#169 IN dynamicpruning#12

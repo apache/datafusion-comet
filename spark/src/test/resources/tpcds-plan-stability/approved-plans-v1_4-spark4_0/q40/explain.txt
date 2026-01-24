@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (33)
+* CometColumnarToRow (33)
 +- CometTakeOrderedAndProject (32)
    +- CometHashAggregate (31)
       +- CometExchange (30)
@@ -184,7 +184,7 @@ Functions [2]: [sum(CASE WHEN (d_date#19 < 2000-03-11) THEN (cs_sales_price#4 - 
 Input [4]: [w_state#13, i_item_id#17, sales_before#24, sales_after#25]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[w_state#13 ASC NULLS FIRST,i_item_id#17 ASC NULLS FIRST], output=[w_state#13,i_item_id#17,sales_before#24,sales_after#25]), [w_state#13, i_item_id#17, sales_before#24, sales_after#25], 100, 0, [w_state#13 ASC NULLS FIRST, i_item_id#17 ASC NULLS FIRST], [w_state#13, i_item_id#17, sales_before#24, sales_after#25]
 
-(33) CometNativeColumnarToRow
+(33) CometColumnarToRow [codegen id : 1]
 Input [4]: [w_state#13, i_item_id#17, sales_before#24, sales_after#25]
 
 ===== Subqueries =====

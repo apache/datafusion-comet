@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (40)
+* CometColumnarToRow (40)
 +- CometTakeOrderedAndProject (39)
    +- CometFilter (38)
       +- CometHashAggregate (37)
@@ -224,7 +224,7 @@ Condition : (cnt#23 >= 10)
 Input [2]: [state#22, cnt#23]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[cnt#23 ASC NULLS FIRST], output=[state#22,cnt#23]), [state#22, cnt#23], 100, 0, [cnt#23 ASC NULLS FIRST], [state#22, cnt#23]
 
-(40) CometNativeColumnarToRow
+(40) CometColumnarToRow [codegen id : 1]
 Input [2]: [state#22, cnt#23]
 
 ===== Subqueries =====

@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (90)
+* CometColumnarToRow (90)
 +- CometSort (89)
    +- CometExchange (88)
       +- CometProject (87)
@@ -504,7 +504,7 @@ Arguments: rangepartitioning(ca_county#9 ASC NULLS FIRST, 5), ENSURE_REQUIREMENT
 Input [6]: [ca_county#9, d_year#6, web_q1_q2_increase#67, store_q1_q2_increase#68, web_q2_q3_increase#69, store_q2_q3_increase#70]
 Arguments: [ca_county#9, d_year#6, web_q1_q2_increase#67, store_q1_q2_increase#68, web_q2_q3_increase#69, store_q2_q3_increase#70], [ca_county#9 ASC NULLS FIRST]
 
-(90) CometNativeColumnarToRow
+(90) CometColumnarToRow [codegen id : 1]
 Input [6]: [ca_county#9, d_year#6, web_q1_q2_increase#67, store_q1_q2_increase#68, web_q2_q3_increase#69, store_q2_q3_increase#70]
 
 ===== Subqueries =====

@@ -2,7 +2,7 @@
 TakeOrderedAndProject (41)
 +- * Filter (40)
    +- Window (39)
-      +- CometNativeColumnarToRow (38)
+      +- * CometColumnarToRow (38)
          +- CometSort (37)
             +- CometExchange (36)
                +- CometProject (35)
@@ -11,7 +11,7 @@ TakeOrderedAndProject (41)
                      :  +- CometColumnarExchange (17)
                      :     +- * Project (16)
                      :        +- Window (15)
-                     :           +- CometNativeColumnarToRow (14)
+                     :           +- * CometColumnarToRow (14)
                      :              +- CometSort (13)
                      :                 +- CometExchange (12)
                      :                    +- CometHashAggregate (11)
@@ -29,7 +29,7 @@ TakeOrderedAndProject (41)
                         +- CometColumnarExchange (32)
                            +- * Project (31)
                               +- Window (30)
-                                 +- CometNativeColumnarToRow (29)
+                                 +- * CometColumnarToRow (29)
                                     +- CometSort (28)
                                        +- CometExchange (27)
                                           +- CometHashAggregate (26)
@@ -104,14 +104,14 @@ Arguments: hashpartitioning(ws_item_sk#1, 5), ENSURE_REQUIREMENTS, CometNativeSh
 Input [4]: [item_sk#9, d_date#6, _w0#10, ws_item_sk#1]
 Arguments: [item_sk#9, d_date#6, _w0#10, ws_item_sk#1], [ws_item_sk#1 ASC NULLS FIRST, d_date#6 ASC NULLS FIRST]
 
-(14) CometNativeColumnarToRow
+(14) CometColumnarToRow [codegen id : 1]
 Input [4]: [item_sk#9, d_date#6, _w0#10, ws_item_sk#1]
 
 (15) Window
 Input [4]: [item_sk#9, d_date#6, _w0#10, ws_item_sk#1]
 Arguments: [sum(_w0#10) windowspecdefinition(ws_item_sk#1, d_date#6 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS cume_sales#11], [ws_item_sk#1], [d_date#6 ASC NULLS FIRST]
 
-(16) Project [codegen id : 1]
+(16) Project [codegen id : 2]
 Output [3]: [item_sk#9, d_date#6, cume_sales#11]
 Input [5]: [item_sk#9, d_date#6, _w0#10, ws_item_sk#1, cume_sales#11]
 
@@ -169,14 +169,14 @@ Arguments: hashpartitioning(ss_item_sk#12, 5), ENSURE_REQUIREMENTS, CometNativeS
 Input [4]: [item_sk#19, d_date#17, _w0#20, ss_item_sk#12]
 Arguments: [item_sk#19, d_date#17, _w0#20, ss_item_sk#12], [ss_item_sk#12 ASC NULLS FIRST, d_date#17 ASC NULLS FIRST]
 
-(29) CometNativeColumnarToRow
+(29) CometColumnarToRow [codegen id : 3]
 Input [4]: [item_sk#19, d_date#17, _w0#20, ss_item_sk#12]
 
 (30) Window
 Input [4]: [item_sk#19, d_date#17, _w0#20, ss_item_sk#12]
 Arguments: [sum(_w0#20) windowspecdefinition(ss_item_sk#12, d_date#17 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS cume_sales#21], [ss_item_sk#12], [d_date#17 ASC NULLS FIRST]
 
-(31) Project [codegen id : 2]
+(31) Project [codegen id : 4]
 Output [3]: [item_sk#19, d_date#17, cume_sales#21]
 Input [5]: [item_sk#19, d_date#17, _w0#20, ss_item_sk#12, cume_sales#21]
 
@@ -205,14 +205,14 @@ Arguments: hashpartitioning(item_sk#22, 5), ENSURE_REQUIREMENTS, CometNativeShuf
 Input [4]: [item_sk#22, d_date#23, web_sales#24, store_sales#25]
 Arguments: [item_sk#22, d_date#23, web_sales#24, store_sales#25], [item_sk#22 ASC NULLS FIRST, d_date#23 ASC NULLS FIRST]
 
-(38) CometNativeColumnarToRow
+(38) CometColumnarToRow [codegen id : 5]
 Input [4]: [item_sk#22, d_date#23, web_sales#24, store_sales#25]
 
 (39) Window
 Input [4]: [item_sk#22, d_date#23, web_sales#24, store_sales#25]
 Arguments: [max(web_sales#24) windowspecdefinition(item_sk#22, d_date#23 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS web_cumulative#26, max(store_sales#25) windowspecdefinition(item_sk#22, d_date#23 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS store_cumulative#27], [item_sk#22], [d_date#23 ASC NULLS FIRST]
 
-(40) Filter [codegen id : 3]
+(40) Filter [codegen id : 6]
 Input [6]: [item_sk#22, d_date#23, web_sales#24, store_sales#25, web_cumulative#26, store_cumulative#27]
 Condition : ((isnotnull(web_cumulative#26) AND isnotnull(store_cumulative#27)) AND (web_cumulative#26 > store_cumulative#27))
 

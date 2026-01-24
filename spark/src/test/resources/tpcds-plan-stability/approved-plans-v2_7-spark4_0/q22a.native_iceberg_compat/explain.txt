@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (47)
+* CometColumnarToRow (47)
 +- CometTakeOrderedAndProject (46)
    +- CometUnion (45)
       :- CometHashAggregate (24)
@@ -263,7 +263,7 @@ Child 4 Input [5]: [i_product_name#77, i_brand#78, i_class#79, i_category#80, qo
 Input [5]: [i_product_name#63, i_brand#64, i_class#65, i_category#66, qoh#67]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[qoh#67 ASC NULLS FIRST,i_product_name#63 ASC NULLS FIRST,i_brand#64 ASC NULLS FIRST,i_class#65 ASC NULLS FIRST,i_category#66 ASC NULLS FIRST], output=[i_product_name#63,i_brand#64,i_class#65,i_category#66,qoh#67]), [i_product_name#63, i_brand#64, i_class#65, i_category#66, qoh#67], 100, 0, [qoh#67 ASC NULLS FIRST, i_product_name#63 ASC NULLS FIRST, i_brand#64 ASC NULLS FIRST, i_class#65 ASC NULLS FIRST, i_category#66 ASC NULLS FIRST], [i_product_name#63, i_brand#64, i_class#65, i_category#66, qoh#67]
 
-(47) CometNativeColumnarToRow
+(47) CometColumnarToRow [codegen id : 1]
 Input [5]: [i_product_name#63, i_brand#64, i_class#65, i_category#66, qoh#67]
 
 ===== Subqueries =====

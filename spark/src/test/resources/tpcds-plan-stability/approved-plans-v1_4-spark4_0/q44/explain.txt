@@ -1,5 +1,5 @@
 == Physical Plan ==
-CometNativeColumnarToRow (47)
+* CometColumnarToRow (47)
 +- CometTakeOrderedAndProject (46)
    +- CometProject (45)
       +- CometBroadcastHashJoin (44)
@@ -13,11 +13,11 @@ CometNativeColumnarToRow (47)
          :     :     :        +- * Filter (16)
          :     :     :           +- Window (15)
          :     :     :              +- WindowGroupLimit (14)
-         :     :     :                 +- CometNativeColumnarToRow (13)
+         :     :     :                 +- * CometColumnarToRow (13)
          :     :     :                    +- CometSort (12)
          :     :     :                       +- CometColumnarExchange (11)
          :     :     :                          +- WindowGroupLimit (10)
-         :     :     :                             +- CometNativeColumnarToRow (9)
+         :     :     :                             +- * CometColumnarToRow (9)
          :     :     :                                +- CometSort (8)
          :     :     :                                   +- CometFilter (7)
          :     :     :                                      +- CometHashAggregate (6)
@@ -32,11 +32,11 @@ CometNativeColumnarToRow (47)
          :     :              +- * Filter (31)
          :     :                 +- Window (30)
          :     :                    +- WindowGroupLimit (29)
-         :     :                       +- CometNativeColumnarToRow (28)
+         :     :                       +- * CometColumnarToRow (28)
          :     :                          +- CometSort (27)
          :     :                             +- CometColumnarExchange (26)
          :     :                                +- WindowGroupLimit (25)
-         :     :                                   +- CometNativeColumnarToRow (24)
+         :     :                                   +- * CometColumnarToRow (24)
          :     :                                      +- CometSort (23)
          :     :                                         +- CometFilter (22)
          :     :                                            +- CometHashAggregate (21)
@@ -85,7 +85,7 @@ Condition : (isnotnull(rank_col#8) AND (cast(rank_col#8 as decimal(13,7)) > (0.9
 Input [2]: [item_sk#7, rank_col#8]
 Arguments: [item_sk#7, rank_col#8], [rank_col#8 ASC NULLS FIRST]
 
-(9) CometNativeColumnarToRow
+(9) CometColumnarToRow [codegen id : 1]
 Input [2]: [item_sk#7, rank_col#8]
 
 (10) WindowGroupLimit
@@ -100,7 +100,7 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=
 Input [2]: [item_sk#7, rank_col#8]
 Arguments: [item_sk#7, rank_col#8], [rank_col#8 ASC NULLS FIRST]
 
-(13) CometNativeColumnarToRow
+(13) CometColumnarToRow [codegen id : 2]
 Input [2]: [item_sk#7, rank_col#8]
 
 (14) WindowGroupLimit
@@ -111,11 +111,11 @@ Arguments: [rank_col#8 ASC NULLS FIRST], rank(rank_col#8), 10, Final
 Input [2]: [item_sk#7, rank_col#8]
 Arguments: [rank(rank_col#8) windowspecdefinition(rank_col#8 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rnk#11], [rank_col#8 ASC NULLS FIRST]
 
-(16) Filter [codegen id : 1]
+(16) Filter [codegen id : 3]
 Input [3]: [item_sk#7, rank_col#8, rnk#11]
 Condition : ((rnk#11 < 11) AND isnotnull(item_sk#7))
 
-(17) Project [codegen id : 1]
+(17) Project [codegen id : 3]
 Output [2]: [item_sk#7, rnk#11]
 Input [3]: [item_sk#7, rank_col#8, rnk#11]
 
@@ -143,7 +143,7 @@ Condition : (isnotnull(rank_col#17) AND (cast(rank_col#17 as decimal(13,7)) > (0
 Input [2]: [item_sk#16, rank_col#17]
 Arguments: [item_sk#16, rank_col#17], [rank_col#17 DESC NULLS LAST]
 
-(24) CometNativeColumnarToRow
+(24) CometColumnarToRow [codegen id : 4]
 Input [2]: [item_sk#16, rank_col#17]
 
 (25) WindowGroupLimit
@@ -158,7 +158,7 @@ Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=
 Input [2]: [item_sk#16, rank_col#17]
 Arguments: [item_sk#16, rank_col#17], [rank_col#17 DESC NULLS LAST]
 
-(28) CometNativeColumnarToRow
+(28) CometColumnarToRow [codegen id : 5]
 Input [2]: [item_sk#16, rank_col#17]
 
 (29) WindowGroupLimit
@@ -169,11 +169,11 @@ Arguments: [rank_col#17 DESC NULLS LAST], rank(rank_col#17), 10, Final
 Input [2]: [item_sk#16, rank_col#17]
 Arguments: [rank(rank_col#17) windowspecdefinition(rank_col#17 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rnk#18], [rank_col#17 DESC NULLS LAST]
 
-(31) Filter [codegen id : 2]
+(31) Filter [codegen id : 6]
 Input [3]: [item_sk#16, rank_col#17, rnk#18]
 Condition : ((rnk#18 < 11) AND isnotnull(item_sk#16))
 
-(32) Project [codegen id : 2]
+(32) Project [codegen id : 6]
 Output [2]: [item_sk#16, rnk#18]
 Input [3]: [item_sk#16, rank_col#17, rnk#18]
 
@@ -238,13 +238,13 @@ Arguments: [rnk#11, best_performing#24, worst_performing#25], [rnk#11, i_product
 Input [3]: [rnk#11, best_performing#24, worst_performing#25]
 Arguments: TakeOrderedAndProject(limit=100, orderBy=[rnk#11 ASC NULLS FIRST], output=[rnk#11,best_performing#24,worst_performing#25]), [rnk#11, best_performing#24, worst_performing#25], 100, 0, [rnk#11 ASC NULLS FIRST], [rnk#11, best_performing#24, worst_performing#25]
 
-(47) CometNativeColumnarToRow
+(47) CometColumnarToRow [codegen id : 7]
 Input [3]: [rnk#11, best_performing#24, worst_performing#25]
 
 ===== Subqueries =====
 
 Subquery:1 Hosting operator id = 7 Hosting Expression = Subquery scalar-subquery#9, [id=#10]
-CometNativeColumnarToRow (54)
+* CometColumnarToRow (54)
 +- CometHashAggregate (53)
    +- CometExchange (52)
       +- CometHashAggregate (51)
@@ -282,7 +282,7 @@ Input [3]: [ss_store_sk#27, sum#30, count#31]
 Keys [1]: [ss_store_sk#27]
 Functions [1]: [avg(UnscaledValue(ss_net_profit#28))]
 
-(54) CometNativeColumnarToRow
+(54) CometColumnarToRow [codegen id : 1]
 Input [1]: [rank_col#32]
 
 Subquery:2 Hosting operator id = 22 Hosting Expression = ReusedSubquery Subquery scalar-subquery#9, [id=#10]

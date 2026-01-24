@@ -2,17 +2,17 @@
 TakeOrderedAndProject (49)
 +- * Project (48)
    +- Window (47)
-      +- CometNativeColumnarToRow (46)
+      +- * CometColumnarToRow (46)
          +- CometSort (45)
             +- CometColumnarExchange (44)
                +- * HashAggregate (43)
-                  +- CometNativeColumnarToRow (42)
+                  +- * CometColumnarToRow (42)
                      +- CometColumnarExchange (41)
                         +- * HashAggregate (40)
                            +- * Expand (39)
                               +- * Project (38)
                                  +- * BroadcastHashJoin Inner BuildRight (37)
-                                    :- CometNativeColumnarToRow (9)
+                                    :- * CometColumnarToRow (9)
                                     :  +- CometProject (8)
                                     :     +- CometBroadcastHashJoin (7)
                                     :        :- CometFilter (2)
@@ -32,7 +32,7 @@ TakeOrderedAndProject (49)
                                                    +- * Filter (31)
                                                       +- Window (30)
                                                          +- WindowGroupLimit (29)
-                                                            +- CometNativeColumnarToRow (28)
+                                                            +- * CometColumnarToRow (28)
                                                                +- CometSort (27)
                                                                   +- CometHashAggregate (26)
                                                                      +- CometExchange (25)
@@ -90,7 +90,7 @@ Arguments: [ss_sold_date_sk#3], [d_date_sk#5], Inner, BuildRight
 Input [4]: [ss_store_sk#1, ss_net_profit#2, ss_sold_date_sk#3, d_date_sk#5]
 Arguments: [ss_store_sk#1, ss_net_profit#2], [ss_store_sk#1, ss_net_profit#2]
 
-(9) CometNativeColumnarToRow
+(9) CometColumnarToRow [codegen id : 4]
 Input [2]: [ss_store_sk#1, ss_net_profit#2]
 
 (10) CometScan [native_iceberg_compat] parquet spark_catalog.default.store
@@ -177,7 +177,7 @@ Functions [1]: [sum(UnscaledValue(ss_net_profit#11))]
 Input [3]: [s_state#16, _w0#19, s_state#16]
 Arguments: [s_state#16, _w0#19, s_state#16], [s_state#16 ASC NULLS FIRST, _w0#19 DESC NULLS LAST]
 
-(28) CometNativeColumnarToRow
+(28) CometColumnarToRow [codegen id : 1]
 Input [3]: [s_state#16, _w0#19, s_state#16]
 
 (29) WindowGroupLimit
@@ -188,11 +188,11 @@ Arguments: [s_state#16], [_w0#19 DESC NULLS LAST], rank(_w0#19), 5, Final
 Input [3]: [s_state#16, _w0#19, s_state#16]
 Arguments: [rank(_w0#19) windowspecdefinition(s_state#16, _w0#19 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS ranking#20], [s_state#16], [_w0#19 DESC NULLS LAST]
 
-(31) Filter [codegen id : 1]
+(31) Filter [codegen id : 2]
 Input [4]: [s_state#16, _w0#19, s_state#16, ranking#20]
 Condition : (ranking#20 <= 5)
 
-(32) Project [codegen id : 1]
+(32) Project [codegen id : 2]
 Output [1]: [s_state#16]
 Input [4]: [s_state#16, _w0#19, s_state#16, ranking#20]
 
@@ -200,13 +200,13 @@ Input [4]: [s_state#16, _w0#19, s_state#16, ranking#20]
 Input [1]: [s_state#16]
 Arguments: HashedRelationBroadcastMode(List(input[0, string, true]),false), [plan_id=2]
 
-(34) BroadcastHashJoin [codegen id : 2]
+(34) BroadcastHashJoin [codegen id : 3]
 Left keys [1]: [static_invoke(CharVarcharCodegenUtils.readSidePadding(s_state#9, 2))]
 Right keys [1]: [s_state#16]
 Join type: LeftSemi
 Join condition: None
 
-(35) Project [codegen id : 2]
+(35) Project [codegen id : 3]
 Output [3]: [s_store_sk#7, s_county#8, static_invoke(CharVarcharCodegenUtils.readSidePadding(s_state#9, 2)) AS s_state#21]
 Input [3]: [s_store_sk#7, s_county#8, s_state#9]
 
@@ -214,21 +214,21 @@ Input [3]: [s_store_sk#7, s_county#8, s_state#9]
 Input [3]: [s_store_sk#7, s_county#8, s_state#21]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=3]
 
-(37) BroadcastHashJoin [codegen id : 3]
+(37) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [ss_store_sk#1]
 Right keys [1]: [s_store_sk#7]
 Join type: Inner
 Join condition: None
 
-(38) Project [codegen id : 3]
+(38) Project [codegen id : 4]
 Output [3]: [ss_net_profit#2, s_state#21, s_county#8]
 Input [5]: [ss_store_sk#1, ss_net_profit#2, s_store_sk#7, s_county#8, s_state#21]
 
-(39) Expand [codegen id : 3]
+(39) Expand [codegen id : 4]
 Input [3]: [ss_net_profit#2, s_state#21, s_county#8]
 Arguments: [[ss_net_profit#2, s_state#21, s_county#8, 0], [ss_net_profit#2, s_state#21, null, 1], [ss_net_profit#2, null, null, 3]], [ss_net_profit#2, s_state#22, s_county#23, spark_grouping_id#24]
 
-(40) HashAggregate [codegen id : 3]
+(40) HashAggregate [codegen id : 4]
 Input [4]: [ss_net_profit#2, s_state#22, s_county#23, spark_grouping_id#24]
 Keys [3]: [s_state#22, s_county#23, spark_grouping_id#24]
 Functions [1]: [partial_sum(UnscaledValue(ss_net_profit#2))]
@@ -239,10 +239,10 @@ Results [4]: [s_state#22, s_county#23, spark_grouping_id#24, sum#26]
 Input [4]: [s_state#22, s_county#23, spark_grouping_id#24, sum#26]
 Arguments: hashpartitioning(s_state#22, s_county#23, spark_grouping_id#24, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
-(42) CometNativeColumnarToRow
+(42) CometColumnarToRow [codegen id : 5]
 Input [4]: [s_state#22, s_county#23, spark_grouping_id#24, sum#26]
 
-(43) HashAggregate [codegen id : 4]
+(43) HashAggregate [codegen id : 5]
 Input [4]: [s_state#22, s_county#23, spark_grouping_id#24, sum#26]
 Keys [3]: [s_state#22, s_county#23, spark_grouping_id#24]
 Functions [1]: [sum(UnscaledValue(ss_net_profit#2))]
@@ -257,14 +257,14 @@ Arguments: hashpartitioning(_w1#31, _w2#32, 5), ENSURE_REQUIREMENTS, CometColumn
 Input [7]: [total_sum#28, s_state#22, s_county#23, lochierarchy#29, _w0#30, _w1#31, _w2#32]
 Arguments: [total_sum#28, s_state#22, s_county#23, lochierarchy#29, _w0#30, _w1#31, _w2#32], [_w1#31 ASC NULLS FIRST, _w2#32 ASC NULLS FIRST, _w0#30 DESC NULLS LAST]
 
-(46) CometNativeColumnarToRow
+(46) CometColumnarToRow [codegen id : 6]
 Input [7]: [total_sum#28, s_state#22, s_county#23, lochierarchy#29, _w0#30, _w1#31, _w2#32]
 
 (47) Window
 Input [7]: [total_sum#28, s_state#22, s_county#23, lochierarchy#29, _w0#30, _w1#31, _w2#32]
 Arguments: [rank(_w0#30) windowspecdefinition(_w1#31, _w2#32, _w0#30 DESC NULLS LAST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#33], [_w1#31, _w2#32], [_w0#30 DESC NULLS LAST]
 
-(48) Project [codegen id : 5]
+(48) Project [codegen id : 7]
 Output [5]: [total_sum#28, s_state#22, s_county#23, lochierarchy#29, rank_within_parent#33]
 Input [8]: [total_sum#28, s_state#22, s_county#23, lochierarchy#29, _w0#30, _w1#31, _w2#32, rank_within_parent#33]
 
