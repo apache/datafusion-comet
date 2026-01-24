@@ -130,6 +130,32 @@ message CsvOptions {
   bool truncated_rows = 8;
 }
 
+// Partition value for Iceberg partition data
+message PartitionValue {
+  int32 field_id = 1;
+  oneof value {
+    int32 int_val = 2;
+    int64 long_val = 3;
+    int64 date_val = 4;           // days since epoch
+    int64 timestamp_val = 5;       // microseconds since epoch
+    int64 timestamp_tz_val = 6;    // microseconds with timezone
+    string string_val = 7;
+    double double_val = 8;
+    float float_val = 9;
+    bytes decimal_val = 10;        // unscaled BigInteger bytes
+    bool bool_val = 11;
+    bytes uuid_val = 12;
+    bytes fixed_val = 13;
+    bytes binary_val = 14;
+  }
+  bool is_null = 15;
+}
+
+// Collection of partition values for a single partition
+message PartitionData {
+  repeated PartitionValue values = 1;
+}
+
 message IcebergScan {
   // Schema to read
   repeated SparkStructField required_schema = 1;
@@ -149,7 +175,7 @@ message IcebergScan {
   repeated string partition_spec_pool = 7;
   repeated string name_mapping_pool = 8;
   repeated ProjectFieldIdList project_field_ids_pool = 9;
-  repeated string partition_data_pool = 10;
+  repeated PartitionData partition_data_pool = 10;
   repeated DeleteFileList delete_files_pool = 11;
   repeated spark.spark_expression.Expr residual_pool = 12;
 }
