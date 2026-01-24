@@ -305,7 +305,7 @@ object CometConf extends ShimCometConf {
           "of the JVM implementation. This can improve performance for queries that need to " +
           "convert between columnar and row formats.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
