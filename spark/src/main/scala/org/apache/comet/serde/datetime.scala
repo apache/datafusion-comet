@@ -20,11 +20,9 @@
 package org.apache.comet.serde
 
 import java.util.Locale
-
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, Minute, Month, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DateAdd, DateDiff, DateFormatClass, DateSub, DayOfMonth, DayOfWeek, DayOfYear, GetDateField, Hour, LastDay, Literal, Minute, Month, ParseToDate, Quarter, Second, TruncDate, TruncTimestamp, UnixDate, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.types.{DateType, IntegerType, StringType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
-
 import org.apache.comet.CometSparkSessionExtensions.withInfo
 import org.apache.comet.serde.CometGetDateField.CometGetDateField
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -173,6 +171,29 @@ object CometQuarter extends CometExpressionSerde[Quarter] with CometExprGetDateF
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     getDateField(expr, CometGetDateField.Quarter, inputs, binding)
+  }
+}
+
+object CometParseToDate extends CometExpressionSerde[ParseToDate] {
+  /**
+   * Convert a Spark expression into a protocol buffer representation that can be passed into
+   * native code.
+   *
+   * @param expr
+   * The Spark expression.
+   * @param inputs
+   * The input attributes.
+   * @param binding
+   * Whether the attributes are bound (this is only relevant in aggregate expressions).
+   * @return
+   * Protocol buffer representation, or None if the expression could not be converted. In this
+   * case it is expected that the input expression will have been tagged with reasons why it
+   * could not be converted.
+   */
+  override def convert(expr: ParseToDate, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val childExpr: Option[Expr] = exprToProtoInternal(expr.left, inputs, binding)
+    val failOnErrorExpr: Option[Expr] = exprToProtoInternal(Literal(expr.ansiEnabled), inputs, binding)
+    ???
   }
 }
 
