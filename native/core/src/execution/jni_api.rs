@@ -44,6 +44,7 @@ use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
 use datafusion_spark::function::datetime::date_sub::SparkDateSub;
+use datafusion_spark::function::datetime::last_day::SparkLastDay;
 use datafusion_spark::function::hash::sha1::SparkSha1;
 use datafusion_spark::function::hash::sha2::SparkSha2;
 use datafusion_spark::function::map::map_from_entries::MapFromEntries;
@@ -175,6 +176,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     memory_limit: jlong,
     memory_limit_per_task: jlong,
     task_attempt_id: jlong,
+    task_cpus: jlong,
     key_unwrapper_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |mut env| {
@@ -242,6 +244,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 memory_pool,
                 local_dirs_vec,
                 max_temp_directory_size,
+                task_cpus as usize,
             )?;
 
             let plan_creation_time = start.elapsed();
@@ -295,6 +298,7 @@ fn prepare_datafusion_session_context(
     memory_pool: Arc<dyn MemoryPool>,
     local_dirs: Vec<String>,
     max_temp_directory_size: u64,
+    task_cpus: usize,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
     let disk_manager = DiskManagerBuilder::default()
@@ -307,6 +311,10 @@ fn prepare_datafusion_session_context(
     // can be configured in Comet Spark JVM using Spark --conf parameters
     // e.g: spark-shell --conf spark.datafusion.sql_parser.parse_float_as_decimal=true
     let session_config = SessionConfig::new()
+        .with_target_partitions(task_cpus)
+        // This DataFusion context is within the scope of an executing Spark Task. We want to set
+        // its internal parallelism to the number of CPUs allocated to Spark Tasks. This can be
+        // modified by changing spark.task.cpus in the Spark config.
         .with_batch_size(batch_size)
         // DataFusion partial aggregates can emit duplicate rows so we disable the
         // skip partial aggregation feature because this is not compatible with Spark's
@@ -339,6 +347,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitGet::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateAdd::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLastDay::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitwiseNot::default()));
@@ -496,12 +505,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let task_ctx = exec_context.session_ctx.task_ctx();
                 // Each Comet native execution corresponds to a single Spark partition,
                 // so we should always execute partition 0.
-                let stream = exec_context
-                    .root_op
-                    .as_ref()
-                    .unwrap()
-                    .native_plan
-                    .execute(0, task_ctx)?;
+                let stream = root_op.native_plan.execute(0, task_ctx)?;
                 exec_context.stream = Some(stream);
             } else {
                 // Pull input batches
@@ -559,16 +563,23 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                             }
                             return Ok(-1);
                         }
-                        // A poll pending means there are more than one blocking operators,
-                        // we don't need go back-forth between JVM/Native. Just keeping polling.
+                        // A poll pending means the stream is not ready yet.
                         Poll::Pending => {
-                            // TODO: Investigate if JNI calls are safe without block_in_place.
-                            // block_in_place prevents Tokio from migrating this task to another thread,
-                            // which is necessary because JNI env is thread-local. If we can guarantee
-                            // thread safety another way, we could remove this wrapper for better perf.
-                            tokio::task::block_in_place(|| {
-                                pull_input_batches(exec_context)
-                            })?;
+                            if exec_context.scans.is_empty() {
+                                // Pure async I/O (e.g., IcebergScanExec, DataSourceExec)
+                                // Yield to let the executor drive I/O instead of busy-polling
+                                tokio::task::yield_now().await;
+                            } else {
+                                // Has ScanExec operators
+                                // Busy-poll to pull batches from JVM
+                                // TODO: Investigate if JNI calls are safe without block_in_place.
+                                // block_in_place prevents Tokio from migrating this task to another thread,
+                                // which is necessary because JNI env is thread-local. If we can guarantee
+                                // thread safety another way, we could remove this wrapper for better perf.
+                                tokio::task::block_in_place(|| {
+                                    pull_input_batches(exec_context)
+                                })?;
+                            }
 
                             // Output not ready yet
                             continue;
@@ -605,8 +616,7 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 
 /// Updates the metrics of the query plan.
 fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> CometResult<()> {
-    if exec_context.root_op.is_some() {
-        let native_query = exec_context.root_op.as_ref().unwrap();
+    if let Some(native_query) = &exec_context.root_op {
         let metrics = exec_context.metrics.as_obj();
         update_comet_metric(env, metrics, native_query)
     } else {

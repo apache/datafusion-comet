@@ -46,29 +46,115 @@ env:
   RUST_VERSION: stable
 
 jobs:
-  
-  # Run Rust tests once per JDK version
-  linux-test-rust:
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-        java_version: [11, 17]
-      fail-fast: false
-    name: ${{ matrix.os }}/java ${{ matrix.java_version }}-rust
-    runs-on: ${{ matrix.os }}
+
+  # Fast lint check - gates all other jobs
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
     container:
       image: amd64/rust
     steps:
       - uses: actions/checkout@v6
+
+      - name: Check Rust formatting
+        run: |
+          rustup component add rustfmt
+          cd native && cargo fmt --all -- --check
+
+  # Build native library once and share with all test jobs
+  build-native:
+    needs: lint
+    name: Build Native Library
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17  # JDK only needed for common module proto generation
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-
+
+      - name: Build native library (CI profile)
+        run: |
+          cd native
+          # CI profile: same overflow behavior as release, but faster compilation
+          # (no LTO, parallel codegen)
+          cargo build --profile ci
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-lib-linux
+          path: native/target/ci/libcomet.so
+          retention-days: 1
+
+      - name: Save Cargo cache
+        uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+
+  # Run Rust tests (runs in parallel with build-native, uses debug builds)
+  linux-test-rust:
+    needs: lint
+    name: ubuntu-latest/rust-test
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
-          rust-version: ${{env.RUST_VERSION}}
-          jdk-version: ${{ matrix.java_version }}
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          # Note: Java version intentionally excluded - Rust target is JDK-independent
+          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-debug-
+
       - name: Rust test steps
         uses: ./.github/actions/rust-test
-  
+
+      - name: Save Cargo cache
+        uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}
+
   linux-test:
+    needs: build-native
     strategy:
       matrix:
         os: [ubuntu-latest]
@@ -122,6 +208,7 @@ jobs:
               org.apache.comet.exec.CometAsyncShuffleSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
               org.apache.comet.exec.DisableAQECometAsyncShuffleSuite
+              org.apache.spark.shuffle.sort.SpillSorterSuite
           - name: "parquet"
             value: |
               org.apache.comet.parquet.CometParquetWriterSuite
@@ -133,6 +220,9 @@ jobs:
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
               org.apache.comet.CometIcebergNativeSuite
+          - name: "csv"
+            value: |
+              org.apache.comet.csv.CometCsvNativeReadSuite
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
@@ -160,6 +250,7 @@ jobs:
             value: |
               org.apache.comet.CometExpressionSuite
               org.apache.comet.CometExpressionCoverageSuite
+              org.apache.comet.CometHashExpressionSuite
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
               org.apache.comet.CometCastSuite
@@ -184,11 +275,31 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
-          rust-version: ${{env.RUST_VERSION}}
+          rust-version: ${{ env.RUST_VERSION }}
           jdk-version: ${{ matrix.profile.java_version }}
+
+      - name: Download native library
+        uses: actions/download-artifact@v4
+        with:
+          name: native-lib-linux
+          # Download to release/ since Maven's -Prelease expects libcomet.so there
+          path: native/target/release/
+
+      # Restore cargo registry cache (for any cargo commands that might run)
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('native/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
       - name: Java test steps
         uses: ./.github/actions/java-test
         with:
@@ -197,3 +308,148 @@ jobs:
           maven_opts: ${{ matrix.profile.maven_opts }}
           scan_impl: ${{ matrix.profile.scan_impl }}
           upload-test-reports: true
+          skip-native-build: true
+
+  # TPC-H correctness test - verifies benchmark queries produce correct results
+  verify-benchmark-results-tpch:
+    needs: build-native
+    name: Verify TPC-H Results
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 11
+
+      - name: Download native library
+        uses: actions/download-artifact@v4
+        with:
+          name: native-lib-linux
+          path: native/target/release/
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Cache TPC-H data
+        id: cache-tpch
+        uses: actions/cache@v4
+        with:
+          path: ./tpch
+          key: tpch-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
+
+      - name: Build project
+        run: |
+          ./mvnw -B -Prelease install -DskipTests
+
+      - name: Generate TPC-H data (SF=1)
+        if: steps.cache-tpch.outputs.cache-hit != 'true'
+        run: |
+          cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCHData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--location `pwd`/.. --scaleFactor 1 --numPartitions 1 --overwrite"
+
+      - name: Run TPC-H queries
+        run: |
+          SPARK_HOME=`pwd` SPARK_TPCH_DATA=`pwd`/tpch/sf1_parquet ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCHQuerySuite test
+
+  # TPC-DS correctness tests - verifies benchmark queries produce correct results
+  verify-benchmark-results-tpcds:
+    needs: build-native
+    name: Verify TPC-DS Results (${{ matrix.join }})
+    runs-on: ubuntu-latest
+    container:
+      image: amd64/rust
+    strategy:
+      matrix:
+        join: [sort_merge, broadcast, hash]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 11
+
+      - name: Download native library
+        uses: actions/download-artifact@v4
+        with:
+          name: native-lib-linux
+          path: native/target/release/
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Cache TPC-DS data
+        id: cache-tpcds
+        uses: actions/cache@v4
+        with:
+          path: ./tpcds-sf-1
+          key: tpcds-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
+
+      - name: Build project
+        run: |
+          ./mvnw -B -Prelease install -DskipTests
+
+      - name: Checkout tpcds-kit
+        if: steps.cache-tpcds.outputs.cache-hit != 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: databricks/tpcds-kit
+          path: ./tpcds-kit
+
+      - name: Build tpcds-kit
+        if: steps.cache-tpcds.outputs.cache-hit != 'true'
+        run: |
+          apt-get update && apt-get install -y yacc bison flex gcc-12 g++-12
+          update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 120 --slave /usr/bin/g++ g++ /usr/bin/g++-12
+          cd tpcds-kit/tools && make OS=LINUX
+
+      - name: Generate TPC-DS data (SF=1)
+        if: steps.cache-tpcds.outputs.cache-hit != 'true'
+        run: |
+          cd spark && MAVEN_OPTS='-Xmx20g' ../mvnw -B -Prelease exec:java -Dexec.mainClass="org.apache.spark.sql.GenTPCDSData" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="--dsdgenDir `pwd`/../tpcds-kit/tools --location `pwd`/../tpcds-sf-1 --scaleFactor 1 --numPartitions 1"
+
+      - name: Run TPC-DS queries (Sort merge join)
+        if: matrix.join == 'sort_merge'
+        run: |
+          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
+        env:
+          SPARK_TPCDS_JOIN_CONF: |
+            spark.sql.autoBroadcastJoinThreshold=-1
+            spark.sql.join.preferSortMergeJoin=true
+
+      - name: Run TPC-DS queries (Broadcast hash join)
+        if: matrix.join == 'broadcast'
+        run: |
+          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
+        env:
+          SPARK_TPCDS_JOIN_CONF: |
+            spark.sql.autoBroadcastJoinThreshold=10485760
+
+      - name: Run TPC-DS queries (Shuffled hash join)
+        if: matrix.join == 'hash'
+        run: |
+          SPARK_HOME=`pwd` SPARK_TPCDS_DATA=`pwd`/tpcds-sf-1 ./mvnw -B -Prelease -Dsuites=org.apache.spark.sql.CometTPCDSQuerySuite test
+        env:
+          SPARK_TPCDS_JOIN_CONF: |
+            spark.sql.autoBroadcastJoinThreshold=-1
+            spark.sql.join.forceApplyShuffledHashJoin=true
