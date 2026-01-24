@@ -46,7 +46,7 @@ The `native_datafusion` and `native_iceberg_compat` scans share the following li
   (unsigned 8-bit integers), Comet may produce different results than Spark. Spark maps `UINT_8` to `ShortType`, but
   Comet's Arrow-based readers respect the unsigned type and read the data as unsigned rather than signed. Since Comet
   cannot distinguish `ShortType` columns that came from `UINT_8` versus signed `INT16`, by default Comet falls back to
-  `native_comet` when scanning Parquet files containing `ShortType` columns. This behavior can be disabled by setting
+  Spark when scanning Parquet files containing `ShortType` columns. This behavior can be disabled by setting
   `spark.comet.scan.unsignedSmallIntSafetyCheck=false`. Note that `ByteType` columns are always safe because they can
   only come from signed `INT8`, where truncation preserves the signed value.
 - No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
@@ -60,11 +60,11 @@ The `native_datafusion` scan has some additional limitations:
 
 ## S3 Support
 
-There are some
+There are some differences in S3 support between the scan implementations.
 
 ### `native_comet`
 
-The default `native_comet` Parquet scan implementation reads data from S3 using the [Hadoop-AWS module](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html), which
+The `native_comet` Parquet scan implementation reads data from S3 using the [Hadoop-AWS module](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html), which
 is identical to the approach commonly used with vanilla Spark. AWS credential configuration and other Hadoop S3A
 configurations works the same way as in vanilla Spark.
 
