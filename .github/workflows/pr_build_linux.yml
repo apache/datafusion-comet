@@ -351,7 +351,7 @@ jobs:
 
       - name: Build project
         run: |
-          ./mvnw -B -Prelease compile test-compile -DskipTests
+          ./mvnw -B -Prelease install -DskipTests
 
       - name: Generate TPC-H data (SF=1)
         if: steps.cache-tpch.outputs.cache-hit != 'true'
@@ -407,7 +407,7 @@ jobs:
 
       - name: Build project
         run: |
-          ./mvnw -B -Prelease compile test-compile -DskipTests
+          ./mvnw -B -Prelease install -DskipTests
 
       - name: Checkout tpcds-kit
         if: steps.cache-tpcds.outputs.cache-hit != 'true'
