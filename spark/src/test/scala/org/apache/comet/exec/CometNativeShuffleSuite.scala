@@ -68,7 +68,9 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         withTempDir { dir =>
           val path = new Path(dir.toURI.toString, "test.parquet")
           makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
-          var allTypes: Seq[Int] = (1 to 20)
+          // Exclude _17 which is DECIMAL(38, 37) - high precision decimals are not supported
+          // as partitioning keys in native shuffle
+          var allTypes: Seq[Int] = (1 to 20).filterNot(_ == 17)
           allTypes.map(i => s"_$i").foreach { c =>
             withSQLConf(
               CometConf.COMET_EXEC_ENABLED.key -> execEnabled.toString,
@@ -100,8 +102,8 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
                 .filter($"_3" > 10)
                 .repartition(numPartitions, $"_2")
 
-              // Partitioning on nested array falls back to Spark
-              checkShuffleAnswer(df, 0)
+              // Partitioning on nested array works with native shuffle
+              checkShuffleAnswer(df, 1)
 
               df = sql("SELECT * FROM tbl")
                 .filter($"_3" > 10)
@@ -111,6 +113,36 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
               checkShuffleAnswer(df, 1)
             }
           }
+        }
+      }
+    }
+  }
+
+  test("native shuffle with struct as partition key") {
+    Seq(10, 201).foreach { numPartitions =>
+      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
+        withParquetTable((0 until 50).map(i => (i, (i % 10, s"value_${i % 10}"), i + 1)), "tbl") {
+          val df = sql("SELECT * FROM tbl")
+            .filter($"_3" > 10)
+            .repartition(numPartitions, $"_2")
+
+          // Partitioning on struct works with native shuffle
+          checkShuffleAnswer(df, 1)
+        }
+      }
+    }
+  }
+
+  test("native shuffle with map as partition key") {
+    Seq(10, 201).foreach { numPartitions =>
+      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
+        withParquetTable((0 until 50).map(i => (i, Map("key" -> (i % 10)), i + 1)), "tbl") {
+          val df = sql("SELECT * FROM tbl")
+            .filter($"_3" > 10)
+            .repartition(numPartitions, $"_2")
+
+          // Partitioning on map works with native shuffle
+          checkShuffleAnswer(df, 1)
         }
       }
     }
