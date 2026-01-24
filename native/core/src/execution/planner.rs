@@ -21,6 +21,7 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
+use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
 use crate::{
     errors::ExpressionError,
@@ -70,8 +71,7 @@ use datafusion::{
 };
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, EvalMode, SparkHour, SparkMinute, SparkSecond,
-    SumInteger,
+    BloomFilterAgg, BloomFilterMightContain, EvalMode, SumInteger,
 };
 use iceberg::expr::Bind;
 
@@ -95,6 +95,7 @@ use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
+
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
     Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray,
@@ -126,8 +127,7 @@ use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncre
 use datafusion_comet_spark_expr::{
     ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation, Covariance, CreateNamedStruct,
     GetArrayStructFields, GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, RandExpr,
-    RandnExpr, SparkCastOptions, Stddev, SumDecimal, TimestampTruncExpr, ToJson, UnboundColumn,
-    Variance,
+    RandnExpr, SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance,
 };
 use itertools::Itertools;
 use jni::objects::GlobalRef;
@@ -374,65 +374,6 @@ impl PhysicalPlanner {
                     datatype,
                     SparkCastOptions::new(eval_mode, &expr.timezone, expr.allow_incompat),
                 )))
-            }
-            ExprStruct::Hour(expr) => {
-                let child =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let timezone = expr.timezone.clone();
-                let args = vec![child];
-                let comet_hour = Arc::new(ScalarUDF::new_from_impl(SparkHour::new(timezone)));
-                let field_ref = Arc::new(Field::new("hour", DataType::Int32, true));
-                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
-                    "hour",
-                    comet_hour,
-                    args,
-                    field_ref,
-                    Arc::new(ConfigOptions::default()),
-                );
-
-                Ok(Arc::new(expr))
-            }
-            ExprStruct::Minute(expr) => {
-                let child =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let timezone = expr.timezone.clone();
-                let args = vec![child];
-                let comet_minute = Arc::new(ScalarUDF::new_from_impl(SparkMinute::new(timezone)));
-                let field_ref = Arc::new(Field::new("minute", DataType::Int32, true));
-                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
-                    "minute",
-                    comet_minute,
-                    args,
-                    field_ref,
-                    Arc::new(ConfigOptions::default()),
-                );
-
-                Ok(Arc::new(expr))
-            }
-            ExprStruct::Second(expr) => {
-                let child =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let timezone = expr.timezone.clone();
-                let args = vec![child];
-                let comet_second = Arc::new(ScalarUDF::new_from_impl(SparkSecond::new(timezone)));
-                let field_ref = Arc::new(Field::new("second", DataType::Int32, true));
-                let expr: ScalarFunctionExpr = ScalarFunctionExpr::new(
-                    "second",
-                    comet_second,
-                    args,
-                    field_ref,
-                    Arc::new(ConfigOptions::default()),
-                );
-
-                Ok(Arc::new(expr))
-            }
-            ExprStruct::TruncTimestamp(expr) => {
-                let child =
-                    self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let format = self.create_expr(expr.format.as_ref().unwrap(), input_schema)?;
-                let timezone = expr.timezone.clone();
-
-                Ok(Arc::new(TimestampTruncExpr::new(child, format, timezone)))
             }
             ExprStruct::CheckOverflow(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
@@ -1114,6 +1055,44 @@ impl PhysicalPlanner {
                     scan.case_sensitive,
                     self.session_ctx(),
                     scan.encryption_enabled,
+                )?;
+                Ok((
+                    vec![],
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
+                ))
+            }
+            OpStruct::CsvScan(scan) => {
+                let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
+                let partition_schema =
+                    convert_spark_types_to_arrow_schema(scan.partition_schema.as_slice());
+                let projection_vector: Vec<usize> =
+                    scan.projection_vector.iter().map(|i| *i as usize).collect();
+                let object_store_options: HashMap<String, String> = scan
+                    .object_store_options
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let one_file = scan
+                    .file_partitions
+                    .first()
+                    .and_then(|f| f.partitioned_file.first())
+                    .map(|f| f.file_path.clone())
+                    .ok_or(GeneralError("Failed to locate file".to_string()))?;
+                let (object_store_url, _) = prepare_object_store_with_configs(
+                    self.session_ctx.runtime_env(),
+                    one_file,
+                    &object_store_options,
+                )?;
+                let files =
+                    self.get_partitioned_files(&scan.file_partitions[self.partition as usize])?;
+                let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
+                let scan = init_csv_datasource_exec(
+                    object_store_url,
+                    file_groups,
+                    data_schema,
+                    partition_schema,
+                    projection_vector,
+                    &scan.csv_options.clone().unwrap(),
                 )?;
                 Ok((
                     vec![],
@@ -2650,6 +2629,103 @@ fn convert_spark_types_to_arrow_schema(
     arrow_schema
 }
 
+/// Converts a protobuf PartitionValue to an iceberg Literal.
+///
+fn partition_value_to_literal(
+    proto_value: &spark_operator::PartitionValue,
+) -> Result<Option<iceberg::spec::Literal>, ExecutionError> {
+    use spark_operator::partition_value::Value;
+
+    if proto_value.is_null {
+        return Ok(None);
+    }
+
+    let literal = match &proto_value.value {
+        Some(Value::IntVal(v)) => iceberg::spec::Literal::int(*v),
+        Some(Value::LongVal(v)) => iceberg::spec::Literal::long(*v),
+        Some(Value::DateVal(v)) => {
+            // Convert i64 to i32 for date (days since epoch)
+            let days = (*v)
+                .try_into()
+                .map_err(|_| GeneralError(format!("Date value out of range: {}", v)))?;
+            iceberg::spec::Literal::date(days)
+        }
+        Some(Value::TimestampVal(v)) => iceberg::spec::Literal::timestamp(*v),
+        Some(Value::TimestampTzVal(v)) => iceberg::spec::Literal::timestamptz(*v),
+        Some(Value::StringVal(s)) => iceberg::spec::Literal::string(s.clone()),
+        Some(Value::DoubleVal(v)) => iceberg::spec::Literal::double(*v),
+        Some(Value::FloatVal(v)) => iceberg::spec::Literal::float(*v),
+        Some(Value::DecimalVal(bytes)) => {
+            // Deserialize unscaled BigInteger bytes to i128
+            // BigInteger is serialized as signed big-endian bytes
+            if bytes.len() > 16 {
+                return Err(GeneralError(format!(
+                    "Decimal bytes too large: {} bytes (max 16 for i128)",
+                    bytes.len()
+                )));
+            }
+
+            // Convert big-endian bytes to i128
+            let mut buf = [0u8; 16];
+            let offset = 16 - bytes.len();
+            buf[offset..].copy_from_slice(bytes);
+
+            // Handle sign extension for negative numbers
+            let value = if !bytes.is_empty() && (bytes[0] & 0x80) != 0 {
+                // Negative number - sign extend
+                for byte in buf.iter_mut().take(offset) {
+                    *byte = 0xFF;
+                }
+                i128::from_be_bytes(buf)
+            } else {
+                // Positive number
+                i128::from_be_bytes(buf)
+            };
+
+            iceberg::spec::Literal::decimal(value)
+        }
+        Some(Value::BoolVal(v)) => iceberg::spec::Literal::bool(*v),
+        Some(Value::UuidVal(bytes)) => {
+            // Deserialize UUID from 16 bytes
+            if bytes.len() != 16 {
+                return Err(GeneralError(format!(
+                    "Invalid UUID bytes length: {} (expected 16)",
+                    bytes.len()
+                )));
+            }
+            let uuid = uuid::Uuid::from_slice(bytes)
+                .map_err(|e| GeneralError(format!("Failed to parse UUID: {}", e)))?;
+            iceberg::spec::Literal::uuid(uuid)
+        }
+        Some(Value::FixedVal(bytes)) => iceberg::spec::Literal::fixed(bytes.to_vec()),
+        Some(Value::BinaryVal(bytes)) => iceberg::spec::Literal::binary(bytes.to_vec()),
+        None => {
+            return Err(GeneralError(
+                "PartitionValue has no value set and is_null is false".to_string(),
+            ));
+        }
+    };
+
+    Ok(Some(literal))
+}
+
+/// Converts a protobuf PartitionData to an iceberg Struct.
+///
+/// Uses the existing Struct::from_iter() API from iceberg-rust to construct the struct
+/// from the list of partition values.
+/// This can potentially be upstreamed to iceberg_rust
+fn partition_data_to_struct(
+    proto_partition: &spark_operator::PartitionData,
+) -> Result<iceberg::spec::Struct, ExecutionError> {
+    let literals: Vec<Option<iceberg::spec::Literal>> = proto_partition
+        .values
+        .iter()
+        .map(partition_value_to_literal)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(iceberg::spec::Struct::from_iter(literals))
+}
+
 /// Converts protobuf FileScanTasks from Scala into iceberg-rust FileScanTask objects.
 ///
 /// Each task contains a residual predicate that is used for row-group level filtering
@@ -2670,19 +2746,6 @@ fn parse_file_scan_tasks(
             serde_json::from_str(json).map(Arc::new).map_err(|e| {
                 ExecutionError::GeneralError(format!(
                     "Failed to parse schema JSON from pool: {}",
-                    e
-                ))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let partition_type_cache: Vec<iceberg::spec::StructType> = proto_scan
-        .partition_type_pool
-        .iter()
-        .map(|json| {
-            serde_json::from_str(json).map_err(|e| {
-                ExecutionError::GeneralError(format!(
-                    "Failed to parse partition type JSON from pool: {}",
                     e
                 ))
             })
@@ -2742,19 +2805,7 @@ fn parse_file_scan_tasks(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let partition_data_cache: Vec<serde_json::Value> = proto_scan
-        .partition_data_pool
-        .iter()
-        .map(|json| {
-            serde_json::from_str(json).map_err(|e| {
-                ExecutionError::GeneralError(format!(
-                    "Failed to parse partition data JSON from pool: {}",
-                    e
-                ))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
+    // Partition data pool is in protobuf messages
     let results: Result<Vec<_>, _> = proto_tasks
         .iter()
         .map(|proto_task| {
@@ -2808,48 +2859,24 @@ fn parse_file_scan_tasks(
             };
 
             let partition = if let Some(partition_data_idx) = proto_task.partition_data_idx {
-                let partition_type_idx = proto_task.partition_type_idx.ok_or_else(|| {
-                    ExecutionError::GeneralError(
-                        "partition_type_idx is required when partition_data_idx is present"
-                            .to_string(),
-                    )
-                })?;
-
-                let partition_data_value = partition_data_cache
+                // Get partition data from protobuf pool
+                let partition_data_proto = proto_scan
+                    .partition_data_pool
                     .get(partition_data_idx as usize)
                     .ok_or_else(|| {
                         ExecutionError::GeneralError(format!(
-                            "Invalid partition_data_idx: {} (cache size: {})",
+                            "Invalid partition_data_idx: {} (pool size: {})",
                             partition_data_idx,
-                            partition_data_cache.len()
+                            proto_scan.partition_data_pool.len()
                         ))
                     })?;
 
-                let partition_type = partition_type_cache
-                    .get(partition_type_idx as usize)
-                    .ok_or_else(|| {
-                        ExecutionError::GeneralError(format!(
-                            "Invalid partition_type_idx: {} (cache size: {})",
-                            partition_type_idx,
-                            partition_type_cache.len()
-                        ))
-                    })?;
-
-                match iceberg::spec::Literal::try_from_json(
-                    partition_data_value.clone(),
-                    &iceberg::spec::Type::Struct(partition_type.clone()),
-                ) {
-                    Ok(Some(iceberg::spec::Literal::Struct(s))) => Some(s),
-                    Ok(None) => None,
-                    Ok(other) => {
-                        return Err(GeneralError(format!(
-                            "Expected struct literal for partition data, got: {:?}",
-                            other
-                        )))
-                    }
+                // Convert protobuf PartitionData to iceberg Struct
+                match partition_data_to_struct(partition_data_proto) {
+                    Ok(s) => Some(s),
                     Err(e) => {
-                        return Err(GeneralError(format!(
-                            "Failed to deserialize partition data from JSON: {}",
+                        return Err(ExecutionError::GeneralError(format!(
+                            "Failed to deserialize partition data from protobuf: {}",
                             e
                         )))
                     }
