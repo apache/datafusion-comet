@@ -42,12 +42,28 @@ origin	git@github.com:yourgithubid/datafusion-comet.git (push)
 Create a release branch from the latest commit in main and push to the `apache` repo:
 
 ```shell
-get fetch apache
+git fetch apache
 git checkout main
 git reset --hard apache/main
 git checkout -b branch-0.1
 git push apache branch-0.1
 ```
+
+### Generate Release Documentation
+
+Generate the documentation content for this release. The docs on `main` contain only template markers,
+so we need to generate the actual content (config tables, compatibility matrices) for the release branch:
+
+```shell
+./dev/generate-release-docs.sh
+git add docs/source/user-guide/latest/
+git commit -m "Generate docs for 0.1.0 release"
+git push apache branch-0.1
+```
+
+This freezes the documentation to reflect the configs and expressions available in this release.
+
+### Update Maven Version
 
 Update the `pom.xml` files in the release branch to update the Maven version from `0.1.0-SNAPSHOT` to `0.1.0`.
 
