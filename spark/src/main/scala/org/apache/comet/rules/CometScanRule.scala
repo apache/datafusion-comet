@@ -47,7 +47,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, withInfo, wi
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.parquet.{CometParquetScan, Native, SupportsComet}
+import org.apache.comet.parquet.{CometNativeParquetScan, CometParquetScan, Native, SupportsComet}
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.serde.operator.CometNativeScan
 import org.apache.comet.shims.CometTypeShim
@@ -229,31 +229,7 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
     scanExec.scan match {
       case scan: ParquetScan =>
-        val fallbackReasons = new ListBuffer[String]()
-        val schemaSupported =
-          CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
-        if (!schemaSupported) {
-          fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
-        }
-
-        val partitionSchemaSupported =
-          CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema, fallbackReasons)
-        if (!partitionSchemaSupported) {
-          fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
-        }
-
-        if (scan.pushedAggregate.nonEmpty) {
-          fallbackReasons += "Comet does not support pushed aggregate"
-        }
-
-        if (schemaSupported && partitionSchemaSupported && scan.pushedAggregate.isEmpty) {
-          val cometScan = CometParquetScan(session, scanExec.scan.asInstanceOf[ParquetScan])
-          CometBatchScanExec(
-            scanExec.copy(scan = cometScan),
-            runtimeFilters = scanExec.runtimeFilters)
-        } else {
-          withInfos(scanExec, fallbackReasons.toSet)
-        }
+        transformV2ParquetScan(scanExec, scan)
 
       case scan: CSVScan if COMET_CSV_V2_NATIVE_ENABLED.get() =>
         val fallbackReasons = new ListBuffer[String]()
@@ -634,6 +610,131 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
           scanExec,
           s"Unsupported scan: ${other.getClass.getName}. " +
             "Comet Scan only supports Parquet and Iceberg Parquet file formats")
+    }
+  }
+
+  /**
+   * Transform a V2 Parquet scan to use native execution.
+   *
+   * For auto or native_iceberg_compat: uses CometNativeParquetScan (DataFusion-based reader) For
+   * native_comet: uses CometParquetScan (legacy JNI-based reader) For native_datafusion: falls
+   * back to Spark (not yet supported for V2)
+   */
+  private def transformV2ParquetScan(scanExec: BatchScanExec, scan: ParquetScan): SparkPlan = {
+    val scanImpl = COMET_NATIVE_SCAN_IMPL.get()
+
+    scanImpl match {
+      case SCAN_NATIVE_DATAFUSION =>
+        withInfo(
+          scanExec,
+          s"V2 Parquet scan does not yet support $SCAN_NATIVE_DATAFUSION. " +
+            s"Use $SCAN_AUTO, $SCAN_NATIVE_ICEBERG_COMPAT, or $SCAN_NATIVE_COMET instead.")
+
+      case SCAN_NATIVE_COMET =>
+        nativeCometV2Scan(scanExec, scan).getOrElse(scanExec)
+
+      case SCAN_AUTO | SCAN_NATIVE_ICEBERG_COMPAT =>
+        nativeIcebergCompatV2Scan(scanExec, scan).getOrElse(scanExec)
+    }
+  }
+
+  /**
+   * Create a native_comet V2 Parquet scan using the legacy JNI-based BatchReader.
+   */
+  private def nativeCometV2Scan(scanExec: BatchScanExec, scan: ParquetScan): Option[SparkPlan] = {
+    val fallbackReasons = new ListBuffer[String]()
+
+    val schemaSupported =
+      CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
+    if (!schemaSupported) {
+      fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
+    }
+
+    val partitionSchemaSupported =
+      CometBatchScanExec.isSchemaSupported(scan.readPartitionSchema, fallbackReasons)
+    if (!partitionSchemaSupported) {
+      fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
+    }
+
+    if (scan.pushedAggregate.nonEmpty) {
+      fallbackReasons += "Comet does not support pushed aggregate"
+    }
+
+    if (fallbackReasons.isEmpty) {
+      val cometScan = CometParquetScan(session, scan)
+      Some(
+        CometBatchScanExec(
+          scanExec.copy(scan = cometScan),
+          runtimeFilters = scanExec.runtimeFilters))
+    } else {
+      withInfos(scanExec, fallbackReasons.toSet)
+      None
+    }
+  }
+
+  /**
+   * Try to create a native_iceberg_compat V2 Parquet scan. Returns None if validation fails.
+   */
+  private def nativeIcebergCompatV2Scan(
+      scanExec: BatchScanExec,
+      scan: ParquetScan): Option[SparkPlan] = {
+    val fallbackReasons = new ListBuffer[String]()
+
+    // Check if comet exec is enabled (required for native_iceberg_compat)
+    if (!COMET_EXEC_ENABLED.get()) {
+      fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT requires ${COMET_EXEC_ENABLED.key}=true"
+    }
+
+    // Check pushed aggregate
+    if (scan.pushedAggregate.nonEmpty) {
+      fallbackReasons += "Comet does not support pushed aggregate"
+    }
+
+    // Use the appropriate type checker for native_iceberg_compat
+    val typeChecker = CometScanTypeChecker(SCAN_NATIVE_ICEBERG_COMPAT)
+
+    val schemaSupported =
+      typeChecker.isSchemaSupported(scan.readDataSchema, fallbackReasons)
+    if (!schemaSupported) {
+      fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
+    }
+
+    val partitionSchemaSupported =
+      typeChecker.isSchemaSupported(scan.readPartitionSchema, fallbackReasons)
+    if (!partitionSchemaSupported) {
+      fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
+    }
+
+    // Check filesystem support and object store configuration
+    val hadoopConf = session.sessionState.newHadoopConfWithOptions(scan.options.asScala.toMap)
+    val inputFiles = scan.fileIndex.inputFiles
+    val allFilesSupported = inputFiles.forall { path =>
+      path.startsWith("file:") || path.startsWith("s3a://") || path.startsWith("s3://")
+    }
+    if (!allFilesSupported) {
+      fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT only supports local filesystem and S3"
+    } else {
+      // Validate S3 config if any S3 files
+      val s3File = inputFiles.find(p => p.startsWith("s3a://") || p.startsWith("s3://"))
+      s3File.foreach { filePath =>
+        validateObjectStoreConfig(filePath, hadoopConf, fallbackReasons)
+      }
+    }
+
+    // Check encryption support
+    if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
+      fallbackReasons += s"$SCAN_NATIVE_ICEBERG_COMPAT does not support this encryption config"
+    }
+
+    if (fallbackReasons.isEmpty) {
+      val cometScan = CometNativeParquetScan(session, scan)
+      Some(
+        CometBatchScanExec(
+          scanExec.copy(scan = cometScan),
+          runtimeFilters = scanExec.runtimeFilters))
+    } else {
+      withInfos(scanExec, fallbackReasons.toSet)
+      None
     }
   }
 

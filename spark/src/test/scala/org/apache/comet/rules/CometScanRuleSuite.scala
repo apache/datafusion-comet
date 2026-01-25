@@ -30,7 +30,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.parquet.CometParquetScan
+import org.apache.comet.parquet.CometNativeParquetScan
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -127,13 +127,43 @@ class CometScanRuleSuite extends CometTestBase {
 
                 // CometScanRule should have replaced the underlying scan
                 val scan = transformedPlan.collect { case scan: CometBatchScanExec => scan }.head
-                assert(scan.wrapped.scan.isInstanceOf[CometParquetScan])
+                assert(scan.wrapped.scan.isInstanceOf[CometNativeParquetScan])
 
               } else {
                 assert(countOperators(transformedPlan, classOf[BatchScanExec]) == 1)
                 assert(countOperators(transformedPlan, classOf[CometBatchScanExec]) == 0)
               }
             }
+          }
+        }
+      }
+    }
+  }
+
+  test("V2 scan should fallback to Spark when native_datafusion is specified") {
+    withTempPath { path =>
+      createTestDataFrame.write.parquet(path.toString)
+      withTempView("test_data") {
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+          spark.read.parquet(path.toString).createOrReplaceTempView("test_data")
+
+          val sparkPlan =
+            createSparkPlan(
+              spark,
+              "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
+
+          // Count original Spark operators
+          assert(countOperators(sparkPlan, classOf[BatchScanExec]) == 1)
+
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
+
+            val transformedPlan = applyCometScanRule(sparkPlan)
+
+            // Should fallback to Spark because V2 scans don't yet support native_datafusion
+            assert(countOperators(transformedPlan, classOf[BatchScanExec]) == 1)
+            assert(countOperators(transformedPlan, classOf[CometBatchScanExec]) == 0)
           }
         }
       }
