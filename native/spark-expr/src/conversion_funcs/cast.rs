@@ -2317,8 +2317,8 @@ fn cast_string_to_decimal256_impl(
 }
 
 /// Parse a string to decimal following Spark's behavior
-fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Option<i128>> {
-    let string_bytes = s.as_bytes();
+fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkResult<Option<i128>> {
+    let string_bytes = input_str.as_bytes();
     let mut start = 0;
     let mut end = string_bytes.len();
 
@@ -2330,7 +2330,7 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
         end -= 1;
     }
 
-    let trimmed = &s[start..end];
+    let trimmed = &input_str[start..end];
 
     if trimmed.is_empty() {
         return Ok(None);
@@ -2347,15 +2347,21 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
         return Ok(None);
     }
 
-    // validate and parse mantissa and exponent
+    // validate and parse mantissa and exponent or bubble up the error
     let (mantissa, exponent) = parse_decimal_str(
         trimmed,
+        input_str,
         "STRING",
         &format!("DECIMAL({},{})", precision, scale),
     )?;
 
-    //  return early when mantissa is 0
+    // Early return mantissa 0, Spark checks if it fits digits and throw error in ansi
     if mantissa == 0 {
+        if exponent < -37 {
+            return Err(SparkError::NumericOutOfRange {
+                value: input_str.to_string(),
+            });
+        }
         return Ok(Some(0));
     }
 
@@ -2424,10 +2430,15 @@ fn parse_string_to_decimal(s: &str, precision: u8, scale: i8) -> SparkResult<Opt
 }
 
 /// Parse a decimal string into mantissa and scale
-/// e.g., "123.45" -> (12345, 2), "-0.001" -> (-1, 3)
-fn parse_decimal_str(s: &str, from_type: &str, to_type: &str) -> SparkResult<(i128, i32)> {
+/// e.g., "123.45" -> (12345, 2), "-0.001" -> (-1, 3) , 0e50 -> (0,50) etc
+fn parse_decimal_str(
+    s: &str,
+    original_str: &str,
+    from_type: &str,
+    to_type: &str,
+) -> SparkResult<(i128, i32)> {
     if s.is_empty() {
-        return Err(invalid_value(s, from_type, to_type));
+        return Err(invalid_value(original_str, from_type, to_type));
     }
 
     let (mantissa_str, exponent) = if let Some(e_pos) = s.find(|c| ['e', 'E'].contains(&c)) {
@@ -2436,7 +2447,7 @@ fn parse_decimal_str(s: &str, from_type: &str, to_type: &str) -> SparkResult<(i1
         // Parse exponent
         let exp: i32 = exponent_part
             .parse()
-            .map_err(|_| invalid_value(s, from_type, to_type))?;
+            .map_err(|_| invalid_value(original_str, from_type, to_type))?;
 
         (mantissa_part, exp)
     } else {
@@ -2451,13 +2462,13 @@ fn parse_decimal_str(s: &str, from_type: &str, to_type: &str) -> SparkResult<(i1
     };
 
     if mantissa_str.starts_with('+') || mantissa_str.starts_with('-') {
-        return Err(invalid_value(s, from_type, to_type));
+        return Err(invalid_value(original_str, from_type, to_type));
     }
 
     let (integral_part, fractional_part) = match mantissa_str.find('.') {
         Some(dot_pos) => {
             if mantissa_str[dot_pos + 1..].contains('.') {
-                return Err(invalid_value(s, from_type, to_type));
+                return Err(invalid_value(original_str, from_type, to_type));
             }
             (&mantissa_str[..dot_pos], &mantissa_str[dot_pos + 1..])
         }
@@ -2465,15 +2476,15 @@ fn parse_decimal_str(s: &str, from_type: &str, to_type: &str) -> SparkResult<(i1
     };
 
     if integral_part.is_empty() && fractional_part.is_empty() {
-        return Err(invalid_value(s, from_type, to_type));
+        return Err(invalid_value(original_str, from_type, to_type));
     }
 
     if !integral_part.is_empty() && !integral_part.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(invalid_value(s, from_type, to_type));
+        return Err(invalid_value(original_str, from_type, to_type));
     }
 
     if !fractional_part.is_empty() && !fractional_part.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(invalid_value(s, from_type, to_type));
+        return Err(invalid_value(original_str, from_type, to_type));
     }
 
     // Parse integral part
@@ -2483,7 +2494,7 @@ fn parse_decimal_str(s: &str, from_type: &str, to_type: &str) -> SparkResult<(i1
     } else {
         integral_part
             .parse()
-            .map_err(|_| invalid_value(s, from_type, to_type))?
+            .map_err(|_| invalid_value(original_str, from_type, to_type))?
     };
 
     // Parse fractional part
@@ -2493,14 +2504,14 @@ fn parse_decimal_str(s: &str, from_type: &str, to_type: &str) -> SparkResult<(i1
     } else {
         fractional_part
             .parse()
-            .map_err(|_| invalid_value(s, from_type, to_type))?
+            .map_err(|_| invalid_value(original_str, from_type, to_type))?
     };
 
     // Combine: value = integral * 10^fractional_scale + fractional
     let mantissa = integral_value
         .checked_mul(10_i128.pow(fractional_scale as u32))
         .and_then(|v| v.checked_add(fractional_value))
-        .ok_or_else(|| invalid_value(s, from_type, to_type))?;
+        .ok_or_else(|| invalid_value(original_str, from_type, to_type))?;
 
     let final_mantissa = if negative { -mantissa } else { mantissa };
     // final scale = fractional_scale - exponent
