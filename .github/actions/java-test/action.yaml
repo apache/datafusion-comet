@@ -37,11 +37,16 @@ inputs:
     description: 'Whether to upload test results including coverage to GitHub'
     required: false
     default: 'false'
+  skip-native-build:
+    description: 'Skip native build (when using pre-built artifact)'
+    required: false
+    default: 'false'
 
 runs:
   using: "composite"
   steps:
     - name: Run Cargo release build
+      if: ${{ inputs.skip-native-build != 'true' }}
       shell: bash
       # it is important that we run the Scala tests against a release build rather than a debug build
       # to make sure that no tests are relying on overflow checks that are present only in debug builds

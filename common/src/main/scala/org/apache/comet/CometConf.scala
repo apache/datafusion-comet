@@ -111,6 +111,10 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  // Deprecated: native_comet uses mutable buffers incompatible with Arrow FFI best practices
+  // and does not support complex types. Use native_iceberg_compat or auto instead.
+  // See: https://github.com/apache/datafusion-comet/issues/2186
+  @deprecated("Use SCAN_AUTO instead", "0.9.0")
   val SCAN_NATIVE_COMET = "native_comet"
   val SCAN_NATIVE_DATAFUSION = "native_datafusion"
   val SCAN_NATIVE_ICEBERG_COMPAT = "native_iceberg_compat"
@@ -121,11 +125,14 @@ object CometConf extends ShimCometConf {
     .doc(
       s"The implementation of Comet Native Scan to use. Available modes are `$SCAN_NATIVE_COMET`," +
         s"`$SCAN_NATIVE_DATAFUSION`, and `$SCAN_NATIVE_ICEBERG_COMPAT`. " +
-        s"`$SCAN_NATIVE_COMET` is for the original Comet native scan which uses a jvm based " +
-        "parquet file reader and native column decoding. Supports simple types only " +
-        s"`$SCAN_NATIVE_DATAFUSION` is a fully native implementation of scan based on DataFusion" +
-        s"`$SCAN_NATIVE_ICEBERG_COMPAT` is a native implementation that exposes apis to read " +
-        s"parquet columns natively. `$SCAN_AUTO` chooses the best scan.")
+        s"`$SCAN_NATIVE_COMET` (DEPRECATED) is for the original Comet native scan which " +
+        "uses a jvm based parquet file reader and native column decoding. " +
+        "Supports simple types only. " +
+        s"`$SCAN_NATIVE_DATAFUSION` is a fully native implementation of scan based on " +
+        "DataFusion. " +
+        s"`$SCAN_NATIVE_ICEBERG_COMPAT` is the recommended native implementation that " +
+        "exposes apis to read parquet columns natively and supports complex types. " +
+        s"`$SCAN_AUTO` (default) chooses the best scan.")
     .internal()
     .stringConf
     .transform(_.toLowerCase(Locale.ROOT))
@@ -140,6 +147,16 @@ object CometConf extends ShimCometConf {
         "Whether to enable native Iceberg table scan using iceberg-rust. When enabled, " +
           "Iceberg tables are read directly through native execution, bypassing Spark's " +
           "DataSource V2 API for better performance.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_CSV_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.csv.v2.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Whether to use the native Comet V2 CSV reader for improved performance. " +
+          "Default: false (uses standard Spark CSV reader) " +
+          "Experimental: Performance benefits are workload-dependent.")
       .booleanConf
       .createWithDefault(false)
 
@@ -279,6 +296,17 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
 
+  val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether to enable native columnar to row conversion. When enabled, Comet will use " +
+          "native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead " +
+          "of the JVM implementation. This can improve performance for queries that need to " +
+          "convert between columnar and row formats. This is an experimental feature.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .category(CATEGORY_ENABLE_EXEC)
@@ -357,6 +385,36 @@ object CometConf extends ShimCometConf {
       .doc("Whether to enable range partitioning for Comet native shuffle.")
       .booleanConf
       .createWithDefault(true)
+
+  val COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.native.shuffle.partitioning.roundrobin.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Whether to enable round robin partitioning for Comet native shuffle. " +
+          "This is disabled by default because Comet's round-robin produces different " +
+          "partition assignments than Spark. Spark sorts rows by their binary UnsafeRow " +
+          "representation before assigning partitions, but Comet uses Arrow format which " +
+          "has a different binary layout. Instead, Comet implements round-robin as hash " +
+          "partitioning on all columns, which achieves the same goals: even distribution, " +
+          "deterministic output (for fault tolerance), and no semantic grouping. " +
+          "Sorted output will be identical to Spark, but unsorted row ordering may differ.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS: ConfigEntry[Int] =
+    conf("spark.comet.native.shuffle.partitioning.roundrobin.maxHashColumns")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "The maximum number of columns to hash for round robin partitioning. " +
+          "When set to 0 (the default), all columns are hashed. " +
+          "When set to a positive value, only the first N columns are used for hashing, " +
+          "which can improve performance for wide tables while still providing " +
+          "reasonable distribution.")
+      .intConf
+      .checkValue(
+        v => v >= 0,
+        "The maximum number of columns to hash for round robin partitioning must be non-negative.")
+      .createWithDefault(0)
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
