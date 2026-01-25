@@ -459,8 +459,8 @@ class CometParquetWriterSuite extends CometTestBase {
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
         // explicitly set scan impl to override CI defaults
         CometConf.COMET_NATIVE_SCAN_IMPL.key -> "auto",
-        // COMET_SCAN_ALLOW_INCOMPATIBLE is needed because input data contains byte/short types
-        CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
+        // Disable unsigned small int safety check for ShortType columns
+        CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> "false",
         // use a different timezone to make sure that timezone handling works with nested types
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax") {
 
