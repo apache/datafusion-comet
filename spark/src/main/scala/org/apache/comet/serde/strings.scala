@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Expression, InitCap, Left, Length, Like, Literal, Lower, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Concat, Elt, Expression, InitCap, Left, Length, Like, Literal, Lower, RegExpReplace, RLike, StringLPad, StringRepeat, StringRPad, Substring, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
@@ -286,6 +286,16 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
       replacementExpr,
       flagsExpr)
     optExprWithInfo(optExpr, expr, expr.subject, expr.regexp, expr.rep, expr.pos)
+  }
+}
+
+object CometElt extends CometScalarFunction[Elt]("elt") {
+
+  override def getSupportLevel(expr: Elt): SupportLevel = {
+    if (expr.failOnError) {
+      return Unsupported(Some("failOnError=true is not supported"))
+    }
+    Compatible(None)
   }
 }
 
