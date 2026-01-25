@@ -50,6 +50,15 @@ The `native_datafusion` and `native_iceberg_compat` scans share the following li
   `spark.comet.scan.unsignedSmallIntSafetyCheck=false`. Note that `ByteType` columns are always safe because they can
   only come from signed `INT8`, where truncation preserves the signed value.
 - No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
+- No support for datetime rebasing detection or the `spark.comet.exceptionOnDatetimeRebase` configuration. When reading
+  Parquet files containing dates or timestamps written before Spark 3.0 (which used a hybrid Julian/Gregorian calendar),
+  the `native_comet` implementation can detect these legacy values and either throw an exception or read them without
+  rebasing. The DataFusion-based implementations do not have this detection capability and will read all dates/timestamps
+  as if they were written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
+  October 15, 1582.
+- No support for Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`,
+  Spark uses the V2 API for Parquet scans. The DataFusion-based implementations only support the V1 API, so Comet
+  will fall back to `native_comet` when V2 is enabled.
 
 The `native_datafusion` scan has some additional limitations:
 
