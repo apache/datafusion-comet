@@ -29,7 +29,7 @@ CometColumnarToRow
                            :     :     :     :              :     :     :  :     +- CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales
                            :     :     :     :              :     :     :  :           +- SubqueryBroadcast
                            :     :     :     :              :     :     :  :              +- BroadcastExchange
-                           :     :     :     :              :     :     :  :                 +- CometNativeColumnarToRow
+                           :     :     :     :              :     :     :  :                 +- CometColumnarToRow
                            :     :     :     :              :     :     :  :                    +- CometProject
                            :     :     :     :              :     :     :  :                       +- CometFilter
                            :     :     :     :              :     :     :  :                          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
@@ -53,14 +53,14 @@ CometColumnarToRow
                            :     :     :           +- CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales
                            :     :     :                 +- SubqueryBroadcast
                            :     :     :                    +- BroadcastExchange
-                           :     :     :                       +- CometNativeColumnarToRow
+                           :     :     :                       +- CometColumnarToRow
                            :     :     :                          +- CometProject
                            :     :     :                             +- CometFilter
                            :     :     :                                :  :- ReusedSubquery
                            :     :     :                                :  +- ReusedSubquery
                            :     :     :                                +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                            :     :     :                                      :- Subquery
-                           :     :     :                                      :  +- CometNativeColumnarToRow
+                           :     :     :                                      :  +- CometColumnarToRow
                            :     :     :                                      :     +- CometHashAggregate
                            :     :     :                                      :        +- CometExchange
                            :     :     :                                      :           +- CometHashAggregate
@@ -68,7 +68,7 @@ CometColumnarToRow
                            :     :     :                                      :                 +- CometFilter
                            :     :     :                                      :                    +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim
                            :     :     :                                      +- Subquery
-                           :     :     :                                         +- CometNativeColumnarToRow
+                           :     :     :                                         +- CometColumnarToRow
                            :     :     :                                            +- CometHashAggregate
                            :     :     :                                               +- CometExchange
                            :     :     :                                                  +- CometHashAggregate

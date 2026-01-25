@@ -4,7 +4,7 @@ TakeOrderedAndProject (55)
    :- * HashAggregate (25)
    :  +- * HashAggregate (24)
    :     +- * HashAggregate (23)
-   :        +- CometNativeColumnarToRow (22)
+   :        +- * CometColumnarToRow (22)
    :           +- CometColumnarExchange (21)
    :              +- * HashAggregate (20)
    :                 +- * Project (19)
@@ -18,41 +18,41 @@ TakeOrderedAndProject (55)
    :                       :     :     :     +- Scan parquet spark_catalog.default.inventory (1)
    :                       :     :     +- ReusedExchange (4)
    :                       :     +- BroadcastExchange (11)
-   :                       :        +- CometNativeColumnarToRow (10)
+   :                       :        +- * CometColumnarToRow (10)
    :                       :           +- CometProject (9)
    :                       :              +- CometFilter (8)
    :                       :                 +- CometNativeScan parquet spark_catalog.default.item (7)
    :                       +- BroadcastExchange (17)
-   :                          +- CometNativeColumnarToRow (16)
+   :                          +- * CometColumnarToRow (16)
    :                             +- CometFilter (15)
    :                                +- CometNativeScan parquet spark_catalog.default.warehouse (14)
    :- * HashAggregate (32)
-   :  +- CometNativeColumnarToRow (31)
+   :  +- * CometColumnarToRow (31)
    :     +- CometColumnarExchange (30)
    :        +- * HashAggregate (29)
    :           +- * HashAggregate (28)
-   :              +- CometNativeColumnarToRow (27)
+   :              +- * CometColumnarToRow (27)
    :                 +- ReusedExchange (26)
    :- * HashAggregate (39)
-   :  +- CometNativeColumnarToRow (38)
+   :  +- * CometColumnarToRow (38)
    :     +- CometColumnarExchange (37)
    :        +- * HashAggregate (36)
    :           +- * HashAggregate (35)
-   :              +- CometNativeColumnarToRow (34)
+   :              +- * CometColumnarToRow (34)
    :                 +- ReusedExchange (33)
    :- * HashAggregate (46)
-   :  +- CometNativeColumnarToRow (45)
+   :  +- * CometColumnarToRow (45)
    :     +- CometColumnarExchange (44)
    :        +- * HashAggregate (43)
    :           +- * HashAggregate (42)
-   :              +- CometNativeColumnarToRow (41)
+   :              +- * CometColumnarToRow (41)
    :                 +- ReusedExchange (40)
    +- * HashAggregate (53)
-      +- CometNativeColumnarToRow (52)
+      +- * CometColumnarToRow (52)
          +- CometColumnarExchange (51)
             +- * HashAggregate (50)
                +- * HashAggregate (49)
-                  +- CometNativeColumnarToRow (48)
+                  +- * CometColumnarToRow (48)
                      +- ReusedExchange (47)
 
 
@@ -64,23 +64,23 @@ PartitionFilters: [isnotnull(inv_date_sk#4), dynamicpruningexpression(inv_date_s
 PushedFilters: [IsNotNull(inv_item_sk), IsNotNull(inv_warehouse_sk)]
 ReadSchema: struct<inv_item_sk:int,inv_warehouse_sk:int,inv_quantity_on_hand:int>
 
-(2) ColumnarToRow [codegen id : 1]
+(2) ColumnarToRow [codegen id : 4]
 Input [4]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4]
 
-(3) Filter [codegen id : 1]
+(3) Filter [codegen id : 4]
 Input [4]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4]
 Condition : (isnotnull(inv_item_sk#1) AND isnotnull(inv_warehouse_sk#2))
 
 (4) ReusedExchange [Reuses operator id: 60]
 Output [1]: [d_date_sk#6]
 
-(5) BroadcastHashJoin [codegen id : 1]
+(5) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [inv_date_sk#4]
 Right keys [1]: [d_date_sk#6]
 Join type: Inner
 Join condition: None
 
-(6) Project [codegen id : 1]
+(6) Project [codegen id : 4]
 Output [3]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3]
 Input [5]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, inv_date_sk#4, d_date_sk#6]
 
@@ -99,20 +99,20 @@ Condition : isnotnull(i_item_sk#7)
 Input [5]: [i_item_sk#7, i_brand#8, i_class#9, i_category#10, i_product_name#11]
 Arguments: [i_item_sk#7, i_brand#12, i_class#13, i_category#14, i_product_name#15], [i_item_sk#7, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_brand#8, 50)) AS i_brand#12, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_class#9, 50)) AS i_class#13, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_category#10, 50)) AS i_category#14, static_invoke(CharVarcharCodegenUtils.readSidePadding(i_product_name#11, 50)) AS i_product_name#15]
 
-(10) CometNativeColumnarToRow
+(10) CometColumnarToRow [codegen id : 2]
 Input [5]: [i_item_sk#7, i_brand#12, i_class#13, i_category#14, i_product_name#15]
 
 (11) BroadcastExchange
 Input [5]: [i_item_sk#7, i_brand#12, i_class#13, i_category#14, i_product_name#15]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=1]
 
-(12) BroadcastHashJoin [codegen id : 1]
+(12) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [inv_item_sk#1]
 Right keys [1]: [i_item_sk#7]
 Join type: Inner
 Join condition: None
 
-(13) Project [codegen id : 1]
+(13) Project [codegen id : 4]
 Output [6]: [inv_warehouse_sk#2, inv_quantity_on_hand#3, i_brand#12, i_class#13, i_category#14, i_product_name#15]
 Input [8]: [inv_item_sk#1, inv_warehouse_sk#2, inv_quantity_on_hand#3, i_item_sk#7, i_brand#12, i_class#13, i_category#14, i_product_name#15]
 
@@ -127,24 +127,24 @@ ReadSchema: struct<w_warehouse_sk:int>
 Input [1]: [w_warehouse_sk#16]
 Condition : isnotnull(w_warehouse_sk#16)
 
-(16) CometNativeColumnarToRow
+(16) CometColumnarToRow [codegen id : 3]
 Input [1]: [w_warehouse_sk#16]
 
 (17) BroadcastExchange
 Input [1]: [w_warehouse_sk#16]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, false] as bigint)),false), [plan_id=2]
 
-(18) BroadcastHashJoin [codegen id : 1]
+(18) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [inv_warehouse_sk#2]
 Right keys [1]: [w_warehouse_sk#16]
 Join type: Inner
 Join condition: None
 
-(19) Project [codegen id : 1]
+(19) Project [codegen id : 4]
 Output [5]: [inv_quantity_on_hand#3, i_brand#12, i_class#13, i_category#14, i_product_name#15]
 Input [7]: [inv_warehouse_sk#2, inv_quantity_on_hand#3, i_brand#12, i_class#13, i_category#14, i_product_name#15, w_warehouse_sk#16]
 
-(20) HashAggregate [codegen id : 1]
+(20) HashAggregate [codegen id : 4]
 Input [5]: [inv_quantity_on_hand#3, i_brand#12, i_class#13, i_category#14, i_product_name#15]
 Keys [4]: [i_product_name#15, i_brand#12, i_class#13, i_category#14]
 Functions [1]: [partial_avg(inv_quantity_on_hand#3)]
@@ -155,24 +155,24 @@ Results [6]: [i_product_name#15, i_brand#12, i_class#13, i_category#14, sum#19, 
 Input [6]: [i_product_name#15, i_brand#12, i_class#13, i_category#14, sum#19, count#20]
 Arguments: hashpartitioning(i_product_name#15, i_brand#12, i_class#13, i_category#14, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
-(22) CometNativeColumnarToRow
+(22) CometColumnarToRow [codegen id : 5]
 Input [6]: [i_product_name#15, i_brand#12, i_class#13, i_category#14, sum#19, count#20]
 
-(23) HashAggregate [codegen id : 2]
+(23) HashAggregate [codegen id : 5]
 Input [6]: [i_product_name#15, i_brand#12, i_class#13, i_category#14, sum#19, count#20]
 Keys [4]: [i_product_name#15, i_brand#12, i_class#13, i_category#14]
 Functions [1]: [avg(inv_quantity_on_hand#3)]
 Aggregate Attributes [1]: [avg(inv_quantity_on_hand#3)#21]
 Results [5]: [i_product_name#15, i_brand#12, i_class#13, i_category#14, avg(inv_quantity_on_hand#3)#21 AS qoh#22]
 
-(24) HashAggregate [codegen id : 2]
+(24) HashAggregate [codegen id : 5]
 Input [5]: [i_product_name#15, i_brand#12, i_class#13, i_category#14, qoh#22]
 Keys [4]: [i_product_name#15, i_brand#12, i_class#13, i_category#14]
 Functions [1]: [partial_avg(qoh#22)]
 Aggregate Attributes [2]: [sum#23, count#24]
 Results [6]: [i_product_name#15, i_brand#12, i_class#13, i_category#14, sum#25, count#26]
 
-(25) HashAggregate [codegen id : 2]
+(25) HashAggregate [codegen id : 5]
 Input [6]: [i_product_name#15, i_brand#12, i_class#13, i_category#14, sum#25, count#26]
 Keys [4]: [i_product_name#15, i_brand#12, i_class#13, i_category#14]
 Functions [1]: [avg(qoh#22)]
@@ -182,17 +182,17 @@ Results [5]: [i_product_name#15 AS i_product_name#28, i_brand#12 AS i_brand#29, 
 (26) ReusedExchange [Reuses operator id: 21]
 Output [6]: [i_product_name#33, i_brand#34, i_class#35, i_category#36, sum#37, count#38]
 
-(27) CometNativeColumnarToRow
+(27) CometColumnarToRow [codegen id : 10]
 Input [6]: [i_product_name#33, i_brand#34, i_class#35, i_category#36, sum#37, count#38]
 
-(28) HashAggregate [codegen id : 4]
+(28) HashAggregate [codegen id : 10]
 Input [6]: [i_product_name#33, i_brand#34, i_class#35, i_category#36, sum#37, count#38]
 Keys [4]: [i_product_name#33, i_brand#34, i_class#35, i_category#36]
 Functions [1]: [avg(inv_quantity_on_hand#39)]
 Aggregate Attributes [1]: [avg(inv_quantity_on_hand#39)#21]
 Results [4]: [i_product_name#33, i_brand#34, i_class#35, avg(inv_quantity_on_hand#39)#21 AS qoh#40]
 
-(29) HashAggregate [codegen id : 4]
+(29) HashAggregate [codegen id : 10]
 Input [4]: [i_product_name#33, i_brand#34, i_class#35, qoh#40]
 Keys [3]: [i_product_name#33, i_brand#34, i_class#35]
 Functions [1]: [partial_avg(qoh#40)]
@@ -203,10 +203,10 @@ Results [5]: [i_product_name#33, i_brand#34, i_class#35, sum#43, count#44]
 Input [5]: [i_product_name#33, i_brand#34, i_class#35, sum#43, count#44]
 Arguments: hashpartitioning(i_product_name#33, i_brand#34, i_class#35, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
-(31) CometNativeColumnarToRow
+(31) CometColumnarToRow [codegen id : 11]
 Input [5]: [i_product_name#33, i_brand#34, i_class#35, sum#43, count#44]
 
-(32) HashAggregate [codegen id : 5]
+(32) HashAggregate [codegen id : 11]
 Input [5]: [i_product_name#33, i_brand#34, i_class#35, sum#43, count#44]
 Keys [3]: [i_product_name#33, i_brand#34, i_class#35]
 Functions [1]: [avg(qoh#40)]
@@ -216,17 +216,17 @@ Results [5]: [i_product_name#33, i_brand#34, i_class#35, null AS i_category#46, 
 (33) ReusedExchange [Reuses operator id: 21]
 Output [6]: [i_product_name#48, i_brand#49, i_class#50, i_category#51, sum#52, count#53]
 
-(34) CometNativeColumnarToRow
+(34) CometColumnarToRow [codegen id : 16]
 Input [6]: [i_product_name#48, i_brand#49, i_class#50, i_category#51, sum#52, count#53]
 
-(35) HashAggregate [codegen id : 7]
+(35) HashAggregate [codegen id : 16]
 Input [6]: [i_product_name#48, i_brand#49, i_class#50, i_category#51, sum#52, count#53]
 Keys [4]: [i_product_name#48, i_brand#49, i_class#50, i_category#51]
 Functions [1]: [avg(inv_quantity_on_hand#54)]
 Aggregate Attributes [1]: [avg(inv_quantity_on_hand#54)#21]
 Results [3]: [i_product_name#48, i_brand#49, avg(inv_quantity_on_hand#54)#21 AS qoh#55]
 
-(36) HashAggregate [codegen id : 7]
+(36) HashAggregate [codegen id : 16]
 Input [3]: [i_product_name#48, i_brand#49, qoh#55]
 Keys [2]: [i_product_name#48, i_brand#49]
 Functions [1]: [partial_avg(qoh#55)]
@@ -237,10 +237,10 @@ Results [4]: [i_product_name#48, i_brand#49, sum#58, count#59]
 Input [4]: [i_product_name#48, i_brand#49, sum#58, count#59]
 Arguments: hashpartitioning(i_product_name#48, i_brand#49, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
-(38) CometNativeColumnarToRow
+(38) CometColumnarToRow [codegen id : 17]
 Input [4]: [i_product_name#48, i_brand#49, sum#58, count#59]
 
-(39) HashAggregate [codegen id : 8]
+(39) HashAggregate [codegen id : 17]
 Input [4]: [i_product_name#48, i_brand#49, sum#58, count#59]
 Keys [2]: [i_product_name#48, i_brand#49]
 Functions [1]: [avg(qoh#55)]
@@ -250,17 +250,17 @@ Results [5]: [i_product_name#48, i_brand#49, null AS i_class#61, null AS i_categ
 (40) ReusedExchange [Reuses operator id: 21]
 Output [6]: [i_product_name#64, i_brand#65, i_class#66, i_category#67, sum#68, count#69]
 
-(41) CometNativeColumnarToRow
+(41) CometColumnarToRow [codegen id : 22]
 Input [6]: [i_product_name#64, i_brand#65, i_class#66, i_category#67, sum#68, count#69]
 
-(42) HashAggregate [codegen id : 10]
+(42) HashAggregate [codegen id : 22]
 Input [6]: [i_product_name#64, i_brand#65, i_class#66, i_category#67, sum#68, count#69]
 Keys [4]: [i_product_name#64, i_brand#65, i_class#66, i_category#67]
 Functions [1]: [avg(inv_quantity_on_hand#70)]
 Aggregate Attributes [1]: [avg(inv_quantity_on_hand#70)#21]
 Results [2]: [i_product_name#64, avg(inv_quantity_on_hand#70)#21 AS qoh#71]
 
-(43) HashAggregate [codegen id : 10]
+(43) HashAggregate [codegen id : 22]
 Input [2]: [i_product_name#64, qoh#71]
 Keys [1]: [i_product_name#64]
 Functions [1]: [partial_avg(qoh#71)]
@@ -271,10 +271,10 @@ Results [3]: [i_product_name#64, sum#74, count#75]
 Input [3]: [i_product_name#64, sum#74, count#75]
 Arguments: hashpartitioning(i_product_name#64, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=6]
 
-(45) CometNativeColumnarToRow
+(45) CometColumnarToRow [codegen id : 23]
 Input [3]: [i_product_name#64, sum#74, count#75]
 
-(46) HashAggregate [codegen id : 11]
+(46) HashAggregate [codegen id : 23]
 Input [3]: [i_product_name#64, sum#74, count#75]
 Keys [1]: [i_product_name#64]
 Functions [1]: [avg(qoh#71)]
@@ -284,17 +284,17 @@ Results [5]: [i_product_name#64, null AS i_brand#77, null AS i_class#78, null AS
 (47) ReusedExchange [Reuses operator id: 21]
 Output [6]: [i_product_name#81, i_brand#82, i_class#83, i_category#84, sum#85, count#86]
 
-(48) CometNativeColumnarToRow
+(48) CometColumnarToRow [codegen id : 28]
 Input [6]: [i_product_name#81, i_brand#82, i_class#83, i_category#84, sum#85, count#86]
 
-(49) HashAggregate [codegen id : 13]
+(49) HashAggregate [codegen id : 28]
 Input [6]: [i_product_name#81, i_brand#82, i_class#83, i_category#84, sum#85, count#86]
 Keys [4]: [i_product_name#81, i_brand#82, i_class#83, i_category#84]
 Functions [1]: [avg(inv_quantity_on_hand#87)]
 Aggregate Attributes [1]: [avg(inv_quantity_on_hand#87)#21]
 Results [1]: [avg(inv_quantity_on_hand#87)#21 AS qoh#88]
 
-(50) HashAggregate [codegen id : 13]
+(50) HashAggregate [codegen id : 28]
 Input [1]: [qoh#88]
 Keys: []
 Functions [1]: [partial_avg(qoh#88)]
@@ -305,10 +305,10 @@ Results [2]: [sum#91, count#92]
 Input [2]: [sum#91, count#92]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=7]
 
-(52) CometNativeColumnarToRow
+(52) CometColumnarToRow [codegen id : 29]
 Input [2]: [sum#91, count#92]
 
-(53) HashAggregate [codegen id : 14]
+(53) HashAggregate [codegen id : 29]
 Input [2]: [sum#91, count#92]
 Keys: []
 Functions [1]: [avg(qoh#88)]
@@ -325,7 +325,7 @@ Arguments: 100, [qoh#32 ASC NULLS FIRST, i_product_name#28 ASC NULLS FIRST, i_br
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = inv_date_sk#4 IN dynamicpruning#5
 BroadcastExchange (60)
-+- CometNativeColumnarToRow (59)
++- * CometColumnarToRow (59)
    +- CometProject (58)
       +- CometFilter (57)
          +- CometNativeScan parquet spark_catalog.default.date_dim (56)
@@ -346,7 +346,7 @@ Condition : (((isnotnull(d_month_seq#99) AND (d_month_seq#99 >= 1212)) AND (d_mo
 Input [2]: [d_date_sk#6, d_month_seq#99]
 Arguments: [d_date_sk#6], [d_date_sk#6]
 
-(59) CometNativeColumnarToRow
+(59) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#6]
 
 (60) BroadcastExchange

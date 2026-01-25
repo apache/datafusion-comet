@@ -23,7 +23,7 @@ TakeOrderedAndProject (26)
                      :              +- CometFilter (10)
                      :                 +- CometScan [native_iceberg_compat] parquet spark_catalog.default.item (9)
                      +- BroadcastExchange (18)
-                        +- CometNativeColumnarToRow (17)
+                        +- * CometColumnarToRow (17)
                            +- CometScan [native_iceberg_compat] parquet spark_catalog.default.warehouse (16)
 
 
@@ -95,7 +95,7 @@ Arguments: [inv_item_sk#1], [i_item_sk#7], Inner, BuildRight
 Input [7]: [inv_item_sk#1, inv_quantity_on_hand#2, i_item_sk#7, i_brand#12, i_class#13, i_category#14, i_product_name#15]
 Arguments: [inv_quantity_on_hand#2, i_brand#12, i_class#13, i_category#14, i_product_name#15], [inv_quantity_on_hand#2, i_brand#12, i_class#13, i_category#14, i_product_name#15]
 
-(15) CometColumnarToRow [codegen id : 1]
+(15) CometColumnarToRow [codegen id : 2]
 Input [5]: [inv_quantity_on_hand#2, i_brand#12, i_class#13, i_category#14, i_product_name#15]
 
 (16) CometScan [native_iceberg_compat] parquet spark_catalog.default.warehouse
@@ -104,26 +104,26 @@ Batched: true
 Location [not included in comparison]/{warehouse_dir}/warehouse]
 ReadSchema: struct<>
 
-(17) CometNativeColumnarToRow
+(17) CometColumnarToRow [codegen id : 1]
 Input: []
 
 (18) BroadcastExchange
 Input: []
 Arguments: IdentityBroadcastMode, [plan_id=1]
 
-(19) BroadcastNestedLoopJoin [codegen id : 1]
+(19) BroadcastNestedLoopJoin [codegen id : 2]
 Join type: Inner
 Join condition: None
 
-(20) Project [codegen id : 1]
+(20) Project [codegen id : 2]
 Output [5]: [inv_quantity_on_hand#2, i_product_name#15, i_brand#12, i_class#13, i_category#14]
 Input [5]: [inv_quantity_on_hand#2, i_brand#12, i_class#13, i_category#14, i_product_name#15]
 
-(21) Expand [codegen id : 1]
+(21) Expand [codegen id : 2]
 Input [5]: [inv_quantity_on_hand#2, i_product_name#15, i_brand#12, i_class#13, i_category#14]
 Arguments: [[inv_quantity_on_hand#2, i_product_name#15, i_brand#12, i_class#13, i_category#14, 0], [inv_quantity_on_hand#2, i_product_name#15, i_brand#12, i_class#13, null, 1], [inv_quantity_on_hand#2, i_product_name#15, i_brand#12, null, null, 3], [inv_quantity_on_hand#2, i_product_name#15, null, null, null, 7], [inv_quantity_on_hand#2, null, null, null, null, 15]], [inv_quantity_on_hand#2, i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_grouping_id#20]
 
-(22) HashAggregate [codegen id : 1]
+(22) HashAggregate [codegen id : 2]
 Input [6]: [inv_quantity_on_hand#2, i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_grouping_id#20]
 Keys [5]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_grouping_id#20]
 Functions [1]: [partial_avg(inv_quantity_on_hand#2)]
@@ -134,10 +134,10 @@ Results [7]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_gr
 Input [7]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_grouping_id#20, sum#23, count#24]
 Arguments: hashpartitioning(i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_grouping_id#20, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=2]
 
-(24) CometColumnarToRow [codegen id : 2]
+(24) CometColumnarToRow [codegen id : 3]
 Input [7]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_grouping_id#20, sum#23, count#24]
 
-(25) HashAggregate [codegen id : 2]
+(25) HashAggregate [codegen id : 3]
 Input [7]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_grouping_id#20, sum#23, count#24]
 Keys [5]: [i_product_name#16, i_brand#17, i_class#18, i_category#19, spark_grouping_id#20]
 Functions [1]: [avg(inv_quantity_on_hand#2)]
@@ -152,7 +152,7 @@ Arguments: 100, [qoh#26 ASC NULLS FIRST, i_product_name#16 ASC NULLS FIRST, i_br
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = inv_date_sk#3 IN dynamicpruning#4
 BroadcastExchange (31)
-+- CometNativeColumnarToRow (30)
++- * CometColumnarToRow (30)
    +- CometProject (29)
       +- CometFilter (28)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (27)
@@ -173,7 +173,7 @@ Condition : (((isnotnull(d_month_seq#6) AND (d_month_seq#6 >= 1200)) AND (d_mont
 Input [2]: [d_date_sk#5, d_month_seq#6]
 Arguments: [d_date_sk#5], [d_date_sk#5]
 
-(30) CometNativeColumnarToRow
+(30) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#5]
 
 (31) BroadcastExchange
