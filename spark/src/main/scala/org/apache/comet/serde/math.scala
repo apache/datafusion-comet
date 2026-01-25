@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Unhex}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Unhex, WidthBucket}
 import org.apache.spark.sql.types.{DecimalType, NumericType}
 
 import org.apache.comet.CometSparkSessionExtensions.withInfo
@@ -218,3 +218,5 @@ object CometCheckOverflow extends CometExpressionSerde[CheckOverflow] {
     }
   }
 }
+
+object CometWidthBucket extends CometScalarFunction[WidthBucket]("width_bucket")

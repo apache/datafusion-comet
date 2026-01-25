@@ -90,4 +90,40 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       1000,
       DataGenOptions(generateNegativeZero = generateNegativeZero))
   }
+
+  test("width_bucket") {
+    // Basic cases
+    checkSparkAnswerAndOperator("SELECT width_bucket(5.3, 0.2, 10.6, 5)")
+    checkSparkAnswerAndOperator("SELECT width_bucket(8.1, 0.0, 5.7, 4)")
+    checkSparkAnswerAndOperator("SELECT width_bucket(-0.9, 5.2, 0.5, 2)")
+    checkSparkAnswerAndOperator("SELECT width_bucket(-2.1, 1.3, 3.4, 3)")
+  }
+
+  test("width_bucket - edge cases") {
+    // Value equals max (reversed bounds)
+    checkSparkAnswerAndOperator("SELECT width_bucket(0.0, 10.0, 0.0, 5)")
+    // Value equals max (normal bounds)
+    checkSparkAnswerAndOperator("SELECT width_bucket(10.0, 0.0, 10.0, 5)")
+    // Min equals max - returns NULL
+    checkSparkAnswerAndOperator("SELECT width_bucket(10.0, 0.0, 0.0, 5)")
+    // Zero buckets - returns NULL
+    checkSparkAnswerAndOperator("SELECT width_bucket(5.0, 0.0, 10.0, 0)")
+  }
+
+  test("width_bucket - NaN values") {
+    checkSparkAnswerAndOperator("SELECT width_bucket(CAST('NaN' AS DOUBLE), 5.0, 0.0, 5)")
+    checkSparkAnswerAndOperator("SELECT width_bucket(5.0, CAST('NaN' AS DOUBLE), 0.0, 5)")
+    checkSparkAnswerAndOperator("SELECT width_bucket(5.0, 0.0, CAST('NaN' AS DOUBLE), 5)")
+  }
+
+  test("width_bucket - with table data") {
+    withTempView("width_bucket_tbl") {
+      spark
+        .range(10)
+        .selectExpr("id", "CAST(id AS DOUBLE) as value")
+        .createOrReplaceTempView("width_bucket_tbl")
+      checkSparkAnswerAndOperator(
+        "SELECT id, width_bucket(value, 0.0, 10.0, 5) FROM width_bucket_tbl ORDER BY id")
+    }
+  }
 }
