@@ -160,11 +160,76 @@ impl SparkBloomFilter {
     }
 
     pub fn merge_filter(&mut self, other: &[u8]) {
-        assert_eq!(
-            other.len(),
-            self.bits.byte_size(),
-            "Cannot merge SparkBloomFilters with different lengths."
-        );
-        self.bits.merge_bits(other);
+        // Extract bits data if other is in Spark's full serialization format
+        // We need to compute the expected size and extract data before borrowing self.bits mutably
+        let expected_bits_size = self.bits.byte_size();
+        const SPARK_HEADER_SIZE: usize = 12; // version (4) + num_hash_functions (4) + num_words (4)
+
+        let bits_data = if other.len() >= SPARK_HEADER_SIZE {
+            // Check if this is Spark's serialization format by reading the version
+            let version = i32::from_be_bytes([
+                other[0], other[1], other[2], other[3],
+            ]);
+            if version == SPARK_BLOOM_FILTER_VERSION_1 {
+                // This is Spark's full format, parse it to extract bits data
+                let num_words = i32::from_be_bytes([
+                    other[8], other[9], other[10], other[11],
+                ]) as usize;
+                let bits_start = SPARK_HEADER_SIZE;
+                let bits_end = bits_start + (num_words * 8);
+                
+                // Verify the buffer is large enough
+                if bits_end > other.len() {
+                    panic!(
+                        "Cannot merge SparkBloomFilters: buffer too short. Expected at least {} bytes ({} words), got {} bytes",
+                        bits_end,
+                        num_words,
+                        other.len()
+                    );
+                }
+                
+                // Check if the incoming bloom filter has compatible size
+                let incoming_bits_size = bits_end - bits_start;
+                if incoming_bits_size != expected_bits_size {
+                    panic!(
+                        "Cannot merge SparkBloomFilters with incompatible sizes. Expected {} bytes ({} words), got {} bytes ({} words) from Spark partial aggregate. Full buffer size: {} bytes",
+                        expected_bits_size,
+                        self.bits.word_size(),
+                        incoming_bits_size,
+                        num_words,
+                        other.len()
+                    );
+                }
+                
+                // Extract just the bits portion
+                &other[bits_start..bits_end]
+            } else if other.len() == expected_bits_size {
+                // Not Spark format but size matches, treat as raw bits data (Comet format)
+                other
+            } else {
+                // Size doesn't match and not Spark format - provide helpful error
+                panic!(
+                    "Cannot merge SparkBloomFilters: unexpected format. Expected {} bytes (Comet format) or Spark format (version 1, {} bytes header + bits), but got {} bytes with version {}",
+                    expected_bits_size,
+                    SPARK_HEADER_SIZE,
+                    other.len(),
+                    version
+                );
+            }
+        } else {
+            // Too short to be Spark format
+            if other.len() != expected_bits_size {
+                panic!(
+                    "Cannot merge SparkBloomFilters: buffer too short. Expected {} bytes (Comet format) or at least {} bytes (Spark format), got {} bytes",
+                    expected_bits_size,
+                    SPARK_HEADER_SIZE,
+                    other.len()
+                );
+            }
+            // Size matches, treat as raw bits data
+            other
+        };
+
+        self.bits.merge_bits(bits_data);
     }
 }
