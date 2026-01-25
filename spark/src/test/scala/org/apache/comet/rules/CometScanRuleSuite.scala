@@ -117,7 +117,10 @@ class CometScanRuleSuite extends CometTestBase {
           assert(countOperators(sparkPlan, classOf[BatchScanExec]) == 1)
 
           for (cometEnabled <- Seq(true, false)) {
-            withSQLConf(CometConf.COMET_ENABLED.key -> cometEnabled.toString) {
+            // Use SCAN_AUTO to ensure V2 scans are supported (native_datafusion falls back to Spark)
+            withSQLConf(
+              CometConf.COMET_ENABLED.key -> cometEnabled.toString,
+              CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
 
               val transformedPlan = applyCometScanRule(sparkPlan)
 
