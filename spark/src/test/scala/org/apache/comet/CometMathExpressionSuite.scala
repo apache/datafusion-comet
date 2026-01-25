@@ -92,21 +92,19 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
   }
 
   test("width_bucket") {
-    withTempPath { path =>
+    withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
       spark
         .createDataFrame(
           Seq((5.3, 0.2, 10.6, 5), (8.1, 0.0, 5.7, 4), (-0.9, 5.2, 0.5, 2), (-2.1, 1.3, 3.4, 3)))
         .toDF("c1", "c2", "c3", "c4")
-        .write
-        .parquet(path.getCanonicalPath)
-      spark.read.parquet(path.getCanonicalPath).createOrReplaceTempView("width_bucket_test")
+        .createOrReplaceTempView("width_bucket_test")
       checkSparkAnswerAndOperator(
         "SELECT c1, width_bucket(c1, c2, c3, c4) FROM width_bucket_test")
     }
   }
 
   test("width_bucket - edge cases") {
-    withTempPath { path =>
+    withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
       spark
         .createDataFrame(Seq(
           (0.0, 10.0, 0.0, 5), // Value equals max (reversed bounds)
@@ -115,35 +113,29 @@ class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
           (5.0, 0.0, 10.0, 0) // Zero buckets - returns NULL
         ))
         .toDF("c1", "c2", "c3", "c4")
-        .write
-        .parquet(path.getCanonicalPath)
-      spark.read.parquet(path.getCanonicalPath).createOrReplaceTempView("width_bucket_edge")
+        .createOrReplaceTempView("width_bucket_edge")
       checkSparkAnswerAndOperator(
         "SELECT c1, width_bucket(c1, c2, c3, c4) FROM width_bucket_edge")
     }
   }
 
   test("width_bucket - NaN values") {
-    withTempPath { path =>
+    withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
       spark
         .createDataFrame(
           Seq((Double.NaN, 5.0, 0.0), (5.0, Double.NaN, 0.0), (5.0, 0.0, Double.NaN)))
         .toDF("c1", "c2", "c3")
-        .write
-        .parquet(path.getCanonicalPath)
-      spark.read.parquet(path.getCanonicalPath).createOrReplaceTempView("width_bucket_nan")
+        .createOrReplaceTempView("width_bucket_nan")
       checkSparkAnswerAndOperator("SELECT c1, width_bucket(c1, c2, c3, 5) FROM width_bucket_nan")
     }
   }
 
   test("width_bucket - with range data") {
-    withTempPath { path =>
+    withSQLConf("spark.comet.exec.localTableScan.enabled" -> "true") {
       spark
         .range(10)
         .selectExpr("id", "CAST(id AS DOUBLE) as value")
-        .write
-        .parquet(path.getCanonicalPath)
-      spark.read.parquet(path.getCanonicalPath).createOrReplaceTempView("width_bucket_range")
+        .createOrReplaceTempView("width_bucket_range")
       checkSparkAnswerAndOperator(
         "SELECT id, width_bucket(value, 0.0, 10.0, 5) FROM width_bucket_range ORDER BY id")
     }
