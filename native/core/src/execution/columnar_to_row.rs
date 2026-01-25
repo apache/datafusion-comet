@@ -133,13 +133,15 @@ impl<'a> TypedArray<'a> {
                 *p,
             )),
             DataType::Utf8 => Ok(TypedArray::String(downcast_array!(array, StringArray)?)),
-            DataType::LargeUtf8 => {
-                Ok(TypedArray::LargeString(downcast_array!(array, LargeStringArray)?))
-            }
+            DataType::LargeUtf8 => Ok(TypedArray::LargeString(downcast_array!(
+                array,
+                LargeStringArray
+            )?)),
             DataType::Binary => Ok(TypedArray::Binary(downcast_array!(array, BinaryArray)?)),
-            DataType::LargeBinary => {
-                Ok(TypedArray::LargeBinary(downcast_array!(array, LargeBinaryArray)?))
-            }
+            DataType::LargeBinary => Ok(TypedArray::LargeBinary(downcast_array!(
+                array,
+                LargeBinaryArray
+            )?)),
             DataType::FixedSizeBinary(_) => Ok(TypedArray::FixedSizeBinary(downcast_array!(
                 array,
                 FixedSizeBinaryArray
@@ -257,7 +259,9 @@ impl<'a> TypedArray<'a> {
     /// Write variable-length data to buffer. Returns actual length (0 if not variable-length).
     fn write_variable_to_buffer(&self, buffer: &mut Vec<u8>, row_idx: usize) -> CometResult<usize> {
         match self {
-            TypedArray::String(arr) => Ok(write_bytes_padded(buffer, arr.value(row_idx).as_bytes())),
+            TypedArray::String(arr) => {
+                Ok(write_bytes_padded(buffer, arr.value(row_idx).as_bytes()))
+            }
             TypedArray::LargeString(arr) => {
                 Ok(write_bytes_padded(buffer, arr.value(row_idx).as_bytes()))
             }
@@ -741,12 +745,8 @@ impl<'a> TypedElements<'a> {
                         set_null_bit(buffer, null_bitset_start, i);
                     } else {
                         let slot_offset = elements_start + i * element_size;
-                        let var_len = write_nested_variable_to_buffer(
-                            buffer,
-                            element_type,
-                            arr,
-                            src_idx,
-                        )?;
+                        let var_len =
+                            write_nested_variable_to_buffer(buffer, element_type, arr, src_idx)?;
 
                         if var_len > 0 {
                             let padded_len = round_up_to_8(var_len);
@@ -1588,11 +1588,17 @@ fn write_dictionary_to_buffer_with_key<K: ArrowDictionaryKeyType>(
     match value_type {
         DataType::Utf8 => {
             let string_values = downcast_array!(values, StringArray)?;
-            Ok(write_bytes_padded(buffer, string_values.value(key_idx).as_bytes()))
+            Ok(write_bytes_padded(
+                buffer,
+                string_values.value(key_idx).as_bytes(),
+            ))
         }
         DataType::LargeUtf8 => {
             let string_values = downcast_array!(values, LargeStringArray)?;
-            Ok(write_bytes_padded(buffer, string_values.value(key_idx).as_bytes()))
+            Ok(write_bytes_padded(
+                buffer,
+                string_values.value(key_idx).as_bytes(),
+            ))
         }
         DataType::Binary => {
             let binary_values = downcast_array!(values, BinaryArray)?;
@@ -1808,12 +1814,7 @@ fn write_struct_to_buffer(
                 buffer[field_offset..field_offset + 8].copy_from_slice(&v.to_le_bytes());
             } else {
                 // Variable-length field
-                let var_len = write_nested_variable_to_buffer(
-                    buffer,
-                    data_type,
-                    column,
-                    row_idx,
-                )?;
+                let var_len = write_nested_variable_to_buffer(buffer, data_type, column, row_idx)?;
                 if var_len > 0 {
                     let padded_len = round_up_to_8(var_len);
                     let data_offset = buffer.len() - padded_len - struct_start;
