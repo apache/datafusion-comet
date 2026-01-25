@@ -1160,10 +1160,10 @@ fn cast_array(
 
 fn cast_boolean_to_decimal(array: &ArrayRef, precision: u8, scale: i8) -> SparkResult<ArrayRef> {
     let bool_array = array.as_boolean();
-    let scale_factor = 10_i128.pow(scale as u32);
+    let scaled_value = 10_i128.pow(scale as u32);
     let result: Decimal128Array = bool_array
         .iter()
-        .map(|v| v.map(|b| if b { scale_factor } else { 0 }))
+        .map(|v| v.map(|b| if b { scaled_value } else { 0 }))
         .collect();
     Ok(Arc::new(result.with_precision_and_scale(precision, scale)?))
 }
