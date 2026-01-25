@@ -48,6 +48,33 @@ use std::sync::Arc;
 /// Maximum digits for decimal that can fit in a long (8 bytes).
 const MAX_LONG_DIGITS: u8 = 18;
 
+/// Helper macro for downcasting arrays with consistent error messages.
+macro_rules! downcast_array {
+    ($array:expr, $array_type:ty) => {
+        $array
+            .as_any()
+            .downcast_ref::<$array_type>()
+            .ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to downcast to {}, actual type: {:?}",
+                    stringify!($array_type),
+                    $array.data_type()
+                ))
+            })
+    };
+}
+
+/// Writes bytes to buffer with 8-byte alignment padding.
+/// Returns the unpadded length.
+#[inline]
+fn write_bytes_padded(buffer: &mut Vec<u8>, bytes: &[u8]) -> usize {
+    let len = bytes.len();
+    buffer.extend_from_slice(bytes);
+    let padding = round_up_to_8(len) - len;
+    buffer.extend(std::iter::repeat_n(0u8, padding));
+    len
+}
+
 /// Pre-downcast array reference to avoid type dispatch in inner loops.
 /// This enum holds references to concrete array types, allowing direct access
 /// without repeated downcast_ref calls.
@@ -81,184 +108,44 @@ enum TypedArray<'a> {
 
 impl<'a> TypedArray<'a> {
     /// Pre-downcast an ArrayRef to a TypedArray.
-    fn from_array(array: &'a ArrayRef, _schema_type: &DataType) -> CometResult<Self> {
+    fn from_array(array: &'a ArrayRef) -> CometResult<Self> {
         let actual_type = array.data_type();
         match actual_type {
             DataType::Null => {
                 // Verify the array is actually a NullArray, but we don't need to store the reference
                 // since all values are null by definition
-                if array.as_any().downcast_ref::<NullArray>().is_none() {
-                    return Err(CometError::Internal(format!(
-                        "Failed to downcast to NullArray, actual type: {:?}",
-                        array.data_type()
-                    )));
-                }
+                downcast_array!(array, NullArray)?;
                 Ok(TypedArray::Null)
             }
-            DataType::Boolean => Ok(TypedArray::Boolean(
-                array
-                    .as_any()
-                    .downcast_ref::<BooleanArray>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to BooleanArray, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?,
-            )),
-            DataType::Int8 => Ok(TypedArray::Int8(
-                array.as_any().downcast_ref::<Int8Array>().ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Int8Array, actual type: {:?}",
-                        array.data_type()
-                    ))
-                })?,
-            )),
-            DataType::Int16 => Ok(TypedArray::Int16(
-                array.as_any().downcast_ref::<Int16Array>().ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Int16Array, actual type: {:?}",
-                        array.data_type()
-                    ))
-                })?,
-            )),
-            DataType::Int32 => Ok(TypedArray::Int32(
-                array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Int32Array, actual type: {:?}",
-                        array.data_type()
-                    ))
-                })?,
-            )),
-            DataType::Int64 => Ok(TypedArray::Int64(
-                array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Int64Array, actual type: {:?}",
-                        array.data_type()
-                    ))
-                })?,
-            )),
-            DataType::Float32 => Ok(TypedArray::Float32(
-                array
-                    .as_any()
-                    .downcast_ref::<Float32Array>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to Float32Array, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?,
-            )),
-            DataType::Float64 => Ok(TypedArray::Float64(
-                array
-                    .as_any()
-                    .downcast_ref::<Float64Array>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to Float64Array, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?,
-            )),
-            DataType::Date32 => Ok(TypedArray::Date32(
-                array
-                    .as_any()
-                    .downcast_ref::<Date32Array>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to Date32Array, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?,
-            )),
+            DataType::Boolean => Ok(TypedArray::Boolean(downcast_array!(array, BooleanArray)?)),
+            DataType::Int8 => Ok(TypedArray::Int8(downcast_array!(array, Int8Array)?)),
+            DataType::Int16 => Ok(TypedArray::Int16(downcast_array!(array, Int16Array)?)),
+            DataType::Int32 => Ok(TypedArray::Int32(downcast_array!(array, Int32Array)?)),
+            DataType::Int64 => Ok(TypedArray::Int64(downcast_array!(array, Int64Array)?)),
+            DataType::Float32 => Ok(TypedArray::Float32(downcast_array!(array, Float32Array)?)),
+            DataType::Float64 => Ok(TypedArray::Float64(downcast_array!(array, Float64Array)?)),
+            DataType::Date32 => Ok(TypedArray::Date32(downcast_array!(array, Date32Array)?)),
             DataType::Timestamp(TimeUnit::Microsecond, _) => Ok(TypedArray::TimestampMicro(
-                array
-                    .as_any()
-                    .downcast_ref::<TimestampMicrosecondArray>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to TimestampMicrosecondArray, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?,
+                downcast_array!(array, TimestampMicrosecondArray)?,
             )),
             DataType::Decimal128(p, _) => Ok(TypedArray::Decimal128(
-                array
-                    .as_any()
-                    .downcast_ref::<Decimal128Array>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to Decimal128Array, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?,
+                downcast_array!(array, Decimal128Array)?,
                 *p,
             )),
-            DataType::Utf8 => Ok(TypedArray::String(
-                array
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to StringArray, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?,
-            )),
-            DataType::LargeUtf8 => Ok(TypedArray::LargeString(
-                array
-                    .as_any()
-                    .downcast_ref::<LargeStringArray>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to LargeStringArray, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?,
-            )),
-            DataType::Binary => Ok(TypedArray::Binary(
-                array
-                    .as_any()
-                    .downcast_ref::<BinaryArray>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to BinaryArray, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?,
-            )),
-            DataType::LargeBinary => Ok(TypedArray::LargeBinary(
-                array
-                    .as_any()
-                    .downcast_ref::<LargeBinaryArray>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to LargeBinaryArray, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?,
-            )),
-            DataType::FixedSizeBinary(_) => Ok(TypedArray::FixedSizeBinary(
-                array
-                    .as_any()
-                    .downcast_ref::<FixedSizeBinaryArray>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to FixedSizeBinaryArray, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?,
-            )),
+            DataType::Utf8 => Ok(TypedArray::String(downcast_array!(array, StringArray)?)),
+            DataType::LargeUtf8 => {
+                Ok(TypedArray::LargeString(downcast_array!(array, LargeStringArray)?))
+            }
+            DataType::Binary => Ok(TypedArray::Binary(downcast_array!(array, BinaryArray)?)),
+            DataType::LargeBinary => {
+                Ok(TypedArray::LargeBinary(downcast_array!(array, LargeBinaryArray)?))
+            }
+            DataType::FixedSizeBinary(_) => Ok(TypedArray::FixedSizeBinary(downcast_array!(
+                array,
+                FixedSizeBinaryArray
+            )?)),
             DataType::Struct(fields) => {
-                let struct_arr = array
-                    .as_any()
-                    .downcast_ref::<StructArray>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to StructArray, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?;
+                let struct_arr = downcast_array!(array, StructArray)?;
                 // Pre-downcast all struct fields once
                 let typed_fields: Vec<TypedElements> = fields
                     .iter()
@@ -270,33 +157,15 @@ impl<'a> TypedArray<'a> {
                 Ok(TypedArray::Struct(struct_arr, fields.clone(), typed_fields))
             }
             DataType::List(field) => Ok(TypedArray::List(
-                array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to ListArray, actual type: {:?}",
-                        array.data_type()
-                    ))
-                })?,
+                downcast_array!(array, ListArray)?,
                 Arc::clone(field),
             )),
             DataType::LargeList(field) => Ok(TypedArray::LargeList(
-                array
-                    .as_any()
-                    .downcast_ref::<LargeListArray>()
-                    .ok_or_else(|| {
-                        CometError::Internal(format!(
-                            "Failed to downcast to LargeListArray, actual type: {:?}",
-                            array.data_type()
-                        ))
-                    })?,
+                downcast_array!(array, LargeListArray)?,
                 Arc::clone(field),
             )),
             DataType::Map(field, _) => Ok(TypedArray::Map(
-                array.as_any().downcast_ref::<MapArray>().ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to MapArray, actual type: {:?}",
-                        array.data_type()
-                    ))
-                })?,
+                downcast_array!(array, MapArray)?,
                 Arc::clone(field),
             )),
             DataType::Dictionary(_, _) => Ok(TypedArray::Dictionary(array, actual_type.clone())),
@@ -388,53 +257,16 @@ impl<'a> TypedArray<'a> {
     /// Write variable-length data to buffer. Returns actual length (0 if not variable-length).
     fn write_variable_to_buffer(&self, buffer: &mut Vec<u8>, row_idx: usize) -> CometResult<usize> {
         match self {
-            TypedArray::String(arr) => {
-                let bytes = arr.value(row_idx).as_bytes();
-                let len = bytes.len();
-                buffer.extend_from_slice(bytes);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-                Ok(len)
-            }
+            TypedArray::String(arr) => Ok(write_bytes_padded(buffer, arr.value(row_idx).as_bytes())),
             TypedArray::LargeString(arr) => {
-                let bytes = arr.value(row_idx).as_bytes();
-                let len = bytes.len();
-                buffer.extend_from_slice(bytes);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-                Ok(len)
+                Ok(write_bytes_padded(buffer, arr.value(row_idx).as_bytes()))
             }
-            TypedArray::Binary(arr) => {
-                let bytes = arr.value(row_idx);
-                let len = bytes.len();
-                buffer.extend_from_slice(bytes);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-                Ok(len)
-            }
-            TypedArray::LargeBinary(arr) => {
-                let bytes = arr.value(row_idx);
-                let len = bytes.len();
-                buffer.extend_from_slice(bytes);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-                Ok(len)
-            }
-            TypedArray::FixedSizeBinary(arr) => {
-                let bytes = arr.value(row_idx);
-                let len = bytes.len();
-                buffer.extend_from_slice(bytes);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-                Ok(len)
-            }
+            TypedArray::Binary(arr) => Ok(write_bytes_padded(buffer, arr.value(row_idx))),
+            TypedArray::LargeBinary(arr) => Ok(write_bytes_padded(buffer, arr.value(row_idx))),
+            TypedArray::FixedSizeBinary(arr) => Ok(write_bytes_padded(buffer, arr.value(row_idx))),
             TypedArray::Decimal128(arr, precision) if *precision > MAX_LONG_DIGITS => {
                 let bytes = i128_to_spark_decimal_bytes(arr.value(row_idx));
-                let len = bytes.len();
-                buffer.extend_from_slice(&bytes);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-                Ok(len)
+                Ok(write_bytes_padded(buffer, &bytes))
             }
             TypedArray::Struct(arr, fields, typed_fields) => {
                 write_struct_to_buffer_typed(buffer, arr, row_idx, fields, typed_fields)
@@ -667,63 +499,21 @@ impl<'a> TypedElements<'a> {
     }
 
     /// Write variable-length data to buffer. Returns length written (0 for fixed-width).
-    fn write_variable_value(
-        &self,
-        buffer: &mut Vec<u8>,
-        idx: usize,
-        base_offset: usize,
-    ) -> CometResult<usize> {
+    fn write_variable_value(&self, buffer: &mut Vec<u8>, idx: usize) -> CometResult<usize> {
         match self {
-            TypedElements::String(arr) => {
-                let bytes = arr.value(idx).as_bytes();
-                let len = bytes.len();
-                buffer.extend_from_slice(bytes);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-                Ok(len)
-            }
+            TypedElements::String(arr) => Ok(write_bytes_padded(buffer, arr.value(idx).as_bytes())),
             TypedElements::LargeString(arr) => {
-                let bytes = arr.value(idx).as_bytes();
-                let len = bytes.len();
-                buffer.extend_from_slice(bytes);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-                Ok(len)
+                Ok(write_bytes_padded(buffer, arr.value(idx).as_bytes()))
             }
-            TypedElements::Binary(arr) => {
-                let bytes = arr.value(idx);
-                let len = bytes.len();
-                buffer.extend_from_slice(bytes);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-                Ok(len)
-            }
-            TypedElements::LargeBinary(arr) => {
-                let bytes = arr.value(idx);
-                let len = bytes.len();
-                buffer.extend_from_slice(bytes);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-                Ok(len)
-            }
-            TypedElements::FixedSizeBinary(arr) => {
-                let bytes = arr.value(idx);
-                let len = bytes.len();
-                buffer.extend_from_slice(bytes);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-                Ok(len)
-            }
+            TypedElements::Binary(arr) => Ok(write_bytes_padded(buffer, arr.value(idx))),
+            TypedElements::LargeBinary(arr) => Ok(write_bytes_padded(buffer, arr.value(idx))),
+            TypedElements::FixedSizeBinary(arr) => Ok(write_bytes_padded(buffer, arr.value(idx))),
             TypedElements::Decimal128(arr, precision) if *precision > MAX_LONG_DIGITS => {
                 let bytes = i128_to_spark_decimal_bytes(arr.value(idx));
-                let len = bytes.len();
-                buffer.extend_from_slice(&bytes);
-                let padding = round_up_to_8(len) - len;
-                buffer.extend(std::iter::repeat_n(0u8, padding));
-                Ok(len)
+                Ok(write_bytes_padded(buffer, &bytes))
             }
             TypedElements::Other(arr, element_type) => {
-                write_nested_variable_to_buffer(buffer, element_type, arr, idx, base_offset)
+                write_nested_variable_to_buffer(buffer, element_type, arr, idx)
             }
             _ => Ok(0), // Fixed-width types
         }
@@ -874,11 +664,7 @@ impl<'a> TypedElements<'a> {
                         set_null_bit(buffer, null_bitset_start, i);
                     } else {
                         let bytes = i128_to_spark_decimal_bytes(arr.value(src_idx));
-                        let len = bytes.len();
-                        buffer.extend_from_slice(&bytes);
-                        let padding = round_up_to_8(len) - len;
-                        buffer.extend(std::iter::repeat_n(0u8, padding));
-
+                        let len = write_bytes_padded(buffer, &bytes);
                         let data_offset = buffer.len() - round_up_to_8(len) - array_start;
                         let offset_and_len = ((data_offset as i64) << 32) | (len as i64);
                         let slot_offset = elements_start + i * 8;
@@ -893,12 +679,7 @@ impl<'a> TypedElements<'a> {
                     if arr.is_null(src_idx) {
                         set_null_bit(buffer, null_bitset_start, i);
                     } else {
-                        let bytes = arr.value(src_idx).as_bytes();
-                        let len = bytes.len();
-                        buffer.extend_from_slice(bytes);
-                        let padding = round_up_to_8(len) - len;
-                        buffer.extend(std::iter::repeat_n(0u8, padding));
-
+                        let len = write_bytes_padded(buffer, arr.value(src_idx).as_bytes());
                         let data_offset = buffer.len() - round_up_to_8(len) - array_start;
                         let offset_and_len = ((data_offset as i64) << 32) | (len as i64);
                         let slot_offset = elements_start + i * 8;
@@ -913,12 +694,7 @@ impl<'a> TypedElements<'a> {
                     if arr.is_null(src_idx) {
                         set_null_bit(buffer, null_bitset_start, i);
                     } else {
-                        let bytes = arr.value(src_idx).as_bytes();
-                        let len = bytes.len();
-                        buffer.extend_from_slice(bytes);
-                        let padding = round_up_to_8(len) - len;
-                        buffer.extend(std::iter::repeat_n(0u8, padding));
-
+                        let len = write_bytes_padded(buffer, arr.value(src_idx).as_bytes());
                         let data_offset = buffer.len() - round_up_to_8(len) - array_start;
                         let offset_and_len = ((data_offset as i64) << 32) | (len as i64);
                         let slot_offset = elements_start + i * 8;
@@ -933,12 +709,7 @@ impl<'a> TypedElements<'a> {
                     if arr.is_null(src_idx) {
                         set_null_bit(buffer, null_bitset_start, i);
                     } else {
-                        let bytes = arr.value(src_idx);
-                        let len = bytes.len();
-                        buffer.extend_from_slice(bytes);
-                        let padding = round_up_to_8(len) - len;
-                        buffer.extend(std::iter::repeat_n(0u8, padding));
-
+                        let len = write_bytes_padded(buffer, arr.value(src_idx));
                         let data_offset = buffer.len() - round_up_to_8(len) - array_start;
                         let offset_and_len = ((data_offset as i64) << 32) | (len as i64);
                         let slot_offset = elements_start + i * 8;
@@ -953,12 +724,7 @@ impl<'a> TypedElements<'a> {
                     if arr.is_null(src_idx) {
                         set_null_bit(buffer, null_bitset_start, i);
                     } else {
-                        let bytes = arr.value(src_idx);
-                        let len = bytes.len();
-                        buffer.extend_from_slice(bytes);
-                        let padding = round_up_to_8(len) - len;
-                        buffer.extend(std::iter::repeat_n(0u8, padding));
-
+                        let len = write_bytes_padded(buffer, arr.value(src_idx));
                         let data_offset = buffer.len() - round_up_to_8(len) - array_start;
                         let offset_and_len = ((data_offset as i64) << 32) | (len as i64);
                         let slot_offset = elements_start + i * 8;
@@ -980,7 +746,6 @@ impl<'a> TypedElements<'a> {
                             element_type,
                             arr,
                             src_idx,
-                            array_start,
                         )?;
 
                         if var_len > 0 {
@@ -1165,8 +930,7 @@ impl ColumnarToRowContext {
         // Pre-downcast all arrays to avoid type dispatch in inner loop
         let typed_arrays: Vec<TypedArray> = arrays
             .iter()
-            .zip(self.schema.iter())
-            .map(|(arr, dt)| TypedArray::from_array(arr, dt))
+            .map(|arr| TypedArray::from_array(arr))
             .collect::<CometResult<Vec<_>>>()?;
 
         // Pre-compute variable-length column indices (once per batch, not per row)
@@ -1823,72 +1587,20 @@ fn write_dictionary_to_buffer_with_key<K: ArrowDictionaryKeyType>(
 
     match value_type {
         DataType::Utf8 => {
-            let string_values = values
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast dictionary values to StringArray, actual type: {:?}",
-                        values.data_type()
-                    ))
-                })?;
-            let bytes = string_values.value(key_idx).as_bytes();
-            let len = bytes.len();
-            buffer.extend_from_slice(bytes);
-            let padding = round_up_to_8(len) - len;
-            buffer.extend(std::iter::repeat_n(0u8, padding));
-            Ok(len)
+            let string_values = downcast_array!(values, StringArray)?;
+            Ok(write_bytes_padded(buffer, string_values.value(key_idx).as_bytes()))
         }
         DataType::LargeUtf8 => {
-            let string_values = values
-                .as_any()
-                .downcast_ref::<LargeStringArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast dictionary values to LargeStringArray, actual type: {:?}",
-                        values.data_type()
-                    ))
-                })?;
-            let bytes = string_values.value(key_idx).as_bytes();
-            let len = bytes.len();
-            buffer.extend_from_slice(bytes);
-            let padding = round_up_to_8(len) - len;
-            buffer.extend(std::iter::repeat_n(0u8, padding));
-            Ok(len)
+            let string_values = downcast_array!(values, LargeStringArray)?;
+            Ok(write_bytes_padded(buffer, string_values.value(key_idx).as_bytes()))
         }
         DataType::Binary => {
-            let binary_values = values
-                .as_any()
-                .downcast_ref::<BinaryArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast dictionary values to BinaryArray, actual type: {:?}",
-                        values.data_type()
-                    ))
-                })?;
-            let bytes = binary_values.value(key_idx);
-            let len = bytes.len();
-            buffer.extend_from_slice(bytes);
-            let padding = round_up_to_8(len) - len;
-            buffer.extend(std::iter::repeat_n(0u8, padding));
-            Ok(len)
+            let binary_values = downcast_array!(values, BinaryArray)?;
+            Ok(write_bytes_padded(buffer, binary_values.value(key_idx)))
         }
         DataType::LargeBinary => {
-            let binary_values = values
-                .as_any()
-                .downcast_ref::<LargeBinaryArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast dictionary values to LargeBinaryArray, actual type: {:?}",
-                        values.data_type()
-                    ))
-                })?;
-            let bytes = binary_values.value(key_idx);
-            let len = bytes.len();
-            buffer.extend_from_slice(bytes);
-            let padding = round_up_to_8(len) - len;
-            buffer.extend(std::iter::repeat_n(0u8, padding));
-            Ok(len)
+            let binary_values = downcast_array!(values, LargeBinaryArray)?;
+            Ok(write_bytes_padded(buffer, binary_values.value(key_idx)))
         }
         _ => Err(CometError::Internal(format!(
             "Unsupported dictionary value type for direct buffer write: {:?}",
@@ -1999,7 +1711,7 @@ fn write_struct_to_buffer_typed(
                 buffer[field_offset..field_offset + 8].copy_from_slice(&value.to_le_bytes());
             } else {
                 // Variable-length field - use pre-downcast writer
-                let var_len = typed_field.write_variable_value(buffer, row_idx, struct_start)?;
+                let var_len = typed_field.write_variable_value(buffer, row_idx)?;
                 if var_len > 0 {
                     let padded_len = round_up_to_8(var_len);
                     let data_offset = buffer.len() - padded_len - struct_start;
@@ -2047,48 +1759,45 @@ fn write_struct_to_buffer(
             let field_offset = struct_start + nested_bitset_width + field_idx * 8;
 
             // Inline type dispatch for fixed-width types (most common case)
-            let value = match data_type {
+            let value: Option<i64> = match data_type {
                 DataType::Boolean => {
-                    let arr = column.as_any().downcast_ref::<BooleanArray>().unwrap();
+                    let arr = downcast_array!(column, BooleanArray)?;
                     Some(if arr.value(row_idx) { 1i64 } else { 0i64 })
                 }
                 DataType::Int8 => {
-                    let arr = column.as_any().downcast_ref::<Int8Array>().unwrap();
+                    let arr = downcast_array!(column, Int8Array)?;
                     Some(arr.value(row_idx) as i64)
                 }
                 DataType::Int16 => {
-                    let arr = column.as_any().downcast_ref::<Int16Array>().unwrap();
+                    let arr = downcast_array!(column, Int16Array)?;
                     Some(arr.value(row_idx) as i64)
                 }
                 DataType::Int32 => {
-                    let arr = column.as_any().downcast_ref::<Int32Array>().unwrap();
+                    let arr = downcast_array!(column, Int32Array)?;
                     Some(arr.value(row_idx) as i64)
                 }
                 DataType::Int64 => {
-                    let arr = column.as_any().downcast_ref::<Int64Array>().unwrap();
+                    let arr = downcast_array!(column, Int64Array)?;
                     Some(arr.value(row_idx))
                 }
                 DataType::Float32 => {
-                    let arr = column.as_any().downcast_ref::<Float32Array>().unwrap();
-                    Some((arr.value(row_idx).to_bits() as i32) as i64)
+                    let arr = downcast_array!(column, Float32Array)?;
+                    Some(arr.value(row_idx).to_bits() as i64)
                 }
                 DataType::Float64 => {
-                    let arr = column.as_any().downcast_ref::<Float64Array>().unwrap();
+                    let arr = downcast_array!(column, Float64Array)?;
                     Some(arr.value(row_idx).to_bits() as i64)
                 }
                 DataType::Date32 => {
-                    let arr = column.as_any().downcast_ref::<Date32Array>().unwrap();
+                    let arr = downcast_array!(column, Date32Array)?;
                     Some(arr.value(row_idx) as i64)
                 }
                 DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                    let arr = column
-                        .as_any()
-                        .downcast_ref::<TimestampMicrosecondArray>()
-                        .unwrap();
+                    let arr = downcast_array!(column, TimestampMicrosecondArray)?;
                     Some(arr.value(row_idx))
                 }
                 DataType::Decimal128(p, _) if *p <= MAX_LONG_DIGITS => {
-                    let arr = column.as_any().downcast_ref::<Decimal128Array>().unwrap();
+                    let arr = downcast_array!(column, Decimal128Array)?;
                     Some(arr.value(row_idx) as i64)
                 }
                 _ => None, // Variable-length type
@@ -2104,7 +1813,6 @@ fn write_struct_to_buffer(
                     data_type,
                     column,
                     row_idx,
-                    struct_start,
                 )?;
                 if var_len > 0 {
                     let padded_len = round_up_to_8(var_len);
@@ -2234,136 +1942,45 @@ fn write_nested_variable_to_buffer(
     data_type: &DataType,
     array: &ArrayRef,
     row_idx: usize,
-    _base_offset: usize,
 ) -> CometResult<usize> {
     let actual_type = array.data_type();
 
     match actual_type {
         DataType::Utf8 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to StringArray for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            let bytes = arr.value(row_idx).as_bytes();
-            let len = bytes.len();
-            buffer.extend_from_slice(bytes);
-            let padding = round_up_to_8(len) - len;
-            buffer.extend(std::iter::repeat_n(0u8, padding));
-            Ok(len)
+            let arr = downcast_array!(array, StringArray)?;
+            Ok(write_bytes_padded(buffer, arr.value(row_idx).as_bytes()))
         }
         DataType::LargeUtf8 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<LargeStringArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to LargeStringArray for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            let bytes = arr.value(row_idx).as_bytes();
-            let len = bytes.len();
-            buffer.extend_from_slice(bytes);
-            let padding = round_up_to_8(len) - len;
-            buffer.extend(std::iter::repeat_n(0u8, padding));
-            Ok(len)
+            let arr = downcast_array!(array, LargeStringArray)?;
+            Ok(write_bytes_padded(buffer, arr.value(row_idx).as_bytes()))
         }
         DataType::Binary => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<BinaryArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to BinaryArray for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            let bytes = arr.value(row_idx);
-            let len = bytes.len();
-            buffer.extend_from_slice(bytes);
-            let padding = round_up_to_8(len) - len;
-            buffer.extend(std::iter::repeat_n(0u8, padding));
-            Ok(len)
+            let arr = downcast_array!(array, BinaryArray)?;
+            Ok(write_bytes_padded(buffer, arr.value(row_idx)))
         }
         DataType::LargeBinary => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<LargeBinaryArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to LargeBinaryArray for type {:?}",
-                        actual_type
-                    ))
-                })?;
-            let bytes = arr.value(row_idx);
-            let len = bytes.len();
-            buffer.extend_from_slice(bytes);
-            let padding = round_up_to_8(len) - len;
-            buffer.extend(std::iter::repeat_n(0u8, padding));
-            Ok(len)
+            let arr = downcast_array!(array, LargeBinaryArray)?;
+            Ok(write_bytes_padded(buffer, arr.value(row_idx)))
         }
         DataType::Decimal128(precision, _) if *precision > MAX_LONG_DIGITS => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<Decimal128Array>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to Decimal128Array for type {:?}",
-                        actual_type
-                    ))
-                })?;
+            let arr = downcast_array!(array, Decimal128Array)?;
             let bytes = i128_to_spark_decimal_bytes(arr.value(row_idx));
-            let len = bytes.len();
-            buffer.extend_from_slice(&bytes);
-            let padding = round_up_to_8(len) - len;
-            buffer.extend(std::iter::repeat_n(0u8, padding));
-            Ok(len)
+            Ok(write_bytes_padded(buffer, &bytes))
         }
         DataType::Struct(fields) => {
-            let struct_array = array
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to StructArray for type {:?}",
-                        actual_type
-                    ))
-                })?;
+            let struct_array = downcast_array!(array, StructArray)?;
             write_struct_to_buffer(buffer, struct_array, row_idx, fields)
         }
         DataType::List(field) => {
-            let list_array = array.as_any().downcast_ref::<ListArray>().ok_or_else(|| {
-                CometError::Internal(format!(
-                    "Failed to downcast to ListArray for type {:?}",
-                    actual_type
-                ))
-            })?;
+            let list_array = downcast_array!(array, ListArray)?;
             write_list_to_buffer(buffer, list_array, row_idx, field)
         }
         DataType::LargeList(field) => {
-            let list_array = array
-                .as_any()
-                .downcast_ref::<LargeListArray>()
-                .ok_or_else(|| {
-                    CometError::Internal(format!(
-                        "Failed to downcast to LargeListArray for type {:?}",
-                        actual_type
-                    ))
-                })?;
+            let list_array = downcast_array!(array, LargeListArray)?;
             write_large_list_to_buffer(buffer, list_array, row_idx, field)
         }
         DataType::Map(field, _) => {
-            let map_array = array.as_any().downcast_ref::<MapArray>().ok_or_else(|| {
-                CometError::Internal(format!(
-                    "Failed to downcast to MapArray for type {:?}",
-                    actual_type
-                ))
-            })?;
+            let map_array = downcast_array!(array, MapArray)?;
             write_map_to_buffer(buffer, map_array, row_idx, field)
         }
         DataType::Dictionary(key_type, value_type) => {
