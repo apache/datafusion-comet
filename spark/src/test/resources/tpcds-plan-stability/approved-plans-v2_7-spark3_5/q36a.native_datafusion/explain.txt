@@ -2,7 +2,7 @@
 TakeOrderedAndProject (48)
 +- * Project (47)
    +- Window (46)
-      +- CometNativeColumnarToRow (45)
+      +- * CometColumnarToRow (45)
          +- CometSort (44)
             +- CometExchange (43)
                +- CometHashAggregate (42)
@@ -10,7 +10,7 @@ TakeOrderedAndProject (48)
                      +- * HashAggregate (40)
                         +- Union (39)
                            :- * HashAggregate (24)
-                           :  +- CometNativeColumnarToRow (23)
+                           :  +- * CometColumnarToRow (23)
                            :     +- CometColumnarExchange (22)
                            :        +- * HashAggregate (21)
                            :           +- * Project (20)
@@ -24,28 +24,28 @@ TakeOrderedAndProject (48)
                            :                 :     :     :     +- Scan parquet spark_catalog.default.store_sales (1)
                            :                 :     :     +- ReusedExchange (4)
                            :                 :     +- BroadcastExchange (11)
-                           :                 :        +- CometNativeColumnarToRow (10)
+                           :                 :        +- * CometColumnarToRow (10)
                            :                 :           +- CometProject (9)
                            :                 :              +- CometFilter (8)
                            :                 :                 +- CometNativeScan parquet spark_catalog.default.item (7)
                            :                 +- BroadcastExchange (18)
-                           :                    +- CometNativeColumnarToRow (17)
+                           :                    +- * CometColumnarToRow (17)
                            :                       +- CometProject (16)
                            :                          +- CometFilter (15)
                            :                             +- CometNativeScan parquet spark_catalog.default.store (14)
                            :- * HashAggregate (31)
-                           :  +- CometNativeColumnarToRow (30)
+                           :  +- * CometColumnarToRow (30)
                            :     +- CometColumnarExchange (29)
                            :        +- * HashAggregate (28)
                            :           +- * HashAggregate (27)
-                           :              +- CometNativeColumnarToRow (26)
+                           :              +- * CometColumnarToRow (26)
                            :                 +- ReusedExchange (25)
                            +- * HashAggregate (38)
-                              +- CometNativeColumnarToRow (37)
+                              +- * CometColumnarToRow (37)
                                  +- CometColumnarExchange (36)
                                     +- * HashAggregate (35)
                                        +- * HashAggregate (34)
-                                          +- CometNativeColumnarToRow (33)
+                                          +- * CometColumnarToRow (33)
                                              +- ReusedExchange (32)
 
 
@@ -57,23 +57,23 @@ PartitionFilters: [isnotnull(ss_sold_date_sk#5), dynamicpruningexpression(ss_sol
 PushedFilters: [IsNotNull(ss_item_sk), IsNotNull(ss_store_sk)]
 ReadSchema: struct<ss_item_sk:int,ss_store_sk:int,ss_ext_sales_price:decimal(7,2),ss_net_profit:decimal(7,2)>
 
-(2) ColumnarToRow [codegen id : 1]
+(2) ColumnarToRow [codegen id : 4]
 Input [5]: [ss_item_sk#1, ss_store_sk#2, ss_ext_sales_price#3, ss_net_profit#4, ss_sold_date_sk#5]
 
-(3) Filter [codegen id : 1]
+(3) Filter [codegen id : 4]
 Input [5]: [ss_item_sk#1, ss_store_sk#2, ss_ext_sales_price#3, ss_net_profit#4, ss_sold_date_sk#5]
 Condition : (isnotnull(ss_item_sk#1) AND isnotnull(ss_store_sk#2))
 
 (4) ReusedExchange [Reuses operator id: 53]
 Output [1]: [d_date_sk#7]
 
-(5) BroadcastHashJoin [codegen id : 1]
+(5) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [ss_sold_date_sk#5]
 Right keys [1]: [d_date_sk#7]
 Join type: Inner
 Join condition: None
 
-(6) Project [codegen id : 1]
+(6) Project [codegen id : 4]
 Output [4]: [ss_item_sk#1, ss_store_sk#2, ss_ext_sales_price#3, ss_net_profit#4]
 Input [6]: [ss_item_sk#1, ss_store_sk#2, ss_ext_sales_price#3, ss_net_profit#4, ss_sold_date_sk#5, d_date_sk#7]
 
@@ -92,20 +92,20 @@ Condition : isnotnull(i_item_sk#8)
 Input [3]: [i_item_sk#8, i_class#9, i_category#10]
 Arguments: [i_item_sk#8, i_class#11, i_category#12], [i_item_sk#8, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_class#9, 50, true, false, true) AS i_class#11, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, i_category#10, 50, true, false, true) AS i_category#12]
 
-(10) CometNativeColumnarToRow
+(10) CometColumnarToRow [codegen id : 2]
 Input [3]: [i_item_sk#8, i_class#11, i_category#12]
 
 (11) BroadcastExchange
 Input [3]: [i_item_sk#8, i_class#11, i_category#12]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=1]
 
-(12) BroadcastHashJoin [codegen id : 1]
+(12) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [ss_item_sk#1]
 Right keys [1]: [i_item_sk#8]
 Join type: Inner
 Join condition: None
 
-(13) Project [codegen id : 1]
+(13) Project [codegen id : 4]
 Output [5]: [ss_store_sk#2, ss_ext_sales_price#3, ss_net_profit#4, i_class#11, i_category#12]
 Input [7]: [ss_item_sk#1, ss_store_sk#2, ss_ext_sales_price#3, ss_net_profit#4, i_item_sk#8, i_class#11, i_category#12]
 
@@ -124,24 +124,24 @@ Condition : ((staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharC
 Input [2]: [s_store_sk#13, s_state#14]
 Arguments: [s_store_sk#13], [s_store_sk#13]
 
-(17) CometNativeColumnarToRow
+(17) CometColumnarToRow [codegen id : 3]
 Input [1]: [s_store_sk#13]
 
 (18) BroadcastExchange
 Input [1]: [s_store_sk#13]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=2]
 
-(19) BroadcastHashJoin [codegen id : 1]
+(19) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [ss_store_sk#2]
 Right keys [1]: [s_store_sk#13]
 Join type: Inner
 Join condition: None
 
-(20) Project [codegen id : 1]
+(20) Project [codegen id : 4]
 Output [4]: [ss_ext_sales_price#3, ss_net_profit#4, i_class#11, i_category#12]
 Input [6]: [ss_store_sk#2, ss_ext_sales_price#3, ss_net_profit#4, i_class#11, i_category#12, s_store_sk#13]
 
-(21) HashAggregate [codegen id : 1]
+(21) HashAggregate [codegen id : 4]
 Input [4]: [ss_ext_sales_price#3, ss_net_profit#4, i_class#11, i_category#12]
 Keys [2]: [i_category#12, i_class#11]
 Functions [2]: [partial_sum(UnscaledValue(ss_net_profit#4)), partial_sum(UnscaledValue(ss_ext_sales_price#3))]
@@ -152,10 +152,10 @@ Results [4]: [i_category#12, i_class#11, sum#17, sum#18]
 Input [4]: [i_category#12, i_class#11, sum#17, sum#18]
 Arguments: hashpartitioning(i_category#12, i_class#11, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=3]
 
-(23) CometNativeColumnarToRow
+(23) CometColumnarToRow [codegen id : 5]
 Input [4]: [i_category#12, i_class#11, sum#17, sum#18]
 
-(24) HashAggregate [codegen id : 2]
+(24) HashAggregate [codegen id : 5]
 Input [4]: [i_category#12, i_class#11, sum#17, sum#18]
 Keys [2]: [i_category#12, i_class#11]
 Functions [2]: [sum(UnscaledValue(ss_net_profit#4)), sum(UnscaledValue(ss_ext_sales_price#3))]
@@ -165,17 +165,17 @@ Results [6]: [cast((MakeDecimal(sum(UnscaledValue(ss_net_profit#4))#19,17,2) / M
 (25) ReusedExchange [Reuses operator id: 22]
 Output [4]: [i_category#12, i_class#11, sum#27, sum#28]
 
-(26) CometNativeColumnarToRow
+(26) CometColumnarToRow [codegen id : 10]
 Input [4]: [i_category#12, i_class#11, sum#27, sum#28]
 
-(27) HashAggregate [codegen id : 4]
+(27) HashAggregate [codegen id : 10]
 Input [4]: [i_category#12, i_class#11, sum#27, sum#28]
 Keys [2]: [i_category#12, i_class#11]
 Functions [2]: [sum(UnscaledValue(ss_net_profit#29)), sum(UnscaledValue(ss_ext_sales_price#30))]
 Aggregate Attributes [2]: [sum(UnscaledValue(ss_net_profit#29))#31, sum(UnscaledValue(ss_ext_sales_price#30))#32]
 Results [3]: [MakeDecimal(sum(UnscaledValue(ss_net_profit#29))#31,17,2) AS ss_net_profit#33, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#30))#32,17,2) AS ss_ext_sales_price#34, i_category#12]
 
-(28) HashAggregate [codegen id : 4]
+(28) HashAggregate [codegen id : 10]
 Input [3]: [ss_net_profit#33, ss_ext_sales_price#34, i_category#12]
 Keys [1]: [i_category#12]
 Functions [2]: [partial_sum(ss_net_profit#33), partial_sum(ss_ext_sales_price#34)]
@@ -186,10 +186,10 @@ Results [5]: [i_category#12, sum#39, isEmpty#40, sum#41, isEmpty#42]
 Input [5]: [i_category#12, sum#39, isEmpty#40, sum#41, isEmpty#42]
 Arguments: hashpartitioning(i_category#12, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=4]
 
-(30) CometNativeColumnarToRow
+(30) CometColumnarToRow [codegen id : 11]
 Input [5]: [i_category#12, sum#39, isEmpty#40, sum#41, isEmpty#42]
 
-(31) HashAggregate [codegen id : 5]
+(31) HashAggregate [codegen id : 11]
 Input [5]: [i_category#12, sum#39, isEmpty#40, sum#41, isEmpty#42]
 Keys [1]: [i_category#12]
 Functions [2]: [sum(ss_net_profit#33), sum(ss_ext_sales_price#34)]
@@ -199,17 +199,17 @@ Results [6]: [cast((sum(ss_net_profit#33)#43 / sum(ss_ext_sales_price#34)#44) as
 (32) ReusedExchange [Reuses operator id: 22]
 Output [4]: [i_category#12, i_class#11, sum#50, sum#51]
 
-(33) CometNativeColumnarToRow
+(33) CometColumnarToRow [codegen id : 16]
 Input [4]: [i_category#12, i_class#11, sum#50, sum#51]
 
-(34) HashAggregate [codegen id : 7]
+(34) HashAggregate [codegen id : 16]
 Input [4]: [i_category#12, i_class#11, sum#50, sum#51]
 Keys [2]: [i_category#12, i_class#11]
 Functions [2]: [sum(UnscaledValue(ss_net_profit#52)), sum(UnscaledValue(ss_ext_sales_price#53))]
 Aggregate Attributes [2]: [sum(UnscaledValue(ss_net_profit#52))#31, sum(UnscaledValue(ss_ext_sales_price#53))#32]
 Results [2]: [MakeDecimal(sum(UnscaledValue(ss_net_profit#52))#31,17,2) AS ss_net_profit#54, MakeDecimal(sum(UnscaledValue(ss_ext_sales_price#53))#32,17,2) AS ss_ext_sales_price#55]
 
-(35) HashAggregate [codegen id : 7]
+(35) HashAggregate [codegen id : 16]
 Input [2]: [ss_net_profit#54, ss_ext_sales_price#55]
 Keys: []
 Functions [2]: [partial_sum(ss_net_profit#54), partial_sum(ss_ext_sales_price#55)]
@@ -220,10 +220,10 @@ Results [4]: [sum#60, isEmpty#61, sum#62, isEmpty#63]
 Input [4]: [sum#60, isEmpty#61, sum#62, isEmpty#63]
 Arguments: SinglePartition, ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
-(37) CometNativeColumnarToRow
+(37) CometColumnarToRow [codegen id : 17]
 Input [4]: [sum#60, isEmpty#61, sum#62, isEmpty#63]
 
-(38) HashAggregate [codegen id : 8]
+(38) HashAggregate [codegen id : 17]
 Input [4]: [sum#60, isEmpty#61, sum#62, isEmpty#63]
 Keys: []
 Functions [2]: [sum(ss_net_profit#54), sum(ss_ext_sales_price#55)]
@@ -232,7 +232,7 @@ Results [6]: [cast((sum(ss_net_profit#54)#64 / sum(ss_ext_sales_price#55)#65) as
 
 (39) Union
 
-(40) HashAggregate [codegen id : 9]
+(40) HashAggregate [codegen id : 18]
 Input [6]: [gross_margin#21, i_category#22, i_class#23, t_category#24, t_class#25, lochierarchy#26]
 Keys [6]: [gross_margin#21, i_category#22, i_class#23, t_category#24, t_class#25, lochierarchy#26]
 Functions: []
@@ -256,14 +256,14 @@ Arguments: hashpartitioning(lochierarchy#26, _w0#72, 5), ENSURE_REQUIREMENTS, Co
 Input [5]: [gross_margin#21, i_category#22, i_class#23, lochierarchy#26, _w0#72]
 Arguments: [gross_margin#21, i_category#22, i_class#23, lochierarchy#26, _w0#72], [lochierarchy#26 ASC NULLS FIRST, _w0#72 ASC NULLS FIRST, gross_margin#21 ASC NULLS FIRST]
 
-(45) CometNativeColumnarToRow
+(45) CometColumnarToRow [codegen id : 19]
 Input [5]: [gross_margin#21, i_category#22, i_class#23, lochierarchy#26, _w0#72]
 
 (46) Window
 Input [5]: [gross_margin#21, i_category#22, i_class#23, lochierarchy#26, _w0#72]
 Arguments: [rank(gross_margin#21) windowspecdefinition(lochierarchy#26, _w0#72, gross_margin#21 ASC NULLS FIRST, specifiedwindowframe(RowFrame, unboundedpreceding$(), currentrow$())) AS rank_within_parent#73], [lochierarchy#26, _w0#72], [gross_margin#21 ASC NULLS FIRST]
 
-(47) Project [codegen id : 10]
+(47) Project [codegen id : 20]
 Output [5]: [gross_margin#21, i_category#22, i_class#23, lochierarchy#26, rank_within_parent#73]
 Input [6]: [gross_margin#21, i_category#22, i_class#23, lochierarchy#26, _w0#72, rank_within_parent#73]
 
@@ -275,7 +275,7 @@ Arguments: 100, [lochierarchy#26 DESC NULLS LAST, CASE WHEN (lochierarchy#26 = 0
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (53)
-+- CometNativeColumnarToRow (52)
++- * CometColumnarToRow (52)
    +- CometProject (51)
       +- CometFilter (50)
          +- CometNativeScan parquet spark_catalog.default.date_dim (49)
@@ -296,7 +296,7 @@ Condition : ((isnotnull(d_year#74) AND (d_year#74 = 2001)) AND isnotnull(d_date_
 Input [2]: [d_date_sk#7, d_year#74]
 Arguments: [d_date_sk#7], [d_date_sk#7]
 
-(52) CometNativeColumnarToRow
+(52) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#7]
 
 (53) BroadcastExchange

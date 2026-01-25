@@ -34,9 +34,11 @@ TakeOrderedAndProject [sum_sales,avg_monthly_sales,d_year,i_category,i_brand,d_m
                                                             CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_call_center_sk,cs_item_sk,cs_sales_price,cs_sold_date_sk]
                                                               SubqueryBroadcast [d_date_sk] #1
                                                                 BroadcastExchange #4
-                                                                  CometNativeColumnarToRow
-                                                                    CometFilter [d_date_sk,d_year,d_moy]
-                                                                      CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
+                                                                  WholeStageCodegen (1)
+                                                                    CometColumnarToRow
+                                                                      InputAdapter
+                                                                        CometFilter [d_date_sk,d_year,d_moy]
+                                                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
                                                     CometBroadcastExchange [d_date_sk,d_year,d_moy] #5
                                                       CometFilter [d_date_sk,d_year,d_moy]
                                                         CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]

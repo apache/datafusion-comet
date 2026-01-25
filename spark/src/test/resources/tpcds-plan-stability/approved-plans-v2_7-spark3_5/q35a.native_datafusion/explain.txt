@@ -1,7 +1,7 @@
 == Physical Plan ==
 TakeOrderedAndProject (43)
 +- * HashAggregate (42)
-   +- CometNativeColumnarToRow (41)
+   +- * CometColumnarToRow (41)
       +- CometColumnarExchange (40)
          +- * HashAggregate (39)
             +- * Project (38)
@@ -11,7 +11,7 @@ TakeOrderedAndProject (43)
                   :     :- * Project (24)
                   :     :  +- * BroadcastHashJoin LeftSemi BuildRight (23)
                   :     :     :- * BroadcastHashJoin LeftSemi BuildRight (10)
-                  :     :     :  :- CometNativeColumnarToRow (3)
+                  :     :     :  :- * CometColumnarToRow (3)
                   :     :     :  :  +- CometFilter (2)
                   :     :     :  :     +- CometNativeScan parquet spark_catalog.default.customer (1)
                   :     :     :  +- BroadcastExchange (9)
@@ -33,12 +33,12 @@ TakeOrderedAndProject (43)
                   :     :                 :  +- Scan parquet spark_catalog.default.catalog_sales (16)
                   :     :                 +- ReusedExchange (18)
                   :     +- BroadcastExchange (29)
-                  :        +- CometNativeColumnarToRow (28)
+                  :        +- * CometColumnarToRow (28)
                   :           +- CometProject (27)
                   :              +- CometFilter (26)
                   :                 +- CometNativeScan parquet spark_catalog.default.customer_address (25)
                   +- BroadcastExchange (36)
-                     +- CometNativeColumnarToRow (35)
+                     +- * CometColumnarToRow (35)
                         +- CometProject (34)
                            +- CometFilter (33)
                               +- CometNativeScan parquet spark_catalog.default.customer_demographics (32)
@@ -55,7 +55,7 @@ ReadSchema: struct<c_customer_sk:int,c_current_cdemo_sk:int,c_current_addr_sk:in
 Input [3]: [c_customer_sk#1, c_current_cdemo_sk#2, c_current_addr_sk#3]
 Condition : (isnotnull(c_current_addr_sk#3) AND isnotnull(c_current_cdemo_sk#2))
 
-(3) CometNativeColumnarToRow
+(3) CometColumnarToRow [codegen id : 9]
 Input [3]: [c_customer_sk#1, c_current_cdemo_sk#2, c_current_addr_sk#3]
 
 (4) Scan parquet spark_catalog.default.store_sales
@@ -65,19 +65,19 @@ Location: InMemoryFileIndex []
 PartitionFilters: [isnotnull(ss_sold_date_sk#5), dynamicpruningexpression(ss_sold_date_sk#5 IN dynamicpruning#6)]
 ReadSchema: struct<ss_customer_sk:int>
 
-(5) ColumnarToRow [codegen id : 1]
+(5) ColumnarToRow [codegen id : 2]
 Input [2]: [ss_customer_sk#4, ss_sold_date_sk#5]
 
 (6) ReusedExchange [Reuses operator id: 48]
 Output [1]: [d_date_sk#7]
 
-(7) BroadcastHashJoin [codegen id : 1]
+(7) BroadcastHashJoin [codegen id : 2]
 Left keys [1]: [ss_sold_date_sk#5]
 Right keys [1]: [d_date_sk#7]
 Join type: Inner
 Join condition: None
 
-(8) Project [codegen id : 1]
+(8) Project [codegen id : 2]
 Output [1]: [ss_customer_sk#4]
 Input [3]: [ss_customer_sk#4, ss_sold_date_sk#5, d_date_sk#7]
 
@@ -85,7 +85,7 @@ Input [3]: [ss_customer_sk#4, ss_sold_date_sk#5, d_date_sk#7]
 Input [1]: [ss_customer_sk#4]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=1]
 
-(10) BroadcastHashJoin [codegen id : 4]
+(10) BroadcastHashJoin [codegen id : 9]
 Left keys [1]: [c_customer_sk#1]
 Right keys [1]: [ss_customer_sk#4]
 Join type: LeftSemi
@@ -98,19 +98,19 @@ Location: InMemoryFileIndex []
 PartitionFilters: [isnotnull(ws_sold_date_sk#9), dynamicpruningexpression(ws_sold_date_sk#9 IN dynamicpruning#6)]
 ReadSchema: struct<ws_bill_customer_sk:int>
 
-(12) ColumnarToRow [codegen id : 2]
+(12) ColumnarToRow [codegen id : 4]
 Input [2]: [ws_bill_customer_sk#8, ws_sold_date_sk#9]
 
 (13) ReusedExchange [Reuses operator id: 48]
 Output [1]: [d_date_sk#10]
 
-(14) BroadcastHashJoin [codegen id : 2]
+(14) BroadcastHashJoin [codegen id : 4]
 Left keys [1]: [ws_sold_date_sk#9]
 Right keys [1]: [d_date_sk#10]
 Join type: Inner
 Join condition: None
 
-(15) Project [codegen id : 2]
+(15) Project [codegen id : 4]
 Output [1]: [ws_bill_customer_sk#8 AS customsk#11]
 Input [3]: [ws_bill_customer_sk#8, ws_sold_date_sk#9, d_date_sk#10]
 
@@ -121,19 +121,19 @@ Location: InMemoryFileIndex []
 PartitionFilters: [isnotnull(cs_sold_date_sk#13), dynamicpruningexpression(cs_sold_date_sk#13 IN dynamicpruning#6)]
 ReadSchema: struct<cs_ship_customer_sk:int>
 
-(17) ColumnarToRow [codegen id : 3]
+(17) ColumnarToRow [codegen id : 6]
 Input [2]: [cs_ship_customer_sk#12, cs_sold_date_sk#13]
 
 (18) ReusedExchange [Reuses operator id: 48]
 Output [1]: [d_date_sk#14]
 
-(19) BroadcastHashJoin [codegen id : 3]
+(19) BroadcastHashJoin [codegen id : 6]
 Left keys [1]: [cs_sold_date_sk#13]
 Right keys [1]: [d_date_sk#14]
 Join type: Inner
 Join condition: None
 
-(20) Project [codegen id : 3]
+(20) Project [codegen id : 6]
 Output [1]: [cs_ship_customer_sk#12 AS customsk#15]
 Input [3]: [cs_ship_customer_sk#12, cs_sold_date_sk#13, d_date_sk#14]
 
@@ -143,13 +143,13 @@ Input [3]: [cs_ship_customer_sk#12, cs_sold_date_sk#13, d_date_sk#14]
 Input [1]: [customsk#11]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=2]
 
-(23) BroadcastHashJoin [codegen id : 4]
+(23) BroadcastHashJoin [codegen id : 9]
 Left keys [1]: [c_customer_sk#1]
 Right keys [1]: [customsk#11]
 Join type: LeftSemi
 Join condition: None
 
-(24) Project [codegen id : 4]
+(24) Project [codegen id : 9]
 Output [2]: [c_current_cdemo_sk#2, c_current_addr_sk#3]
 Input [3]: [c_customer_sk#1, c_current_cdemo_sk#2, c_current_addr_sk#3]
 
@@ -168,20 +168,20 @@ Condition : isnotnull(ca_address_sk#16)
 Input [2]: [ca_address_sk#16, ca_state#17]
 Arguments: [ca_address_sk#16, ca_state#18], [ca_address_sk#16, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, ca_state#17, 2, true, false, true) AS ca_state#18]
 
-(28) CometNativeColumnarToRow
+(28) CometColumnarToRow [codegen id : 7]
 Input [2]: [ca_address_sk#16, ca_state#18]
 
 (29) BroadcastExchange
 Input [2]: [ca_address_sk#16, ca_state#18]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=3]
 
-(30) BroadcastHashJoin [codegen id : 4]
+(30) BroadcastHashJoin [codegen id : 9]
 Left keys [1]: [c_current_addr_sk#3]
 Right keys [1]: [ca_address_sk#16]
 Join type: Inner
 Join condition: None
 
-(31) Project [codegen id : 4]
+(31) Project [codegen id : 9]
 Output [2]: [c_current_cdemo_sk#2, ca_state#18]
 Input [4]: [c_current_cdemo_sk#2, c_current_addr_sk#3, ca_address_sk#16, ca_state#18]
 
@@ -200,24 +200,24 @@ Condition : isnotnull(cd_demo_sk#19)
 Input [6]: [cd_demo_sk#19, cd_gender#20, cd_marital_status#21, cd_dep_count#22, cd_dep_employed_count#23, cd_dep_college_count#24]
 Arguments: [cd_demo_sk#19, cd_gender#25, cd_marital_status#26, cd_dep_count#22, cd_dep_employed_count#23, cd_dep_college_count#24], [cd_demo_sk#19, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_gender#20, 1, true, false, true) AS cd_gender#25, staticinvoke(class org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils, StringType, readSidePadding, cd_marital_status#21, 1, true, false, true) AS cd_marital_status#26, cd_dep_count#22, cd_dep_employed_count#23, cd_dep_college_count#24]
 
-(35) CometNativeColumnarToRow
+(35) CometColumnarToRow [codegen id : 8]
 Input [6]: [cd_demo_sk#19, cd_gender#25, cd_marital_status#26, cd_dep_count#22, cd_dep_employed_count#23, cd_dep_college_count#24]
 
 (36) BroadcastExchange
 Input [6]: [cd_demo_sk#19, cd_gender#25, cd_marital_status#26, cd_dep_count#22, cd_dep_employed_count#23, cd_dep_college_count#24]
 Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint)),false), [plan_id=4]
 
-(37) BroadcastHashJoin [codegen id : 4]
+(37) BroadcastHashJoin [codegen id : 9]
 Left keys [1]: [c_current_cdemo_sk#2]
 Right keys [1]: [cd_demo_sk#19]
 Join type: Inner
 Join condition: None
 
-(38) Project [codegen id : 4]
+(38) Project [codegen id : 9]
 Output [6]: [ca_state#18, cd_gender#25, cd_marital_status#26, cd_dep_count#22, cd_dep_employed_count#23, cd_dep_college_count#24]
 Input [8]: [c_current_cdemo_sk#2, ca_state#18, cd_demo_sk#19, cd_gender#25, cd_marital_status#26, cd_dep_count#22, cd_dep_employed_count#23, cd_dep_college_count#24]
 
-(39) HashAggregate [codegen id : 4]
+(39) HashAggregate [codegen id : 9]
 Input [6]: [ca_state#18, cd_gender#25, cd_marital_status#26, cd_dep_count#22, cd_dep_employed_count#23, cd_dep_college_count#24]
 Keys [6]: [ca_state#18, cd_gender#25, cd_marital_status#26, cd_dep_count#22, cd_dep_employed_count#23, cd_dep_college_count#24]
 Functions [10]: [partial_count(1), partial_avg(cd_dep_count#22), partial_max(cd_dep_count#22), partial_sum(cd_dep_count#22), partial_avg(cd_dep_employed_count#23), partial_max(cd_dep_employed_count#23), partial_sum(cd_dep_employed_count#23), partial_avg(cd_dep_college_count#24), partial_max(cd_dep_college_count#24), partial_sum(cd_dep_college_count#24)]
@@ -228,10 +228,10 @@ Results [19]: [ca_state#18, cd_gender#25, cd_marital_status#26, cd_dep_count#22,
 Input [19]: [ca_state#18, cd_gender#25, cd_marital_status#26, cd_dep_count#22, cd_dep_employed_count#23, cd_dep_college_count#24, count#40, sum#41, count#42, max#43, sum#44, sum#45, count#46, max#47, sum#48, sum#49, count#50, max#51, sum#52]
 Arguments: hashpartitioning(ca_state#18, cd_gender#25, cd_marital_status#26, cd_dep_count#22, cd_dep_employed_count#23, cd_dep_college_count#24, 5), ENSURE_REQUIREMENTS, CometColumnarShuffle, [plan_id=5]
 
-(41) CometNativeColumnarToRow
+(41) CometColumnarToRow [codegen id : 10]
 Input [19]: [ca_state#18, cd_gender#25, cd_marital_status#26, cd_dep_count#22, cd_dep_employed_count#23, cd_dep_college_count#24, count#40, sum#41, count#42, max#43, sum#44, sum#45, count#46, max#47, sum#48, sum#49, count#50, max#51, sum#52]
 
-(42) HashAggregate [codegen id : 5]
+(42) HashAggregate [codegen id : 10]
 Input [19]: [ca_state#18, cd_gender#25, cd_marital_status#26, cd_dep_count#22, cd_dep_employed_count#23, cd_dep_college_count#24, count#40, sum#41, count#42, max#43, sum#44, sum#45, count#46, max#47, sum#48, sum#49, count#50, max#51, sum#52]
 Keys [6]: [ca_state#18, cd_gender#25, cd_marital_status#26, cd_dep_count#22, cd_dep_employed_count#23, cd_dep_college_count#24]
 Functions [10]: [count(1), avg(cd_dep_count#22), max(cd_dep_count#22), sum(cd_dep_count#22), avg(cd_dep_employed_count#23), max(cd_dep_employed_count#23), sum(cd_dep_employed_count#23), avg(cd_dep_college_count#24), max(cd_dep_college_count#24), sum(cd_dep_college_count#24)]
@@ -246,7 +246,7 @@ Arguments: 100, [ca_state#18 ASC NULLS FIRST, cd_gender#25 ASC NULLS FIRST, cd_m
 
 Subquery:1 Hosting operator id = 4 Hosting Expression = ss_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (48)
-+- CometNativeColumnarToRow (47)
++- * CometColumnarToRow (47)
    +- CometProject (46)
       +- CometFilter (45)
          +- CometNativeScan parquet spark_catalog.default.date_dim (44)
@@ -267,7 +267,7 @@ Condition : ((((isnotnull(d_year#75) AND isnotnull(d_qoy#76)) AND (d_year#75 = 1
 Input [3]: [d_date_sk#7, d_year#75, d_qoy#76]
 Arguments: [d_date_sk#7], [d_date_sk#7]
 
-(47) CometNativeColumnarToRow
+(47) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#7]
 
 (48) BroadcastExchange

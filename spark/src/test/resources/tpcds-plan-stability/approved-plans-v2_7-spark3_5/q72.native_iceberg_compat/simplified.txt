@@ -31,10 +31,12 @@ WholeStageCodegen (1)
                                                             CometScan [native_iceberg_compat] parquet spark_catalog.default.catalog_sales [cs_ship_date_sk,cs_bill_cdemo_sk,cs_bill_hdemo_sk,cs_item_sk,cs_promo_sk,cs_order_number,cs_quantity,cs_sold_date_sk]
                                                               SubqueryBroadcast [d_date_sk] #1
                                                                 BroadcastExchange #3
-                                                                  CometNativeColumnarToRow
-                                                                    CometProject [d_date_sk,d_date,d_week_seq]
-                                                                      CometFilter [d_date_sk,d_date,d_week_seq,d_year]
-                                                                        CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_week_seq,d_year]
+                                                                  WholeStageCodegen (1)
+                                                                    CometColumnarToRow
+                                                                      InputAdapter
+                                                                        CometProject [d_date_sk,d_date,d_week_seq]
+                                                                          CometFilter [d_date_sk,d_date,d_week_seq,d_year]
+                                                                            CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date,d_week_seq,d_year]
                                                           CometBroadcastExchange [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk] #4
                                                             CometFilter [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]
                                                               CometScan [native_iceberg_compat] parquet spark_catalog.default.inventory [inv_item_sk,inv_warehouse_sk,inv_quantity_on_hand,inv_date_sk]

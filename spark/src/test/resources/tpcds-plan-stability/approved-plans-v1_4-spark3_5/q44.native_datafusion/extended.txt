@@ -10,15 +10,15 @@ TakeOrderedAndProject
       :     :     :     +- Filter
       :     :     :        +- Window
       :     :     :           +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-      :     :     :              +- CometNativeColumnarToRow
+      :     :     :              +- CometColumnarToRow
       :     :     :                 +- CometSort
       :     :     :                    +- CometColumnarExchange
       :     :     :                       +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-      :     :     :                          +- CometNativeColumnarToRow
+      :     :     :                          +- CometColumnarToRow
       :     :     :                             +- CometSort
       :     :     :                                +- CometFilter
       :     :     :                                   :  +- Subquery
-      :     :     :                                   :     +- CometNativeColumnarToRow
+      :     :     :                                   :     +- CometColumnarToRow
       :     :     :                                   :        +- CometHashAggregate
       :     :     :                                   :           +- CometExchange
       :     :     :                                   :              +- CometHashAggregate
@@ -36,11 +36,11 @@ TakeOrderedAndProject
       :     :           +- Filter
       :     :              +- Window
       :     :                 +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-      :     :                    +- CometNativeColumnarToRow
+      :     :                    +- CometColumnarToRow
       :     :                       +- CometSort
       :     :                          +- CometColumnarExchange
       :     :                             +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-      :     :                                +- CometNativeColumnarToRow
+      :     :                                +- CometColumnarToRow
       :     :                                   +- CometSort
       :     :                                      +- CometFilter
       :     :                                         :  +- ReusedSubquery
@@ -51,12 +51,12 @@ TakeOrderedAndProject
       :     :                                                     +- CometFilter
       :     :                                                        +- CometNativeScan parquet spark_catalog.default.store_sales
       :     +- BroadcastExchange
-      :        +- CometNativeColumnarToRow
+      :        +- CometColumnarToRow
       :           +- CometProject
       :              +- CometFilter
       :                 +- CometNativeScan parquet spark_catalog.default.item
       +- BroadcastExchange
-         +- CometNativeColumnarToRow
+         +- CometColumnarToRow
             +- CometProject
                +- CometFilter
                   +- CometNativeScan parquet spark_catalog.default.item

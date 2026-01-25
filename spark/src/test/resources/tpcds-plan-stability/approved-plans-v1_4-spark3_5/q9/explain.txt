@@ -1,6 +1,6 @@
 == Physical Plan ==
 * Project (4)
-+- CometNativeColumnarToRow (3)
++- * CometColumnarToRow (3)
    +- CometFilter (2)
       +- CometScan [native_iceberg_compat] parquet spark_catalog.default.reason (1)
 
@@ -16,7 +16,7 @@ ReadSchema: struct<r_reason_sk:int>
 Input [1]: [r_reason_sk#1]
 Condition : (isnotnull(r_reason_sk#1) AND (r_reason_sk#1 = 1))
 
-(3) CometNativeColumnarToRow
+(3) CometColumnarToRow [codegen id : 1]
 Input [1]: [r_reason_sk#1]
 
 (4) Project [codegen id : 1]

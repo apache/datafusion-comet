@@ -1,10 +1,10 @@
 TakeOrderedAndProject [cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating,cnt1,cnt2,cnt3]
-  WholeStageCodegen (4)
+  WholeStageCodegen (6)
     HashAggregate [cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating,count] [count(1),cnt1,cnt2,cnt3,count]
       CometColumnarToRow
         InputAdapter
           CometColumnarExchange [cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating] #1
-            WholeStageCodegen (3)
+            WholeStageCodegen (5)
               HashAggregate [cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating] [count,count]
                 Project [cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating]
                   BroadcastHashJoin [c_current_cdemo_sk,cd_demo_sk]
@@ -24,10 +24,12 @@ TakeOrderedAndProject [cd_gender,cd_marital_status,cd_education_status,cd_purcha
                                           CometScan [native_iceberg_compat] parquet spark_catalog.default.store_sales [ss_customer_sk,ss_sold_date_sk]
                                             SubqueryBroadcast [d_date_sk] #1
                                               BroadcastExchange #3
-                                                CometNativeColumnarToRow
-                                                  CometProject [d_date_sk]
-                                                    CometFilter [d_date_sk,d_year,d_moy]
-                                                      CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
+                                                WholeStageCodegen (1)
+                                                  CometColumnarToRow
+                                                    InputAdapter
+                                                      CometProject [d_date_sk]
+                                                        CometFilter [d_date_sk,d_year,d_moy]
+                                                          CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
                                           CometBroadcastExchange [d_date_sk] #4
                                             CometProject [d_date_sk]
                                               CometFilter [d_date_sk,d_year,d_moy]
@@ -54,13 +56,17 @@ TakeOrderedAndProject [cd_gender,cd_marital_status,cd_education_status,cd_purcha
                                           ReusedExchange [d_date_sk] #4
                         InputAdapter
                           BroadcastExchange #7
-                            CometNativeColumnarToRow
-                              CometProject [ca_address_sk]
-                                CometFilter [ca_address_sk,ca_state]
-                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]
+                            WholeStageCodegen (3)
+                              CometColumnarToRow
+                                InputAdapter
+                                  CometProject [ca_address_sk]
+                                    CometFilter [ca_address_sk,ca_state]
+                                      CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_address [ca_address_sk,ca_state]
                     InputAdapter
                       BroadcastExchange #8
-                        CometNativeColumnarToRow
-                          CometProject [cd_gender,cd_marital_status,cd_education_status,cd_credit_rating] [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating]
-                            CometFilter [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating]
-                              CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating]
+                        WholeStageCodegen (4)
+                          CometColumnarToRow
+                            InputAdapter
+                              CometProject [cd_gender,cd_marital_status,cd_education_status,cd_credit_rating] [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating]
+                                CometFilter [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating]
+                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.customer_demographics [cd_demo_sk,cd_gender,cd_marital_status,cd_education_status,cd_purchase_estimate,cd_credit_rating]

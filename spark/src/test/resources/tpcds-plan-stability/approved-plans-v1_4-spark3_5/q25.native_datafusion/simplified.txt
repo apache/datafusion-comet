@@ -1,10 +1,10 @@
 TakeOrderedAndProject [i_item_id,i_item_desc,s_store_id,s_store_name,store_sales_profit,store_returns_loss,catalog_sales_profit]
-  WholeStageCodegen (4)
+  WholeStageCodegen (9)
     HashAggregate [i_item_id,i_item_desc,s_store_id,s_store_name,sum,sum,sum] [sum(UnscaledValue(ss_net_profit)),sum(UnscaledValue(sr_net_loss)),sum(UnscaledValue(cs_net_profit)),store_sales_profit,store_returns_loss,catalog_sales_profit,sum,sum,sum]
-      InputAdapter
-        CometNativeColumnarToRow
+      CometColumnarToRow
+        InputAdapter
           CometColumnarExchange [i_item_id,i_item_desc,s_store_id,s_store_name] #1
-            WholeStageCodegen (3)
+            WholeStageCodegen (8)
               HashAggregate [i_item_id,i_item_desc,s_store_id,s_store_name,ss_net_profit,sr_net_loss,cs_net_profit] [sum,sum,sum,sum,sum,sum]
                 Project [ss_net_profit,sr_net_loss,cs_net_profit,s_store_id,s_store_name,i_item_id,i_item_desc]
                   BroadcastHashJoin [ss_item_sk,i_item_sk]
@@ -26,10 +26,12 @@ TakeOrderedAndProject [i_item_id,i_item_desc,s_store_id,s_store_name,store_sales
                                                   Scan parquet spark_catalog.default.store_sales [ss_item_sk,ss_customer_sk,ss_store_sk,ss_ticket_number,ss_net_profit,ss_sold_date_sk]
                                                     SubqueryBroadcast [d_date_sk] #1
                                                       BroadcastExchange #2
-                                                        CometNativeColumnarToRow
-                                                          CometProject [d_date_sk]
-                                                            CometFilter [d_date_sk,d_year,d_moy]
-                                                              CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
+                                                        WholeStageCodegen (1)
+                                                          CometColumnarToRow
+                                                            InputAdapter
+                                                              CometProject [d_date_sk]
+                                                                CometFilter [d_date_sk,d_year,d_moy]
+                                                                  CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
                                             InputAdapter
                                               BroadcastExchange #3
                                                 WholeStageCodegen (1)
@@ -39,10 +41,12 @@ TakeOrderedAndProject [i_item_id,i_item_desc,s_store_id,s_store_name,store_sales
                                                         Scan parquet spark_catalog.default.store_returns [sr_item_sk,sr_customer_sk,sr_ticket_number,sr_net_loss,sr_returned_date_sk]
                                                           SubqueryBroadcast [d_date_sk] #2
                                                             BroadcastExchange #4
-                                                              CometNativeColumnarToRow
-                                                                CometProject [d_date_sk]
-                                                                  CometFilter [d_date_sk,d_year,d_moy]
-                                                                    CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
+                                                              WholeStageCodegen (1)
+                                                                CometColumnarToRow
+                                                                  InputAdapter
+                                                                    CometProject [d_date_sk]
+                                                                      CometFilter [d_date_sk,d_year,d_moy]
+                                                                        CometNativeScan parquet spark_catalog.default.date_dim [d_date_sk,d_year,d_moy]
                                         InputAdapter
                                           BroadcastExchange #5
                                             WholeStageCodegen (2)
@@ -59,13 +63,17 @@ TakeOrderedAndProject [i_item_id,i_item_desc,s_store_id,s_store_name,store_sales
                               ReusedExchange [d_date_sk] #4
                         InputAdapter
                           BroadcastExchange #6
-                            CometNativeColumnarToRow
-                              CometProject [s_store_id] [s_store_sk,s_store_id,s_store_name]
-                                CometFilter [s_store_sk,s_store_id,s_store_name]
-                                  CometNativeScan parquet spark_catalog.default.store [s_store_sk,s_store_id,s_store_name]
+                            WholeStageCodegen (6)
+                              CometColumnarToRow
+                                InputAdapter
+                                  CometProject [s_store_id] [s_store_sk,s_store_id,s_store_name]
+                                    CometFilter [s_store_sk,s_store_id,s_store_name]
+                                      CometNativeScan parquet spark_catalog.default.store [s_store_sk,s_store_id,s_store_name]
                     InputAdapter
                       BroadcastExchange #7
-                        CometNativeColumnarToRow
-                          CometProject [i_item_id] [i_item_sk,i_item_id,i_item_desc]
-                            CometFilter [i_item_sk,i_item_id,i_item_desc]
-                              CometNativeScan parquet spark_catalog.default.item [i_item_sk,i_item_id,i_item_desc]
+                        WholeStageCodegen (7)
+                          CometColumnarToRow
+                            InputAdapter
+                              CometProject [i_item_id] [i_item_sk,i_item_id,i_item_desc]
+                                CometFilter [i_item_sk,i_item_id,i_item_desc]
+                                  CometNativeScan parquet spark_catalog.default.item [i_item_sk,i_item_id,i_item_desc]

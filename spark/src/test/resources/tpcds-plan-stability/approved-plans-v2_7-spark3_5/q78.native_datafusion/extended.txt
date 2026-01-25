@@ -1,6 +1,6 @@
 TakeOrderedAndProject
 +-  Project [COMET: Comet does not support Spark's BigDecimal rounding]
-   +- CometNativeColumnarToRow
+   +- CometColumnarToRow
       +- CometSortMergeJoin
          :- CometProject
          :  +- CometSortMergeJoin
@@ -20,7 +20,7 @@ TakeOrderedAndProject
          :     :                 :        :           +-  Scan parquet spark_catalog.default.store_sales [COMET: Native DataFusion scan does not support subqueries/dynamic pruning]
          :     :                 :        :                 +- SubqueryBroadcast
          :     :                 :        :                    +- BroadcastExchange
-         :     :                 :        :                       +- CometNativeColumnarToRow
+         :     :                 :        :                       +- CometColumnarToRow
          :     :                 :        :                          +- CometFilter
          :     :                 :        :                             +- CometNativeScan parquet spark_catalog.default.date_dim
          :     :                 :        +- CometSort

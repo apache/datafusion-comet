@@ -17,19 +17,21 @@ WholeStageCodegen (1)
                                 CometScan [native_iceberg_compat] parquet spark_catalog.default.store_returns [sr_item_sk,sr_return_quantity,sr_returned_date_sk]
                                   SubqueryBroadcast [d_date_sk] #1
                                     BroadcastExchange #2
-                                      CometNativeColumnarToRow
-                                        CometProject [d_date_sk]
-                                          CometBroadcastHashJoin [d_date_sk,d_date,d_date]
-                                            CometFilter [d_date_sk,d_date]
-                                              CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]
-                                            CometBroadcastExchange [d_date] #3
-                                              CometProject [d_date]
-                                                CometBroadcastHashJoin [d_date,d_week_seq,d_week_seq]
-                                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date,d_week_seq]
-                                                  CometBroadcastExchange [d_week_seq] #4
-                                                    CometProject [d_week_seq]
-                                                      CometFilter [d_date,d_week_seq]
-                                                        CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date,d_week_seq]
+                                      WholeStageCodegen (1)
+                                        CometColumnarToRow
+                                          InputAdapter
+                                            CometProject [d_date_sk]
+                                              CometBroadcastHashJoin [d_date_sk,d_date,d_date]
+                                                CometFilter [d_date_sk,d_date]
+                                                  CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date_sk,d_date]
+                                                CometBroadcastExchange [d_date] #3
+                                                  CometProject [d_date]
+                                                    CometBroadcastHashJoin [d_date,d_week_seq,d_week_seq]
+                                                      CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date,d_week_seq]
+                                                      CometBroadcastExchange [d_week_seq] #4
+                                                        CometProject [d_week_seq]
+                                                          CometFilter [d_date,d_week_seq]
+                                                            CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim [d_date,d_week_seq]
                               CometBroadcastExchange [i_item_sk,i_item_id] #5
                                 CometProject [i_item_id] [i_item_sk,i_item_id]
                                   CometFilter [i_item_sk,i_item_id]

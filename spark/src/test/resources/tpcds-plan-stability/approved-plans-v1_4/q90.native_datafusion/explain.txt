@@ -1,7 +1,7 @@
 == Physical Plan ==
 * Project (47)
 +- * BroadcastNestedLoopJoin Inner BuildRight (46)
-   :- CometNativeColumnarToRow (25)
+   :- * CometColumnarToRow (25)
    :  +- CometHashAggregate (24)
    :     +- CometExchange (23)
    :        +- CometHashAggregate (22)
@@ -27,7 +27,7 @@
    :                       +- CometFilter (17)
    :                          +- CometNativeScan parquet spark_catalog.default.web_page (16)
    +- BroadcastExchange (45)
-      +- CometNativeColumnarToRow (44)
+      +- * CometColumnarToRow (44)
          +- CometHashAggregate (43)
             +- CometExchange (42)
                +- CometHashAggregate (41)
@@ -160,7 +160,7 @@ Input [1]: [count#11]
 Keys: []
 Functions [1]: [count(1)]
 
-(25) CometNativeColumnarToRow
+(25) CometColumnarToRow [codegen id : 2]
 Input [1]: [amc#12]
 
 (26) CometNativeScan parquet spark_catalog.default.web_sales
@@ -243,18 +243,18 @@ Input [1]: [count#21]
 Keys: []
 Functions [1]: [count(1)]
 
-(44) CometNativeColumnarToRow
+(44) CometColumnarToRow [codegen id : 1]
 Input [1]: [pmc#22]
 
 (45) BroadcastExchange
 Input [1]: [pmc#22]
 Arguments: IdentityBroadcastMode, [plan_id=3]
 
-(46) BroadcastNestedLoopJoin [codegen id : 1]
+(46) BroadcastNestedLoopJoin [codegen id : 2]
 Join type: Inner
 Join condition: None
 
-(47) Project [codegen id : 1]
+(47) Project [codegen id : 2]
 Output [1]: [(cast(amc#12 as decimal(15,4)) / cast(pmc#22 as decimal(15,4))) AS am_pm_ratio#23]
 Input [2]: [amc#12, pmc#22]
 

@@ -491,7 +491,7 @@ Input [3]: [c_last_name#33, c_first_name#32, sales#51]
 
 Subquery:1 Hosting operator id = 1 Hosting Expression = cs_sold_date_sk#5 IN dynamicpruning#6
 BroadcastExchange (93)
-+- CometNativeColumnarToRow (92)
++- * CometColumnarToRow (92)
    +- CometProject (91)
       +- CometFilter (90)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (89)
@@ -512,7 +512,7 @@ Condition : ((((isnotnull(d_year#35) AND isnotnull(d_moy#36)) AND (d_year#35 = 2
 Input [3]: [d_date_sk#34, d_year#35, d_moy#36]
 Arguments: [d_date_sk#34], [d_date_sk#34]
 
-(92) CometNativeColumnarToRow
+(92) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#34]
 
 (93) BroadcastExchange
@@ -521,7 +521,7 @@ Arguments: HashedRelationBroadcastMode(List(cast(input[0, int, true] as bigint))
 
 Subquery:2 Hosting operator id = 3 Hosting Expression = ss_sold_date_sk#8 IN dynamicpruning#9
 BroadcastExchange (98)
-+- CometNativeColumnarToRow (97)
++- * CometColumnarToRow (97)
    +- CometProject (96)
       +- CometFilter (95)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (94)
@@ -542,7 +542,7 @@ Condition : (d_year#12 IN (2000,2001,2002,2003) AND isnotnull(d_date_sk#10))
 Input [3]: [d_date_sk#10, d_date#11, d_year#12]
 Arguments: [d_date_sk#10, d_date#11], [d_date_sk#10, d_date#11]
 
-(97) CometNativeColumnarToRow
+(97) CometColumnarToRow [codegen id : 1]
 Input [2]: [d_date_sk#10, d_date#11]
 
 (98) BroadcastExchange
@@ -655,7 +655,7 @@ Input [1]: [tpcds_cmax#65]
 
 Subquery:4 Hosting operator id = 99 Hosting Expression = ss_sold_date_sk#56 IN dynamicpruning#57
 BroadcastExchange (121)
-+- CometNativeColumnarToRow (120)
++- * CometColumnarToRow (120)
    +- CometProject (119)
       +- CometFilter (118)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (117)
@@ -676,7 +676,7 @@ Condition : (d_year#60 IN (2000,2001,2002,2003) AND isnotnull(d_date_sk#59))
 Input [2]: [d_date_sk#59, d_year#60]
 Arguments: [d_date_sk#59], [d_date_sk#59]
 
-(120) CometNativeColumnarToRow
+(120) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#59]
 
 (121) BroadcastExchange

@@ -249,7 +249,7 @@ Input [4]: [Call_Center#28, Call_Center_Name#29, Manager#30, Returns_Loss#31]
 
 Subquery:1 Hosting operator id = 4 Hosting Expression = cr_returned_date_sk#9 IN dynamicpruning#10
 BroadcastExchange (48)
-+- CometNativeColumnarToRow (47)
++- * CometColumnarToRow (47)
    +- CometProject (46)
       +- CometFilter (45)
          +- CometScan [native_iceberg_compat] parquet spark_catalog.default.date_dim (44)
@@ -270,7 +270,7 @@ Condition : ((((isnotnull(d_year#12) AND isnotnull(d_moy#13)) AND (d_year#12 = 1
 Input [3]: [d_date_sk#11, d_year#12, d_moy#13]
 Arguments: [d_date_sk#11], [d_date_sk#11]
 
-(47) CometNativeColumnarToRow
+(47) CometColumnarToRow [codegen id : 1]
 Input [1]: [d_date_sk#11]
 
 (48) BroadcastExchange
