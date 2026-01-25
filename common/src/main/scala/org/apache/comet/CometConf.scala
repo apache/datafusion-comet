@@ -113,8 +113,9 @@ object CometConf extends ShimCometConf {
 
   // Deprecated: native_comet uses mutable buffers incompatible with Arrow FFI best practices
   // and does not support complex types. Use native_iceberg_compat or auto instead.
+  // This will be removed in a future release.
   // See: https://github.com/apache/datafusion-comet/issues/2186
-  @deprecated("Use SCAN_AUTO instead", "0.9.0")
+  @deprecated("Use SCAN_AUTO instead. native_comet will be removed in a future release.", "0.9.0")
   val SCAN_NATIVE_COMET = "native_comet"
   val SCAN_NATIVE_DATAFUSION = "native_datafusion"
   val SCAN_NATIVE_ICEBERG_COMPAT = "native_iceberg_compat"
@@ -125,9 +126,9 @@ object CometConf extends ShimCometConf {
     .doc(
       s"The implementation of Comet Native Scan to use. Available modes are `$SCAN_NATIVE_COMET`," +
         s"`$SCAN_NATIVE_DATAFUSION`, and `$SCAN_NATIVE_ICEBERG_COMPAT`. " +
-        s"`$SCAN_NATIVE_COMET` (DEPRECATED) is for the original Comet native scan which " +
-        "uses a jvm based parquet file reader and native column decoding. " +
-        "Supports simple types only. " +
+        s"`$SCAN_NATIVE_COMET` (DEPRECATED - will be removed in a future release) is for the " +
+        "original Comet native scan which uses a jvm based parquet file reader and native " +
+        "column decoding. Supports simple types only. " +
         s"`$SCAN_NATIVE_DATAFUSION` is a fully native implementation of scan based on " +
         "DataFusion. " +
         s"`$SCAN_NATIVE_ICEBERG_COMPAT` is the recommended native implementation that " +
