@@ -539,9 +539,7 @@ impl ExecutionPlan for ParquetWriterExec {
         let props = WriterProperties::builder()
             .set_compression(compression)
             .build();
-
-        let object_store_options = self.object_store_options.clone();
-
+        
         // Clone schema for use in async closure
         let schema_for_write = Arc::clone(&output_schema);
 
@@ -638,6 +636,8 @@ impl ExecutionPlan for ParquetWriterExec {
                                 &full_path_part_file,
                                 Arc::clone(&write_schema),
                                 props.clone(),
+                                runtime_env.clone(),
+                                &HashMap::new(),
                             )?;
                             writers.insert(partition_path.clone(), writer);
                         }
@@ -686,7 +686,8 @@ impl ExecutionPlan for ParquetWriterExec {
                 format!("{}/part-{:05}.parquet", work_dir, self.partition_id)
             };
             let mut writer =
-                Self::create_arrow_writer(&part_file, Arc::clone(&output_schema), props)?;
+                Self::create_arrow_writer(&part_file, Arc::clone(&output_schema), props,runtime_env,
+                                          &HashMap::new(),)?;
 
             // Write batches
             let write_task = async move {
