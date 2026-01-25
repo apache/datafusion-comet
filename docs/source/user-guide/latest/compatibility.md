@@ -73,17 +73,16 @@ should not be used in production. The feature will be enabled in a future releas
 
 Cast operations in Comet fall into three levels of support:
 
-- **Compatible**: The results match Apache Spark
-- **Incompatible**: The results may match Apache Spark for some inputs, but there are known issues where some inputs
+- **C (Compatible)**: The results match Apache Spark
+- **I (Incompatible)**: The results may match Apache Spark for some inputs, but there are known issues where some inputs
   will result in incorrect results or exceptions. The query stage will fall back to Spark by default. Setting
   `spark.comet.expression.Cast.allowIncompatible=true` will allow all incompatible casts to run natively in Comet, but this is not
   recommended for production use.
-- **Unsupported**: Comet does not provide a native version of this cast expression and the query stage will fall back to
+- **U (Unsupported)**: Comet does not provide a native version of this cast expression and the query stage will fall back to
   Spark.
+- **N/A**: Spark does not support this cast.
 
-### Compatible Casts
-
-The following cast operations are generally compatible with Spark except for the differences noted here.
+### Legacy Mode
 
 <!--BEGIN:CAST_LEGACY_TABLE-->
 <!--END:CAST_LEGACY_TABLE-->
