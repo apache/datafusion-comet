@@ -296,6 +296,17 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
 
+  val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether to enable native columnar to row conversion. When enabled, Comet will use " +
+          "native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead " +
+          "of the JVM implementation. This can improve performance for queries that need to " +
+          "convert between columnar and row formats. This is an experimental feature.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .category(CATEGORY_ENABLE_EXEC)
@@ -374,6 +385,36 @@ object CometConf extends ShimCometConf {
       .doc("Whether to enable range partitioning for Comet native shuffle.")
       .booleanConf
       .createWithDefault(true)
+
+  val COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.native.shuffle.partitioning.roundrobin.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Whether to enable round robin partitioning for Comet native shuffle. " +
+          "This is disabled by default because Comet's round-robin produces different " +
+          "partition assignments than Spark. Spark sorts rows by their binary UnsafeRow " +
+          "representation before assigning partitions, but Comet uses Arrow format which " +
+          "has a different binary layout. Instead, Comet implements round-robin as hash " +
+          "partitioning on all columns, which achieves the same goals: even distribution, " +
+          "deterministic output (for fault tolerance), and no semantic grouping. " +
+          "Sorted output will be identical to Spark, but unsorted row ordering may differ.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS: ConfigEntry[Int] =
+    conf("spark.comet.native.shuffle.partitioning.roundrobin.maxHashColumns")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "The maximum number of columns to hash for round robin partitioning. " +
+          "When set to 0 (the default), all columns are hashed. " +
+          "When set to a positive value, only the first N columns are used for hashing, " +
+          "which can improve performance for wide tables while still providing " +
+          "reasonable distribution.")
+      .intConf
+      .checkValue(
+        v => v >= 0,
+        "The maximum number of columns to hash for round robin partitioning must be non-negative.")
+      .createWithDefault(0)
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
@@ -725,13 +766,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_SCAN_ALLOW_INCOMPATIBLE: ConfigEntry[Boolean] =
-    conf("spark.comet.scan.allowIncompatible")
+  val COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.unsignedSmallIntSafetyCheck")
       .category(CATEGORY_SCAN)
-      .doc("Some Comet scan implementations are not currently fully compatible with Spark for " +
-        s"all datatypes. Set this config to true to allow them anyway. $COMPAT_GUIDE.")
+      .doc(
+        "Parquet files may contain unsigned 8-bit integers (UINT_8) which Spark maps to " +
+          "ShortType. When this config is true (default), Comet falls back to Spark for " +
+          "ShortType columns because we cannot distinguish signed INT16 (safe) from unsigned " +
+          "UINT_8 (may produce different results). Set to false to allow native execution of " +
+          "ShortType columns if you know your data does not contain unsigned UINT_8 columns " +
+          s"from improperly encoded Parquet files. $COMPAT_GUIDE.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_EXEC_STRICT_FLOATING_POINT: ConfigEntry[Boolean] =
     conf("spark.comet.exec.strictFloatingPoint")
