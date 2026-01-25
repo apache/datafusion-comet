@@ -34,7 +34,7 @@ python3 generate-versions.py
 # This runs GenerateDocs against the temp copy, not source files
 echo "Generating dynamic documentation content..."
 cd ..
-./mvnw -q compile -pl spark -DskipTests -am
+./mvnw -q compile -DskipTests
 ./mvnw -q exec:java -pl spark \
   -Dexec.mainClass=org.apache.comet.GenerateDocs \
   -Dexec.arguments="$(pwd)/docs/temp/user-guide/latest/" \
