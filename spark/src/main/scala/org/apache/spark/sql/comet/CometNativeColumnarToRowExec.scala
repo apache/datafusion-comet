@@ -112,7 +112,18 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
             .flatMap { batch =>
               numInputBatches += 1
               numOutputRows += batch.numRows()
-              converter.convert(batch)
+              val result = converter.convert(batch)
+              // Wrap iterator to close batch after consumption
+              new Iterator[InternalRow] {
+                override def hasNext: Boolean = {
+                  val hasMore = result.hasNext
+                  if (!hasMore) {
+                    batch.close()
+                  }
+                  hasMore
+                }
+                override def next(): InternalRow = result.next()
+              }
             }
 
           val mode = cometBroadcastExchange.get.mode
@@ -200,7 +211,17 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
         val result = converter.convert(batch)
         convertTime += System.nanoTime() - startTime
 
-        result
+        // Wrap iterator to close batch after consumption
+        new Iterator[InternalRow] {
+          override def hasNext: Boolean = {
+            val hasMore = result.hasNext
+            if (!hasMore) {
+              batch.close()
+            }
+            hasMore
+          }
+          override def next(): InternalRow = result.next()
+        }
       }
     }
   }
