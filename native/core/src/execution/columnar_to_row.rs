@@ -930,7 +930,7 @@ impl ColumnarToRowContext {
         // Pre-downcast all arrays to avoid type dispatch in inner loop
         let typed_arrays: Vec<TypedArray> = arrays
             .iter()
-            .map(|arr| TypedArray::from_array(arr))
+            .map(TypedArray::from_array)
             .collect::<CometResult<Vec<_>>>()?;
 
         // Pre-compute variable-length column indices (once per batch, not per row)
