@@ -303,7 +303,7 @@ object CometConf extends ShimCometConf {
         "Whether to enable native columnar to row conversion. When enabled, Comet will use " +
           "native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead " +
           "of the JVM implementation. This can improve performance for queries that need to " +
-          "convert between columnar and row formats.")
+          "convert between columnar and row formats. This is an experimental feature.")
       .booleanConf
       .createWithDefault(false)
 
@@ -385,6 +385,36 @@ object CometConf extends ShimCometConf {
       .doc("Whether to enable range partitioning for Comet native shuffle.")
       .booleanConf
       .createWithDefault(true)
+
+  val COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.native.shuffle.partitioning.roundrobin.enabled")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Whether to enable round robin partitioning for Comet native shuffle. " +
+          "This is disabled by default because Comet's round-robin produces different " +
+          "partition assignments than Spark. Spark sorts rows by their binary UnsafeRow " +
+          "representation before assigning partitions, but Comet uses Arrow format which " +
+          "has a different binary layout. Instead, Comet implements round-robin as hash " +
+          "partitioning on all columns, which achieves the same goals: even distribution, " +
+          "deterministic output (for fault tolerance), and no semantic grouping. " +
+          "Sorted output will be identical to Spark, but unsorted row ordering may differ.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS: ConfigEntry[Int] =
+    conf("spark.comet.native.shuffle.partitioning.roundrobin.maxHashColumns")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "The maximum number of columns to hash for round robin partitioning. " +
+          "When set to 0 (the default), all columns are hashed. " +
+          "When set to a positive value, only the first N columns are used for hashing, " +
+          "which can improve performance for wide tables while still providing " +
+          "reasonable distribution.")
+      .intConf
+      .checkValue(
+        v => v >= 0,
+        "The maximum number of columns to hash for round robin partitioning must be non-negative.")
+      .createWithDefault(0)
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
