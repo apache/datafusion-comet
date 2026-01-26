@@ -26,6 +26,7 @@ use comet::execution::shuffle::row::{
 };
 use comet::execution::shuffle::CompressionCodec;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::sync::Arc;
 use tempfile::Builder;
 
 const BATCH_SIZE: usize = 5000;
@@ -459,6 +460,132 @@ fn benchmark_deeply_nested_struct_conversion(c: &mut Criterion) {
     group.finish();
 }
 
+/// Create a schema with a list column: List<Int64>
+fn make_list_schema(element_type: DataType) -> DataType {
+    DataType::List(Arc::new(Field::new("item", element_type, true)))
+}
+
+/// Calculate row size for a list with the given number of elements.
+/// UnsafeRow layout for list: [null bits] [list pointer (offset, size)]
+/// List data: [num_elements (8 bytes)] [null bits] [element data]
+fn get_list_row_size(num_elements: usize, element_size: usize) -> usize {
+    // Top-level row has 1 column (the list)
+    let top_level_bitset_width = SparkUnsafeRow::get_row_bitset_width(1);
+    let list_pointer_size = 8;
+
+    // List header: num_elements (8 bytes) + null bitset
+    let list_null_bitset = ((num_elements + 63) / 64) * 8;
+    let list_header = 8 + list_null_bitset;
+    let list_data_size = num_elements * element_size;
+
+    top_level_bitset_width + list_pointer_size + list_header + list_data_size
+}
+
+struct ListRowData {
+    data: Vec<u8>,
+}
+
+impl ListRowData {
+    fn new_int64_list(num_elements: usize) -> Self {
+        let row_size = get_list_row_size(num_elements, 8);
+        let mut data = vec![0u8; row_size];
+
+        let top_level_bitset_width = SparkUnsafeRow::get_row_bitset_width(1);
+        let list_null_bitset = ((num_elements + 63) / 64) * 8;
+
+        // List starts after top-level header + pointer
+        let list_offset = top_level_bitset_width + 8;
+        let list_size = 8 + list_null_bitset + num_elements * 8;
+
+        // Write list pointer (offset in upper 32 bits, size in lower 32 bits)
+        let offset_and_size = ((list_offset as i64) << 32) | (list_size as i64);
+        data[top_level_bitset_width..top_level_bitset_width + 8]
+            .copy_from_slice(&offset_and_size.to_le_bytes());
+
+        // Write number of elements at list start
+        data[list_offset..list_offset + 8].copy_from_slice(&(num_elements as i64).to_le_bytes());
+
+        // Fill list with data (after header)
+        let data_start = list_offset + 8 + list_null_bitset;
+        for i in 0..num_elements {
+            let value_offset = data_start + i * 8;
+            let value = (i as i64) * 100;
+            data[value_offset..value_offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+
+        ListRowData { data }
+    }
+
+    fn to_spark_row(&self, spark_row: &mut SparkUnsafeRow) {
+        spark_row.point_to_slice(&self.data);
+    }
+}
+
+fn benchmark_list_conversion(c: &mut Criterion) {
+    let mut group = c.benchmark_group("list_conversion");
+
+    // Test with different list sizes and row counts
+    for num_elements in [10, 100] {
+        for num_rows in [1000, 10000] {
+            let schema = vec![make_list_schema(DataType::Int64)];
+
+            // Create row data - each row has a list with num_elements items
+            let rows: Vec<ListRowData> = (0..num_rows)
+                .map(|_| ListRowData::new_int64_list(num_elements))
+                .collect();
+
+            let spark_rows: Vec<SparkUnsafeRow> = rows
+                .iter()
+                .map(|row_data| {
+                    let mut spark_row = SparkUnsafeRow::new_with_num_fields(1);
+                    row_data.to_spark_row(&mut spark_row);
+                    spark_row.set_not_null_at(0);
+                    spark_row
+                })
+                .collect();
+
+            let mut row_addresses: Vec<i64> =
+                spark_rows.iter().map(|row| row.get_row_addr()).collect();
+            let mut row_sizes: Vec<i32> = spark_rows.iter().map(|row| row.get_row_size()).collect();
+
+            let row_address_ptr = row_addresses.as_mut_ptr();
+            let row_size_ptr = row_sizes.as_mut_ptr();
+
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("elements_{}", num_elements),
+                    format!("rows_{}", num_rows),
+                ),
+                &(num_rows, &schema),
+                |b, (num_rows, schema)| {
+                    b.iter(|| {
+                        let tempfile = Builder::new().tempfile().unwrap();
+
+                        process_sorted_row_partition(
+                            *num_rows,
+                            BATCH_SIZE,
+                            row_address_ptr,
+                            row_size_ptr,
+                            schema,
+                            tempfile.path().to_str().unwrap().to_string(),
+                            1.0,
+                            false,
+                            0,
+                            None,
+                            &CompressionCodec::Zstd(1),
+                        )
+                        .unwrap();
+                    });
+                },
+            );
+
+            std::mem::drop(spark_rows);
+        }
+    }
+
+    group.finish();
+}
+
 fn config() -> Criterion {
     Criterion::default()
 }
@@ -466,6 +593,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = benchmark_struct_conversion, benchmark_nested_struct_conversion, benchmark_deeply_nested_struct_conversion
+    targets = benchmark_struct_conversion, benchmark_nested_struct_conversion, benchmark_deeply_nested_struct_conversion, benchmark_list_conversion
 }
 criterion_main!(benches);
