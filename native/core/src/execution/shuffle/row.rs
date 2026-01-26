@@ -748,7 +748,7 @@ fn append_list_column_batch(
                         .values()
                         .as_any_mut()
                         .downcast_mut::<$builder_type>()
-                        .unwrap();
+                        .expect(stringify!($builder_type));
                     array.$append_fn::<true>(values_builder);
                     list_builder.append(true);
                 }
@@ -836,7 +836,7 @@ fn append_map_column_batch(
                             .keys()
                             .as_any_mut()
                             .downcast_mut::<$key_builder>()
-                            .unwrap();
+                            .expect(stringify!($key_builder));
                         map.keys.$key_append::<false>(keys_builder);
                     }
                     // Process values in a scope so borrow ends
@@ -845,7 +845,7 @@ fn append_map_column_batch(
                             .values()
                             .as_any_mut()
                             .downcast_mut::<$val_builder>()
-                            .unwrap();
+                            .expect(stringify!($val_builder));
                         map.values.$val_append::<true>(values_builder);
                     }
                     map_builder.append(true)?;
