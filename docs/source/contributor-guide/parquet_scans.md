@@ -26,11 +26,11 @@ settings. Most users should not need to change this setting. However, it is poss
 a particular implementation for all scan operations by setting this configuration property to one of the following
 implementations.
 
-| Implementation          | Description                                                                                                                                                                          |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `native_comet`          | This implementation provides strong compatibility with Spark but does not support complex types. This is the original scan implementation in Comet and may eventually be removed.    |
-| `native_iceberg_compat` | This implementation delegates to DataFusion's `DataSourceExec` but uses a hybrid approach of JVM and native code. This scan is designed to be integrated with Iceberg in the future. |
-| `native_datafusion`     | This experimental implementation delegates to DataFusion's `DataSourceExec` for full native execution. There are known compatibility issues when using this scan.                    |
+| Implementation          | Description                                                                                                                                                                                                 |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `native_comet`          | **Deprecated.** This implementation provides strong compatibility with Spark but does not support complex types. This is the original scan implementation in Comet and will be removed in a future release. |
+| `native_iceberg_compat` | This implementation delegates to DataFusion's `DataSourceExec` but uses a hybrid approach of JVM and native code. This scan is designed to be integrated with Iceberg in the future.                        |
+| `native_datafusion`     | This experimental implementation delegates to DataFusion's `DataSourceExec` for full native execution. There are known compatibility issues when using this scan.                                           |
 
 The `native_datafusion` and `native_iceberg_compat` scans provide the following benefits over the `native_comet`
 implementation:
@@ -71,7 +71,9 @@ The `native_datafusion` scan has some additional limitations:
 
 There are some differences in S3 support between the scan implementations.
 
-### `native_comet`
+### `native_comet` (Deprecated)
+
+> **Note:** The `native_comet` scan implementation is deprecated and will be removed in a future release.
 
 The `native_comet` Parquet scan implementation reads data from S3 using the [Hadoop-AWS module](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html), which
 is identical to the approach commonly used with vanilla Spark. AWS credential configuration and other Hadoop S3A
