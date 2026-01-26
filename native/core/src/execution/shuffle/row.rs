@@ -277,6 +277,9 @@ impl SparkUnsafeRow {
     /// Returns true if the null bit at the given index of the row is set.
     #[inline]
     pub(crate) fn is_null_at(&self, index: usize) -> bool {
+        // SAFETY: row_addr points to valid Spark UnsafeRow data with at least
+        // ceil(num_fields/64) * 8 bytes of null bitset. The caller ensures index < num_fields.
+        // word_offset is within the bitset region since (index >> 6) << 3 < bitset size.
         unsafe {
             let mask: i64 = 1i64 << (index & 0x3f);
             let word_offset = (self.row_addr + (((index >> 6) as i64) << 3)) as *const i64;
@@ -287,6 +290,10 @@ impl SparkUnsafeRow {
 
     /// Unsets the null bit at the given index of the row, i.e., set the bit to 0 (not null).
     pub fn set_not_null_at(&mut self, index: usize) {
+        // SAFETY: row_addr points to valid Spark UnsafeRow data with at least
+        // ceil(num_fields/64) * 8 bytes of null bitset. The caller ensures index < num_fields.
+        // word_offset is within the bitset region since (index >> 6) << 3 < bitset size.
+        // Writing is safe because we have mutable access and the memory is owned by the JVM.
         unsafe {
             let mask: i64 = 1i64 << (index & 0x3f);
             let word_offset = (self.row_addr + (((index >> 6) as i64) << 3)) as *mut i64;
@@ -716,6 +723,8 @@ fn append_list_column_batch(
     macro_rules! process_primitive_lists {
         ($builder_type:ty, $append_fn:ident) => {{
             for i in row_start..row_end {
+                // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
+                // are valid for indices [row_start, row_end) as provided by the JVM
                 let row_addr = unsafe { *row_addresses_ptr.add(i) };
                 let row_size = unsafe { *row_sizes_ptr.add(i) };
                 row.point_to(row_addr, row_size);
@@ -768,6 +777,8 @@ fn append_list_column_batch(
         // For complex element types, fall back to per-row dispatch
         _ => {
             for i in row_start..row_end {
+                // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
+                // are valid for indices [row_start, row_end) as provided by the JVM
                 let row_addr = unsafe { *row_addresses_ptr.add(i) };
                 let row_size = unsafe { *row_sizes_ptr.add(i) };
                 row.point_to(row_addr, row_size);
@@ -807,6 +818,8 @@ fn append_map_column_batch(
     macro_rules! process_primitive_maps {
         ($key_builder:ty, $key_append:ident, $val_builder:ty, $val_append:ident) => {{
             for i in row_start..row_end {
+                // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
+                // are valid for indices [row_start, row_end) as provided by the JVM
                 let row_addr = unsafe { *row_addresses_ptr.add(i) };
                 let row_size = unsafe { *row_sizes_ptr.add(i) };
                 row.point_to(row_addr, row_size);
@@ -880,6 +893,8 @@ fn append_map_column_batch(
         // For other types, fall back to per-row dispatch
         _ => {
             for i in row_start..row_end {
+                // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
+                // are valid for indices [row_start, row_end) as provided by the JVM
                 let row_addr = unsafe { *row_addresses_ptr.add(i) };
                 let row_size = unsafe { *row_sizes_ptr.add(i) };
                 row.point_to(row_addr, row_size);
@@ -918,6 +933,8 @@ fn append_struct_fields_field_major(
     let mut struct_is_null = Vec::with_capacity(num_rows);
 
     for i in row_start..row_end {
+        // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
+        // are valid for indices [row_start, row_end) as provided by the JVM
         let row_addr = unsafe { *row_addresses_ptr.add(i) };
         let row_size = unsafe { *row_sizes_ptr.add(i) };
         parent_row.point_to(row_addr, row_size);
@@ -942,6 +959,8 @@ fn append_struct_fields_field_major(
                     // Struct is null, field is also null
                     field_builder.append_null();
                 } else {
+                    // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
+                    // are valid for indices [row_start, row_end) as provided by the JVM
                     let row_addr = unsafe { *row_addresses_ptr.add(i) };
                     let row_size = unsafe { *row_sizes_ptr.add(i) };
                     parent_row.point_to(row_addr, row_size);
@@ -1006,6 +1025,8 @@ fn append_struct_fields_field_major(
                     if struct_is_null[row_idx] {
                         field_builder.append_null();
                     } else {
+                        // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
+                        // are valid for indices [row_start, row_end) as provided by the JVM
                         let row_addr = unsafe { *row_addresses_ptr.add(i) };
                         let row_size = unsafe { *row_sizes_ptr.add(i) };
                         parent_row.point_to(row_addr, row_size);
@@ -1026,6 +1047,8 @@ fn append_struct_fields_field_major(
                     if struct_is_null[row_idx] {
                         field_builder.append_null();
                     } else {
+                        // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
+                        // are valid for indices [row_start, row_end) as provided by the JVM
                         let row_addr = unsafe { *row_addresses_ptr.add(i) };
                         let row_size = unsafe { *row_sizes_ptr.add(i) };
                         parent_row.point_to(row_addr, row_size);
@@ -1048,6 +1071,8 @@ fn append_struct_fields_field_major(
                     if struct_is_null[row_idx] {
                         field_builder.append_null();
                     } else {
+                        // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
+                        // are valid for indices [row_start, row_end) as provided by the JVM
                         let row_addr = unsafe { *row_addresses_ptr.add(i) };
                         let row_size = unsafe { *row_sizes_ptr.add(i) };
                         parent_row.point_to(row_addr, row_size);
@@ -1078,6 +1103,8 @@ fn append_struct_fields_field_major(
                         nested_addresses.push(0);
                         nested_sizes.push(0);
                     } else {
+                        // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
+                        // are valid for indices [row_start, row_end) as provided by the JVM
                         let row_addr = unsafe { *row_addresses_ptr.add(i) };
                         let row_size = unsafe { *row_sizes_ptr.add(i) };
                         parent_row.point_to(row_addr, row_size);
@@ -1116,6 +1143,8 @@ fn append_struct_fields_field_major(
                         let null_row = SparkUnsafeRow::default();
                         append_field(dt, struct_builder, &null_row, field_idx)?;
                     } else {
+                        // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
+                        // are valid for indices [row_start, row_end) as provided by the JVM
                         let row_addr = unsafe { *row_addresses_ptr.add(i) };
                         let row_size = unsafe { *row_sizes_ptr.add(i) };
                         parent_row.point_to(row_addr, row_size);
