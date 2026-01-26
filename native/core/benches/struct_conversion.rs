@@ -586,6 +586,169 @@ fn benchmark_list_conversion(c: &mut Criterion) {
     group.finish();
 }
 
+/// Create a schema with a map column: Map<Int64, Int64>
+fn make_map_schema() -> DataType {
+    // Map is represented as List<Struct<key, value>> in Arrow
+    let key_field = Field::new("key", DataType::Int64, false);
+    let value_field = Field::new("value", DataType::Int64, true);
+    let entries_field = Field::new(
+        "entries",
+        DataType::Struct(Fields::from(vec![key_field, value_field])),
+        false,
+    );
+    DataType::Map(Arc::new(entries_field), false)
+}
+
+/// Calculate row size for a map with the given number of entries.
+/// UnsafeRow layout for map: [null bits] [map pointer (offset, size)]
+/// Map data: [key_array_size (8 bytes)] [key_array] [value_array]
+/// Array format: [num_elements (8 bytes)] [null bits] [element data]
+fn get_map_row_size(num_entries: usize) -> usize {
+    // Top-level row has 1 column (the map)
+    let top_level_bitset_width = SparkUnsafeRow::get_row_bitset_width(1);
+    let map_pointer_size = 8;
+
+    // Key array: num_elements (8) + null bitset + data
+    let key_null_bitset = ((num_entries + 63) / 64) * 8;
+    let key_array_size = 8 + key_null_bitset + num_entries * 8;
+
+    // Value array: num_elements (8) + null bitset + data
+    let value_null_bitset = ((num_entries + 63) / 64) * 8;
+    let value_array_size = 8 + value_null_bitset + num_entries * 8;
+
+    // Map header (key array size) + key array + value array
+    let map_size = 8 + key_array_size + value_array_size;
+
+    top_level_bitset_width + map_pointer_size + map_size
+}
+
+struct MapRowData {
+    data: Vec<u8>,
+}
+
+impl MapRowData {
+    fn new_int64_map(num_entries: usize) -> Self {
+        let row_size = get_map_row_size(num_entries);
+        let mut data = vec![0u8; row_size];
+
+        let top_level_bitset_width = SparkUnsafeRow::get_row_bitset_width(1);
+        let key_null_bitset = ((num_entries + 63) / 64) * 8;
+        let value_null_bitset = ((num_entries + 63) / 64) * 8;
+
+        let key_array_size = 8 + key_null_bitset + num_entries * 8;
+        let value_array_size = 8 + value_null_bitset + num_entries * 8;
+        let map_size = 8 + key_array_size + value_array_size;
+
+        // Map starts after top-level header + pointer
+        let map_offset = top_level_bitset_width + 8;
+
+        // Write map pointer (offset in upper 32 bits, size in lower 32 bits)
+        let offset_and_size = ((map_offset as i64) << 32) | (map_size as i64);
+        data[top_level_bitset_width..top_level_bitset_width + 8]
+            .copy_from_slice(&offset_and_size.to_le_bytes());
+
+        // Write key array size at map start
+        data[map_offset..map_offset + 8].copy_from_slice(&(key_array_size as i64).to_le_bytes());
+
+        // Key array starts after map header
+        let key_array_offset = map_offset + 8;
+        // Write number of elements
+        data[key_array_offset..key_array_offset + 8]
+            .copy_from_slice(&(num_entries as i64).to_le_bytes());
+        // Fill key data (after header)
+        let key_data_start = key_array_offset + 8 + key_null_bitset;
+        for i in 0..num_entries {
+            let value_offset = key_data_start + i * 8;
+            let value = i as i64;
+            data[value_offset..value_offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+
+        // Value array starts after key array
+        let value_array_offset = key_array_offset + key_array_size;
+        // Write number of elements
+        data[value_array_offset..value_array_offset + 8]
+            .copy_from_slice(&(num_entries as i64).to_le_bytes());
+        // Fill value data (after header)
+        let value_data_start = value_array_offset + 8 + value_null_bitset;
+        for i in 0..num_entries {
+            let value_offset = value_data_start + i * 8;
+            let value = (i as i64) * 100;
+            data[value_offset..value_offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+
+        MapRowData { data }
+    }
+
+    fn to_spark_row(&self, spark_row: &mut SparkUnsafeRow) {
+        spark_row.point_to_slice(&self.data);
+    }
+}
+
+fn benchmark_map_conversion(c: &mut Criterion) {
+    let mut group = c.benchmark_group("map_conversion");
+
+    // Test with different map sizes and row counts
+    for num_entries in [10, 100] {
+        for num_rows in [1000, 10000] {
+            let schema = vec![make_map_schema()];
+
+            // Create row data - each row has a map with num_entries items
+            let rows: Vec<MapRowData> = (0..num_rows)
+                .map(|_| MapRowData::new_int64_map(num_entries))
+                .collect();
+
+            let spark_rows: Vec<SparkUnsafeRow> = rows
+                .iter()
+                .map(|row_data| {
+                    let mut spark_row = SparkUnsafeRow::new_with_num_fields(1);
+                    row_data.to_spark_row(&mut spark_row);
+                    spark_row.set_not_null_at(0);
+                    spark_row
+                })
+                .collect();
+
+            let mut row_addresses: Vec<i64> =
+                spark_rows.iter().map(|row| row.get_row_addr()).collect();
+            let mut row_sizes: Vec<i32> = spark_rows.iter().map(|row| row.get_row_size()).collect();
+
+            let row_address_ptr = row_addresses.as_mut_ptr();
+            let row_size_ptr = row_sizes.as_mut_ptr();
+
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("entries_{}", num_entries),
+                    format!("rows_{}", num_rows),
+                ),
+                &(num_rows, &schema),
+                |b, (num_rows, schema)| {
+                    b.iter(|| {
+                        let tempfile = Builder::new().tempfile().unwrap();
+
+                        process_sorted_row_partition(
+                            *num_rows,
+                            BATCH_SIZE,
+                            row_address_ptr,
+                            row_size_ptr,
+                            schema,
+                            tempfile.path().to_str().unwrap().to_string(),
+                            1.0,
+                            false,
+                            0,
+                            None,
+                            &CompressionCodec::Zstd(1),
+                        )
+                        .unwrap();
+                    });
+                },
+            );
+
+            std::mem::drop(spark_rows);
+        }
+    }
+
+    group.finish();
+}
+
 fn config() -> Criterion {
     Criterion::default()
 }
@@ -593,6 +756,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = benchmark_struct_conversion, benchmark_nested_struct_conversion, benchmark_deeply_nested_struct_conversion, benchmark_list_conversion
+    targets = benchmark_struct_conversion, benchmark_nested_struct_conversion, benchmark_deeply_nested_struct_conversion, benchmark_list_conversion, benchmark_map_conversion
 }
 criterion_main!(benches);
