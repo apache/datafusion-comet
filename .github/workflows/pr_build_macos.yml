@@ -225,7 +225,7 @@ jobs:
           protoc-architecture: aarch_64
 
       - name: Download native library
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: native-lib-macos
           # Download to release/ since Maven's -Prelease expects libcomet.dylib there
