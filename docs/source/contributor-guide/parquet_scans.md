@@ -26,11 +26,11 @@ settings. Most users should not need to change this setting. However, it is poss
 a particular implementation for all scan operations by setting this configuration property to one of the following
 implementations.
 
-| Implementation          | Description                                                                                                                                                                          |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `native_comet`          | This implementation provides strong compatibility with Spark but does not support complex types. This is the original scan implementation in Comet and may eventually be removed.    |
-| `native_iceberg_compat` | This implementation delegates to DataFusion's `DataSourceExec` but uses a hybrid approach of JVM and native code. This scan is designed to be integrated with Iceberg in the future. |
-| `native_datafusion`     | This experimental implementation delegates to DataFusion's `DataSourceExec` for full native execution. There are known compatibility issues when using this scan.                    |
+| Implementation          | Description                                                                                                                                                                                                 |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `native_comet`          | **Deprecated.** This implementation provides strong compatibility with Spark but does not support complex types. This is the original scan implementation in Comet and will be removed in a future release. |
+| `native_iceberg_compat` | This implementation delegates to DataFusion's `DataSourceExec` but uses a hybrid approach of JVM and native code. This scan is designed to be integrated with Iceberg in the future.                        |
+| `native_datafusion`     | This experimental implementation delegates to DataFusion's `DataSourceExec` for full native execution. There are known compatibility issues when using this scan.                                           |
 
 The `native_datafusion` and `native_iceberg_compat` scans provide the following benefits over the `native_comet`
 implementation:
@@ -42,13 +42,23 @@ implementation:
 
 The `native_datafusion` and `native_iceberg_compat` scans share the following limitations:
 
-- When reading Parquet files written by systems other than Spark that contain columns with the logical types `UINT_8`
-  or `UINT_16`, Comet will produce different results than Spark because Spark does not preserve or understand these
-  logical types. Arrow-based readers, such as DataFusion and Comet do respect these types and read the data as unsigned
-  rather than signed. By default, Comet will fall back to Spark's native scan when scanning Parquet files containing
-  `byte` or `short` types (regardless of the logical type). This behavior can be disabled by setting
-  `spark.comet.scan.allowIncompatible=true`.
+- When reading Parquet files written by systems other than Spark that contain columns with the logical type `UINT_8`
+  (unsigned 8-bit integers), Comet may produce different results than Spark. Spark maps `UINT_8` to `ShortType`, but
+  Comet's Arrow-based readers respect the unsigned type and read the data as unsigned rather than signed. Since Comet
+  cannot distinguish `ShortType` columns that came from `UINT_8` versus signed `INT16`, by default Comet falls back to
+  Spark when scanning Parquet files containing `ShortType` columns. This behavior can be disabled by setting
+  `spark.comet.scan.unsignedSmallIntSafetyCheck=false`. Note that `ByteType` columns are always safe because they can
+  only come from signed `INT8`, where truncation preserves the signed value.
 - No support for default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
+- No support for datetime rebasing detection or the `spark.comet.exceptionOnDatetimeRebase` configuration. When reading
+  Parquet files containing dates or timestamps written before Spark 3.0 (which used a hybrid Julian/Gregorian calendar),
+  the `native_comet` implementation can detect these legacy values and either throw an exception or read them without
+  rebasing. The DataFusion-based implementations do not have this detection capability and will read all dates/timestamps
+  as if they were written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
+  October 15, 1582.
+- No support for Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`,
+  Spark uses the V2 API for Parquet scans. The DataFusion-based implementations only support the V1 API, so Comet
+  will fall back to `native_comet` when V2 is enabled.
 
 The `native_datafusion` scan has some additional limitations:
 
@@ -61,7 +71,9 @@ The `native_datafusion` scan has some additional limitations:
 
 There are some differences in S3 support between the scan implementations.
 
-### `native_comet`
+### `native_comet` (Deprecated)
+
+> **Note:** The `native_comet` scan implementation is deprecated and will be removed in a future release.
 
 The `native_comet` Parquet scan implementation reads data from S3 using the [Hadoop-AWS module](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html), which
 is identical to the approach commonly used with vanilla Spark. AWS credential configuration and other Hadoop S3A
