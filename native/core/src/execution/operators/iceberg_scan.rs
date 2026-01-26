@@ -18,7 +18,7 @@
 //! Native Iceberg table scan operator using iceberg-rust
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -36,14 +36,15 @@ use datafusion::physical_plan::metrics::{
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
-use futures::{Stream, StreamExt, TryStreamExt};
+use futures::{ready, FutureExt, Stream, StreamExt, TryStreamExt};
 use iceberg::io::FileIO;
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::parquet_support::SparkParquetOptions;
-use crate::parquet::schema_adapter::SparkSchemaAdapterFactory;
 use datafusion::datasource::schema_adapter::{SchemaAdapterFactory, SchemaMapper};
+use futures::future::BoxFuture;
 use datafusion_comet_spark_expr::EvalMode;
+use crate::parquet::schema_adapter::ParquetSchemaAdapterStream;
 
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
 ///
@@ -179,20 +180,27 @@ impl IcebergScanExec {
         })?;
 
         let spark_options = SparkParquetOptions::new(EvalMode::Legacy, "UTC", false);
-        let adapter_factory = SparkSchemaAdapterFactory::new(spark_options, None);
-
-        let adapted_stream =
-            stream.map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)));
 
         let wrapped_stream = IcebergStreamWrapper {
-            inner: adapted_stream,
+            inner: stream,
             schema: output_schema,
             cached_adapter: None,
             adapter_factory,
             baseline_metrics: metrics.baseline,
         };
 
-        Ok(Box::pin(wrapped_stream))
+        let adapter_stream = ParquetSchemaAdapterStream::new(
+            wrapped_stream,
+            Arc::clone(&output_schema),
+            output_schema.as_ref(),
+            spark_options,
+            None,
+        );
+
+        let adapted_stream =
+            adapter_stream.map_err(|e| DataFusionError::Execution(format!("Iceberg scan error: {}", e)));
+
+        Ok(Box::pin(adapted_stream))
     }
 
     fn load_file_io(
