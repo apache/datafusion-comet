@@ -297,11 +297,32 @@ impl SparkUnsafeRow {
 }
 
 macro_rules! downcast_builder_ref {
-    ($builder_type:ty, $builder:expr) => {
+    ($builder_type:ty, $builder:expr) => {{
+        let actual_type_id = $builder.as_any().type_id();
         $builder
             .as_any_mut()
             .downcast_mut::<$builder_type>()
-            .expect(stringify!($builder_type))
+            .ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to downcast builder: expected {}, got {:?}",
+                    stringify!($builder_type),
+                    actual_type_id
+                ))
+            })?
+    }};
+}
+
+macro_rules! get_field_builder {
+    ($struct_builder:expr, $builder_type:ty, $idx:expr) => {
+        $struct_builder
+            .field_builder::<$builder_type>($idx)
+            .ok_or_else(|| {
+                CometError::Internal(format!(
+                    "Failed to get field builder at index {}: expected {}",
+                    $idx,
+                    stringify!($builder_type)
+                ))
+            })?
     };
 }
 
@@ -324,7 +345,7 @@ pub(crate) fn append_field(
     /// A macro for generating code of appending value into field builder of Arrow struct builder.
     macro_rules! append_field_to_builder {
         ($builder_type:ty, $accessor:expr) => {{
-            let field_builder = struct_builder.field_builder::<$builder_type>(idx).unwrap();
+            let field_builder = get_field_builder!(struct_builder, $builder_type, idx);
 
             if row.is_null_row() {
                 // The row is null.
@@ -397,7 +418,7 @@ pub(crate) fn append_field(
         }
         DataType::Struct(fields) => {
             // Appending value into struct field builder of Arrow struct builder.
-            let field_builder = struct_builder.field_builder::<StructBuilder>(idx).unwrap();
+            let field_builder = get_field_builder!(struct_builder, StructBuilder, idx);
 
             let nested_row = if row.is_null_row() || row.is_null_at(idx) {
                 // The row is null, or the field in the row is null, i.e., a null nested row.
@@ -414,9 +435,11 @@ pub(crate) fn append_field(
             }
         }
         DataType::Map(field, _) => {
-            let field_builder = struct_builder
-                .field_builder::<MapBuilder<Box<dyn ArrayBuilder>, Box<dyn ArrayBuilder>>>(idx)
-                .unwrap();
+            let field_builder = get_field_builder!(
+                struct_builder,
+                MapBuilder<Box<dyn ArrayBuilder>, Box<dyn ArrayBuilder>>,
+                idx
+            );
 
             if row.is_null_row() {
                 // The row is null.
@@ -434,9 +457,8 @@ pub(crate) fn append_field(
             }
         }
         DataType::List(field) => {
-            let field_builder = struct_builder
-                .field_builder::<ListBuilder<Box<dyn ArrayBuilder>>>(idx)
-                .unwrap();
+            let field_builder =
+                get_field_builder!(struct_builder, ListBuilder<Box<dyn ArrayBuilder>>, idx);
 
             if row.is_null_row() {
                 // The row is null.
@@ -480,9 +502,7 @@ fn append_nested_struct_fields_field_major(
     // Helper macro for processing primitive fields
     macro_rules! process_field {
         ($builder_type:ty, $field_idx:expr, $get_value:expr) => {{
-            let field_builder = struct_builder
-                .field_builder::<$builder_type>($field_idx)
-                .unwrap();
+            let field_builder = get_field_builder!(struct_builder, $builder_type, $field_idx);
 
             for row_idx in 0..num_rows {
                 if struct_is_null[row_idx] {
@@ -546,9 +566,8 @@ fn append_nested_struct_fields_field_major(
                 );
             }
             DataType::Binary => {
-                let field_builder = struct_builder
-                    .field_builder::<BinaryBuilder>(field_idx)
-                    .unwrap();
+                let field_builder =
+                    get_field_builder!(struct_builder, BinaryBuilder, field_idx);
 
                 for row_idx in 0..num_rows {
                     if struct_is_null[row_idx] {
@@ -567,9 +586,8 @@ fn append_nested_struct_fields_field_major(
                 }
             }
             DataType::Utf8 => {
-                let field_builder = struct_builder
-                    .field_builder::<StringBuilder>(field_idx)
-                    .unwrap();
+                let field_builder =
+                    get_field_builder!(struct_builder, StringBuilder, field_idx);
 
                 for row_idx in 0..num_rows {
                     if struct_is_null[row_idx] {
@@ -589,9 +607,8 @@ fn append_nested_struct_fields_field_major(
             }
             DataType::Decimal128(p, _) => {
                 let p = *p;
-                let field_builder = struct_builder
-                    .field_builder::<Decimal128Builder>(field_idx)
-                    .unwrap();
+                let field_builder =
+                    get_field_builder!(struct_builder, Decimal128Builder, field_idx);
 
                 for row_idx in 0..num_rows {
                     if struct_is_null[row_idx] {
@@ -610,9 +627,8 @@ fn append_nested_struct_fields_field_major(
                 }
             }
             DataType::Struct(nested_fields) => {
-                let nested_builder = struct_builder
-                    .field_builder::<StructBuilder>(field_idx)
-                    .unwrap();
+                let nested_builder =
+                    get_field_builder!(struct_builder, StructBuilder, field_idx);
 
                 // Collect nested struct addresses and sizes in one pass, building validity
                 let mut nested_addresses: Vec<jlong> = Vec::with_capacity(num_rows);
@@ -922,9 +938,7 @@ fn append_struct_fields_field_major(
     // Helper macro for processing primitive fields
     macro_rules! process_field {
         ($builder_type:ty, $field_idx:expr, $get_value:expr) => {{
-            let field_builder = struct_builder
-                .field_builder::<$builder_type>($field_idx)
-                .unwrap();
+            let field_builder = get_field_builder!(struct_builder, $builder_type, $field_idx);
 
             for (row_idx, i) in (row_start..row_end).enumerate() {
                 if struct_is_null[row_idx] {
@@ -989,9 +1003,8 @@ fn append_struct_fields_field_major(
                 );
             }
             DataType::Binary => {
-                let field_builder = struct_builder
-                    .field_builder::<BinaryBuilder>(field_idx)
-                    .unwrap();
+                let field_builder =
+                    get_field_builder!(struct_builder, BinaryBuilder, field_idx);
 
                 for (row_idx, i) in (row_start..row_end).enumerate() {
                     if struct_is_null[row_idx] {
@@ -1011,9 +1024,8 @@ fn append_struct_fields_field_major(
                 }
             }
             DataType::Utf8 => {
-                let field_builder = struct_builder
-                    .field_builder::<StringBuilder>(field_idx)
-                    .unwrap();
+                let field_builder =
+                    get_field_builder!(struct_builder, StringBuilder, field_idx);
 
                 for (row_idx, i) in (row_start..row_end).enumerate() {
                     if struct_is_null[row_idx] {
@@ -1034,9 +1046,8 @@ fn append_struct_fields_field_major(
             }
             DataType::Decimal128(p, _) => {
                 let p = *p;
-                let field_builder = struct_builder
-                    .field_builder::<Decimal128Builder>(field_idx)
-                    .unwrap();
+                let field_builder =
+                    get_field_builder!(struct_builder, Decimal128Builder, field_idx);
 
                 for (row_idx, i) in (row_start..row_end).enumerate() {
                     if struct_is_null[row_idx] {
@@ -1057,9 +1068,8 @@ fn append_struct_fields_field_major(
             }
             // For nested structs, apply field-major processing recursively
             DataType::Struct(nested_fields) => {
-                let nested_builder = struct_builder
-                    .field_builder::<StructBuilder>(field_idx)
-                    .unwrap();
+                let nested_builder =
+                    get_field_builder!(struct_builder, StructBuilder, field_idx);
 
                 // Collect nested struct addresses and sizes in one pass, building validity
                 let mut nested_addresses: Vec<jlong> = Vec::with_capacity(num_rows);
