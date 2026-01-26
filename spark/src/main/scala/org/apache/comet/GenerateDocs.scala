@@ -180,7 +180,9 @@ object GenerateDocs {
     if (annotations.nonEmpty) {
       w.write("\n**Notes:**\n".getBytes)
       for ((from, to, note) <- annotations.distinct) {
-        w.write(s"- **$from -> $to**: $note\n".getBytes)
+        // Normalize note by replacing newlines with spaces for prettier compatibility
+        val normalizedNote = note.replaceAll("\\s*\\n\\s*", " ")
+        w.write(s"- **$from -> $to**: $normalizedNote\n".getBytes)
       }
     }
   }
