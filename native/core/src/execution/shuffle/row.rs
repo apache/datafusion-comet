@@ -566,8 +566,7 @@ fn append_nested_struct_fields_field_major(
                 );
             }
             DataType::Binary => {
-                let field_builder =
-                    get_field_builder!(struct_builder, BinaryBuilder, field_idx);
+                let field_builder = get_field_builder!(struct_builder, BinaryBuilder, field_idx);
 
                 for row_idx in 0..num_rows {
                     if struct_is_null[row_idx] {
@@ -586,8 +585,7 @@ fn append_nested_struct_fields_field_major(
                 }
             }
             DataType::Utf8 => {
-                let field_builder =
-                    get_field_builder!(struct_builder, StringBuilder, field_idx);
+                let field_builder = get_field_builder!(struct_builder, StringBuilder, field_idx);
 
                 for row_idx in 0..num_rows {
                     if struct_is_null[row_idx] {
@@ -627,8 +625,7 @@ fn append_nested_struct_fields_field_major(
                 }
             }
             DataType::Struct(nested_fields) => {
-                let nested_builder =
-                    get_field_builder!(struct_builder, StructBuilder, field_idx);
+                let nested_builder = get_field_builder!(struct_builder, StructBuilder, field_idx);
 
                 // Collect nested struct addresses and sizes in one pass, building validity
                 let mut nested_addresses: Vec<jlong> = Vec::with_capacity(num_rows);
@@ -1003,8 +1000,7 @@ fn append_struct_fields_field_major(
                 );
             }
             DataType::Binary => {
-                let field_builder =
-                    get_field_builder!(struct_builder, BinaryBuilder, field_idx);
+                let field_builder = get_field_builder!(struct_builder, BinaryBuilder, field_idx);
 
                 for (row_idx, i) in (row_start..row_end).enumerate() {
                     if struct_is_null[row_idx] {
@@ -1024,8 +1020,7 @@ fn append_struct_fields_field_major(
                 }
             }
             DataType::Utf8 => {
-                let field_builder =
-                    get_field_builder!(struct_builder, StringBuilder, field_idx);
+                let field_builder = get_field_builder!(struct_builder, StringBuilder, field_idx);
 
                 for (row_idx, i) in (row_start..row_end).enumerate() {
                     if struct_is_null[row_idx] {
@@ -1068,8 +1063,7 @@ fn append_struct_fields_field_major(
             }
             // For nested structs, apply field-major processing recursively
             DataType::Struct(nested_fields) => {
-                let nested_builder =
-                    get_field_builder!(struct_builder, StructBuilder, field_idx);
+                let nested_builder = get_field_builder!(struct_builder, StructBuilder, field_idx);
 
                 // Collect nested struct addresses and sizes in one pass, building validity
                 let mut nested_addresses: Vec<jlong> = Vec::with_capacity(num_rows);
