@@ -15,10 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Benchmark for struct column processing in native shuffle.
+//! Benchmarks for complex type processing in JVM shuffle row-to-columnar conversion.
 //!
 //! This benchmark measures the performance of converting Spark UnsafeRow
-//! with struct columns to Arrow arrays.
+//! with complex type columns (struct, list, map) to Arrow arrays via
+//! `process_sorted_row_partition()`.
 
 use arrow::datatypes::{DataType, Field, Fields};
 use comet::execution::shuffle::row::{

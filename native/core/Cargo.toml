@@ -133,7 +133,7 @@ name = "parquet_decode"
 harness = false
 
 [[bench]]
-name = "struct_conversion"
+name = "complex_type_conversion"
 harness = false
 
 [[bench]]
