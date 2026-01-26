@@ -143,7 +143,7 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
-test("V2 scan should fallback to Spark when native_datafusion is specified") {
+  test("V2 scan should work with native_datafusion when exec is enabled") {
     withTempPath { path =>
       createTestDataFrame.write.parquet(path.toString)
       withTempView("test_data") {
@@ -160,11 +160,48 @@ test("V2 scan should fallback to Spark when native_datafusion is specified") {
 
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
 
             val transformedPlan = applyCometScanRule(sparkPlan)
 
-            // Should fallback to Spark because V2 scans don't yet support native_datafusion
+            // Should use CometBatchScanExec with native_datafusion
+            assert(countOperators(transformedPlan, classOf[BatchScanExec]) == 0)
+            assert(countOperators(transformedPlan, classOf[CometBatchScanExec]) == 1)
+
+            // CometScanRule should have replaced the underlying scan
+            val scan = transformedPlan.collect { case scan: CometBatchScanExec => scan }.head
+            assert(scan.wrapped.scan.isInstanceOf[CometNativeParquetScan])
+          }
+        }
+      }
+    }
+  }
+
+  test(
+    "V2 scan should fallback to Spark when native_datafusion is specified but exec is disabled") {
+    withTempPath { path =>
+      createTestDataFrame.write.parquet(path.toString)
+      withTempView("test_data") {
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+          spark.read.parquet(path.toString).createOrReplaceTempView("test_data")
+
+          val sparkPlan =
+            createSparkPlan(
+              spark,
+              "SELECT id, id * 2 as doubled FROM test_data WHERE id % 2 == 0")
+
+          // Count original Spark operators
+          assert(countOperators(sparkPlan, classOf[BatchScanExec]) == 1)
+
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "false",
+            CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
+
+            val transformedPlan = applyCometScanRule(sparkPlan)
+
+            // Should fallback to Spark because COMET_EXEC_ENABLED is false
             assert(countOperators(transformedPlan, classOf[BatchScanExec]) == 1)
             assert(countOperators(transformedPlan, classOf[CometBatchScanExec]) == 0)
           }

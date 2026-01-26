@@ -616,19 +616,16 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
   /**
    * Transform a V2 Parquet scan to use native execution.
    *
-   * For auto or native_iceberg_compat: uses CometNativeParquetScan (DataFusion-based reader) For
-   * native_comet: uses CometParquetScan (legacy JNI-based reader) For native_datafusion: falls
-   * back to Spark (not yet supported for V2)
+   * For auto or native_iceberg_compat: uses CometNativeParquetScan (DataFusion-based reader). For
+   * native_datafusion: uses CometNativeParquetScan (DataFusion-based reader). For native_comet:
+   * uses CometParquetScan (legacy JNI-based reader).
    */
   private def transformV2ParquetScan(scanExec: BatchScanExec, scan: ParquetScan): SparkPlan = {
     val scanImpl = COMET_NATIVE_SCAN_IMPL.get()
 
     scanImpl match {
       case SCAN_NATIVE_DATAFUSION =>
-        withInfo(
-          scanExec,
-          s"V2 Parquet scan does not yet support $SCAN_NATIVE_DATAFUSION. " +
-            s"Use $SCAN_AUTO, $SCAN_NATIVE_ICEBERG_COMPAT, or $SCAN_NATIVE_COMET instead.")
+        nativeDataFusionV2Scan(scanExec, scan).getOrElse(scanExec)
 
       case SCAN_NATIVE_COMET =>
         nativeCometV2Scan(scanExec, scan).getOrElse(scanExec)
@@ -662,6 +659,75 @@ case class CometScanRule(session: SparkSession) extends Rule[SparkPlan] with Com
 
     if (fallbackReasons.isEmpty) {
       val cometScan = CometParquetScan(session, scan)
+      Some(
+        CometBatchScanExec(
+          scanExec.copy(scan = cometScan),
+          runtimeFilters = scanExec.runtimeFilters))
+    } else {
+      withInfos(scanExec, fallbackReasons.toSet)
+      None
+    }
+  }
+
+  /**
+   * Try to create a native_datafusion V2 Parquet scan. Returns None if validation fails.
+   *
+   * Uses the same DataFusion-based reader as native_iceberg_compat but with
+   * native_datafusion-specific type checking.
+   */
+  private def nativeDataFusionV2Scan(
+      scanExec: BatchScanExec,
+      scan: ParquetScan): Option[SparkPlan] = {
+    val fallbackReasons = new ListBuffer[String]()
+
+    // Check if comet exec is enabled (required for DataFusion-based V2 scans)
+    if (!COMET_EXEC_ENABLED.get()) {
+      fallbackReasons += s"$SCAN_NATIVE_DATAFUSION requires ${COMET_EXEC_ENABLED.key}=true"
+    }
+
+    // Check pushed aggregate
+    if (scan.pushedAggregate.nonEmpty) {
+      fallbackReasons += "Comet does not support pushed aggregate"
+    }
+
+    // Use the appropriate type checker for native_datafusion
+    val typeChecker = CometScanTypeChecker(SCAN_NATIVE_DATAFUSION)
+
+    val schemaSupported =
+      typeChecker.isSchemaSupported(scan.readDataSchema, fallbackReasons)
+    if (!schemaSupported) {
+      fallbackReasons += s"Schema ${scan.readDataSchema} is not supported"
+    }
+
+    val partitionSchemaSupported =
+      typeChecker.isSchemaSupported(scan.readPartitionSchema, fallbackReasons)
+    if (!partitionSchemaSupported) {
+      fallbackReasons += s"Partition schema ${scan.readPartitionSchema} is not supported"
+    }
+
+    // Check filesystem support and object store configuration
+    val hadoopConf = session.sessionState.newHadoopConfWithOptions(scan.options.asScala.toMap)
+    val inputFiles = scan.fileIndex.inputFiles
+    val allFilesSupported = inputFiles.forall { path =>
+      path.startsWith("file:") || path.startsWith("s3a://") || path.startsWith("s3://")
+    }
+    if (!allFilesSupported) {
+      fallbackReasons += s"$SCAN_NATIVE_DATAFUSION only supports local filesystem and S3"
+    } else {
+      // Validate S3 config if any S3 files
+      val s3File = inputFiles.find(p => p.startsWith("s3a://") || p.startsWith("s3://"))
+      s3File.foreach { filePath =>
+        validateObjectStoreConfig(filePath, hadoopConf, fallbackReasons)
+      }
+    }
+
+    // Check encryption support
+    if (encryptionEnabled(hadoopConf) && !isEncryptionConfigSupported(hadoopConf)) {
+      fallbackReasons += s"$SCAN_NATIVE_DATAFUSION does not support this encryption config"
+    }
+
+    if (fallbackReasons.isEmpty) {
+      val cometScan = CometNativeParquetScan(session, scan)
       Some(
         CometBatchScanExec(
           scanExec.copy(scan = cometScan),
