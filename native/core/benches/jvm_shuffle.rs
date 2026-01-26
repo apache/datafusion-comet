@@ -791,8 +791,7 @@ fn benchmark_primitive_columns(c: &mut Criterion) {
             })
             .collect();
 
-        let mut row_addresses: Vec<i64> =
-            spark_rows.iter().map(|row| row.get_row_addr()).collect();
+        let mut row_addresses: Vec<i64> = spark_rows.iter().map(|row| row.get_row_addr()).collect();
         let mut row_sizes: Vec<i32> = spark_rows.iter().map(|row| row.get_row_size()).collect();
 
         let row_address_ptr = row_addresses.as_mut_ptr();
