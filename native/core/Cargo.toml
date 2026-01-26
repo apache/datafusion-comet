@@ -122,7 +122,7 @@ name = "bit_util"
 harness = false
 
 [[bench]]
-name = "jvm_shuffle"
+name = "row_columnar"
 harness = false
 
 [[bench]]
