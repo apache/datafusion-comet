@@ -16,6 +16,7 @@
 // under the License.
 
 use arrow::array::{Array, Date32Array, Int32Array};
+use arrow::compute::cast;
 use arrow::compute::kernels::arity::binary;
 use arrow::datatypes::DataType;
 use datafusion::common::{utils::take_function_args, DataFusionError, Result};
@@ -84,6 +85,12 @@ impl ScalarUDFImpl for SparkDateDiff {
         let end_arr = end_date.into_array(num_rows)?;
         let start_arr = start_date.into_array(num_rows)?;
 
+        // Normalize dictionary arrays (important for Iceberg)
+        let end_arr = cast(&end_arr, &DataType::Date32)
+            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+        let start_arr = cast(&start_arr, &DataType::Date32)
+            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+
         let end_date_array = end_arr
             .as_any()
             .downcast_ref::<Date32Array>()
@@ -105,9 +112,5 @@ impl ScalarUDFImpl for SparkDateDiff {
             binary(end_date_array, start_date_array, |end, start| end - start)?;
 
         Ok(ColumnarValue::Array(Arc::new(result)))
-    }
-
-    fn aliases(&self) -> &[String] {
-        &self.aliases
     }
 }
