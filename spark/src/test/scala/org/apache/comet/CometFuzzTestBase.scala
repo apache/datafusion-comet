@@ -115,6 +115,7 @@ class CometFuzzTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
       super.test(testName + s" ($shuffleMode shuffle)", testTags: _*) {
         withSQLConf(
           CometConf.COMET_SCAN_ALLOW_INCOMPATIBLE.key -> "true",
+            CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> "false",
           CometConf.COMET_SHUFFLE_MODE.key -> shuffleMode) {
           testFun
         }
