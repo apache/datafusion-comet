@@ -135,3 +135,7 @@ harness = false
 [[bench]]
 name = "struct_conversion"
 harness = false
+
+[[bench]]
+name = "array_conversion"
+harness = false
