@@ -132,7 +132,7 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.spark-version.java }}
       - name: Download native library
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: native-lib-linux
           path: native/target/release/
@@ -188,7 +188,7 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
       - name: Download native library
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: native-lib-linux
           path: native/target/release/
@@ -244,7 +244,7 @@ jobs:
           rust-version: ${{env.RUST_VERSION}}
           jdk-version: ${{ matrix.java-version }}
       - name: Download native library
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: native-lib-linux
           path: native/target/release/
