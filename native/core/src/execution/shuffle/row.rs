@@ -702,6 +702,20 @@ fn append_nested_struct_fields_field_major(
     Ok(())
 }
 
+/// Reads row address and size from JVM-provided pointer arrays and points the row to that data.
+///
+/// # Safety
+/// Caller must ensure row_addresses_ptr and row_sizes_ptr are valid for index i.
+/// This is guaranteed when called from append_columns with indices in [row_start, row_end).
+macro_rules! read_row_at {
+    ($row:expr, $row_addresses_ptr:expr, $row_sizes_ptr:expr, $i:expr) => {{
+        // SAFETY: Caller guarantees pointers are valid for this index (see macro doc)
+        let row_addr = unsafe { *$row_addresses_ptr.add($i) };
+        let row_size = unsafe { *$row_sizes_ptr.add($i) };
+        $row.point_to(row_addr, row_size);
+    }};
+}
+
 /// Appends a batch of list values to the list builder with a single type dispatch.
 /// This moves type dispatch from O(rows) to O(1), significantly improving performance
 /// for large batches.
@@ -723,11 +737,7 @@ fn append_list_column_batch(
     macro_rules! process_primitive_lists {
         ($builder_type:ty, $append_fn:ident) => {{
             for i in row_start..row_end {
-                // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
-                // are valid for indices [row_start, row_end) as provided by the JVM
-                let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                let row_size = unsafe { *row_sizes_ptr.add(i) };
-                row.point_to(row_addr, row_size);
+                read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
 
                 if row.is_null_at(column_idx) {
                     list_builder.append_null();
@@ -777,11 +787,7 @@ fn append_list_column_batch(
         // For complex element types, fall back to per-row dispatch
         _ => {
             for i in row_start..row_end {
-                // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
-                // are valid for indices [row_start, row_end) as provided by the JVM
-                let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                let row_size = unsafe { *row_sizes_ptr.add(i) };
-                row.point_to(row_addr, row_size);
+                read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
 
                 if row.is_null_at(column_idx) {
                     list_builder.append_null();
@@ -818,11 +824,7 @@ fn append_map_column_batch(
     macro_rules! process_primitive_maps {
         ($key_builder:ty, $key_append:ident, $val_builder:ty, $val_append:ident) => {{
             for i in row_start..row_end {
-                // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
-                // are valid for indices [row_start, row_end) as provided by the JVM
-                let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                let row_size = unsafe { *row_sizes_ptr.add(i) };
-                row.point_to(row_addr, row_size);
+                read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
 
                 if row.is_null_at(column_idx) {
                     map_builder.append(false)?;
@@ -893,11 +895,7 @@ fn append_map_column_batch(
         // For other types, fall back to per-row dispatch
         _ => {
             for i in row_start..row_end {
-                // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
-                // are valid for indices [row_start, row_end) as provided by the JVM
-                let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                let row_size = unsafe { *row_sizes_ptr.add(i) };
-                row.point_to(row_addr, row_size);
+                read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
 
                 if row.is_null_at(column_idx) {
                     map_builder.append(false)?;
@@ -933,11 +931,7 @@ fn append_struct_fields_field_major(
     let mut struct_is_null = Vec::with_capacity(num_rows);
 
     for i in row_start..row_end {
-        // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
-        // are valid for indices [row_start, row_end) as provided by the JVM
-        let row_addr = unsafe { *row_addresses_ptr.add(i) };
-        let row_size = unsafe { *row_sizes_ptr.add(i) };
-        parent_row.point_to(row_addr, row_size);
+        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
 
         let is_null = parent_row.is_null_at(column_idx);
         struct_is_null.push(is_null);
@@ -959,11 +953,7 @@ fn append_struct_fields_field_major(
                     // Struct is null, field is also null
                     field_builder.append_null();
                 } else {
-                    // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
-                    // are valid for indices [row_start, row_end) as provided by the JVM
-                    let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                    let row_size = unsafe { *row_sizes_ptr.add(i) };
-                    parent_row.point_to(row_addr, row_size);
+                    read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
                     let nested_row = parent_row.get_struct(column_idx, num_fields);
 
                     if nested_row.is_null_at($field_idx) {
@@ -1025,11 +1015,7 @@ fn append_struct_fields_field_major(
                     if struct_is_null[row_idx] {
                         field_builder.append_null();
                     } else {
-                        // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
-                        // are valid for indices [row_start, row_end) as provided by the JVM
-                        let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                        let row_size = unsafe { *row_sizes_ptr.add(i) };
-                        parent_row.point_to(row_addr, row_size);
+                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
                         let nested_row = parent_row.get_struct(column_idx, num_fields);
 
                         if nested_row.is_null_at(field_idx) {
@@ -1047,11 +1033,7 @@ fn append_struct_fields_field_major(
                     if struct_is_null[row_idx] {
                         field_builder.append_null();
                     } else {
-                        // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
-                        // are valid for indices [row_start, row_end) as provided by the JVM
-                        let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                        let row_size = unsafe { *row_sizes_ptr.add(i) };
-                        parent_row.point_to(row_addr, row_size);
+                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
                         let nested_row = parent_row.get_struct(column_idx, num_fields);
 
                         if nested_row.is_null_at(field_idx) {
@@ -1071,11 +1053,7 @@ fn append_struct_fields_field_major(
                     if struct_is_null[row_idx] {
                         field_builder.append_null();
                     } else {
-                        // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
-                        // are valid for indices [row_start, row_end) as provided by the JVM
-                        let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                        let row_size = unsafe { *row_sizes_ptr.add(i) };
-                        parent_row.point_to(row_addr, row_size);
+                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
                         let nested_row = parent_row.get_struct(column_idx, num_fields);
 
                         if nested_row.is_null_at(field_idx) {
@@ -1103,11 +1081,7 @@ fn append_struct_fields_field_major(
                         nested_addresses.push(0);
                         nested_sizes.push(0);
                     } else {
-                        // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
-                        // are valid for indices [row_start, row_end) as provided by the JVM
-                        let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                        let row_size = unsafe { *row_sizes_ptr.add(i) };
-                        parent_row.point_to(row_addr, row_size);
+                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
                         let parent_struct = parent_row.get_struct(column_idx, num_fields);
 
                         if parent_struct.is_null_at(field_idx) {
@@ -1143,11 +1117,7 @@ fn append_struct_fields_field_major(
                         let null_row = SparkUnsafeRow::default();
                         append_field(dt, struct_builder, &null_row, field_idx)?;
                     } else {
-                        // SAFETY: Caller (append_columns) guarantees row_addresses_ptr and row_sizes_ptr
-                        // are valid for indices [row_start, row_end) as provided by the JVM
-                        let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                        let row_size = unsafe { *row_sizes_ptr.add(i) };
-                        parent_row.point_to(row_addr, row_size);
+                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
                         let nested_row = parent_row.get_struct(column_idx, num_fields);
                         append_field(dt, struct_builder, &nested_row, field_idx)?;
                     }
@@ -1197,11 +1167,7 @@ pub(crate) fn append_columns(
             let mut row = SparkUnsafeRow::new(schema);
 
             for i in row_start..row_end {
-                // SAFETY: row_addresses_ptr and row_sizes_ptr are valid for indices [row_start, row_end)
-                // as guaranteed by the caller (JVM provides these arrays with correct bounds)
-                let row_addr = unsafe { *row_addresses_ptr.add(i) };
-                let row_size = unsafe { *row_sizes_ptr.add(i) };
-                row.point_to(row_addr, row_size);
+                read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
 
                 let is_null = row.is_null_at(column_idx);
 
