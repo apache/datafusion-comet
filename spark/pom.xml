@@ -26,7 +26,7 @@ under the License.
   <parent>
     <groupId>org.apache.datafusion</groupId>
     <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-    <version>0.13.0-SNAPSHOT</version>
+    <version>0.13.0</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -255,6 +255,34 @@ under the License.
           <scope>test</scope>
         </dependency>
       </dependencies>
+    </profile>
+    <profile>
+      <id>generate-docs</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>${exec-maven-plugin.version}</version>
+            <executions>
+              <execution>
+                <id>generate-user-guide-reference-docs</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>java</goal>
+                </goals>
+                <configuration>
+                  <mainClass>org.apache.comet.GenerateDocs</mainClass>
+                  <arguments>
+                    <argument>${project.parent.basedir}/docs/source/user-guide/latest/</argument>
+                  </arguments>
+                  <classpathScope>compile</classpathScope>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
   </profiles>
 
