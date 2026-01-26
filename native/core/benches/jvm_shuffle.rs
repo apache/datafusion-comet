@@ -481,7 +481,7 @@ fn get_list_row_size(num_elements: usize, element_size: usize) -> usize {
     let list_pointer_size = 8;
 
     // List header: num_elements (8 bytes) + null bitset
-    let list_null_bitset = ((num_elements + 63) / 64) * 8;
+    let list_null_bitset = num_elements.div_ceil(64) * 8;
     let list_header = 8 + list_null_bitset;
     let list_data_size = num_elements * element_size;
 
@@ -498,7 +498,7 @@ impl ListRowData {
         let mut data = vec![0u8; row_size];
 
         let top_level_bitset_width = SparkUnsafeRow::get_row_bitset_width(1);
-        let list_null_bitset = ((num_elements + 63) / 64) * 8;
+        let list_null_bitset = num_elements.div_ceil(64) * 8;
 
         // List starts after top-level header + pointer
         let list_offset = top_level_bitset_width + 8;
@@ -616,11 +616,11 @@ fn get_map_row_size(num_entries: usize) -> usize {
     let map_pointer_size = 8;
 
     // Key array: num_elements (8) + null bitset + data
-    let key_null_bitset = ((num_entries + 63) / 64) * 8;
+    let key_null_bitset = num_entries.div_ceil(64) * 8;
     let key_array_size = 8 + key_null_bitset + num_entries * 8;
 
     // Value array: num_elements (8) + null bitset + data
-    let value_null_bitset = ((num_entries + 63) / 64) * 8;
+    let value_null_bitset = num_entries.div_ceil(64) * 8;
     let value_array_size = 8 + value_null_bitset + num_entries * 8;
 
     // Map header (key array size) + key array + value array
@@ -639,8 +639,8 @@ impl MapRowData {
         let mut data = vec![0u8; row_size];
 
         let top_level_bitset_width = SparkUnsafeRow::get_row_bitset_width(1);
-        let key_null_bitset = ((num_entries + 63) / 64) * 8;
-        let value_null_bitset = ((num_entries + 63) / 64) * 8;
+        let key_null_bitset = num_entries.div_ceil(64) * 8;
+        let value_null_bitset = num_entries.div_ceil(64) * 8;
 
         let key_array_size = 8 + key_null_bitset + num_entries * 8;
         let value_array_size = 8 + value_null_bitset + num_entries * 8;
@@ -772,8 +772,13 @@ fn benchmark_primitive_columns(c: &mut Criterion) {
             .map(|_| {
                 let mut data = vec![0u8; row_size];
                 // Fill with some data after the bitset
-                for i in SparkUnsafeRow::get_row_bitset_width(NUM_COLS)..row_size {
-                    data[i] = i as u8;
+                for (i, byte) in data
+                    .iter_mut()
+                    .enumerate()
+                    .take(row_size)
+                    .skip(SparkUnsafeRow::get_row_bitset_width(NUM_COLS))
+                {
+                    *byte = i as u8;
                 }
                 data
             })
