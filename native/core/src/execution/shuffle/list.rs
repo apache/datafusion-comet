@@ -32,6 +32,52 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, TimeUnit};
 
+/// Generates bulk append methods for primitive types in SparkUnsafeArray.
+///
+/// # Safety invariants for all generated methods:
+/// - `element_offset` points to contiguous element data of length `num_elements`
+/// - `null_bitset_ptr()` returns a pointer to `ceil(num_elements/64)` i64 words
+/// - These invariants are guaranteed by the SparkUnsafeArray layout from the JVM
+macro_rules! impl_append_to_builder {
+    ($method_name:ident, $builder_type:ty, $element_type:ty) => {
+        pub(crate) fn $method_name<const NULLABLE: bool>(&self, builder: &mut $builder_type) {
+            let num_elements = self.num_elements;
+            if num_elements == 0 {
+                return;
+            }
+
+            if NULLABLE {
+                let mut ptr = self.element_offset as *const $element_type;
+                let null_words = self.null_bitset_ptr();
+                for idx in 0..num_elements {
+                    let word_idx = idx >> 6;
+                    let bit_idx = idx & 0x3f;
+                    // SAFETY: word_idx < ceil(num_elements/64) since idx < num_elements
+                    let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
+
+                    if is_null {
+                        builder.append_null();
+                    } else {
+                        // SAFETY: ptr is within element data bounds
+                        builder.append_value(unsafe { *ptr });
+                    }
+                    // SAFETY: ptr stays within bounds, iterating num_elements times
+                    ptr = unsafe { ptr.add(1) };
+                }
+            } else {
+                // SAFETY: element_offset points to contiguous data of length num_elements
+                let slice = unsafe {
+                    std::slice::from_raw_parts(
+                        self.element_offset as *const $element_type,
+                        num_elements,
+                    )
+                };
+                builder.append_slice(slice);
+            }
+        }
+    };
+}
+
 pub struct SparkUnsafeArray {
     row_addr: i64,
     num_elements: usize,
@@ -39,10 +85,12 @@ pub struct SparkUnsafeArray {
 }
 
 impl SparkUnsafeObject for SparkUnsafeArray {
+    #[inline]
     fn get_row_addr(&self) -> i64 {
         self.row_addr
     }
 
+    #[inline]
     fn get_element_offset(&self, index: usize, element_size: usize) -> *const u8 {
         (self.element_offset + (index * element_size) as i64) as *const u8
     }
@@ -93,203 +141,19 @@ impl SparkUnsafeArray {
 
     /// Returns the null bitset pointer (starts at row_addr + 8).
     #[inline]
-    pub(crate) fn null_bitset_ptr(&self) -> *const i64 {
+    fn null_bitset_ptr(&self) -> *const i64 {
         (self.row_addr + 8) as *const i64
     }
 
-    /// Bulk append i32 values to builder.
-    /// For non-nullable: uses slice append for optimal performance.
-    /// For nullable: uses pointer iteration with efficient null bitset reading.
-    pub(crate) fn append_ints_to_builder<const NULLABLE: bool>(&self, builder: &mut Int32Builder) {
-        let num_elements = self.num_elements;
-        if num_elements == 0 {
-            return;
-        }
+    impl_append_to_builder!(append_ints_to_builder, Int32Builder, i32);
+    impl_append_to_builder!(append_longs_to_builder, Int64Builder, i64);
+    impl_append_to_builder!(append_shorts_to_builder, Int16Builder, i16);
+    impl_append_to_builder!(append_bytes_to_builder, Int8Builder, i8);
+    impl_append_to_builder!(append_floats_to_builder, Float32Builder, f32);
+    impl_append_to_builder!(append_doubles_to_builder, Float64Builder, f64);
 
-        if NULLABLE {
-            let mut ptr = self.element_offset as *const i32;
-            let null_words = self.null_bitset_ptr();
-            for idx in 0..num_elements {
-                let word_idx = idx >> 6;
-                let bit_idx = idx & 0x3f;
-                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
-
-                if is_null {
-                    builder.append_null();
-                } else {
-                    builder.append_value(unsafe { *ptr });
-                }
-                ptr = unsafe { ptr.add(1) };
-            }
-        } else {
-            // Use slice-based append for non-nullable path (much faster)
-            let slice = unsafe {
-                std::slice::from_raw_parts(self.element_offset as *const i32, num_elements)
-            };
-            builder.append_slice(slice);
-        }
-    }
-
-    /// Bulk append i64 values to builder.
-    pub(crate) fn append_longs_to_builder<const NULLABLE: bool>(&self, builder: &mut Int64Builder) {
-        let num_elements = self.num_elements;
-        if num_elements == 0 {
-            return;
-        }
-
-        if NULLABLE {
-            let mut ptr = self.element_offset as *const i64;
-            let null_words = self.null_bitset_ptr();
-            for idx in 0..num_elements {
-                let word_idx = idx >> 6;
-                let bit_idx = idx & 0x3f;
-                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
-
-                if is_null {
-                    builder.append_null();
-                } else {
-                    builder.append_value(unsafe { *ptr });
-                }
-                ptr = unsafe { ptr.add(1) };
-            }
-        } else {
-            let slice = unsafe {
-                std::slice::from_raw_parts(self.element_offset as *const i64, num_elements)
-            };
-            builder.append_slice(slice);
-        }
-    }
-
-    /// Bulk append i16 values to builder.
-    pub(crate) fn append_shorts_to_builder<const NULLABLE: bool>(
-        &self,
-        builder: &mut Int16Builder,
-    ) {
-        let num_elements = self.num_elements;
-        if num_elements == 0 {
-            return;
-        }
-
-        if NULLABLE {
-            let mut ptr = self.element_offset as *const i16;
-            let null_words = self.null_bitset_ptr();
-            for idx in 0..num_elements {
-                let word_idx = idx >> 6;
-                let bit_idx = idx & 0x3f;
-                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
-
-                if is_null {
-                    builder.append_null();
-                } else {
-                    builder.append_value(unsafe { *ptr });
-                }
-                ptr = unsafe { ptr.add(1) };
-            }
-        } else {
-            let slice = unsafe {
-                std::slice::from_raw_parts(self.element_offset as *const i16, num_elements)
-            };
-            builder.append_slice(slice);
-        }
-    }
-
-    /// Bulk append i8 values to builder.
-    pub(crate) fn append_bytes_to_builder<const NULLABLE: bool>(&self, builder: &mut Int8Builder) {
-        let num_elements = self.num_elements;
-        if num_elements == 0 {
-            return;
-        }
-
-        if NULLABLE {
-            let mut ptr = self.element_offset as *const i8;
-            let null_words = self.null_bitset_ptr();
-            for idx in 0..num_elements {
-                let word_idx = idx >> 6;
-                let bit_idx = idx & 0x3f;
-                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
-
-                if is_null {
-                    builder.append_null();
-                } else {
-                    builder.append_value(unsafe { *ptr });
-                }
-                ptr = unsafe { ptr.add(1) };
-            }
-        } else {
-            let slice = unsafe {
-                std::slice::from_raw_parts(self.element_offset as *const i8, num_elements)
-            };
-            builder.append_slice(slice);
-        }
-    }
-
-    /// Bulk append f32 values to builder.
-    pub(crate) fn append_floats_to_builder<const NULLABLE: bool>(
-        &self,
-        builder: &mut Float32Builder,
-    ) {
-        let num_elements = self.num_elements;
-        if num_elements == 0 {
-            return;
-        }
-
-        if NULLABLE {
-            let mut ptr = self.element_offset as *const f32;
-            let null_words = self.null_bitset_ptr();
-            for idx in 0..num_elements {
-                let word_idx = idx >> 6;
-                let bit_idx = idx & 0x3f;
-                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
-
-                if is_null {
-                    builder.append_null();
-                } else {
-                    builder.append_value(unsafe { *ptr });
-                }
-                ptr = unsafe { ptr.add(1) };
-            }
-        } else {
-            let slice = unsafe {
-                std::slice::from_raw_parts(self.element_offset as *const f32, num_elements)
-            };
-            builder.append_slice(slice);
-        }
-    }
-
-    /// Bulk append f64 values to builder.
-    pub(crate) fn append_doubles_to_builder<const NULLABLE: bool>(
-        &self,
-        builder: &mut Float64Builder,
-    ) {
-        let num_elements = self.num_elements;
-        if num_elements == 0 {
-            return;
-        }
-
-        if NULLABLE {
-            let mut ptr = self.element_offset as *const f64;
-            let null_words = self.null_bitset_ptr();
-            for idx in 0..num_elements {
-                let word_idx = idx >> 6;
-                let bit_idx = idx & 0x3f;
-                let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
-
-                if is_null {
-                    builder.append_null();
-                } else {
-                    builder.append_value(unsafe { *ptr });
-                }
-                ptr = unsafe { ptr.add(1) };
-            }
-        } else {
-            let slice = unsafe {
-                std::slice::from_raw_parts(self.element_offset as *const f64, num_elements)
-            };
-            builder.append_slice(slice);
-        }
-    }
-
-    /// Bulk append boolean values to builder using pointer iteration.
+    /// Bulk append boolean values to builder.
+    /// Booleans are stored as 1 byte each in SparkUnsafeArray, requiring special handling.
     pub(crate) fn append_booleans_to_builder<const NULLABLE: bool>(
         &self,
         builder: &mut BooleanBuilder,
@@ -306,24 +170,28 @@ impl SparkUnsafeArray {
             for idx in 0..num_elements {
                 let word_idx = idx >> 6;
                 let bit_idx = idx & 0x3f;
+                // SAFETY: word_idx < ceil(num_elements/64) since idx < num_elements
                 let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
 
                 if is_null {
                     builder.append_null();
                 } else {
+                    // SAFETY: ptr is within element data bounds
                     builder.append_value(unsafe { *ptr != 0 });
                 }
+                // SAFETY: ptr stays within bounds, iterating num_elements times
                 ptr = unsafe { ptr.add(1) };
             }
         } else {
             for _ in 0..num_elements {
+                // SAFETY: ptr is within element data bounds
                 builder.append_value(unsafe { *ptr != 0 });
                 ptr = unsafe { ptr.add(1) };
             }
         }
     }
 
-    /// Bulk append timestamp values to builder.
+    /// Bulk append timestamp values to builder (stored as i64 microseconds).
     pub(crate) fn append_timestamps_to_builder<const NULLABLE: bool>(
         &self,
         builder: &mut TimestampMicrosecondBuilder,
@@ -339,16 +207,20 @@ impl SparkUnsafeArray {
             for idx in 0..num_elements {
                 let word_idx = idx >> 6;
                 let bit_idx = idx & 0x3f;
+                // SAFETY: word_idx < ceil(num_elements/64) since idx < num_elements
                 let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
 
                 if is_null {
                     builder.append_null();
                 } else {
+                    // SAFETY: ptr is within element data bounds
                     builder.append_value(unsafe { *ptr });
                 }
+                // SAFETY: ptr stays within bounds, iterating num_elements times
                 ptr = unsafe { ptr.add(1) };
             }
         } else {
+            // SAFETY: element_offset points to contiguous i64 data of length num_elements
             let slice = unsafe {
                 std::slice::from_raw_parts(self.element_offset as *const i64, num_elements)
             };
@@ -356,7 +228,7 @@ impl SparkUnsafeArray {
         }
     }
 
-    /// Bulk append date values to builder.
+    /// Bulk append date values to builder (stored as i32 days since epoch).
     pub(crate) fn append_dates_to_builder<const NULLABLE: bool>(
         &self,
         builder: &mut Date32Builder,
@@ -372,16 +244,20 @@ impl SparkUnsafeArray {
             for idx in 0..num_elements {
                 let word_idx = idx >> 6;
                 let bit_idx = idx & 0x3f;
+                // SAFETY: word_idx < ceil(num_elements/64) since idx < num_elements
                 let is_null = unsafe { (*null_words.add(word_idx) & (1i64 << bit_idx)) != 0 };
 
                 if is_null {
                     builder.append_null();
                 } else {
+                    // SAFETY: ptr is within element data bounds
                     builder.append_value(unsafe { *ptr });
                 }
+                // SAFETY: ptr stays within bounds, iterating num_elements times
                 ptr = unsafe { ptr.add(1) };
             }
         } else {
+            // SAFETY: element_offset points to contiguous i32 data of length num_elements
             let slice = unsafe {
                 std::slice::from_raw_parts(self.element_offset as *const i32, num_elements)
             };

@@ -56,6 +56,19 @@ const NESTED_TYPE_BUILDER_CAPACITY: usize = 100;
 /// A common trait for Spark Unsafe classes that can be used to access the underlying data,
 /// e.g., `UnsafeRow` and `UnsafeArray`. This defines a set of methods that can be used to
 /// access the underlying data with index.
+///
+/// # Safety
+///
+/// Implementations must ensure that:
+/// - `get_row_addr()` returns a valid pointer to JVM-allocated memory
+/// - `get_element_offset()` returns a valid pointer within the row/array data region
+/// - The memory layout follows Spark's UnsafeRow/UnsafeArray format
+/// - The memory remains valid for the lifetime of the object (guaranteed by JVM ownership)
+///
+/// All accessor methods (get_boolean, get_int, etc.) use unsafe pointer operations but are
+/// safe to call as long as:
+/// - The index is within bounds (caller's responsibility)
+/// - The object was constructed from valid Spark UnsafeRow/UnsafeArray data
 pub trait SparkUnsafeObject {
     /// Returns the address of the row.
     fn get_row_addr(&self) -> i64;
@@ -73,12 +86,14 @@ pub trait SparkUnsafeObject {
     }
 
     /// Returns boolean value at the given index of the object.
+    #[inline]
     fn get_boolean(&self, index: usize) -> bool {
         let addr = self.get_element_offset(index, 1);
         unsafe { *addr != 0 }
     }
 
     /// Returns byte value at the given index of the object.
+    #[inline]
     fn get_byte(&self, index: usize) -> i8 {
         let addr = self.get_element_offset(index, 1);
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 1) };
@@ -86,6 +101,7 @@ pub trait SparkUnsafeObject {
     }
 
     /// Returns short value at the given index of the object.
+    #[inline]
     fn get_short(&self, index: usize) -> i16 {
         let addr = self.get_element_offset(index, 2);
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 2) };
@@ -93,6 +109,7 @@ pub trait SparkUnsafeObject {
     }
 
     /// Returns integer value at the given index of the object.
+    #[inline]
     fn get_int(&self, index: usize) -> i32 {
         let addr = self.get_element_offset(index, 4);
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
@@ -100,6 +117,7 @@ pub trait SparkUnsafeObject {
     }
 
     /// Returns long value at the given index of the object.
+    #[inline]
     fn get_long(&self, index: usize) -> i64 {
         let addr = self.get_element_offset(index, 8);
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
@@ -107,6 +125,7 @@ pub trait SparkUnsafeObject {
     }
 
     /// Returns float value at the given index of the object.
+    #[inline]
     fn get_float(&self, index: usize) -> f32 {
         let addr = self.get_element_offset(index, 4);
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
@@ -114,6 +133,7 @@ pub trait SparkUnsafeObject {
     }
 
     /// Returns double value at the given index of the object.
+    #[inline]
     fn get_double(&self, index: usize) -> f64 {
         let addr = self.get_element_offset(index, 8);
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
@@ -137,6 +157,7 @@ pub trait SparkUnsafeObject {
     }
 
     /// Returns date value at the given index of the object.
+    #[inline]
     fn get_date(&self, index: usize) -> i32 {
         let addr = self.get_element_offset(index, 4);
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 4) };
@@ -144,6 +165,7 @@ pub trait SparkUnsafeObject {
     }
 
     /// Returns timestamp value at the given index of the object.
+    #[inline]
     fn get_timestamp(&self, index: usize) -> i64 {
         let addr = self.get_element_offset(index, 8);
         let slice: &[u8] = unsafe { std::slice::from_raw_parts(addr, 8) };
@@ -1111,6 +1133,16 @@ fn append_struct_fields_field_major(
 }
 
 /// Appends column of top rows to the given array builder.
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - `row_addresses_ptr` points to an array of at least `row_end` jlong values
+/// - `row_sizes_ptr` points to an array of at least `row_end` jint values
+/// - Each address in `row_addresses_ptr[row_start..row_end]` points to valid Spark UnsafeRow data
+/// - The memory remains valid for the duration of this function call
+///
+/// These invariants are guaranteed when called from JNI with arrays provided by the JVM.
 #[allow(clippy::redundant_closure_call, clippy::too_many_arguments)]
 pub(crate) fn append_columns(
     row_addresses_ptr: *mut jlong,
@@ -1132,6 +1164,8 @@ pub(crate) fn append_columns(
             let mut row = SparkUnsafeRow::new(schema);
 
             for i in row_start..row_end {
+                // SAFETY: row_addresses_ptr and row_sizes_ptr are valid for indices [row_start, row_end)
+                // as guaranteed by the caller (JVM provides these arrays with correct bounds)
                 let row_addr = unsafe { *row_addresses_ptr.add(i) };
                 let row_size = unsafe { *row_sizes_ptr.add(i) };
                 row.point_to(row_addr, row_size);
