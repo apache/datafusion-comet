@@ -121,15 +121,15 @@ name = "bit_util"
 harness = false
 
 [[bench]]
+name = "jvm_shuffle"
+harness = false
+
+[[bench]]
 name = "shuffle_writer"
 harness = false
 
 [[bench]]
 name = "parquet_decode"
-harness = false
-
-[[bench]]
-name = "jvm_shuffle"
 harness = false
 
 [[bench]]
