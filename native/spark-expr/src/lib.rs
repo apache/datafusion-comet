@@ -40,7 +40,6 @@ pub use predicate_funcs::{spark_isnan, RLike};
 
 mod agg_funcs;
 mod array_funcs;
-mod bitwise_funcs;
 mod comet_scalar_funcs;
 pub mod hash_funcs;
 
@@ -60,7 +59,6 @@ mod math_funcs;
 mod nondetermenistic_funcs;
 
 pub use array_funcs::*;
-pub use bitwise_funcs::*;
 pub use conditional_funcs::*;
 pub use conversion_funcs::*;
 pub use nondetermenistic_funcs::*;
