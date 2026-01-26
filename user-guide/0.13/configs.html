@@ -1,0 +1,1737 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Comet Configuration Settings &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=cd442bcd" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/0.13/configs';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Compatibility Guide" href="compatibility.html" />
+    <link rel="prev" title="Supported Spark Expressions" href="expressions.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/index.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../contributor-guide/index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/index.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../contributor-guide/index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../about/index.html">Comet Overview</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">User Guide</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../latest/index.html">0.14.0-SNAPSHOT</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="index.html">0.13.x</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="installation.html">Installing Comet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="source.html">Building From Source</a></li>
+<li class="toctree-l3"><a class="reference internal" href="datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="operators.html">Supported Operators</a></li>
+<li class="toctree-l3"><a class="reference internal" href="expressions.html">Supported Expressions</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Configuration Settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="compatibility.html">Compatibility Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="tuning.html">Tuning Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="metrics.html">Metrics Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../0.12/index.html">0.12.x</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../0.11/index.html">0.11.x</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../0.10/index.html">0.10.x</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../contributor-guide/index.html">Contributor Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../asf/index.html">ASF Links</a></li>
+</ul>
+
+  </div>
+</nav>
+</div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Comet User Guide</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.13.0 User Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Comet Configuration Settings</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!---
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<section id="comet-configuration-settings">
+<h1>Comet Configuration Settings<a class="headerlink" href="#comet-configuration-settings" title="Link to this heading">#</a></h1>
+<p>Comet provides the following configuration settings.</p>
+<section id="scan-configuration-settings">
+<h2>Scan Configuration Settings<a class="headerlink" href="#scan-configuration-settings" title="Link to this heading">#</a></h2>
+<!--BEGIN:CONFIG_TABLE[scan]-->
+<!-- prettier-ignore-start -->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.enabled</span></code></p></td>
+<td><p>Whether to enable native scans. When this is turned on, Spark will use Comet to read supported data sources (currently only Parquet is supported natively). Note that to enable native vectorized execution, both this config and <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code> need to be enabled.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled</span></code></p></td>
+<td><p>Whether to enable native Iceberg table scan using iceberg-rust. When enabled, Iceberg tables are read directly through native execution, bypassing Spark’s DataSource V2 API for better performance.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.preFetch.enabled</span></code></p></td>
+<td><p>Whether to enable pre-fetching feature of CometScan.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.preFetch.threadNum</span></code></p></td>
+<td><p>The number of threads running pre-fetching for CometScan. Effective if spark.comet.scan.preFetch.enabled is enabled. Note that more pre-fetching threads means more memory requirement to store pre-fetched row groups.</p></td>
+<td><p>2</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.unsignedSmallIntSafetyCheck</span></code></p></td>
+<td><p>Parquet files may contain unsigned 8-bit integers (UINT_8) which Spark maps to ShortType. When this config is true (default), Comet falls back to Spark for ShortType columns because we cannot distinguish signed INT16 (safe) from unsigned UINT_8 (may produce different results). Set to false to allow native execution of ShortType columns if you know your data does not contain unsigned UINT_8 columns from improperly encoded Parquet files. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.hadoop.fs.comet.libhdfs.schemes</span></code></p></td>
+<td><p>Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses via libhdfs, separated by commas. Valid only when built with hdfs feature enabled.</p></td>
+<td><p></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- prettier-ignore-end -->
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="parquet-reader-configuration-settings">
+<h2>Parquet Reader Configuration Settings<a class="headerlink" href="#parquet-reader-configuration-settings" title="Link to this heading">#</a></h2>
+<!--BEGIN:CONFIG_TABLE[parquet]-->
+<!-- prettier-ignore-start -->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.enable.directBuffer</span></code></p></td>
+<td><p>Whether to use Java direct byte buffer when reading Parquet.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.read.io.adjust.readRange.skew</span></code></p></td>
+<td><p>In the parallel reader, if the read ranges submitted are skewed in sizes, this option will cause the reader to break up larger read ranges into smaller ranges to reduce the skew. This will result in a slightly larger number of connections opened to the file system but may give improved performance.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.read.io.mergeRanges</span></code></p></td>
+<td><p>When enabled the parallel reader will try to merge ranges of data that are separated by less than <code class="docutils literal notranslate"><span class="pre">comet.parquet.read.io.mergeRanges.delta</span></code> bytes. Longer continuous reads are faster on cloud storage.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.read.io.mergeRanges.delta</span></code></p></td>
+<td><p>The delta in bytes between consecutive read ranges below which the parallel reader will try to merge the ranges. The default is 8MB.</p></td>
+<td><p>8388608</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.read.parallel.io.enabled</span></code></p></td>
+<td><p>Whether to enable Comet’s parallel reader for Parquet files. The parallel reader reads ranges of consecutive data in a  file in parallel. It is faster for large files and row groups but uses more resources.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.read.parallel.io.thread-pool.size</span></code></p></td>
+<td><p>The maximum number of parallel threads the parallel reader will use in a single executor. For executors configured with a smaller number of cores, use a smaller number.</p></td>
+<td><p>16</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.respectFilterPushdown</span></code></p></td>
+<td><p>Whether to respect Spark’s PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be respected when running the Spark SQL test suite but the default setting results in poor performance in Comet when using the new native scans, disabled by default</p></td>
+<td><p>false</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- prettier-ignore-end -->
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="query-execution-settings">
+<h2>Query Execution Settings<a class="headerlink" href="#query-execution-settings" title="Link to this heading">#</a></h2>
+<!--BEGIN:CONFIG_TABLE[exec]-->
+<!-- prettier-ignore-start -->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.caseConversion.enabled</span></code></p></td>
+<td><p>Java uses locale-specific rules when converting strings to upper or lower case and Rust does not, so we disable upper and lower by default.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.debug.enabled</span></code></p></td>
+<td><p>Whether to enable debug mode for Comet. When enabled, Comet will do additional checks for debugging purpose. For example, validating array when importing arrays from JVM at native side. Note that these checks may be expensive in performance and should only be enabled for debugging purpose.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.dppFallback.enabled</span></code></p></td>
+<td><p>Whether to fall back to Spark for queries that use DPP.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.enabled</span></code></p></td>
+<td><p>Whether to enable Comet extension for Spark. When this is turned on, Spark will use Comet to read Parquet data source. Note that to enable native vectorized execution, both this config and <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code> need to be enabled. It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET</span></code>.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exceptionOnDatetimeRebase</span></code></p></td>
+<td><p>Whether to throw exception when seeing dates/timestamps from the legacy hybrid (Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according to the Proleptic Gregorian calendar. When this is true, Comet will throw exceptions when seeing these dates/timestamps that were written by Spark version before 3.0. If this is false, these dates/timestamps will be read as if they were written to the Proleptic Gregorian calendar and will not be rebased.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.columnarToRow.native.enabled</span></code></p></td>
+<td><p>Whether to enable native columnar to row conversion. When enabled, Comet will use native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead of the JVM implementation. This can improve performance for queries that need to convert between columnar and row formats. This is an experimental feature.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.enabled</span></code></p></td>
+<td><p>Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.&lt;operator_name&gt;.enabled</span></code> at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.replaceSortMergeJoin</span></code></p></td>
+<td><p>Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/tuning.html">Comet Tuning Guide</a>.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint</span></code></p></td>
+<td><p>When enabled, fall back to Spark for floating-point operations that may differ from Spark, such as when comparing or sorting -0.0 and 0.0. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.maxTempDirectorySize</span></code></p></td>
+<td><p>The maximum amount of data (in bytes) stored inside the temporary directories.</p></td>
+<td><p>107374182400b</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.updateInterval</span></code></p></td>
+<td><p>The interval in milliseconds to update metrics. If interval is negative, metrics will be updated upon task completion.</p></td>
+<td><p>3000</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.nativeLoadRequired</span></code></p></td>
+<td><p>Whether to require Comet native library to load successfully when Comet is enabled. If not, Comet will silently fallback to Spark when it fails to load the native lib. Otherwise, an error will be thrown and the Spark job will be aborted.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.regexp.allowIncompatible</span></code></p></td>
+<td><p>Comet is not currently fully compatible with Spark for all regular expressions. Set this config to true to allow them anyway. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
+<td><p>false</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- prettier-ignore-end -->
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="viewing-explain-plan-fallback-reasons">
+<h2>Viewing Explain Plan &amp; Fallback Reasons<a class="headerlink" href="#viewing-explain-plan-fallback-reasons" title="Link to this heading">#</a></h2>
+<p>These settings can be used to determine which parts of the plan are accelerated by Comet and to see why some parts of the plan could not be supported by Comet.</p>
+<!--BEGIN:CONFIG_TABLE[exec_explain]-->
+<!-- prettier-ignore-start -->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.format</span></code></p></td>
+<td><p>Choose extended explain output. The default format of ‘verbose’ will provide the full query plan annotated with fallback reasons as well as a summary of how much of the plan was accelerated by Comet. The format ‘fallback’ provides a list of fallback reasons instead.</p></td>
+<td><p>verbose</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled</span></code></p></td>
+<td><p>When this setting is enabled, Comet will provide a tree representation of the native query plan before execution and again after execution, with metrics.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.rules</span></code></p></td>
+<td><p>When this setting is enabled, Comet will log all plan transformations performed in physical optimizer rules. Default: false</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explainFallback.enabled</span></code></p></td>
+<td><p>When this setting is enabled, Comet will provide logging explaining the reason(s) why a query stage cannot be executed natively. Set this to false to reduce the amount of logging.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.logFallbackReasons.enabled</span></code></p></td>
+<td><p>When this setting is enabled, Comet will log warnings for all fallback reasons. It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET_LOG_FALLBACK_REASONS</span></code>.</p></td>
+<td><p>false</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- prettier-ignore-end -->
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="shuffle-configuration-settings">
+<h2>Shuffle Configuration Settings<a class="headerlink" href="#shuffle-configuration-settings" title="Link to this heading">#</a></h2>
+<!--BEGIN:CONFIG_TABLE[shuffle]-->
+<!-- prettier-ignore-start -->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.async.enabled</span></code></p></td>
+<td><p>Whether to enable asynchronous shuffle for Arrow-based shuffle.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.async.max.thread.num</span></code></p></td>
+<td><p>Maximum number of threads on an executor used for Comet async columnar shuffle. This is the upper bound of total number of shuffle threads per executor. In other words, if the number of cores * the number of shuffle threads per task <code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.async.thread.num</span></code> is larger than this config. Comet will use this config as the number of shuffle threads per executor instead.</p></td>
+<td><p>100</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.async.thread.num</span></code></p></td>
+<td><p>Number of threads used for Comet async columnar shuffle per shuffle task. Note that more threads means more memory requirement to buffer shuffle data before flushing to disk. Also, more threads may not always improve performance, and should be set based on the number of cores available.</p></td>
+<td><p>3</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.batch.size</span></code></p></td>
+<td><p>Batch size when writing out sorted spill files on the native side. Note that this should not be larger than batch size (i.e., <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>). Otherwise it will produce larger batches than expected in the native operator after shuffle.</p></td>
+<td><p>8192</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.compression.codec</span></code></p></td>
+<td><p>The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and snappy are supported. Compression can be disabled by setting spark.shuffle.compress=false.</p></td>
+<td><p>lz4</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.compression.zstd.level</span></code></p></td>
+<td><p>The compression level to use when compressing shuffle files with zstd.</p></td>
+<td><p>1</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.enabled</span></code></p></td>
+<td><p>Whether to enable Comet native shuffle. Note that this requires setting <code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code> to <code class="docutils literal notranslate"><span class="pre">org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager</span></code>. <code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code> must be set before starting the Spark application and cannot be changed during the application.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.writeBufferSize</span></code></p></td>
+<td><p>Size of the write buffer in bytes used by the native shuffle writer when writing shuffle data to disk. Larger values may improve write performance by reducing the number of system calls, but will use more memory. The default is 1MB which provides a good balance between performance and memory usage.</p></td>
+<td><p>1048576b</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.native.shuffle.partitioning.hash.enabled</span></code></p></td>
+<td><p>Whether to enable hash partitioning for Comet native shuffle.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.native.shuffle.partitioning.range.enabled</span></code></p></td>
+<td><p>Whether to enable range partitioning for Comet native shuffle.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.native.shuffle.partitioning.roundrobin.enabled</span></code></p></td>
+<td><p>Whether to enable round robin partitioning for Comet native shuffle. This is disabled by default because Comet’s round-robin produces different partition assignments than Spark. Spark sorts rows by their binary UnsafeRow representation before assigning partitions, but Comet uses Arrow format which has a different binary layout. Instead, Comet implements round-robin as hash partitioning on all columns, which achieves the same goals: even distribution, deterministic output (for fault tolerance), and no semantic grouping. Sorted output will be identical to Spark, but unsorted row ordering may differ.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.native.shuffle.partitioning.roundrobin.maxHashColumns</span></code></p></td>
+<td><p>The maximum number of columns to hash for round robin partitioning. When set to 0 (the default), all columns are hashed. When set to a positive value, only the first N columns are used for hashing, which can improve performance for wide tables while still providing reasonable distribution.</p></td>
+<td><p>0</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.preferDictionary.ratio</span></code></p></td>
+<td><p>The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. Note that this config is only used when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> is <code class="docutils literal notranslate"><span class="pre">jvm</span></code>.</p></td>
+<td><p>10.0</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.sizeInBytesMultiplier</span></code></p></td>
+<td><p>Comet reports smaller sizes for shuffle due to using Arrow’s columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy.</p></td>
+<td><p>1.0</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- prettier-ignore-end -->
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="memory-tuning-configuration-settings">
+<h2>Memory &amp; Tuning Configuration Settings<a class="headerlink" href="#memory-tuning-configuration-settings" title="Link to this heading">#</a></h2>
+<!--BEGIN:CONFIG_TABLE[tuning]-->
+<!-- prettier-ignore-start -->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code></p></td>
+<td><p>The columnar batch size, i.e., the maximum number of rows that a batch can contain.</p></td>
+<td><p>8192</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code></p></td>
+<td><p>The type of memory pool to be used for Comet native execution when running Spark in off-heap mode. Available pool types are <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> and <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code>. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/tuning.html">Comet Tuning Guide</a>.</p></td>
+<td><p>fair_unified</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code></p></td>
+<td><p>Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/tuning.html">Comet Tuning Guide</a>.</p></td>
+<td><p>1.0</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.tracing.enabled</span></code></p></td>
+<td><p>Enable fine-grained tracing of events and memory usage. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/contributor-guide/tracing.html">Comet Tracing Guide</a>.</p></td>
+<td><p>false</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- prettier-ignore-end -->
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="development-testing-settings">
+<h2>Development &amp; Testing Settings<a class="headerlink" href="#development-testing-settings" title="Link to this heading">#</a></h2>
+<!--BEGIN:CONFIG_TABLE[testing]-->
+<!-- prettier-ignore-start -->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.memory.factor</span></code></p></td>
+<td><p>Fraction of Comet memory to be allocated per executor process for columnar shuffle when running in on-heap mode. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/tuning.html">Comet Tuning Guide</a>.</p></td>
+<td><p>1.0</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.convert.csv.enabled</span></code></p></td>
+<td><p>When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to Arrow format. This is an experimental feature and has known issues with non-UTC timezones.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.convert.json.enabled</span></code></p></td>
+<td><p>When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to Arrow format. This is an experimental feature and has known issues with non-UTC timezones.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.convert.parquet.enabled</span></code></p></td>
+<td><p>When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to Arrow format.  This is an experimental feature and has known issues with non-UTC timezones.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.onHeap.enabled</span></code></p></td>
+<td><p>Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests. It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET_ONHEAP</span></code>.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.onHeap.memoryPool</span></code></p></td>
+<td><p>The type of memory pool to be used for Comet native execution when running Spark in on-heap mode. Available pool types are <code class="docutils literal notranslate"><span class="pre">greedy</span></code>, <code class="docutils literal notranslate"><span class="pre">fair_spill</span></code>, <code class="docutils literal notranslate"><span class="pre">greedy_task_shared</span></code>, <code class="docutils literal notranslate"><span class="pre">fair_spill_task_shared</span></code>, <code class="docutils literal notranslate"><span class="pre">greedy_global</span></code>, <code class="docutils literal notranslate"><span class="pre">fair_spill_global</span></code>, and <code class="docutils literal notranslate"><span class="pre">unbounded</span></code>.</p></td>
+<td><p>greedy_task_shared</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.memoryOverhead</span></code></p></td>
+<td><p>The amount of additional memory to be allocated per executor process for Comet, in MiB, when running Spark in on-heap mode.</p></td>
+<td><p>1024 MiB</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.write.enabled</span></code></p></td>
+<td><p>Whether to enable native Parquet write through Comet. When enabled, Comet will intercept Parquet write operations and execute them natively. This feature is highly experimental and only partially implemented. It should not be used in production.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.csv.v2.enabled</span></code></p></td>
+<td><p>Whether to use the native Comet V2 CSV reader for improved performance. Default: false (uses standard Spark CSV reader) Experimental: Performance benefits are workload-dependent.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled</span></code></p></td>
+<td><p>Whether to enable Spark to Arrow columnar conversion. When this is turned on, Comet will convert operators in <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code> into Arrow columnar format before processing. This is an experimental feature and has known issues with non-UTC timezones.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code></p></td>
+<td><p>A comma-separated list of operators that will be converted to Arrow columnar format when <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled</span></code> is true.</p></td>
+<td><p>Range,InMemoryTableScan,RDDScan</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.testing.strict</span></code></p></td>
+<td><p>Experimental option to enable strict testing, which will fail tests that could be more comprehensive, such as checking for a specific fallback reason. It can be overridden by the environment variable <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET_STRICT_TESTING</span></code>.</p></td>
+<td><p>false</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- prettier-ignore-end -->
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="enabling-or-disabling-individual-operators">
+<h2>Enabling or Disabling Individual Operators<a class="headerlink" href="#enabling-or-disabling-individual-operators" title="Link to this heading">#</a></h2>
+<!--BEGIN:CONFIG_TABLE[enable_exec]-->
+<!-- prettier-ignore-start -->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.aggregate.enabled</span></code></p></td>
+<td><p>Whether to enable aggregate by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.broadcastExchange.enabled</span></code></p></td>
+<td><p>Whether to enable broadcastExchange by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.broadcastHashJoin.enabled</span></code></p></td>
+<td><p>Whether to enable broadcastHashJoin by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.coalesce.enabled</span></code></p></td>
+<td><p>Whether to enable coalesce by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.collectLimit.enabled</span></code></p></td>
+<td><p>Whether to enable collectLimit by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.expand.enabled</span></code></p></td>
+<td><p>Whether to enable expand by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.explode.enabled</span></code></p></td>
+<td><p>Whether to enable explode by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.filter.enabled</span></code></p></td>
+<td><p>Whether to enable filter by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.globalLimit.enabled</span></code></p></td>
+<td><p>Whether to enable globalLimit by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.hashJoin.enabled</span></code></p></td>
+<td><p>Whether to enable hashJoin by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.localLimit.enabled</span></code></p></td>
+<td><p>Whether to enable localLimit by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.localTableScan.enabled</span></code></p></td>
+<td><p>Whether to enable localTableScan by default.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.project.enabled</span></code></p></td>
+<td><p>Whether to enable project by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sort.enabled</span></code></p></td>
+<td><p>Whether to enable sort by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sortMergeJoin.enabled</span></code></p></td>
+<td><p>Whether to enable sortMergeJoin by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sortMergeJoinWithJoinFilter.enabled</span></code></p></td>
+<td><p>Experimental support for Sort Merge Join with filter</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.takeOrderedAndProject.enabled</span></code></p></td>
+<td><p>Whether to enable takeOrderedAndProject by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.union.enabled</span></code></p></td>
+<td><p>Whether to enable union by default.</p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.window.enabled</span></code></p></td>
+<td><p>Whether to enable window by default.</p></td>
+<td><p>true</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- prettier-ignore-end -->
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="enabling-or-disabling-individual-scalar-expressions">
+<h2>Enabling or Disabling Individual Scalar Expressions<a class="headerlink" href="#enabling-or-disabling-individual-scalar-expressions" title="Link to this heading">#</a></h2>
+<!--BEGIN:CONFIG_TABLE[enable_expr]-->
+<!-- prettier-ignore-start -->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Abs.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Abs</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Acos.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Acos</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Add.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Add</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Alias.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Alias</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.And.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">And</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayAppend.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArrayAppend</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayCompact.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArrayCompact</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayContains.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArrayContains</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayDistinct.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArrayDistinct</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayExcept.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArrayExcept</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayFilter.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArrayFilter</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayInsert.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArrayInsert</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayIntersect.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArrayIntersect</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayJoin.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArrayJoin</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayMax.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArrayMax</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayMin.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArrayMin</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayRemove.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArrayRemove</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayRepeat.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArrayRepeat</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayUnion.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArrayUnion</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArraysOverlap.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ArraysOverlap</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Ascii.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Ascii</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Asin.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Asin</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Atan.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Atan</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Atan2.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Atan2</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.AttributeReference.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">AttributeReference</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.BitLength.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">BitLength</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.BitwiseAnd.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">BitwiseAnd</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.BitwiseCount.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">BitwiseCount</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.BitwiseGet.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">BitwiseGet</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.BitwiseNot.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">BitwiseNot</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.BitwiseOr.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">BitwiseOr</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.BitwiseXor.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">BitwiseXor</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.BloomFilterMightContain.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">BloomFilterMightContain</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.CaseWhen.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">CaseWhen</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Cast.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Cast</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Ceil.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Ceil</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.CheckOverflow.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">CheckOverflow</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Chr.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Chr</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Coalesce.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Coalesce</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Concat.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Concat</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ConcatWs.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ConcatWs</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Contains.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Contains</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Cos.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Cos</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Cosh.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Cosh</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Cot.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Cot</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.CreateArray.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">CreateArray</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.CreateNamedStruct.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">CreateNamedStruct</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DateAdd.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">DateAdd</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DateDiff.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">DateDiff</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DateFormatClass.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">DateFormatClass</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DateSub.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">DateSub</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DayOfMonth.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">DayOfMonth</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DayOfWeek.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">DayOfWeek</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DayOfYear.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">DayOfYear</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Divide.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Divide</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ElementAt.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ElementAt</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EndsWith.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">EndsWith</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EqualNullSafe.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">EqualNullSafe</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EqualTo.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">EqualTo</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Exp.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Exp</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Expm1.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Expm1</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Flatten.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Flatten</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Floor.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Floor</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.FromUnixTime.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">FromUnixTime</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.GetArrayItem.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">GetArrayItem</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.GetArrayStructFields.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">GetArrayStructFields</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.GetMapValue.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">GetMapValue</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.GetStructField.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">GetStructField</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.GreaterThan.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">GreaterThan</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.GreaterThanOrEqual.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">GreaterThanOrEqual</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Hex.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Hex</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Hour.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Hour</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.If.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">If</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.In.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">In</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.InSet.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">InSet</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.InitCap.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">InitCap</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.IntegralDivide.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">IntegralDivide</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.IsNaN.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">IsNaN</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.IsNotNull.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">IsNotNull</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.IsNull.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">IsNull</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.JsonToStructs.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">JsonToStructs</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.KnownFloatingPointNormalized.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">KnownFloatingPointNormalized</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.LastDay.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">LastDay</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Left.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Left</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Length.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Length</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.LessThan.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">LessThan</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.LessThanOrEqual.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">LessThanOrEqual</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Like.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Like</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Literal.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Literal</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Log.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Log</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Log10.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Log10</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Log2.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Log2</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Lower.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Lower</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MakeDecimal.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">MakeDecimal</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapEntries.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">MapEntries</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapFromArrays.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">MapFromArrays</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapKeys.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">MapKeys</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapValues.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">MapValues</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Md5.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Md5</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Minute.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Minute</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MonotonicallyIncreasingID.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">MonotonicallyIncreasingID</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Month.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Month</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Multiply.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Multiply</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Murmur3Hash.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Murmur3Hash</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Not.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Not</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.OctetLength.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">OctetLength</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Or.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Or</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Pow.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Pow</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Quarter.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Quarter</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RLike.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">RLike</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Rand.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Rand</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Randn.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Randn</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegExpReplace.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">RegExpReplace</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Remainder.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Remainder</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Reverse.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Reverse</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Round.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Round</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ScalarSubquery.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ScalarSubquery</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Second.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Second</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Sha1.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Sha1</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Sha2.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Sha2</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ShiftLeft.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ShiftLeft</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ShiftRight.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">ShiftRight</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Signum.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Signum</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Sin.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Sin</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Sinh.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Sinh</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Size.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Size</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">SortOrder</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SparkPartitionID.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">SparkPartitionID</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Sqrt.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Sqrt</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StartsWith.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StartsWith</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StaticInvoke.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StaticInvoke</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringInstr.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringInstr</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringLPad.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringLPad</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringRPad.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringRPad</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringRepeat.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringRepeat</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringReplace.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringReplace</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringSpace.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringSpace</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTranslate.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringTranslate</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrim.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringTrim</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrimBoth.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringTrimBoth</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrimLeft.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringTrimLeft</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTrimRight.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StringTrimRight</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StructsToJson.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StructsToJson</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Substring.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Substring</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Subtract.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Subtract</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Tan.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Tan</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Tanh.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Tanh</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncDate.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">TruncDate</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncTimestamp.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">TruncTimestamp</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.UnaryMinus.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">UnaryMinus</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Unhex.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Unhex</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.UnixDate.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">UnixDate</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.UnixTimestamp.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">UnixTimestamp</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.UnscaledValue.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">UnscaledValue</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Upper.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Upper</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.WeekDay.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">WeekDay</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.WeekOfYear.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">WeekOfYear</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.XxHash64.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">XxHash64</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Year.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Year</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- prettier-ignore-end -->
+<!--END:CONFIG_TABLE-->
+</section>
+<section id="enabling-or-disabling-individual-aggregate-expressions">
+<h2>Enabling or Disabling Individual Aggregate Expressions<a class="headerlink" href="#enabling-or-disabling-individual-aggregate-expressions" title="Link to this heading">#</a></h2>
+<!--BEGIN:CONFIG_TABLE[enable_agg_expr]-->
+<!-- prettier-ignore-start -->
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Config</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Default Value</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Average.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Average</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.BitAndAgg.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">BitAndAgg</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.BitOrAgg.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">BitOrAgg</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.BitXorAgg.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">BitXorAgg</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.BloomFilterAggregate.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">BloomFilterAggregate</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Corr.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Corr</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Count.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Count</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.CovPopulation.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">CovPopulation</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.CovSample.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">CovSample</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.First.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">First</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Last.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Last</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Max.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Max</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Min.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Min</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StddevPop.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StddevPop</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StddevSamp.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">StddevSamp</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Sum.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">Sum</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.VariancePop.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">VariancePop</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.VarianceSamp.enabled</span></code></p></td>
+<td><p>Enable Comet acceleration for <code class="docutils literal notranslate"><span class="pre">VarianceSamp</span></code></p></td>
+<td><p>true</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- prettier-ignore-end -->
+<!--END:CONFIG_TABLE-->
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="expressions.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Supported Spark Expressions</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="compatibility.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Compatibility Guide</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>

@@ -1,0 +1,655 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Comet Tuning Guide &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/theme_overrides.css?v=cd442bcd" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/0.13/tuning';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Comet Metrics" href="metrics.html" />
+    <link rel="prev" title="Compatibility Guide" href="compatibility.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/index.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../contributor-guide/index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../about/index.html">
+    Comet Overview
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../contributor-guide/index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../asf/index.html">
+    ASF Links
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    <p aria-level="2" class="caption" role="heading"><span class="caption-text">Index</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../about/index.html">Comet Overview</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">User Guide</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../latest/index.html">0.14.0-SNAPSHOT</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="index.html">0.13.x</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="installation.html">Installing Comet</a></li>
+<li class="toctree-l3"><a class="reference internal" href="source.html">Building From Source</a></li>
+<li class="toctree-l3"><a class="reference internal" href="datasources.html">Supported Data Sources</a></li>
+<li class="toctree-l3"><a class="reference internal" href="datatypes.html">Supported Data Types</a></li>
+<li class="toctree-l3"><a class="reference internal" href="operators.html">Supported Operators</a></li>
+<li class="toctree-l3"><a class="reference internal" href="expressions.html">Supported Expressions</a></li>
+<li class="toctree-l3"><a class="reference internal" href="configs.html">Configuration Settings</a></li>
+<li class="toctree-l3"><a class="reference internal" href="compatibility.html">Compatibility Guide</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Tuning Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="metrics.html">Metrics Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="kubernetes.html">Kubernetes Guide</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../0.12/index.html">0.12.x</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../0.11/index.html">0.11.x</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../0.10/index.html">0.10.x</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../contributor-guide/index.html">Contributor Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../asf/index.html">ASF Links</a></li>
+</ul>
+
+  </div>
+</nav>
+</div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Comet User Guide</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.13.0 User Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Comet Tuning Guide</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!---
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<section id="comet-tuning-guide">
+<h1>Comet Tuning Guide<a class="headerlink" href="#comet-tuning-guide" title="Link to this heading">#</a></h1>
+<p>Comet provides some tuning options to help you get the best performance from your queries.</p>
+<section id="configuring-tokio-runtime">
+<h2>Configuring Tokio Runtime<a class="headerlink" href="#configuring-tokio-runtime" title="Link to this heading">#</a></h2>
+<p>Comet uses a global tokio runtime per executor process using tokio’s defaults of one worker thread per core and a
+maximum of 512 blocking threads. These values can be overridden using the environment variables <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code>
+and <code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code>.</p>
+<p>It is recommended that <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code> be set to the number of executor cores. This may not be necessary
+in some environments, such as Kubernetes, where the number of cores allocated to a pod will already be equal to the
+number of executor cores.</p>
+</section>
+<section id="memory-tuning">
+<h2>Memory Tuning<a class="headerlink" href="#memory-tuning" title="Link to this heading">#</a></h2>
+<p>It is necessary to specify how much memory Comet can use in addition to memory already allocated to Spark. In some
+cases, it may be possible to reduce the amount of memory allocated to Spark so that overall memory allocation is
+the same or lower than the original configuration. In other cases, enabling Comet may require allocating more memory
+than before. See the <a class="reference internal" href="#determining-how-much-memory-to-allocate">Determining How Much Memory to Allocate</a> section for more details.</p>
+<section id="configuring-comet-memory">
+<h3>Configuring Comet Memory<a class="headerlink" href="#configuring-comet-memory" title="Link to this heading">#</a></h3>
+<p>Comet shares an off-heap memory pool with Spark. The size of the pool is
+specified by <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.size</span></code>.</p>
+<p>Comet’s memory accounting isn’t 100% accurate and this can result in Comet using more memory than it reserves,
+leading to out-of-memory exceptions. To work around this issue, it is possible to
+set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code> to a value less than <code class="docutils literal notranslate"><span class="pre">1.0</span></code> to restrict the amount of memory that can be
+reserved by Comet.</p>
+<p>For more details about Spark off-heap memory mode, please refer to <a class="reference external" href="https://spark.apache.org/docs/latest/configuration.html">Spark documentation</a>.</p>
+<p>Comet implements multiple memory pool implementations. The type of pool can be specified with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code>.</p>
+<p>The valid pool types are:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> (default when <code class="docutils literal notranslate"><span class="pre">spark.memory.offHeap.enabled=true</span></code> is set)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code></p></li>
+</ul>
+<p>The <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> pool types prevents operators from using more than an even fraction of the available memory
+(i.e. <code class="docutils literal notranslate"><span class="pre">pool_size</span> <span class="pre">/</span> <span class="pre">num_reservations</span></code>). This pool works best when you know beforehand
+the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
+when there is sufficient memory in order to leave enough memory for other operators.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
+need to spill or have a single spillable operator.</p>
+</section>
+<section id="determining-how-much-memory-to-allocate">
+<h3>Determining How Much Memory to Allocate<a class="headerlink" href="#determining-how-much-memory-to-allocate" title="Link to this heading">#</a></h3>
+<p>Generally, increasing the amount of memory allocated to Comet will improve query performance by reducing the
+amount of time spent spilling to disk, especially for aggregate, join, and shuffle operations. Allocating insufficient
+memory can result in out-of-memory errors. This is no different from allocating memory in Spark and the amount of
+memory will vary for different workloads, so some experimentation will be required.</p>
+<p>Here is a real-world example, based on running benchmarks derived from TPC-H, running on a single executor against
+local Parquet files using the 100 GB data set.</p>
+<p>Baseline Spark Performance</p>
+<ul class="simple">
+<li><p>Spark completes the benchmark in 632 seconds with 8 cores and 8 GB RAM</p></li>
+<li><p>With less than 8 GB RAM, performance degrades due to spilling</p></li>
+<li><p>Spark can complete the benchmark with as little as 3 GB of RAM, but with worse performance (744 seconds)</p></li>
+</ul>
+<p>Comet Performance</p>
+<ul class="simple">
+<li><p>Comet requires at least 5 GB of RAM, but performance at this level
+is around 340 seconds, which is significantly faster than Spark with any amount of RAM</p></li>
+<li><p>Comet running in off-heap with 8 cores completes the benchmark in 295 seconds, more than 2x faster than Spark</p></li>
+<li><p>It is worth noting that running Comet with only 4 cores and 4 GB RAM completes the benchmark in 520 seconds,
+providing better performance than Spark for half the resource</p></li>
+</ul>
+<p>It may be possible to reduce Comet’s memory overhead by reducing batch sizes or increasing number of partitions.</p>
+</section>
+</section>
+<section id="optimizing-sorting-on-floating-point-values">
+<h2>Optimizing Sorting on Floating-Point Values<a class="headerlink" href="#optimizing-sorting-on-floating-point-values" title="Link to this heading">#</a></h2>
+<p>Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
+Spark if the data contains both zero and negative zero. This is likely an edge case that is not of concern for many users
+and sorting on floating-point data can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortOrder.allowIncompatible=true</span></code>.</p>
+</section>
+<section id="optimizing-joins">
+<h2>Optimizing Joins<a class="headerlink" href="#optimizing-joins" title="Link to this heading">#</a></h2>
+<p>Spark often chooses <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> over <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> for stability reasons. If the build-side of a
+<code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> is very large then it could lead to OOM in Spark.</p>
+<p>Vectorized query engines tend to perform better with <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>, so for best performance it is often preferable
+to configure Comet to convert <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> to <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>. Comet does not yet provide spill-to-disk for
+<code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> so this could result in OOM. Also, <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> may still be faster in some cases. It is best
+to test with both for your specific workloads.</p>
+<p>To configure Comet to convert <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> to <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>, set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.replaceSortMergeJoin=true</span></code>.</p>
+</section>
+<section id="shuffle">
+<h2>Shuffle<a class="headerlink" href="#shuffle" title="Link to this heading">#</a></h2>
+<p>Comet provides accelerated shuffle implementations that can be used to improve the performance of your queries.</p>
+<p>To enable Comet shuffle, set the following configuration in your Spark configuration:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">manager</span><span class="o">=</span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">execution</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">CometShuffleManager</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">exec</span><span class="o">.</span><span class="n">shuffle</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">spark.shuffle.manager</span></code> is a Spark static configuration which cannot be changed at runtime.
+It must be set before the Spark context is created. You can enable or disable Comet shuffle
+at runtime by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> or <code class="docutils literal notranslate"><span class="pre">false</span></code>.
+Once it is disabled, Comet will fall back to the default Spark shuffle manager.</p>
+<section id="shuffle-implementations">
+<h3>Shuffle Implementations<a class="headerlink" href="#shuffle-implementations" title="Link to this heading">#</a></h3>
+<p>Comet provides two shuffle implementations: Native Shuffle and Columnar Shuffle. Comet will first try to use Native
+Shuffle and if that is not possible it will try to use Columnar Shuffle. If neither can be applied, it will fall
+back to Spark for shuffle operations.</p>
+<section id="native-shuffle">
+<h4>Native Shuffle<a class="headerlink" href="#native-shuffle" title="Link to this heading">#</a></h4>
+<p>Comet provides a fully native shuffle implementation, which generally provides the best performance. Native shuffle
+supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code> and <code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code> but currently only supports primitive type
+partitioning keys. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.</p>
+</section>
+<section id="columnar-jvm-shuffle">
+<h4>Columnar (JVM) Shuffle<a class="headerlink" href="#columnar-jvm-shuffle" title="Link to this heading">#</a></h4>
+<p>Comet Columnar shuffle is JVM-based and supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">SinglePartitioning</span></code>. This shuffle implementation supports complex data types as partitioning keys.</p>
+</section>
+</section>
+<section id="shuffle-compression">
+<h3>Shuffle Compression<a class="headerlink" href="#shuffle-compression" title="Link to this heading">#</a></h3>
+<p>By default, Spark compresses shuffle files using LZ4 compression. Comet overrides this behavior with ZSTD compression.
+Compression can be disabled by setting <code class="docutils literal notranslate"><span class="pre">spark.shuffle.compress=false</span></code>, which may result in faster shuffle times in
+certain environments, such as single-node setups with fast NVMe drives, at the expense of increased disk space usage.</p>
+</section>
+</section>
+<section id="explain-plan">
+<h2>Explain Plan<a class="headerlink" href="#explain-plan" title="Link to this heading">#</a></h2>
+<section id="extended-explain">
+<h3>Extended Explain<a class="headerlink" href="#extended-explain" title="Link to this heading">#</a></h3>
+<p>With Spark 4.0.0 and newer, Comet can provide extended explain plan information in the Spark UI. Currently this lists
+reasons why Comet may not have been enabled for specific operations.
+To enable this, in the Spark configuration, set the following:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>-c<span class="w"> </span>spark.sql.extendedExplainProviders<span class="o">=</span>org.apache.comet.ExtendedExplainInfo
+</pre></div>
+</div>
+<p>This will add a section to the detailed plan displayed in the Spark SQL UI page.</p>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="compatibility.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Compatibility Guide</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="metrics.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Comet Metrics</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<!-- Based on pydata_sphinx_theme/footer.html -->
+<footer class="footer mt-5 mt-md-0">
+  <div class="container">
+    
+    <div class="footer-item">
+      <p>Apache DataFusion, Apache DataFusion Comet, Apache, the Apache feather logo, and the Apache DataFusion project logo</p>
+      <p>are either registered trademarks or trademarks of The Apache Software Foundation in the United States and other countries.</p>
+    </div>
+  </div>
+</footer>
+
+
+  </body>
+</html>
