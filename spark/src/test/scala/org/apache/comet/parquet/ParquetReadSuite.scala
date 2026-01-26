@@ -2070,12 +2070,46 @@ class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("V2 parquet scan falls back to Spark for native_datafusion") {
-    // V2 scans with native_datafusion fall back to Spark (not yet supported)
-    testScanner(
-      cometEnabled = "true",
-      CometConf.SCAN_NATIVE_DATAFUSION,
-      scanner = "BatchScan", // Falls back to Spark's BatchScan
-      v1 = None)
+  test("V2 parquet scan works with native_datafusion") {
+    // V2 scans with native_datafusion use CometBatchScan with DataFusion-based reader
+    Seq(("false", "BatchScan"), ("true", "CometBatchScan")).foreach {
+      case (cometEnabled, expectedScanner) =>
+        testScanner(
+          cometEnabled,
+          CometConf.SCAN_NATIVE_DATAFUSION,
+          scanner = expectedScanner,
+          v1 = None)
+    }
+  }
+}
+
+/**
+ * Runs all ParquetReadSuite tests with V2 scans using native_datafusion implementation.
+ */
+class ParquetReadV2NativeDataFusionSuite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
+      pos: Position): Unit = {
+    super.test(testName, testTags: _*)(
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION) {
+        testFun
+      })(pos)
+  }
+
+  override def checkParquetScan[T <: Product: ClassTag: TypeTag](
+      data: Seq[T],
+      f: Row => Boolean = _ => true): Unit = {
+    withParquetDataFrame(data) { r =>
+      val scans = collect(r.filter(f).queryExecution.executedPlan) { case p: CometBatchScanExec =>
+        p.scan
+      }
+      if (CometConf.COMET_ENABLED.get()) {
+        // V2 scans with native_datafusion use CometNativeParquetScan (DataFusion-based reader)
+        assert(scans.nonEmpty && scans.forall(_.isInstanceOf[CometNativeParquetScan]))
+      } else {
+        assert(!scans.exists(_.isInstanceOf[CometNativeParquetScan]))
+      }
+    }
   }
 }
