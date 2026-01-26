@@ -2079,3 +2079,39 @@ class ParquetReadV2Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
       v1 = None)
   }
 }
+
+/**
+ * Runs all ParquetReadSuite tests with V2 scans using native_iceberg_compat implementation.
+ *
+ * Note: ParquetReadV2Suite already uses SCAN_AUTO which defaults to native_iceberg_compat, but
+ * this suite explicitly sets SCAN_NATIVE_ICEBERG_COMPAT for clarity and consistency.
+ */
+class ParquetReadV2NativeIcebergCompatSuite
+    extends ParquetReadSuite
+    with AdaptiveSparkPlanHelper {
+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
+      pos: Position): Unit = {
+    super.test(testName, testTags: _*)(
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "",
+        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_ICEBERG_COMPAT) {
+        testFun
+      })(pos)
+  }
+
+  override def checkParquetScan[T <: Product: ClassTag: TypeTag](
+      data: Seq[T],
+      f: Row => Boolean = _ => true): Unit = {
+    withParquetDataFrame(data) { r =>
+      val scans = collect(r.filter(f).queryExecution.executedPlan) { case p: CometBatchScanExec =>
+        p.scan
+      }
+      if (CometConf.COMET_ENABLED.get()) {
+        // V2 scans with native_iceberg_compat use CometNativeParquetScan (DataFusion-based reader)
+        assert(scans.nonEmpty && scans.forall(_.isInstanceOf[CometNativeParquetScan]))
+      } else {
+        assert(!scans.exists(_.isInstanceOf[CometNativeParquetScan]))
+      }
+    }
+  }
+}
