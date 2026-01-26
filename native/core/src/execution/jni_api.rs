@@ -489,7 +489,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let physical_plan_time = start.elapsed();
 
                 exec_context.plan_creation_time += physical_plan_time;
-                exec_context.root_op = Some(Arc::clone(&root_op));
                 exec_context.scans = scans;
 
                 if exec_context.explain_native {
@@ -501,13 +500,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let task_ctx = exec_context.session_ctx.task_ctx();
                 // Each Comet native execution corresponds to a single Spark partition,
                 // so we should always execute partition 0.
-                let stream = exec_context
-                    .root_op
-                    .as_ref()
-                    .unwrap()
-                    .native_plan
-                    .execute(0, task_ctx)?;
+                let stream = root_op.native_plan.execute(0, task_ctx)?;
                 exec_context.stream = Some(stream);
+                exec_context.root_op = Some(root_op);
             } else {
                 // Pull input batches
                 pull_input_batches(exec_context)?;
@@ -617,8 +612,7 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 
 /// Updates the metrics of the query plan.
 fn update_metrics(env: &mut JNIEnv, exec_context: &mut ExecutionContext) -> CometResult<()> {
-    if exec_context.root_op.is_some() {
-        let native_query = exec_context.root_op.as_ref().unwrap();
+    if let Some(native_query) = &exec_context.root_op {
         let metrics = exec_context.metrics.as_obj();
         update_comet_metric(env, metrics, native_query)
     } else {
