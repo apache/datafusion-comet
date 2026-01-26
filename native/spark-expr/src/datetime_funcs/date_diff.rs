@@ -16,6 +16,7 @@
 // under the License.
 
 use arrow::array::{Array, Date32Array, Int32Array};
+use arrow::compute::cast;
 use arrow::compute::kernels::arity::binary;
 use arrow::datatypes::DataType;
 use datafusion::common::{utils::take_function_args, DataFusionError, Result};
@@ -71,9 +72,22 @@ impl ScalarUDFImpl for SparkDateDiff {
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         let [end_date, start_date] = take_function_args(self.name(), args.args)?;
 
-        // Convert scalars to arrays for uniform processing
-        let end_arr = end_date.into_array(1)?;
-        let start_arr = start_date.into_array(1)?;
+        // Determine target length (broadcast scalars to column length)
+        let len = match (&end_date, &start_date) {
+            (ColumnarValue::Array(a), _) => a.len(),
+            (_, ColumnarValue::Array(a)) => a.len(),
+            _ => 1,
+        };
+
+        // Convert both arguments to arrays of the same length
+        let end_arr = end_date.into_array(len)?;
+        let start_arr = start_date.into_array(len)?;
+
+        // Normalize dictionary arrays (important for Iceberg)
+        let end_arr = arrow::compute::cast(&end_arr, &DataType::Date32)
+            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+        let start_arr = arrow::compute::cast(&start_arr, &DataType::Date32)
+            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
 
         let end_date_array = end_arr
             .as_any()
@@ -96,9 +110,5 @@ impl ScalarUDFImpl for SparkDateDiff {
             binary(end_date_array, start_date_array, |end, start| end - start)?;
 
         Ok(ColumnarValue::Array(Arc::new(result)))
-    }
-
-    fn aliases(&self) -> &[String] {
-        &self.aliases
     }
 }
