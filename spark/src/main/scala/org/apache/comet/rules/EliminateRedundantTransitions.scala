@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
@@ -85,7 +85,7 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
       case ColumnarToRowExec(nativeWrite: CometNativeWriteExec) =>
         nativeWrite
       case c @ ColumnarToRowExec(child) if hasCometNativeChild(child) =>
-        val op = CometColumnarToRowExec(child)
+        val op = createColumnarToRowExec(child)
         if (c.logicalLink.isEmpty) {
           op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
           op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
@@ -94,6 +94,8 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
         }
         op
       case CometColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
+        sparkToColumnar.child
+      case CometNativeColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
         sparkToColumnar.child
       case CometSparkToColumnarExec(child: CometSparkToColumnarExec) => child
       // Spark adds `RowToColumnar` under Comet columnar shuffle. But it's redundant as the
@@ -113,6 +115,8 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
         child
       case CometColumnarToRowExec(child: CometCollectLimitExec) =>
         child
+      case CometNativeColumnarToRowExec(child: CometCollectLimitExec) =>
+        child
       case other =>
         other
     }
@@ -123,6 +127,24 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
       case c: QueryStageExec => hasCometNativeChild(c.plan)
       case c: ReusedExchangeExec => hasCometNativeChild(c.child)
       case _ => op.exists(_.isInstanceOf[CometPlan])
+    }
+  }
+
+  /**
+   * Creates an appropriate columnar to row transition operator.
+   *
+   * If native columnar to row conversion is enabled and the schema is supported, uses
+   * CometNativeColumnarToRowExec. Otherwise falls back to CometColumnarToRowExec.
+   */
+  private def createColumnarToRowExec(child: SparkPlan): SparkPlan = {
+    val schema = child.schema
+    val useNative = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.get() &&
+      CometNativeColumnarToRowExec.supportsSchema(schema)
+
+    if (useNative) {
+      CometNativeColumnarToRowExec(child)
+    } else {
+      CometColumnarToRowExec(child)
     }
   }
 }
