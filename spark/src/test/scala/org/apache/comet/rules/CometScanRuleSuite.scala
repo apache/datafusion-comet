@@ -143,7 +143,7 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
-test("V2 scan should fallback to Spark when native_datafusion is specified") {
+  test("V2 scan should fallback to Spark when native_datafusion is specified") {
     withTempPath { path =>
       createTestDataFrame.write.parquet(path.toString)
       withTempView("test_data") {
