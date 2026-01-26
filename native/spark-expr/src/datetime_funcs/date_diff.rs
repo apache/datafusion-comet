@@ -16,7 +16,6 @@
 // under the License.
 
 use arrow::array::{Array, Date32Array, Int32Array};
-use arrow::compute::cast;
 use arrow::compute::kernels::arity::binary;
 use arrow::datatypes::DataType;
 use datafusion::common::{utils::take_function_args, DataFusionError, Result};
